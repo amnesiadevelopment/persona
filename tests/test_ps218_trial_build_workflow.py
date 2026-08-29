@@ -26,13 +26,11 @@ compile happens on hardware this container does not have and must never attempt
 pin is the set of properties that must hold BEFORE anyone presses the button.
 """
 
-import sys
 from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from posix_shell import find_posix_shell, shell_env  # noqa: E402
+from tests.posix_shell import find_posix_shell, shell_env
 
 yaml = pytest.importorskip("yaml", reason="PyYAML is needed to parse the workflow")
 

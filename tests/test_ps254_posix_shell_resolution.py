@@ -32,12 +32,10 @@ is provable on any host.
 from __future__ import annotations
 
 import sys
-from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import posix_shell  # noqa: E402
+from tests import posix_shell
 
 WSL_STUB = r"C:\Windows\System32\bash.exe"
 
@@ -172,6 +170,92 @@ def test_the_pinned_path_carries_the_tools_the_script_needs(
     assert "/usr/bin:/bin" != path, "the POSIX path is what hid Git Bash's tools"
     for entry in path.split(";" if "\\" in path else ":"):
         assert entry, "the pinned PATH must not contain empty entries"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# THE LAST-RESORT ACCEPT BRANCH — untested until now, and it shipped a defect
+# ─────────────────────────────────────────────────────────────────────────────
+
+@pytest.fixture
+def non_git_layout_shell(tmp_path):
+    """A REAL bash that is not the WSL stub and not in the Git-for-Windows tree.
+
+    This is what `find_posix_shell()`'s last-resort branch accepts. Nothing
+    exercised it before, which is exactly how the empty-PATH defect shipped.
+    """
+    shell_dir = tmp_path / "SomeShell" / "shell"
+    shell_dir.mkdir(parents=True)
+    shell = shell_dir / "bash.exe"
+    shell.write_text("#!/bin/sh\n", encoding="utf-8")
+    return shell
+
+
+def test_a_non_git_shell_never_yields_an_empty_path(
+    non_git_layout_shell, on_windows, monkeypatch
+):
+    """The blocking defect, pinned.
+
+    `find_posix_shell()` accepts any non-stub `bash` on PATH, including one
+    outside the Git-for-Windows layout. For such a shell every candidate in
+    `posix_tool_path()` was filtered out and it returned `""`, so the
+    subprocess launched with `PATH=""`, none of the script's ten utilities
+    resolved, and `ps218_attribute.sh` died on its first command.
+
+    That is a SECOND way to not-really-run the attribution logic, and it is
+    worse than the first: the shell resolves, the "treat it as a finding"
+    assertion passes, and the failure reads as a defect in the script rather
+    than in the harness.
+    """
+    _isolate_from_real_git(monkeypatch)
+    _which_returning({"bash": str(non_git_layout_shell)}, monkeypatch)
+
+    shell = posix_shell.find_posix_shell()
+    assert shell == str(non_git_layout_shell), (
+        "the last-resort branch must accept a real, non-stub shell"
+    )
+
+    path = posix_shell.posix_tool_path(shell)
+    assert path, (
+        "posix_tool_path() returned an empty PATH. The subprocess would launch "
+        "with PATH='' and die on its first utility, while every guard reported "
+        "success — the attribution logic would not really run."
+    )
+    assert str(non_git_layout_shell.parent) in path, (
+        "the shell's own directory is the honest fallback: a bash shipped "
+        "outside the Git layout usually keeps its coreutils beside it"
+    )
+
+
+def test_the_env_never_hands_a_subprocess_an_empty_path(
+    non_git_layout_shell, on_windows, monkeypatch
+):
+    """`shell_env()` guarded only against `None`, so an empty string sailed
+    through it. The env is what a subprocess actually receives, so this is the
+    assertion that matters at the call site."""
+    _isolate_from_real_git(monkeypatch)
+    _which_returning({"bash": str(non_git_layout_shell)}, monkeypatch)
+
+    env = posix_shell.shell_env(UCPL_DIR="u", PATCH_DIR="p")
+
+    assert env["PATH"], (
+        "shell_env() handed the subprocess PATH=''. Ten utilities "
+        "(awk basename date grep mkdir printf sed sort tail wc) would all fail "
+        "to resolve, and the script would never run."
+    )
+
+
+def test_no_resolvable_shell_still_yields_a_usable_path(on_windows, monkeypatch):
+    """The `None` case must not regress either.
+
+    `shell_env()` already handled it, and it must keep handling it: when no
+    shell resolves at all the caller's assertion fires with a clear message,
+    but the env it builds on the way must still be well-formed.
+    """
+    _isolate_from_real_git(monkeypatch)
+    _which_returning({}, monkeypatch)                      # nothing at all
+
+    assert posix_shell.find_posix_shell() is None
+    assert posix_shell.shell_env()["PATH"], "the fallback PATH must not be empty"
 
 
 def test_the_env_carries_systemroot_without_widening_tool_visibility(
