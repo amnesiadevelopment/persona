@@ -55,11 +55,11 @@ _EXPORT_EXCLUDE_DIRS = {".persona-mtls", ".persona-tmp"}
 #
 # * The REST lane's caller is the operator. The API binds 127.0.0.1
 #   (core/config.API_HOST), ships OFF by default (core/settings.is_server_enabled
-#   — the stored key defaults to False), and every /api/v1 route sits behind a
-#   bearer token plus a DNS-rebinding Host guard (the _auth middleware in
-#   api/app.create_app). Reaching this function over HTTP means already holding
-#   the operator's own token on the operator's own machine. There is no
-#   remote-attacker story to confine away.
+#   — the stored key defaults to False), and every /api/v1 route but /health
+#   sits behind a bearer token plus a DNS-rebinding Host guard (the _auth
+#   middleware in api/app.create_app). Reaching this function over HTTP means
+#   already holding the operator's own token on the operator's own machine.
+#   There is no remote-attacker story to confine away.
 # * Nothing in-tree calls the REST export route. The only readers of
 #   `export_dir` are api/routes/profiles.export_profile and the ExportRequest
 #   schema that feeds it, and the UI never speaks HTTP (no request call sites
