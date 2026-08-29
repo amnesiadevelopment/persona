@@ -8,6 +8,34 @@ from src.services.browser.window_entry import (
 )
 
 
+def _redirect_home(monkeypatch, home):
+    """Point the module's `~` at `home` on EVERY platform.
+
+    ⚠️ SETTING ONLY `HOME` IS A POSIX-ONLY REDIRECT, and that is what made
+    eleven of the tests below fail on `windows-latest` while passing on Linux
+    and macOS.
+
+    `window_entry._entry_dir()` resolves its directory with
+    `os.path.expanduser("~/.local/share/applications")`. `expanduser` is
+    `posixpath`'s on POSIX and `ntpath`'s on Windows, and the two read DIFFERENT
+    environment variables — `ntpath.expanduser` consults `USERPROFILE`, then
+    `HOMEDRIVE` + `HOMEPATH`, and **never `HOME`**. So on Windows the patch was
+    ignored, the module wrote into the runner's real user profile, and every
+    assertion that looked under `tmp_path` found an empty directory.
+
+    That is why the failures read as `assert 0 == 2` / `AssertionError: []`
+    rather than as wrong content: nothing was written *there*, and the product
+    was behaving correctly the whole time. The bug is in the harness.
+
+    Setting BOTH names is the convention this repo already uses — see the
+    `fake_home` fixture in `tests/test_desktop_entry.py`, which solved exactly
+    this for the sibling module. A helper rather than a fixture because two
+    tests below rebind `~` per loop iteration, which a fixture cannot express.
+    """
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+
+
 def test_app_id_is_dbus_valid_and_unique():
     # The app_id doubles as the Firefox DBus remoting name, so it must be a
     # valid DBus path segment: only [A-Za-z0-9_]. A name with a dash/space
@@ -31,7 +59,7 @@ def test_app_id_distinguishes_names_that_sanitize_alike():
 
 
 def test_write_uses_app_id_as_wmclass(tmp_path, monkeypatch):
-    monkeypatch.setenv("HOME", str(tmp_path))
+    _redirect_home(monkeypatch, tmp_path)
     path = write_window_entry("test8")
     assert pathlib.Path(path).exists()
     text = pathlib.Path(path).read_text(encoding="utf-8")
@@ -41,14 +69,14 @@ def test_write_uses_app_id_as_wmclass(tmp_path, monkeypatch):
 
 
 def test_write_is_idempotent(tmp_path, monkeypatch):
-    monkeypatch.setenv("HOME", str(tmp_path))
+    _redirect_home(monkeypatch, tmp_path)
     p1 = write_window_entry("acc")
     p2 = write_window_entry("acc")
     assert p1 == p2
 
 
 def test_filename_sanitized(tmp_path, monkeypatch):
-    monkeypatch.setenv("HOME", str(tmp_path))
+    _redirect_home(monkeypatch, tmp_path)
     path = write_window_entry("my acc/01")
     # no path separators leak into the filename
     assert "/" not in pathlib.Path(path).name
@@ -60,7 +88,7 @@ def test_filename_sanitized(tmp_path, monkeypatch):
 def test_remove_window_entry_deletes_the_file(tmp_path, monkeypatch):
     # audit6 LOW c: the desktop entry embeds the profile name in cleartext;
     # delete/wipe must remove it so no forensic trace survives.
-    monkeypatch.setenv("HOME", str(tmp_path))
+    _redirect_home(monkeypatch, tmp_path)
     path = write_window_entry("secret-acct")
     assert pathlib.Path(path).exists()
     remove_window_entry("secret-acct")
@@ -68,7 +96,7 @@ def test_remove_window_entry_deletes_the_file(tmp_path, monkeypatch):
 
 
 def test_remove_window_entry_absent_is_noop(tmp_path, monkeypatch):
-    monkeypatch.setenv("HOME", str(tmp_path))
+    _redirect_home(monkeypatch, tmp_path)
     # no exception when there's nothing to remove
     remove_window_entry("never-existed")
 
@@ -91,7 +119,7 @@ def test_colliding_names_get_two_distinct_files_on_disk(tmp_path, monkeypatch):
     # AC1. Before the digest these two names produced persona-a_b.desktop
     # twice: the second write overwrote the first, so ONE file on disk claimed
     # to be both profiles.
-    monkeypatch.setenv("HOME", str(tmp_path))
+    _redirect_home(monkeypatch, tmp_path)
     p1 = write_window_entry("a_b")
     p2 = write_window_entry("a b")
 
@@ -112,7 +140,7 @@ def test_deleting_one_colliding_profile_keeps_the_others_entry(tmp_path, monkeyp
     # AC3. The delete path unlinks BY FILENAME, so with a shared name removing
     # profile "a_b" deleted the entry belonging to the still-LIVE profile "a b",
     # which then fell back to the generic taskbar label.
-    monkeypatch.setenv("HOME", str(tmp_path))
+    _redirect_home(monkeypatch, tmp_path)
     write_window_entry("a_b")
     survivor = pathlib.Path(write_window_entry("a b"))
 
@@ -151,7 +179,7 @@ def test_write_converges_off_the_legacy_filename(tmp_path, monkeypatch):
     # PS-209 migration (a): an entry already on disk under the old digest-less
     # name would otherwise be orphaned forever, since remove_window_entry no
     # longer computes that path. The next launch heals it.
-    monkeypatch.setenv("HOME", str(tmp_path))
+    _redirect_home(monkeypatch, tmp_path)
     d = pathlib.Path(tmp_path) / ".local/share/applications"
     d.mkdir(parents=True, exist_ok=True)
     legacy = d / "persona-acct.desktop"
@@ -167,7 +195,7 @@ def test_remove_also_unlinks_the_legacy_filename(tmp_path, monkeypatch):
     # A delete/wipe is the last chance to reach that residue: after it the
     # profile is gone, so no later launch would ever converge the old file away
     # and the cleartext Name= would survive the delete (the PS-15/PS-16 class).
-    monkeypatch.setenv("HOME", str(tmp_path))
+    _redirect_home(monkeypatch, tmp_path)
     d = pathlib.Path(tmp_path) / ".local/share/applications"
     write_window_entry("secret acct")
     # planted AFTER the write, or the write's own convergence would remove it
@@ -204,7 +232,7 @@ def test_launching_a_profile_keeps_a_colliding_profiles_current_entry(
 ):
     # The WRITE path. Merely launching _ATTACKER ran the legacy cleanup for its
     # own name, which resolved to _VICTIM's current file and unlinked it.
-    monkeypatch.setenv("HOME", str(tmp_path))
+    _redirect_home(monkeypatch, tmp_path)
     victim = pathlib.Path(write_window_entry(_VICTIM))
     attacker = pathlib.Path(write_window_entry(_ATTACKER))
 
@@ -223,7 +251,7 @@ def test_deleting_a_profile_keeps_a_colliding_profiles_current_entry(
     # The REMOVE path. Deleting _ATTACKER unlinked its own entry AND, via the
     # legacy path, _VICTIM's — leaving the live victim with no entry at all and
     # its window on the generic taskbar label this module exists to prevent.
-    monkeypatch.setenv("HOME", str(tmp_path))
+    _redirect_home(monkeypatch, tmp_path)
     victim = pathlib.Path(write_window_entry(_VICTIM))
     write_window_entry(_ATTACKER)
 
@@ -274,7 +302,7 @@ def test_remove_unlinks_a_pre_v218_legacy_entry(tmp_path, monkeypatch):
     # reached from wipe_all_profiles, whose "nothing survives it" is only true
     # if this file goes. An interior space is a valid profile name, so the
     # legacy filename is persona-client_acct.desktop.
-    monkeypatch.setenv("HOME", str(tmp_path))
+    _redirect_home(monkeypatch, tmp_path)
     d = pathlib.Path(tmp_path) / ".local/share/applications"
     d.mkdir(parents=True, exist_ok=True)
     legacy = d / "persona-client_acct.desktop"
@@ -293,7 +321,7 @@ def test_remove_unlinks_a_pre_v218_legacy_entry(tmp_path, monkeypatch):
 def test_write_converges_off_a_pre_v218_legacy_entry(tmp_path, monkeypatch):
     # The WRITE path: the next launch heals it, rather than leaving the orphan
     # sitting beside the new file forever.
-    monkeypatch.setenv("HOME", str(tmp_path))
+    _redirect_home(monkeypatch, tmp_path)
     d = pathlib.Path(tmp_path) / ".local/share/applications"
     d.mkdir(parents=True, exist_ok=True)
     legacy = d / "persona-client_acct.desktop"
@@ -315,7 +343,7 @@ def test_pre_v218_token_does_not_reopen_the_collision(tmp_path, monkeypatch):
     # two token spaces differ at character 8 (`persona_` vs `persona-`), so an
     # old-token match can never be satisfied by a new-scheme file. Asserted
     # here on files on disk.
-    monkeypatch.setenv("HOME", str(tmp_path))
+    _redirect_home(monkeypatch, tmp_path)
     victim = pathlib.Path(write_window_entry(_VICTIM))
     attacker = pathlib.Path(write_window_entry(_ATTACKER))
 
@@ -338,7 +366,7 @@ def test_legacy_cleanup_leaves_an_entry_it_cannot_prove_it_owns(tmp_path, monkey
     # deleting a live profile's entry, a hand-edited or truncated legacy file
     # survives as residue — the safe direction of the trade, and the reason the
     # guard is content-based rather than name-based.
-    monkeypatch.setenv("HOME", str(tmp_path))
+    _redirect_home(monkeypatch, tmp_path)
     d = pathlib.Path(tmp_path) / ".local/share/applications"
     d.mkdir(parents=True, exist_ok=True)
     foreign = d / "persona-acct.desktop"
@@ -395,7 +423,7 @@ def test_remove_unlinks_a_pre_v218_entry_whose_name_holds_a_line_separator(
     # all three names share the legacy filename persona-client_acct.desktop.
     for sep in _SEPARATORS_THE_VALIDATOR_ALLOWS:
         home = tmp_path / f"home_{ord(sep):04x}"
-        monkeypatch.setenv("HOME", str(home))
+        _redirect_home(monkeypatch, home)
         d = home / ".local/share/applications"
         d.mkdir(parents=True, exist_ok=True)
         name = f"client{sep}acct"
@@ -418,7 +446,7 @@ def test_write_converges_off_a_pre_v218_entry_whose_name_holds_a_separator(
     # beside the new file forever, which is what made this residue permanent.
     for sep in _SEPARATORS_THE_VALIDATOR_ALLOWS:
         home = tmp_path / f"home_{ord(sep):04x}"
-        monkeypatch.setenv("HOME", str(home))
+        _redirect_home(monkeypatch, home)
         d = home / ".local/share/applications"
         d.mkdir(parents=True, exist_ok=True)
         name = f"client{sep}acct"
