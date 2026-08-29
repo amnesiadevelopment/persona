@@ -30,6 +30,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.posix_shell import find_posix_shell, shell_env
+
 yaml = pytest.importorskip("yaml", reason="PyYAML is needed to parse the workflow")
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -220,20 +222,44 @@ ninja: build stopped: subcommand failed.
 
 
 def _run_attribution(tmp_path, log_text: str):
-    """Run the real script against a synthetic compile log."""
+    """Run the real script against a synthetic compile log.
+
+    THE INTERPRETER IS RESOLVED, NOT ASSUMED. `["bash", ...]` with a hardcoded
+    `PATH="/usr/bin:/bin"` fails on a windows-latest runner in the worst
+    possible way: `bash` resolves to the WSL *launcher*, which with no distro
+    installed exits 1 having printed "Windows Subsystem for Linux has no
+    installed distributions", and the pinned POSIX PATH hides the Git Bash that
+    the runner actually ships.
+
+    The consequence was that `ps218_attribute.sh` NEVER EXECUTED on Windows —
+    not one line of attribution logic ran, so every assertion below was vacuous
+    there. Resolving the real shell is what makes these assertions run on
+    Windows for the first time; skipping them would have preserved exactly that
+    blindness.
+
+    Hermeticity is preserved, not traded away: `shell_env()` still pins `PATH`
+    to one known-good toolchain directory set, and on POSIX it returns the same
+    "/usr/bin:/bin" this always used.
+    """
     import subprocess
 
     (tmp_path / "record").mkdir()
     (tmp_path / "record" / "compile-patched.log").write_text(log_text, encoding="utf-8")
 
+    shell = find_posix_shell()
+    assert shell is not None, (
+        "no POSIX shell could be resolved on this host. On Windows the runner "
+        "ships Git Bash and this should not happen — treat it as a finding "
+        "about the runner, not a reason to skip the attribution tests."
+    )
+
     proc = subprocess.run(
-        ["bash", str(ATTRIBUTE_SH)],
+        [shell, str(ATTRIBUTE_SH)],
         cwd=tmp_path,
-        env={
-            "PATH": "/usr/bin:/bin",
-            "UCPL_DIR": str(tmp_path),
-            "PATCH_DIR": str(PATCH_DIR),
-        },
+        env=shell_env(
+            UCPL_DIR=str(tmp_path),
+            PATCH_DIR=str(PATCH_DIR),
+        ),
         capture_output=True,
         text=True,
         encoding="utf-8",
