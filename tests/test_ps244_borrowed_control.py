@@ -33,6 +33,7 @@ was green. Only running the refusal caught it — hence these tests.
 """
 
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -49,6 +50,26 @@ PATCH_DIR = REPO_ROOT / "engine" / "patches" / "fingerprint"
 TAG = "144.0.7559.132-1"
 CONTROL_RUN = "33151144134"
 THIS_RUN = "33999999999"
+
+# The three scripts under test are bash, and they run on a `[self-hosted,
+# persona-build]` Linux runner — POSIX is the only platform they are ever
+# executed on in production.
+#
+# On a windows-latest runner `bash` resolves to the WSL launcher, which reports
+# "Windows Subsystem for Linux has no installed distributions" and exits
+# non-zero. That is a statement about the RUNNER, not about the scripts: it
+# would make every refusal test below "pass" its `rc != 0` assertion for
+# entirely the wrong reason, which is precisely the dead-probe shape this file
+# exists to guard against — a check that fires without ever having read the
+# thing it claims to check.
+#
+# So these are skipped on Windows rather than left to fail or, worse, to pass
+# vacuously. `PATH` is pinned to "/usr/bin:/bin" in every runner below, which is
+# itself POSIX-only and says the same thing.
+requires_posix_shell = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="bash scripts; on windows-latest `bash` is the WSL launcher with no distro installed",
+)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Fixtures: a borrowed control's recorded evidence, in the shape the real
@@ -168,6 +189,7 @@ def assert_refused(tmp_path, out, rc, *, check):
 # THE SUCCESS PATH
 # ─────────────────────────────────────────────────────────────────────────────
 
+@requires_posix_shell
 def test_a_comparable_control_is_verified_and_certified(tmp_path):
     """The feature must actually work: a genuinely comparable control passes."""
     build_fixture(tmp_path)
@@ -195,6 +217,7 @@ def test_a_comparable_control_is_verified_and_certified(tmp_path):
 # THE REFUSALS — one per criterion the ticket names
 # ─────────────────────────────────────────────────────────────────────────────
 
+@requires_posix_shell
 def test_a_control_from_a_different_tag_is_refused(tmp_path):
     """Different tag = a different experiment, not a control."""
     other = "151.0.7922.173-1"
@@ -208,6 +231,7 @@ def test_a_control_from_a_different_tag_is_refused(tmp_path):
     assert other in out and TAG in out, "the refusal must name BOTH tags so it can be acted on"
 
 
+@requires_posix_shell
 def test_a_tag_mismatch_in_either_witness_alone_is_refused(tmp_path):
     """The tag has TWO independent witnesses, and BOTH must agree.
 
@@ -225,6 +249,7 @@ def test_a_tag_mismatch_in_either_witness_alone_is_refused(tmp_path):
     assert "git describe" in out, "the refusal should name which witness disagreed"
 
 
+@requires_posix_shell
 def test_a_control_from_a_different_host_is_refused(tmp_path):
     """Wall-clock, memory ceiling and toolchain belong to the machine."""
     build_fixture(
@@ -236,6 +261,7 @@ def test_a_control_from_a_different_host_is_refused(tmp_path):
     assert "hostname" in out
 
 
+@requires_posix_shell
 def test_a_control_built_on_different_hardware_is_refused(tmp_path):
     """A same-named host with a different CPU/core count is still not this machine."""
     build_fixture(
@@ -246,6 +272,7 @@ def test_a_control_built_on_different_hardware_is_refused(tmp_path):
     assert_refused(tmp_path, out, rc, check="host")
 
 
+@requires_posix_shell
 def test_a_kernel_update_alone_does_not_refuse_the_borrow(tmp_path):
     """The guard must be strict without being useless.
 
@@ -265,6 +292,7 @@ def test_a_kernel_update_alone_does_not_refuse_the_borrow(tmp_path):
     assert "kernel release recorded but NOT compared" in out
 
 
+@requires_posix_shell
 def test_a_control_that_failed_to_compile_is_refused(tmp_path):
     """The artifact EXISTING is not evidence the control succeeded.
 
@@ -281,6 +309,7 @@ def test_a_control_that_failed_to_compile_is_refused(tmp_path):
     assert_refused(tmp_path, out, rc, check="success")
 
 
+@requires_posix_shell
 def test_a_control_whose_patches_never_applied_is_refused(tmp_path):
     """`NOT ATTEMPTED` is a third state, and it is not a pass."""
     build_fixture(
@@ -295,6 +324,7 @@ def test_a_control_whose_patches_never_applied_is_refused(tmp_path):
     assert_refused(tmp_path, out, rc, check="success")
 
 
+@requires_posix_shell
 def test_a_green_verdict_with_no_binary_is_refused(tmp_path):
     """PS-218's own manifest says to trust the binary over the exit code."""
     build_fixture(
@@ -307,6 +337,7 @@ def test_a_green_verdict_with_no_binary_is_refused(tmp_path):
     assert "trust the binary over the exit code" in out
 
 
+@requires_posix_shell
 def test_a_control_with_no_compile_log_is_refused(tmp_path):
     """A verified control with nothing to diff against would be a hollow pass."""
     build_fixture(tmp_path, log=None)
@@ -314,6 +345,7 @@ def test_a_control_with_no_compile_log_is_refused(tmp_path):
     assert_refused(tmp_path, out, rc, check="success")
 
 
+@requires_posix_shell
 def test_an_expired_artifact_gets_its_own_distinct_message(tmp_path):
     """Expiry is a different situation from a mismatch, and must read differently.
 
@@ -330,6 +362,7 @@ def test_an_expired_artifact_gets_its_own_distinct_message(tmp_path):
     assert "trees=both" in out, "the refusal must name the fallback the operator has"
 
 
+@requires_posix_shell
 def test_a_control_whose_stamp_names_another_run_is_refused(tmp_path):
     """The bytes on disk must be traceable to the run the operator NAMED.
 
@@ -345,6 +378,7 @@ def test_a_control_whose_stamp_names_another_run_is_refused(tmp_path):
     assert_refused(tmp_path, out, rc, check="provenance")
 
 
+@requires_posix_shell
 def test_a_patched_tree_log_cannot_pose_as_a_control(tmp_path):
     """A control is the UNMODIFIED tree. A patched log is not a control at all."""
     build_fixture(tmp_path, provenance=PROVENANCE.replace("tree=unmodified", "tree=patched"))
@@ -352,6 +386,7 @@ def test_a_patched_tree_log_cannot_pose_as_a_control(tmp_path):
     assert_refused(tmp_path, out, rc, check="provenance")
 
 
+@requires_posix_shell
 def test_an_unstamped_control_is_refused(tmp_path):
     """Presence is not provenance — the invariant PS-218 already relied on."""
     build_fixture(tmp_path, provenance=None)
@@ -363,6 +398,7 @@ def test_an_unstamped_control_is_refused(tmp_path):
 # THE COMPARATOR TRAP: two failed readings are not an agreement
 # ─────────────────────────────────────────────────────────────────────────────
 
+@requires_posix_shell
 def test_two_unreadable_values_are_refused_rather_than_matched(tmp_path):
     """`[ "$a" = "$b" ]` returns TRUE when both sides are empty.
 
@@ -388,6 +424,7 @@ def test_two_unreadable_values_are_refused_rather_than_matched(tmp_path):
     )
 
 
+@requires_posix_shell
 def test_a_literal_unknown_is_not_treated_as_a_value(tmp_path):
     """`git describe` writes the literal 'unknown' when it fails.
 
@@ -402,6 +439,7 @@ def test_a_literal_unknown_is_not_treated_as_a_value(tmp_path):
     assert_refused(tmp_path, out, rc, check="tag")
 
 
+@requires_posix_shell
 def test_a_dispatch_naming_no_control_run_is_refused(tmp_path):
     """`trees=patched` without a run id has nothing to borrow."""
     build_fixture(tmp_path)
@@ -461,6 +499,7 @@ verified_at=2026-08-28T03:00:00+00:00
 """
 
 
+@requires_posix_shell
 def test_a_certified_borrowed_control_is_accepted_and_labelled_borrowed(tmp_path):
     """The borrow works — and says so, in the document that makes the claim."""
     out = run_attribution(tmp_path, cert=VALID_CERT)
@@ -475,6 +514,7 @@ def test_a_certified_borrowed_control_is_accepted_and_labelled_borrowed(tmp_path
     )
 
 
+@requires_posix_shell
 def test_another_runs_control_without_a_certificate_is_still_refused(tmp_path):
     """The pre-existing invariant, intact. This is the regression that matters.
 
@@ -490,6 +530,7 @@ def test_another_runs_control_without_a_certificate_is_still_refused(tmp_path):
     assert "CONTROL UNKNOWN" in out, "a refused control must fall back to CONTROL UNKNOWN"
 
 
+@requires_posix_shell
 def test_a_certificate_from_an_earlier_dispatch_authorises_nothing(tmp_path):
     """`control/` survives between runs on a self-hosted runner — so must this guard.
 
@@ -505,6 +546,7 @@ def test_a_certificate_from_an_earlier_dispatch_authorises_nothing(tmp_path):
     assert "control origin:     BORROWED" not in out
 
 
+@requires_posix_shell
 def test_a_certificate_about_a_different_run_than_the_log_is_refused(tmp_path):
     """The certificate and the bytes must be about the SAME control run.
 
@@ -517,6 +559,7 @@ def test_a_certificate_about_a_different_run_than_the_log_is_refused(tmp_path):
     assert "control origin:     BORROWED" not in out
 
 
+@requires_posix_shell
 def test_a_borrowed_control_from_another_tag_is_refused_despite_a_certificate(tmp_path):
     """A certificate cannot excuse a different tree — the tag gate binds both paths."""
     out = run_attribution(
@@ -528,6 +571,7 @@ def test_a_borrowed_control_from_another_tag_is_refused_despite_a_certificate(tm
     assert "control origin:     BORROWED" not in out
 
 
+@requires_posix_shell
 def test_the_in_run_control_path_is_unchanged(tmp_path):
     """`both` must behave exactly as before: no certificate, still accepted."""
     out = run_attribution(tmp_path, cert=None, control_run=THIS_RUN)
@@ -560,6 +604,7 @@ def run_manifest(tmp_path, *, control_run=""):
     return (tmp_path / "record" / "MANIFEST-patched.md").read_text(encoding="utf-8")
 
 
+@requires_posix_shell
 def test_the_manifest_says_when_the_control_was_borrowed(tmp_path):
     """A reader must not have to open the workflow to learn this."""
     body = run_manifest(tmp_path, control_run=CONTROL_RUN)
@@ -582,6 +627,7 @@ def test_the_manifest_says_when_the_control_was_borrowed(tmp_path):
     assert "Pre-existing" in body
 
 
+@requires_posix_shell
 def test_the_manifest_says_in_run_on_the_default_path(tmp_path):
     """And the safe path must be positively identified, not merely silent."""
     body = run_manifest(tmp_path, control_run="")
@@ -783,6 +829,7 @@ def test_the_workstation_protection_survives_this_change(workflow):
     )
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
 def test_the_verification_script_is_executable():
     """A runtime-only failure that no other test in this file could see.
 
