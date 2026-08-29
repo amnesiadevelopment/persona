@@ -37,6 +37,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -50,9 +51,30 @@ FAKE_CPU_MODEL = "Fictional Ultra 9 Model X-0000"
 FAKE_CPU_FLAGS = "fpu vme de pse perfctr_core avx512f synthetic_flag"
 FAKE_KERNEL = "9.9.9-synthetic-kernel"
 
-pytestmark = pytest.mark.skipif(
-    shutil.which("bash") is None, reason="the recording script is bash"
-)
+# ⚠️ THE GUARD IS `sys.platform`, NOT `shutil.which("bash")`.
+#
+# `which("bash")` looks like the right check and is a trap on windows-latest: it
+# resolves to `C:\Windows\System32\bash.exe`, the WSL *launcher*, so it returns a
+# path rather than None. The skip would not fire, these tests would run, and they
+# would die in the WSL stub — which is how PS-254's five failures happened.
+#
+# SKIPPING IS CORRECT HERE, and for a reason that did NOT apply to PS-254.
+# There the script under test genuinely executes on Windows, so a skip hid a real
+# gap. `ps218_record_env.sh` runs ONLY on `[self-hosted, persona-build]` (the
+# workflow's sole `runs-on`, at :214 and :414) — a Linux host. It has no Windows
+# code path to leave untested, and the stub shims below are extensionless shell
+# scripts Windows cannot execute in any case. Running these there would test the
+# runner, not the scrub.
+pytestmark = [
+    pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="ps218_record_env.sh runs only on the self-hosted Linux build runner; "
+               "on windows-latest `bash` is the WSL launcher, not a shell",
+    ),
+    pytest.mark.skipif(
+        shutil.which("bash") is None, reason="the recording script is bash"
+    ),
+]
 
 
 def _stub_dir(tmp_path: Path) -> Path:
