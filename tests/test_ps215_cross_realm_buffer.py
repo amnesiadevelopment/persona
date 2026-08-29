@@ -201,13 +201,26 @@ def test_a_non_byte_buffer_is_still_declined(readings):
     if not node:
         pytest.skip("node not available")
     src = _webgl_patch_js(_SEED_A, _CHROMIUM_NATIVE_WRAP)
+    # The patch source arrives on STDIN, not on the command line.
+    #
+    # It used to be inlined via `json.dumps(src)`, which made the argument
+    # 37,602 chars against Windows' CreateProcess ceiling of 32,767 — so this
+    # test died with `FileNotFoundError: [WinError 206]` before node started,
+    # and the brand check it exists to verify was never executed there.
+    #
+    # The `readings` fixture above already reads its payload with
+    # `readFileSync(0, "utf8")`; this is the same mechanism, so the probe's
+    # command line is now a fixed ~700 chars regardless of how large the
+    # generated patch grows.
     probe = (
-        "const vm=require('node:vm');const sb={};vm.createContext(sb);"
+        "const vm=require('node:vm');"
+        "const src=require('fs').readFileSync(0,'utf8');"
+        "const sb={};vm.createContext(sb);"
         "vm.runInContext(`globalThis.self=globalThis;globalThis.window=globalThis;"
         "function C1(){};C1.prototype.readPixels=function(x,y,w,h,f,t,px){"
         "  for(var i=0;i<px.length;i++)px[i]=100;};"
         "globalThis.WebGLRenderingContext=C1;`,sb);"
-        "vm.runInContext(" + json.dumps(src) + ",sb);"
+        "vm.runInContext(src,sb);"
         "const alloc={};vm.createContext(alloc);"
         "const f=vm.runInContext('new Float32Array(64)',alloc);"
         "sb.__foreign=f;"
@@ -218,7 +231,8 @@ def test_a_non_byte_buffer_is_still_declined(readings):
         "console.log(JSON.stringify({untouched:r}));"
     )
     out = subprocess.run(
-        [node, "-e", probe], capture_output=True, text=True, timeout=60, encoding="utf-8"
+        [node, "-e", probe], input=src,
+        capture_output=True, text=True, timeout=60, encoding="utf-8",
     )
     assert out.returncode == 0, out.stderr
     assert json.loads(out.stdout)["untouched"] is True, (
