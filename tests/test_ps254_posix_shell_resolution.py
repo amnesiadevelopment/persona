@@ -72,6 +72,25 @@ def _which_returning(mapping, monkeypatch):
     )
 
 
+def _isolate_from_real_git(monkeypatch):
+    """Remove the env-derived discovery path, so a real Git install cannot leak in.
+
+    ⚠️ WITHOUT THIS THE STUB TEST IS UNFALSIFIABLE ON A MACHINE THAT HAS GIT.
+    `_git_bash_candidates()` reads `GIT_INSTALL_ROOT` / `ProgramFiles` /
+    `ProgramFiles(x86)` from the environment and probes them with `is_file()`.
+    Monkeypatching `shutil.which` alone does NOT cover that path, so on a real
+    windows-latest runner the resolver found `C:\\Program Files\\Git\\bin\\bash.exe`
+    — correctly! — and the assertion "no shell was resolved" could never hold.
+
+    This was caught by CI, not locally: off Windows those variables are unset and
+    that directory does not exist, so the test passed on Linux and failed on the
+    one platform it exists to protect. That is the same blindness this whole
+    ticket is about, so it is recorded here rather than quietly patched.
+    """
+    for var in ("GIT_INSTALL_ROOT", "ProgramFiles", "ProgramFiles(x86)"):
+        monkeypatch.delenv(var, raising=False)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # The refusal — the half that was silently broken
 # ─────────────────────────────────────────────────────────────────────────────
@@ -87,8 +106,14 @@ def _which_returning(mapping, monkeypatch):
 )
 def test_the_wsl_stub_is_never_accepted_as_a_shell(stub, on_windows, monkeypatch):
     """The WSL launcher exits 1 without running anything. Taking it as a shell
-    is what made five tests vacuous, so this must hold for every spelling."""
-    _which_returning({"bash": stub}, monkeypatch)          # no git, no Git Bash
+    is what made five tests vacuous, so this must hold for every spelling.
+
+    The isolation below is load-bearing, not tidiness: without it a real Git
+    install on the host satisfies the resolver through the environment path and
+    this assertion can never fail. See `_isolate_from_real_git`.
+    """
+    _isolate_from_real_git(monkeypatch)                    # no Git Bash on disk
+    _which_returning({"bash": stub}, monkeypatch)          # stub is all PATH offers
     assert posix_shell.find_posix_shell() is None, (
         f"{stub!r} was accepted as a POSIX shell. It is the WSL launcher: it "
         "runs no script, so every assertion downstream would be vacuous."
