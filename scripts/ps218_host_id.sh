@@ -58,17 +58,58 @@ _host_salt() {
   cat "$PS218_HOST_SALT_FILE" 2>/dev/null
 }
 
+# ── THE DIGEST TOOL IS RESOLVED, NOT ASSUMED ────────────────────────────────
+#
+# ⚠️ `sha256sum` IS NOT PORTABLE. It ships with GNU coreutils, so it is present
+# on Linux and ABSENT on macOS, which carries `shasum` instead. Hardcoding it
+# made every macOS caller fall through to the `unknown` path, and because
+# `is_readable()` correctly refuses `unknown`, that REFUSED EVERY BORROW — the
+# exact symptom this file was written to cure, reached by a different route.
+#
+# The fail-closed design worked as intended (it refused rather than leaked, and
+# disclosed nothing), so this was a portability defect and never a security one.
+# But a guard that refuses everything is as useless as one that refuses nothing.
+#
+# All three commands compute the SAME SHA-256 over the same bytes, so a record
+# written on one platform still compares equal to one read on another — the
+# digest is a property of the input, not of the tool.
+#
+# THEIR OUTPUT FORMATS DIFFER, which is the trap:
+#     sha256sum          -> "<64 hex>  -"
+#     shasum -a 256      -> "<64 hex>  -"
+#     openssl dgst       -> "(stdin)= <64 hex>"   (or "SHA2-256(stdin)= ...")
+# `cut -c1-12` is correct for the first two and silently WRONG for the third —
+# it would yield "(stdin)= 3f" and hand that out as a label. Extracting the hex
+# run by pattern is format-independent, so a future tool cannot corrupt it.
+_ps218_digest() {
+  local out=""
+  if command -v sha256sum >/dev/null 2>&1; then
+    out="$(sha256sum 2>/dev/null)" || true
+  elif command -v shasum >/dev/null 2>&1; then
+    out="$(shasum -a 256 2>/dev/null)" || true
+  elif command -v openssl >/dev/null 2>&1; then
+    out="$(openssl dgst -sha256 2>/dev/null)" || true
+  else
+    return 1
+  fi
+  # The 64-hex run, wherever it sits in the line. Empty output => no digest.
+  printf '%s' "$out" | grep -oE '[0-9a-f]{64}' | head -1 || true
+}
+
 # A stable, non-identifying label for one input.
 #
 # Empty input stays `unknown` rather than becoming a digest of the empty string,
 # which would be a value every machine with a missing reading would share — a
 # false match rather than a refusal.
 pseudonymise() {
-  local value="$1" salt digest
+  local value="$1" salt digest hex
   [ -n "$value" ] || { echo "unknown"; return 0; }
   salt="$(_host_salt)" || { echo "unknown"; return 0; }
   [ -n "$salt" ] || { echo "unknown"; return 0; }
-  digest="$(printf '%s\n' "${salt}:${value}" | sha256sum 2>/dev/null | cut -c1-12)" || true
+  hex="$(printf '%s\n' "${salt}:${value}" | _ps218_digest)" || true
+  digest="$(printf '%s' "$hex" | cut -c1-12)" || true
+  # Still fail-closed: with no usable digest tool the value becomes `unknown`,
+  # which is_readable() refuses. It NEVER falls back to the real value.
   [ -n "$digest" ] && echo "${PS218_ANON_PREFIX}${digest}" || echo "unknown"
 }
 
