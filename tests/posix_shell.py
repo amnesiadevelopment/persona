@@ -125,7 +125,31 @@ def posix_tool_path(shell: str) -> str:
         root = root.parent
 
     parts = [root / "usr" / "bin", root / "bin", root / "mingw64" / "bin"]
-    return os.pathsep.join(str(p) for p in parts if p.is_dir())
+    resolved = [str(p) for p in parts if p.is_dir()]
+
+    # ⚠️ NEVER RETURN AN EMPTY PATH.
+    #
+    # `find_posix_shell()` has a last-resort branch that accepts any non-stub
+    # `bash` found on PATH — which need not sit in the Git-for-Windows layout.
+    # For such a shell every candidate above is filtered out and this used to
+    # return "", so the subprocess launched with `PATH=""`, none of the script's
+    # ten utilities resolved, and `ps218_attribute.sh` died on its first command.
+    #
+    # That is a SECOND way to not-really-run the attribution logic — the exact
+    # failure class this ticket exists to close — and it is worse than the first,
+    # because the shell resolves, the "treat it as a finding" assertion passes,
+    # and the failure looks like a defect in the script rather than in the
+    # harness. Latent on today's runner only because `windows-latest` ships Git
+    # Bash and takes the branch above.
+    #
+    # The shell's own directory is the honest fallback: a bash shipped outside
+    # the Git layout keeps its coreutils beside it far more often than not, and
+    # a wrong-but-populated PATH fails loudly at the missing utility instead of
+    # silently at every one of them.
+    if not resolved:
+        resolved = [str(shell_path.parent)]
+
+    return os.pathsep.join(resolved)
 
 
 def shell_env(**extra: str) -> dict[str, str]:
