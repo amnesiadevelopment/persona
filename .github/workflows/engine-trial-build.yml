@@ -165,8 +165,20 @@ on:
 # READ-only, matching the posture ci.yml and release.yml document in place.
 # These jobs fetch and execute untrusted third-party code (the Chromium source
 # tarball, upstream build scripts, a toolchain downloaded at build time) and
-# must not hold a write-capable token that code could exfiltrate. Nothing here
-# writes to the repo, so nothing needs widening.
+# must not hold a write-capable token that code could exfiltrate.
+#
+# NO WRITE SCOPE IS GRANTED ANYWHERE IN THIS FILE, and that is the posture to
+# preserve. But "read-only" is not one scope: declaring a `permissions:` block
+# sets every UNLISTED scope to `none`, so this default alone gives the token
+# `actions: none` — and PS-244's borrowed control is an artifact belonging to
+# ANOTHER run, which `actions/download-artifact` can only list through
+# `GET /repos/{owner}/{repo}/actions/runs/{run_id}/artifacts`. That endpoint
+# needs `actions: read`. The `patched` job therefore widens ITS OWN block by
+# that one read scope (see its `permissions:`); this default stays as-is, so
+# the control job — which reads no other run — is unaffected.
+#
+# Do not "simplify" that job-level block away: without it every patched-only
+# dispatch 403s at the fetch and the feature cannot work at all.
 permissions:
   contents: read
 
@@ -375,6 +387,26 @@ jobs:
   patched:
     name: "2. patched tree (our 16 fingerprint patches)"
     needs: unmodified
+    # WIDENED BY EXACTLY ONE READ SCOPE, and only on this job. The borrowed
+    # control is an artifact of ANOTHER run, so `actions/download-artifact`
+    # must list that run's artifacts via
+    #   GET /repos/{owner}/{repo}/actions/runs/{run_id}/artifacts
+    # which requires `actions: read`. The file-level block above grants
+    # `contents: read` only, and a declared block sets every unlisted scope to
+    # `none` — so without this the borrow step 403s on EVERY patched-only
+    # dispatch, including one naming a perfectly valid control.
+    #
+    # `contents: read` MUST be repeated here: a job-level block REPLACES the
+    # file-level one rather than merging with it, and omitting it would leave
+    # the two checkouts unable to read the repo.
+    #
+    # STILL NO WRITE SCOPE. This job executes untrusted third-party build code,
+    # and `actions: read` cannot mutate the repo, publish a release, or move a
+    # ref — it can only enumerate and download existing artifacts. The control
+    # job is deliberately NOT widened: it reads no other run.
+    permissions:
+      contents: read
+      actions: read
     if: >-
       ${{ !cancelled()
       && ( (inputs.trees == 'both' && needs.unmodified.result == 'success')
