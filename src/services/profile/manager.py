@@ -1,3 +1,4 @@
+import dataclasses
 import glob
 import json
 import logging
@@ -174,113 +175,129 @@ class ProfileManager(StoreGuardMixin, TrashableMixin):
                     # next save would overwrite profiles.json with only what
                     # loaded, silently losing every good profile.
                     try:
-                        clean_data = {
-                            "name": p_data.get("name"),
-                            "proxy": p_data.get("proxy"),
-                            "os_type": p_data.get(
-                                "os_type",
-                                p_data.get("config", {}).get("os", "windows"),
-                            ),
-                            # device_type is NOT judged here (Rule 3, PS-188:
-                            # ACCEPT AND RECORD). This door reads records
-                            # written by an older build, so it is a RECOVERY
-                            # door like import and restore, and refusing would
-                            # drop a profile the operator already owns off the
-                            # bottom of the list. An absent key defaults to
-                            # "desktop", which is coherent with every os_type;
-                            # a stored "mobile" beside a desktop os_type lands
-                            # verbatim and is reported by
-                            # `Profile.device_type_incoherence` rather than
-                            # rewritten. Repairing is not available to this
-                            # door either: which of the two fields is the lie
-                            # is not knowable from the record.
-                            "device_type": p_data.get(
-                                "device_type", "desktop"
-                            ),
-                            # "camoufox" was the retired Firefox engine; map any
-                            # saved profile onto the current "firefox" engine.
-                            "engine": (
-                                "firefox"
-                                if p_data.get("engine") == "camoufox"
-                                else p_data.get("engine", "chromium")
-                            ),
-                            "resolution": p_data.get("resolution", "auto"),
-                            "search_engine": p_data.get(
-                                "search_engine", "duckduckgo"
-                            ),
-                            "bookmark_pool": p_data.get("bookmark_pool"),
-                            # Absent key = a pre-this-field profile → None so it
-                            # keeps getting the default bookmarks. A saved [] is
-                            # an intentional empty selection and is preserved.
-                            "bookmarks": p_data.get("bookmarks"),
-                            "certificate": p_data.get("certificate"),
-                            "cookie_import_status": p_data.get(
-                                "cookie_import_status"
-                            ),
-                            # This allow-list is hand-enumerated, so a field
-                            # missing HERE is silently dropped on reload even
-                            # though to_dict() saved it (see transfer.py:117 —
-                            # cookie_import_status was the last field to hit
-                            # this exact bug).
-                            "cert_trust_status": p_data.get(
-                                "cert_trust_status"
-                            ),
-                            "tags": p_data.get("tags", []),
-                            "notes": p_data.get("notes", ""),
-                            "ai_control": p_data.get("ai_control", False),
-                            # Absent key = a profile written before the seed
-                            # was persisted → None, which makes
-                            # fingerprint_seed fall back to crc32(name) and
-                            # present exactly what that profile has always
-                            # presented. That fallback is the entire migration
-                            # for existing profiles; do NOT default this to
-                            # crc32(name) here, which would silently freeze a
-                            # derived value and make a later rename of an OLD
-                            # profile behave differently depending on whether
-                            # it had been reloaded since. And per the
-                            # allow-list note above, omitting this line is not
-                            # an inert oversight: the seed would be saved by
-                            # to_dict() and dropped on the next load, so every
-                            # profile would quietly re-derive from its name at
-                            # restart and the freeze would evaporate while the
-                            # in-memory tests still passed.
-                            "fingerprint_seed_value": p_data.get(
-                                "fingerprint_seed_value"
-                            ),
-                            # Same allow-list trap as the seed above, and the
-                            # same reason it matters: omit this line and
-                            # to_dict() would save the generation while every
-                            # reload dropped it, so each restart would silently
-                            # re-read the profile as generation 0 — invisible
-                            # until a list grew, then a mass re-roll of exactly
-                            # the profiles this field exists to hold still.
-                            # Absent key = a profile written before the field
-                            # existed → None → generation 0, which sees the
-                            # lists as they shipped, i.e. precisely what that
-                            # profile has always presented. That fallback IS
-                            # the migration; do NOT default it to
-                            # CURRENT_HARDWARE_GENERATION, which would hand
-                            # every existing profile the newest pool and re-roll
-                            # the whole machine at once.
-                            "hardware_generation_value": p_data.get(
-                                "hardware_generation_value"
-                            ),
-                            # Absent key = a profile that has not launched
-                            # since the field was added → None, which reads as
-                            # "not known". Do NOT default these to the
-                            # currently-installed build: that would invent a
-                            # provenance record for a launch that was never
-                            # observed, and the whole value of the field is
-                            # that a difference against it is interpretable.
-                            # A guessed stamp makes that comparison return a
-                            # false answer, which is worse than no answer.
-                            "last_launch_engine": p_data.get(
-                                "last_launch_engine"
-                            ),
-                            "last_launch_build": p_data.get(
-                                "last_launch_build"
-                            ),
+                        # Build from the intersection of the record and
+                        # Profile's own field set, exactly as transfer.py's
+                        # import path does. Enumerating the keys by hand was a
+                        # standing trap: a field added to the dataclass is
+                        # saved automatically by to_dict()/asdict() and was
+                        # then silently dropped on the next load unless
+                        # someone also edited the literal here — no exception,
+                        # no log, and every in-memory test still passing
+                        # because the loss only shows across a restart.
+                        # Deriving the keys means a new field round-trips for
+                        # free; unknown keys in the record are ignored.
+                        #
+                        # `name` is set explicitly rather than taken from the
+                        # intersection: it is the one field with no dataclass
+                        # default, so a record missing it must still reach
+                        # Profile(name=None) — which is what the enumerated
+                        # form did — instead of raising TypeError and being
+                        # skipped as malformed.
+                        #
+                        # The two keys BELOW this dict carry real migration
+                        # logic and are therefore NOT reflection: neither is a
+                        # plain .get() of its own field, so a pure
+                        # intersection would delete them.
+                        field_names = {
+                            f.name for f in dataclasses.fields(Profile)
                         }
+                        clean_data = {
+                            k: v
+                            for k, v in p_data.items()
+                            if k in field_names
+                        }
+                        clean_data["name"] = p_data.get("name")
+
+                        # MIGRATION 1 — legacy nested location. Pre-os_type
+                        # profiles carried the OS at config.os, and "config"
+                        # is NOT a Profile field, so reflection cannot see it:
+                        # without this step every such profile would silently
+                        # become "windows".
+                        #
+                        # Evaluated UNCONDITIONALLY, before the membership
+                        # test, because the enumerated form computed it as the
+                        # default argument of .get("os_type", ...) — i.e. on
+                        # every record, including ones that DO carry os_type.
+                        # A record with a non-dict "config" therefore raised
+                        # AttributeError and was skipped by the handler below;
+                        # deferring the lookup would quietly start loading it.
+                        # That is a behaviour change, so it is not made here.
+                        legacy_os_type = p_data.get("config", {}).get(
+                            "os", "windows"
+                        )
+                        if "os_type" not in p_data:
+                            clean_data["os_type"] = legacy_os_type
+
+                        # MIGRATION 2 — retired value rewrite. "camoufox" was
+                        # the retired Firefox engine; map any saved profile
+                        # onto the current "firefox" engine. Reflection would
+                        # copy the stored value verbatim and resurrect a value
+                        # nothing else in the tree understands.
+                        if p_data.get("engine") == "camoufox":
+                            clean_data["engine"] = "firefox"
+
+                        # NOTES ON KEYS THAT ONLY LOOK LIKE MIGRATIONS — the
+                        # reasoning below is why each one is safe to leave to
+                        # reflection plus the dataclass default, and it is the
+                        # reasoning a future reader needs before "simplifying"
+                        # any of them away.
+                        #
+                        # device_type is NOT judged here (Rule 3, PS-188:
+                        # ACCEPT AND RECORD). This door reads records written
+                        # by an older build, so it is a RECOVERY door like
+                        # import and restore, and refusing would drop a
+                        # profile the operator already owns off the bottom of
+                        # the list. An absent key defaults to "desktop" (the
+                        # dataclass default), which is coherent with every
+                        # os_type; a stored "mobile" beside a desktop os_type
+                        # lands verbatim and is reported by
+                        # `Profile.device_type_incoherence` rather than
+                        # rewritten. Repairing is not available to this door
+                        # either: which of the two fields is the lie is not
+                        # knowable from the record.
+                        #
+                        # bookmarks: an absent key = a pre-this-field profile →
+                        # None so it keeps getting the default bookmarks. A
+                        # saved [] is an intentional empty selection and is
+                        # preserved. Reflection preserves both: an absent key
+                        # falls to the dataclass default of None, a stored []
+                        # is copied through.
+                        #
+                        # tags: an absent key falls to the dataclass
+                        # default_factory=list, i.e. a FRESH list per record —
+                        # the same thing the old `p_data.get("tags", [])`
+                        # produced. Do not substitute a shared module-level [].
+                        #
+                        # fingerprint_seed_value: absent key = a profile
+                        # written before the seed was persisted → None, which
+                        # makes fingerprint_seed fall back to crc32(name) and
+                        # present exactly what that profile has always
+                        # presented. That fallback is the entire migration for
+                        # existing profiles; do NOT default this to
+                        # crc32(name) here, which would silently freeze a
+                        # derived value and make a later rename of an OLD
+                        # profile behave differently depending on whether it
+                        # had been reloaded since.
+                        #
+                        # hardware_generation_value: absent key = a profile
+                        # written before the field existed → None → generation
+                        # 0, which sees the lists as they shipped, i.e.
+                        # precisely what that profile has always presented.
+                        # That fallback IS the migration; do NOT default it to
+                        # CURRENT_HARDWARE_GENERATION, which would hand every
+                        # existing profile the newest pool and re-roll the
+                        # whole machine at once — a mass re-roll of exactly
+                        # the profiles this field exists to hold still.
+                        #
+                        # last_launch_engine / last_launch_build: absent key =
+                        # a profile that has not launched since the field was
+                        # added → None, which reads as "not known". Do NOT
+                        # default these to the currently-installed build: that
+                        # would invent a provenance record for a launch that
+                        # was never observed, and the whole value of the field
+                        # is that a difference against it is interpretable. A
+                        # guessed stamp makes that comparison return a false
+                        # answer, which is worse than no answer.
                         self.profiles[name] = Profile(**clean_data)
                     except Exception:
                         skipped += 1
