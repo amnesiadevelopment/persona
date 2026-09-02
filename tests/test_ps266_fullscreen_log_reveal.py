@@ -74,8 +74,9 @@ def _message_text(row):
 
 def _reveal(row):
     for c in _row_parts(row):
-        if getattr(c, "tooltip", None) in (_REVEAL_TIP, _HIDE_TIP):
-            return c
+        inner = getattr(c, "content", None)
+        if getattr(inner, "tooltip", None) in (_REVEAL_TIP, _HIDE_TIP):
+            return inner
     return None
 
 
@@ -230,6 +231,17 @@ def test_ac3_the_row_built_by_the_view_is_selectable_too():
     """Through the real row builder, not just the cell helper — the wiring is
     what regressed last time."""
     assert _message_text(fullscreen_event_row(_LONG_LINE, ROSTER)).selectable is True
+
+
+def test_ac3_the_selectable_cell_still_names_itself_to_a_screen_reader():
+    """MEASURED live, not assumed: a ``selectable`` Text is a canvas-level
+    SelectableText and paints an accessibility node with an EMPTY string — so
+    restoring selection silently removed the message column from the semantics
+    tree, leaving the row reading as "shop-de-03 / 18:07:20" with the refusal
+    missing. ``semantics_label`` puts the sentence back."""
+    t = fullscreen_message_text(_REFUSAL, "#fff", expanded=False)
+    assert t.semantics_label == _REFUSAL
+    assert _TAIL in t.semantics_label
 
 
 # --- AC4: the dock is untouched --------------------------------------------
