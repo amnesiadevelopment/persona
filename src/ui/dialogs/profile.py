@@ -13,6 +13,10 @@ from ...services.browser.profile_seed import (
 )
 from ...services.bookmark.store import DEFAULT_BOOKMARKS
 from ...services.browser.device_presets import is_mobile_os
+from ...services.profile.cert_assignment import (
+    CERT_UNCHANGED,
+    CertDirective,
+)
 from ...services.profile.pool_assignment import (
     POOL_NONE,
     POOL_UNCHANGED,
@@ -61,6 +65,11 @@ def open_profile_dialog(
     #: The pool position accepts a ``PoolDirective`` on the same terms: the
     #: dialog sends ``POOL_NONE`` for a deliberate "(none)", because the model
     #: no longer reads an empty string as a clear.
+    #: The certificate position accepts a ``CertDirective``, but only the
+    #: unresolved half of the idiom: the dialog sends ``CERT_UNCHANGED`` when it
+    #: could not account for the profile's assigned certificate, and a plain
+    #: ``""`` for a deliberate "(none)" — on that field an empty string IS the
+    #: model's explicit clear, so it needs no directive (cert_assignment.py).
     on_save: Callable[
         [
             str,
@@ -73,7 +82,7 @@ def open_profile_dialog(
             str,
             str,
             str,
-            str,
+            str | CertDirective,
         ],
         str | None,
     ],
@@ -190,18 +199,75 @@ def open_profile_dialog(
     )
 
     current_cert = (profile.certificate or "") if profile is not None else ""
-    cert_value = current_cert if current_cert in cert_names else _NO_CERT
+    # The third member of this dialog's reference-field family, and the last one
+    # to get the option the other two have. `cert_value = current_cert if
+    # current_cert in cert_names else _NO_CERT` rendered an unaccounted-for
+    # certificate as "(none)" — visually identical to a profile the operator
+    # deliberately gave no certificate — and submitting turned that display
+    # fallback into "", which the model reads as an explicit clear.
+    #
+    # The list can legitimately be missing a name the profile still references:
+    # the cert store skips a single unparseable record (populated dropdown, one
+    # name absent) or quarantines the whole file (every name absent) —
+    # services/cert/store.py:82-102. Both are deliberate protections, and
+    # neither reaches this dialog in any form.
+    #
+    # What it costs is neither exposure nor recoverability but INTENT. The
+    # launch path handles a dangling reference correctly (it sweeps the key
+    # material and launches without a client certificate), so nothing breaks
+    # while the name is missing. What breaks is later: the profile stops being
+    # "a profile whose certificate could not be found" and becomes "a profile
+    # that has no certificate", a legitimate configuration nothing will ever
+    # flag — so when the store recovers, the proxy and the pool come back
+    # attached and the certificate does not. The recorded cert_trust_status
+    # verdict goes with it, since update_profile clears it on a real change and
+    # the accidental clear looks exactly like one.
+    #
+    # So the unaccounted-for assignment gets its OWN option, carrying the name,
+    # selected and visibly distinct from "(none)". Submitting while it is
+    # selected sends CERT_UNCHANGED, so an operator who opened the dialog to
+    # rename the profile comes out with the same assignment they went in with.
+    cert_unresolved = bool(current_cert) and current_cert not in cert_names
+    unresolved_cert_key = f"{_UNRESOLVED_PREFIX}{current_cert}"
+    if cert_unresolved:
+        cert_value = unresolved_cert_key
+    elif current_cert:
+        cert_value = current_cert
+    else:
+        cert_value = _NO_CERT
+    cert_options = [ft.dropdown.Option(_NO_CERT)]
+    if cert_unresolved:
+        cert_options.append(
+            ft.dropdown.Option(
+                key=unresolved_cert_key,
+                text=f"{current_cert} — NOT FOUND (keep assigned)",
+            )
+        )
+    cert_options += [ft.dropdown.Option(n) for n in cert_names]
     cert_dropdown = ft.Dropdown(
         value=cert_value,
         expand=True,
-        options=[ft.dropdown.Option(_NO_CERT)]
-        + [ft.dropdown.Option(n) for n in cert_names],
+        options=cert_options,
         bgcolor=COLORS["input_bg"],
         color=COLORS["text_main"],
-        border_color=COLORS["card_border"],
+        border_color=(
+            COLORS["warning"] if cert_unresolved else COLORS["card_border"]
+        ),
         focused_border_color=COLORS["accent"],
         border_radius=3,
         text_style=ft.TextStyle(font_family=MONO),
+    )
+    cert_hint = ft.Text(
+        (
+            f"certificate {current_cert!r} is assigned but was not found — "
+            "saving keeps it assigned"
+            if cert_unresolved
+            else ""
+        ),
+        size=11,
+        color=COLORS["warning"],
+        font_family=MONO,
+        visible=cert_unresolved,
     )
 
     # The Firefox CA import soft-fails: the launch proceeds with the certificate
@@ -823,8 +889,27 @@ def open_profile_dialog(
             pool = POOL_NONE
         else:
             pool = _picked_pool
-        certificate = cert_dropdown.value or _NO_CERT
-        certificate = "" if certificate == _NO_CERT else certificate
+        # Three outcomes, not two — the third member of the family. The
+        # unresolved option means "I could not account for this assignment",
+        # which must travel as CERT_UNCHANGED so saving an unrelated edit cannot
+        # discard the certificate. Sending "" from that state would promote a
+        # display fallback into the model's explicit clear.
+        #
+        # Note the asymmetry with the proxy and pool blocks above, and do not
+        # "fix" it: "(none)" still sends "" rather than a CERT_NONE directive,
+        # because on this field "" already IS the explicit clear and always has
+        # been — the model reads it that way and a test pins it
+        # (test_update_can_clear_certificate). Absence on this field already
+        # preserved, so unlike the other two there was never a moment where
+        # "clear" needed a new spelling. See cert_assignment.py.
+        _picked_cert = cert_dropdown.value or _NO_CERT
+        certificate: str | CertDirective
+        if _picked_cert.startswith(_UNRESOLVED_PREFIX):
+            certificate = CERT_UNCHANGED
+        elif _picked_cert == _NO_CERT:
+            certificate = ""
+        else:
+            certificate = _picked_cert
         bookmarks = [b.name for b in all_bookmarks if b.name in bookmark_selected]
         tags = [s.strip() for s in (tags_field.value or "").split(",") if s.strip()]
         notes = (notes_field.value or "").strip()
@@ -937,7 +1022,19 @@ def open_profile_dialog(
                     labeled(
                         "Certificate (mTLS)",
                         cert_dropdown,
-                        hint=cert_trust_text if _cert_trust else None,
+                        # The unresolved warning OUTRANKS the trust verdict:
+                        # when the name cannot be found, "last launch: trusted"
+                        # describes a certificate this dialog cannot even see,
+                        # and the thing the operator needs to know is that
+                        # saving keeps the assignment. The two never render
+                        # together, and the render gate on _cert_trust is
+                        # untouched (it stays keyed on the profile's stored
+                        # certificate AND status, as PS-198 left it).
+                        hint=(
+                            cert_hint
+                            if cert_unresolved
+                            else (cert_trust_text if _cert_trust else None)
+                        ),
                         icon=ft.Icons.DESCRIPTION_OUTLINED,
                     ),
                     # ---- ENGINE ----

@@ -196,6 +196,29 @@ def update_profile(
         # no pool, which stays expressible.
         new_bookmark_pool = POOL_NONE
 
+    # The same distinction only a route can draw, for the certificate — with
+    # the opposite mapping, deliberately. On this field the model already reads
+    # None as "leave alone" and "" as the explicit clear, so an omitted key was
+    # ALREADY correct here. It was correct BY ACCIDENT: nothing in this lane
+    # said which it meant, and `supplied.get("certificate")` returning None for
+    # an absent key is a property of `dict.get`, not a statement of intent. The
+    # two branches below say it, so a later edit cannot quietly break it and a
+    # reader does not have to reconstruct it from a coincidence.
+    #
+    # No CERT_UNCHANGED is sent: it means "I cannot account for the stored
+    # assignment", which is the DIALOG's state, never a route's — an API caller
+    # that omits the key is not confused about the certificate, it is silent
+    # about it, and None already says exactly that. See
+    # services/profile/cert_assignment.py.
+    if "certificate" not in supplied:
+        new_certificate: str | None = None
+    elif supplied["certificate"]:
+        new_certificate = supplied["certificate"]
+    else:
+        # Explicitly supplied as null/"" — the caller is deliberately choosing
+        # no certificate. "" is the model's clear on this field.
+        new_certificate = ""
+
     # Coherence is enforced by the model, which sees the PATCH's fields AND the
     # stored ones — so `PATCH {"os_type": "macos"}` on a profile already stored
     # as firefox is judged on the pair it would RESULT IN, not on the one field
@@ -215,7 +238,7 @@ def update_profile(
             new_notes=new_notes,
             new_engine=supplied.get("engine"),
             new_resolution=supplied.get("resolution"),
-            new_certificate=supplied.get("certificate"),
+            new_certificate=new_certificate,
         )
     except IncoherentProfile as e:
         raise HTTPException(status_code=400, detail=str(e)) from e

@@ -25,6 +25,12 @@ from .coherence import (
     coherent_engine,
     normalize_engine,
 )
+from .cert_assignment import (
+    CERT_UNCHANGED,
+    CertDirective,
+    cert_for_new_profile,
+    resolve_cert_assignment,
+)
 from .pool_assignment import (
     POOL_UNCHANGED,
     PoolDirective,
@@ -394,7 +400,7 @@ class ProfileManager(StoreGuardMixin, TrashableMixin):
         notes: str = "",
         engine: str = "chromium",
         resolution: str = "auto",
-        certificate: str | None = None,
+        certificate: str | CertDirective | None = None,
         ai_control: bool = False,
     ) -> bool:
         # Validate up front so an invalid/traversal name is rejected before it's
@@ -452,7 +458,13 @@ class ProfileManager(StoreGuardMixin, TrashableMixin):
                 # it were a pool name.
                 bookmark_pool=pool_for_new_profile(bookmark_pool),
                 bookmarks=bookmarks,
-                certificate=certificate or None,
+                # Creation has nothing to preserve, so CERT_UNCHANGED means "no
+                # certificate" here — as proxy_for_new_profile documents. The
+                # unresolved state cannot arise on create, but the dialog shares
+                # ONE value across create and edit, so route it through the
+                # helper: a directive object is TRUTHY, and `certificate or None`
+                # would have stored it as if it were a certificate NAME.
+                certificate=cert_for_new_profile(certificate),
                 tags=tags or [],
                 notes=notes,
                 ai_control=ai_control,
@@ -509,7 +521,7 @@ class ProfileManager(StoreGuardMixin, TrashableMixin):
         new_notes: str | None = None,
         new_engine: str | None = None,
         new_resolution: str | None = None,
-        new_certificate: str | None = None,
+        new_certificate: str | CertDirective | None = None,
     ) -> bool:
         """Apply an edit to a profile.
 
@@ -528,6 +540,17 @@ class ProfileManager(StoreGuardMixin, TrashableMixin):
         not discard the assignment. Here what it costs is recoverability —
         ``delete_pool`` records the profiles referencing a pool so ``restore``
         can put them back, and it computes that list from this very field.
+
+        ``new_certificate`` takes a certificate name, ``""`` to CLEAR the
+        assignment, ``None`` (the default) to leave it alone, or the single
+        directive in ``cert_assignment.py``: ``CERT_UNCHANGED``. Note the
+        deliberate asymmetry with the two fields above — on this field ``""``
+        still means CLEAR and always has, because absence already preserved
+        here, so there was never a moment where "clear" needed a new spelling.
+        What was missing is the opposite statement: a caller that CANNOT ACCOUNT
+        for the stored assignment (the dialog, when the name is absent from the
+        certificate list) used to send ``""`` and thereby promote its own
+        ignorance into an explicit clear. It now sends ``CERT_UNCHANGED``.
 
         ``new_os`` defaults to None = leave unchanged, for the same reason and
         because Python cannot have a required argument follow a defaulted one.
@@ -753,8 +776,26 @@ class ProfileManager(StoreGuardMixin, TrashableMixin):
                 profile.tags = new_tags
             if new_notes is not None:
                 profile.notes = new_notes
+            # The whole point of this ticket, and NOT the shape the two
+            # resolvers above end. Absence already preserved here (the `is not
+            # None` guard below), so "" was free to keep meaning CLEAR — and it
+            # does, unchanged, pinned by test_update_can_clear_certificate.
+            # What was missing is the state BETWEEN those two: a caller that
+            # cannot account for the stored assignment. The dialog sent "" from
+            # it, so an edit made for an unrelated reason turned "I could not
+            # find this certificate" into "the operator chose none" — and took
+            # the recorded cert_trust_status verdict with it as collateral.
+            # That state now travels as CERT_UNCHANGED, which the resolver maps
+            # back to the stored value, so the conditional below sees no change
+            # and the verdict survives as a consequence.
+            #
+            # The guard stays: it is the reading that made absence safe here in
+            # the first place, and the resolver agrees with it (None -> stored),
+            # so the two cannot disagree about a caller that said nothing.
             if new_certificate is not None:
-                _new_cert = new_certificate or None
+                _new_cert = resolve_cert_assignment(
+                    new_certificate, profile.certificate
+                )
                 if _new_cert != profile.certificate:
                     # cert_trust_status records the outcome of the LAST CA trust
                     # attempt, which was made for the certificate being replaced
