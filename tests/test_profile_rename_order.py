@@ -364,7 +364,7 @@ def test_a_profile_saved_without_a_seed_still_derives_it_from_its_name():
 def test_a_pre_seed_record_on_disk_loads_with_the_name_derived_seed(
     mgr, tmp_path, monkeypatch
 ):
-    # AC3 through the LOAD path specifically: the allow-list must map an absent
+    # AC3 through the LOAD path specifically: the loader must map an absent
     # key to None (the fallback) and must not helpfully default it to
     # crc32(name) — freezing a derived value at load time would make a later
     # rename of an OLD profile behave differently depending on whether it had
@@ -392,12 +392,15 @@ def test_a_pre_seed_record_on_disk_loads_with_the_name_derived_seed(
 
 def test_the_seed_survives_a_save_load_round_trip_after_a_rename(mgr, tmp_path):
     # AC4 — the criterion most likely to fail, and the one an in-memory
-    # assertion cannot stand in for. The load allow-list is hand-enumerated, so
-    # a field the dataclass has and to_dict() saves is still silently DROPPED on
-    # reload unless it is listed there too (cookie_import_status was the last
-    # field to hit this). If that happened here the reloaded profile would fall
-    # back to crc32(NEW name) and the freeze would evaporate at the next restart
-    # while every test above still passed.
+    # assertion cannot stand in for. The load path used to be a hand-enumerated
+    # allow-list, so a field the dataclass had and to_dict() saved was still
+    # silently DROPPED on reload unless it was listed there too
+    # (cookie_import_status was the last field to hit this); PS-269 derives the
+    # keys from dataclasses.fields(Profile), so that particular omission is no
+    # longer expressible. The round trip is still what this asserts: if the
+    # value failed to survive reload for ANY reason the reloaded profile would
+    # fall back to crc32(NEW name) and the freeze would evaporate at the next
+    # restart while every test above still passed.
     mgr.add_profile("work", "", "windows")
     seed_before = mgr.profiles["work"].fingerprint_seed
     mgr.update_profile("work", "work1", "", "windows")
@@ -418,10 +421,12 @@ def test_the_seed_survives_a_save_load_round_trip_after_a_rename(mgr, tmp_path):
 
 
 def test_the_hardware_generation_survives_a_save_load_round_trip(mgr, tmp_path):
-    # PS-54, and the same AC4 trap as the seed above: the load allow-list is
-    # hand-enumerated, so a field the dataclass has and to_dict() SAVES is still
-    # silently DROPPED on reload unless it is listed there too. If that happened
-    # here, every restart would quietly re-read each profile as generation 0 —
+    # PS-54, and the same AC4 round trip as the seed above: the load path used
+    # to be a hand-enumerated allow-list, so a field the dataclass had and
+    # to_dict() SAVED was still silently DROPPED on reload unless it was listed
+    # there too (PS-269 replaced that list with dataclasses.fields(Profile)).
+    # If the value failed to survive reload, every restart would quietly
+    # re-read each profile as generation 0 —
     # invisible today, then a mass re-roll the first time a hardware list grew,
     # which is precisely the event this field exists to prevent.
     #
@@ -429,7 +434,7 @@ def test_the_hardware_generation_survives_a_save_load_round_trip(mgr, tmp_path):
     # reads as 0 (None -> 0 is the migration fallback), so the value asserted
     # here must be one the create path would never write of its own accord —
     # otherwise a test using the freshly-minted value would pass just as
-    # happily against an allow-list with this field missing, and the assertion
+    # happily against a loader that dropped this field, and the assertion
     # could not fail. 3 is comfortably clear of CURRENT_HARDWARE_GENERATION
     # (0 when this was written, 1 since PS-183 widened MAC_GPUS), so the
     # round-trip is what is being tested rather than the default.
@@ -881,7 +886,9 @@ def legacy_trash_mgr(tmp_path, monkeypatch):
     whole migration, so on upgrade EVERY profile on disk is a derived-seed
     profile and stays one until it is recreated. The record is written to disk
     and loaded through the normal path rather than having the field poked to
-    None in memory, so the load allow-list is exercised too.
+    None in memory, so the real load path is exercised too — since PS-269 that
+    path derives its keys from dataclasses.fields(Profile) and an absent key
+    falls to the dataclass default of None, which IS this migration.
 
     Trash is redirected as well (same reason as `trash_mgr`): the rename path
     has to be checked against reserved TRASHED seeds, and `_reserved_seeds()`
@@ -1007,9 +1014,11 @@ def test_renaming_a_legacy_profile_keeps_the_machine_it_already_presented(
 def test_a_legacy_profiles_frozen_seed_survives_a_save_load_round_trip(
     legacy_trash_mgr, tmp_path
 ):
-    # AC4 for the rename path. The freeze is written on a field the load
-    # allow-list must carry; if it were dropped there the reloaded profile would
-    # fall back to crc32(NEW name) — re-rolling the machine at the next restart
+    # AC4 for the rename path. The freeze is written on a field the loader
+    # must carry across the persistence boundary (a dataclass field, derived
+    # since PS-269 rather than hand-listed); if it were dropped on the way back
+    # in, the reloaded profile would fall back to crc32(NEW name) — re-rolling
+    # the machine at the next restart
     # and re-opening the collision — while every in-memory assertion above
     # still passed.
     mgr = legacy_trash_mgr
