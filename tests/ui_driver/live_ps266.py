@@ -29,20 +29,41 @@ Flutter's semantics tree carries a Text's FULL string, not its rendered
 truncation — so "the tail is in the tree after I clicked" can be true against a
 build where the reveal does nothing at all. That check alone would be an
 assertion that cannot fail, which is precisely the shape this harness exists to
-make impossible. So the load-bearing evidence here is GEOMETRY: the message
-node's rendered height grows from one line to several when the reveal is
-clicked, and shrinks back when it is clicked again. The semantics text is read
-too, and whether the collapsed state already leaked the tail is REPORTED rather
-than hidden — if it did, the text check is explicitly recorded as non-evidence.
+make impossible. So the load-bearing evidence here is GEOMETRY: the row's
+rendered height grows from one line to several when the reveal is clicked, and
+shrinks back when it is clicked again. The tail IS read too, and this run
+reports it as present while COLLAPSED — so that check is explicitly recorded as
+non-evidence rather than banked.
+
+FOUR THINGS THIS SCRIPT MEASURED THAT NO STRUCTURAL TEST COULD
+--------------------------------------------------------------
+Each of these made an earlier draft report a WORKING view as broken, and each
+is now recorded at its site in this file rather than in a commit message:
+
+1. A ``selectable`` Text is a canvas-level SelectableText and paints a
+   semantics node with an EMPTY string. Restoring selection (AC3) therefore
+   removed the message column from the accessibility tree entirely — the row
+   read as "shop-de-03 / 18:07:20" with the refusal missing. Fixed in
+   ``dialogs/log.py`` with ``semantics_label``; found only by driving.
+2. A ``Container`` with ``on_click`` is ABSORBED into the row's merged
+   semantics node once the message carries a label: the whole 1248px row
+   becomes one button and the chevron has no box of its own, so nothing can
+   address it. The reveal is an ``IconButton`` for that reason.
+3. A tooltip's string propagates into every ANCESTOR's ``innerText``, so
+   counting the tip counted the depth of the widget tree — 2 "controls" at
+   1280px and 4 at 1024px where exactly one was drawn.
+4. ``parse_event`` hoists the profile OUT of the prose, so the seeded
+   "Launching shop-de-03" renders as "Launching". Matching the seeded string
+   reported the short line as absent from a view plainly showing it.
 
 WHAT IS NOT COVERED, RECORDED RATHER THAN SMOOTHED OVER
 -------------------------------------------------------
 AC3 (selection/copy) is NOT driven. Text selection in Flutter is a canvas-level
 gesture: the glyphs are painted, the selection is not a DOM range, and no
-clipboard result is readable from the semantics tree. What IS driven is that
-the cell the operator drags across is the SelectableText one — asserted
-structurally in tests/test_ps266_fullscreen_log_reveal.py. Recorded as not
-covered, with the reason, never as covered by a weaker check.
+clipboard result is readable from the semantics tree. What ships is
+``selectable=True`` on the fullscreen message cell, asserted structurally in
+tests/test_ps266_fullscreen_log_reveal.py. Recorded as not covered, with the
+reason, never as covered by a weaker check.
 
 RUN IT
 ------
@@ -69,7 +90,13 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 TAIL = "add a row for that country to _COUNTRY_TZ (launch_policy.py)"
 
 #: A short line that must carry NO reveal (AC2).
-SHORT = "Launching shop-de-03"
+#:
+#: "Launching", not "Launching shop-de-03" — and the difference is the whole
+#: point of the profile column. ``parse_event`` HOISTS the profile name out of
+#: the prose into its own column, so what the message cell actually renders is
+#: the remainder. Matching on the seeded string reported "the short line is not
+#: on screen" against a view that plainly shows it.
+SHORT = "Launching"
 
 REVEAL_TIP = "Show the full message"
 HIDE_TIP = "Hide the full message"
@@ -133,42 +160,114 @@ def _dismiss(drv: FletDriver) -> None:
             drv.press(label)
 
 
-def _tip_nodes(drv: FletDriver, tip: str) -> list:
-    """Every node whose label or text carries ``tip``, small enough to be a
-    control rather than the root (whose innerText is the whole page)."""
-    out = []
-    for n in drv.nodes():
-        blob = f"{n.text or ''} {n.label or ''}"
-        if tip in blob and n.box[3] < 200:
-            out.append(n)
-    return out
-
-
 def _click(drv: FletDriver, node) -> None:
     drv.page.mouse.click(node.box[0] + node.box[2] // 2, node.box[1] + node.box[3] // 2)
 
 
-def _message_node(drv: FletDriver, needle: str):
-    """The rendered node carrying ``needle``, taken as the SMALLEST such box.
+def _rows(drv: FletDriver) -> list:
+    """The log's ROW nodes, as ``(node, text)``.
 
-    Smallest on purpose: the refusal's text is inside the row, inside the list,
-    inside the dialog, inside the page — every one of those ancestors' innerText
-    contains it, and taking any of them would measure the ListView's height and
-    call it the message's.
+    Two measured facts shape this, and reading either wrong reports a working
+    view as broken:
+
+    * A ``selectable`` Text is a canvas-level SelectableText that paints an
+      EMPTY semantics string — restoring selection removed the message column
+      from the tree entirely, which is why ``dialogs/log.py`` names it with
+      ``semantics_label``. So a row's words arrive as ``.text`` on a plain row
+      and as ``.label`` on a row Flutter has MERGED (which it does once the row
+      contains a focusable button). Both are read.
+    * Every ancestor's ``innerText`` contains every descendant's, so the
+      full-height ListView and the full-page nodes match any needle at all.
+      Rows are therefore taken by GEOMETRY — nearly the full viewport width,
+      and short enough not to be the list itself. The width test is RELATIVE to
+      the viewport, not an absolute pixel count: the log body is 1248px at
+      1280x820 and 992px at the 1024x680 minimum, so a fixed ">1000" threshold
+      silently matched nothing at exactly the window this script exists to
+      check twice.
     """
-    hits = [n for n in drv.nodes() if needle in (n.text or "")]
-    if not hits:
-        return None
-    return min(hits, key=lambda n: n.box[2] * n.box[3])
+    vw = drv.page.evaluate("() => window.innerWidth")
+    out = []
+    for n in drv.nodes():
+        _x, y, w, h = n.box
+        if y > 55 and w > vw * 0.7 and h < 300:
+            words = (n.text or "") or (n.label or "")
+            if words.strip():
+                out.append((n, words))
+    return out
+
+
+def _row_with(drv: FletDriver, needle: str):
+    for n, words in _rows(drv):
+        if needle in words:
+            return n, words
+    return None, ""
+
+
+def _reveal_buttons(drv: FletDriver) -> list:
+    """Every reveal CONTROL on screen, taken by geometry, not by tooltip text.
+
+    A tooltip string cannot be counted here: Flutter merges the row's semantics
+    once it contains a focusable child, so the tip lands on the ROW's label
+    (beside the profile and the whole sentence) and every ancestor of that row
+    repeats it — counting the string reported 2 affordances at 1280px and 4 at
+    1024px where exactly one is drawn. The BUTTON itself is unambiguous: a
+    tappable 20x20 node inside the log body, which nothing else in this view
+    is. The tip is still asserted, but on the row that owns it.
+    """
+    return [
+        n
+        for n in drv.nodes()
+        if n.tappable and n.box[1] > 55 and n.box[2] <= 26 and n.box[3] <= 26
+    ]
 
 
 def _open_fullscreen(drv: FletDriver) -> bool:
-    btns = _tip_nodes(drv, OPEN_FULLSCREEN_TIP)
-    if not btns:
-        return False
-    _click(drv, btns[0])
-    drv.page.wait_for_timeout(2500)
-    return True
+    """Click the dock's "open fullscreen" node — addressed leniently.
+
+    Deliberately NOT :func:`_tip_nodes`. That one is strict because it COUNTS
+    (a loose match there inflated 1 reveal into 4); this one only needs to hit
+    a control it already knows is unique, and the dock's button paints its
+    tooltip on a non-tappable wrapper rather than on the tappable node itself —
+    the same shape ``live_ps229.py:_node_with`` matches.
+    """
+    for n in drv.nodes():
+        blob = f"{n.text or ''} {n.label or ''}"
+        if OPEN_FULLSCREEN_TIP in blob and n.box[3] < 200:
+            _click(drv, n)
+            drv.page.wait_for_timeout(2500)
+            return True
+    return False
+
+
+def _char_budget(drv: FletDriver) -> int:
+    """The one-line character budget at the driver's CURRENT viewport width.
+
+    The same arithmetic ``dialogs/log.py`` budgets with, recomputed here from
+    the live viewport rather than imported — so the driven check and the
+    implementation cannot agree merely by sharing one wrong number. Floored at
+    the app minimum for the same reason the implementation floors it.
+    """
+    vw = drv.page.evaluate("() => window.innerWidth")
+    return max(1, int((max(vw, 1024) - 297) / (11.5 * 0.6)))
+
+
+def _message_of(words: str) -> str:
+    """The MESSAGE out of a row's semantics string.
+
+    A row reads as ``[tooltip] profile message timestamp``, newline-joined.
+    The profile and the 8-char timestamp are their own columns (``parse_event``
+    hoists the profile OUT of the prose, which is why the seeded "Launching
+    shop-de-03" renders as "Launching"), and the tooltip only appears once the
+    row carries a control. The message is what is left after those are dropped.
+    """
+    import re
+
+    parts = [p for p in (words or "").split("\n") if p.strip()]
+    parts = [p for p in parts if p.strip() not in (REVEAL_TIP, HIDE_TIP)]
+    parts = [p for p in parts if not re.fullmatch(r"\d{2}:\d{2}:\d{2}", p.strip())]
+    # What remains is [profile, message], or just [message] when the profile
+    # did not resolve. The message is the longest remaining piece.
+    return max(parts, key=len) if parts else ""
 
 
 def _run_at(drv: FletDriver, label: str, results: list[bool], shot: str) -> None:
@@ -183,72 +282,103 @@ def _run_at(drv: FletDriver, label: str, results: list[bool], shot: str) -> None
         return
 
     # --- AC2, the negative half, read BEFORE anything is clicked ----------
-    reveals = _tip_nodes(drv, REVEAL_TIP)
-    n_reveals = len(reveals)
-    # The short line and the long line are BOTH on screen. Exactly one reveal
-    # means the affordance discriminated; two or three would mean it is drawn
-    # on lines that are already whole, which is the noise AC2 forbids.
-    short_on_screen = any(SHORT in (n.text or "") for n in drv.nodes())
+    rows = _rows(drv)
+    buttons = _reveal_buttons(drv)
+    short_row, _ = _row_with(drv, SHORT)
+    long_row, long_words = _row_with(drv, "Refusing to launch")
+
     results.append(
         _report(
             "a short line and a 460-char line are both on screen",
-            short_on_screen,
-            f"{SHORT!r} present={short_on_screen}",
+            short_row is not None and long_row is not None,
+            f"{len(rows)} row(s); short={short_row is not None} "
+            f"refusal={long_row is not None}",
+        )
+    )
+    # THE RULE, not a hardcoded count. An earlier draft asserted "exactly one
+    # reveal on screen" and failed at 1024x680 for an HONEST reason: that
+    # session's log had accumulated more lines, and at the tighter budget a
+    # second one is genuinely over it — so the affordance was right and the
+    # assertion was wrong. Counting affordances measures the fixture. The
+    # property AC2 actually states is a BICONDITIONAL, so that is what is
+    # checked: a row carries the control if and only if its message overruns
+    # the cell at THIS window width.
+    budget = _char_budget(drv)
+    over = [w for _n, w in rows if len(_message_of(w)) > budget]
+    tipped = [w for _n, w in rows if REVEAL_TIP in w or HIDE_TIP in w]
+    results.append(
+        _report(
+            "AC2 — a row carries the reveal IF AND ONLY IF it is over budget",
+            len(over) == len(tipped)
+            and all(REVEAL_TIP in w or HIDE_TIP in w for w in over),
+            f"budget={budget} chars at this width; {len(over)} of {len(rows)} "
+            f"rows over it, {len(tipped)} carrying the control, "
+            f"{len(buttons)} tappable control node(s) painted",
         )
     )
     results.append(
         _report(
-            "AC2 — exactly one reveal control, on the line that is cut",
-            n_reveals == 1,
-            f"{n_reveals} node(s) with tooltip {REVEAL_TIP!r} "
-            f"(3 log lines on screen, 1 of them over budget)",
+            "AC2 — the affordance is drawn for some rows and not all of them",
+            0 < len(tipped) < len(rows),
+            f"{len(tipped)} of {len(rows)} rows — on EVERY row it would be the "
+            f"noise AC2 forbids; on none, there is no fix",
         )
     )
-
-    # Is the short line's row carrying one? Answered by geometry rather than
-    # by counting: the reveal must not sit on the short row.
-    short_node = _message_node(drv, SHORT)
-    if short_node and reveals:
-        same_row = abs(reveals[0].box[1] - short_node.box[1]) < 12
+    # The affordance is on the CUT row, not the whole one — checked by which
+    # row's semantics carries the tip, and by vertical coincidence.
+    tip_on_long = REVEAL_TIP in long_words
+    _short_row, short_words = _row_with(drv, SHORT)
+    tip_on_short = REVEAL_TIP in short_words
+    results.append(
+        _report(
+            "AC2 — the reveal is on the CUT row and not on the short one",
+            tip_on_long and not tip_on_short,
+            f"refusal row ({len(_message_of(long_words))} chars) carries "
+            f"{REVEAL_TIP!r}={tip_on_long}; short row "
+            f"({len(_message_of(short_words))} chars) carries it={tip_on_short}",
+        )
+    )
+    if buttons and long_row is not None:
+        aligned = any(abs(b.box[1] - long_row.box[1]) < 20 for b in buttons)
         results.append(
             _report(
-                "AC2 — the reveal is NOT on the short line's row",
-                not same_row,
-                f"short row y={short_node.box[1]} reveal y={reveals[0].box[1]}",
+                "AC2 — a control sits on the refusal's own row",
+                aligned,
+                f"button y={[b.box[1] for b in buttons]} "
+                f"refusal row y={long_row.box[1]}",
             )
         )
 
     # --- AC1: click it, and measure what changed --------------------------
-    before = _message_node(drv, "Refusing to launch")
-    before_h = before.box[3] if before else None
-    # Does the COLLAPSED semantics tree already carry the tail? If it does, a
-    # text-presence check after the click is not evidence, and this script says
-    # so instead of banking it.
-    tail_before = any(TAIL in (n.text or "") for n in drv.nodes())
+    before_h = long_row.box[3] if long_row is not None else None
+    # Does the COLLAPSED tree already carry the tail? Flutter's semantics
+    # carries a Text's full string regardless of the rendered truncation, so if
+    # it does, a text-presence check after the click is NOT evidence — and this
+    # script says so instead of banking it.
+    tail_before = TAIL in long_words
 
-    if reveals:
-        _click(drv, reveals[0])
-        drv.page.wait_for_timeout(2000)
+    if buttons:
+        _click(drv, buttons[0])
+        drv.page.wait_for_timeout(2200)
 
-    after = _message_node(drv, "Refusing to launch")
-    after_h = after.box[3] if after else None
-    tail_after = any(TAIL in (n.text or "") for n in drv.nodes())
-    hides = _tip_nodes(drv, HIDE_TIP)
+    after_row, after_words = _row_with(drv, "Refusing to launch")
+    after_h = after_row.box[3] if after_row is not None else None
+    tail_after = TAIL in after_words
+    hide_shown = HIDE_TIP in after_words
 
     grew = bool(before_h and after_h and after_h > before_h + 8)
     results.append(
         _report(
             "AC1 — clicking the reveal makes the message TALLER on screen",
             grew,
-            f"message box height {before_h}px -> {after_h}px "
-            f"(one line -> wrapped)",
+            f"row box height {before_h}px -> {after_h}px (one line -> wrapped)",
         )
     )
     results.append(
         _report(
-            "AC1 — the reveal flips to its 'hide' state (the row knows it is open)",
-            len(hides) == 1,
-            f"{len(hides)} node(s) with tooltip {HIDE_TIP!r}",
+            "AC1 — the control flips to its 'hide' state (the row knows it is open)",
+            hide_shown,
+            f"revealed row carries {HIDE_TIP!r}={hide_shown}",
         )
     )
     results.append(
@@ -267,19 +397,18 @@ def _run_at(drv: FletDriver, label: str, results: list[bool], shot: str) -> None
         )
     )
 
-    # The bound itself: revealed, the message must be TALLER than one line and
-    # still SHORTER than an unbounded reflow of 460 chars would be. At this
-    # budget the whole string is 4-5 lines; an unbounded cell would be the same
-    # here, so the honest driven claim is the ceiling: it never exceeds five
-    # lines' worth of box.
+    # The bound itself. A revealed row must be taller than one line and never
+    # taller than five lines' worth of box — an unbounded reveal is the
+    # original defect deferred by one click, and at a narrower window a pasted
+    # stack trace is exactly what would prove it.
     if after_h and before_h:
-        max_expected = before_h * 5 + 8
+        ceiling = before_h * 5 + 10
         results.append(
             _report(
                 "AC1 — the reveal is BOUNDED (never more than 5 lines of box)",
-                after_h <= max_expected,
+                after_h <= ceiling,
                 f"revealed={after_h}px, one line={before_h}px, "
-                f"5-line ceiling={max_expected}px",
+                f"5-line ceiling={ceiling}px",
             )
         )
 
@@ -287,11 +416,12 @@ def _run_at(drv: FletDriver, label: str, results: list[bool], shot: str) -> None
     print(f"  screenshot: {shot}")
 
     # --- and back: the reveal is reversible -------------------------------
-    if hides:
-        _click(drv, hides[0])
+    buttons2 = _reveal_buttons(drv)
+    if buttons2:
+        _click(drv, buttons2[0])
         drv.page.wait_for_timeout(1800)
-        back = _message_node(drv, "Refusing to launch")
-        back_h = back.box[3] if back else None
+        back_row, _ = _row_with(drv, "Refusing to launch")
+        back_h = back_row.box[3] if back_row is not None else None
         results.append(
             _report(
                 "the reveal is reversible — clicking again re-collapses the row",

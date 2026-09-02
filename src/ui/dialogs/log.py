@@ -149,16 +149,27 @@ def fullscreen_message_text(
        ``Text`` in a ``Row`` is granted its intrinsic width unless it asks to
        flex, so the ellipsis never engages. ``app.py:92-103`` records this
        trap; it is repeated here because it is the half that gets dropped.
-    3. ``selectable=True`` in both states (AC3). Selection costs no vertical
-       metric, and it is what makes a refusal sentence COPYABLE — the
-       capability v2.8.4's fullscreen row had (``selectable=True``, no
-       ``no_wrap``) and PS-229 removed with no recorded argument.
 
     NOT ``log_console._cell``: that renderer is the DOCK's contract — one line,
     always, so the region cannot change extent while profiles launch — and it
     is right for the dock. Loosening it would change what the dock renders,
     which is explicitly out of scope. So the fullscreen view gets its own cell
     rather than a shared one with a flag.
+    3. ``selectable=True`` in both states (AC3). Selection costs no vertical
+       metric, and it is what makes a refusal sentence COPYABLE — the
+       capability v2.8.4's fullscreen row had (``selectable=True``, no
+       ``no_wrap``) and PS-229 removed with no recorded argument.
+
+    ``semantics_label`` is NOT decoration and NOT a test hook. MEASURED here:
+    a ``selectable`` Text is a canvas-level SelectableText and paints an
+    accessibility node with an EMPTY string — the row's group node carries the
+    profile and the timestamp as its label and the message contributes nothing
+    at all. So the moment selection was restored, the one column that carries
+    the actual event became invisible to a screen reader, and the sentence
+    reads as ``"shop-de-03 / 18:07:20"`` with the refusal missing. Naming the
+    string here puts it back. That it also makes the reveal drivable is a
+    consequence, not the reason — the same shape as PS-229 giving the resize
+    grip a tooltip.
     """
     return ft.Text(
         message,
@@ -167,6 +178,7 @@ def fullscreen_message_text(
         color=colour,
         expand=True,
         selectable=True,
+        semantics_label=message,
         no_wrap=not expanded,
         max_lines=_MESSAGE_EXPANDED_MAX_LINES if expanded else 1,
         overflow=ft.TextOverflow.ELLIPSIS,
@@ -253,19 +265,30 @@ def fullscreen_event_row(
     if message_needs_reveal(message, window_width) or expanded:
         controls.append(
             ft.Container(
-                width=16,
+                width=20,
                 height=ROW_HEIGHT,
                 alignment=ft.Alignment.CENTER,
-                border_radius=3,
-                ink=True,
-                on_click=(lambda _: on_toggle(line)) if on_toggle else None,
-                tooltip=(
-                    _HIDE_TIP if expanded else _REVEAL_TIP
-                ),
-                content=ft.Icon(
-                    ft.Icons.UNFOLD_LESS if expanded else ft.Icons.UNFOLD_MORE,
-                    size=12,
-                    color=COLORS["text_dim"],
+                # AN ICONBUTTON, NOT A TAPPABLE CONTAINER, and this is measured
+                # rather than stylistic. A bare Container-with-on_click is
+                # ABSORBED into the row's merged semantics node once the
+                # message carries a semantics_label: the whole 1248px row
+                # becomes one button whose label is "Show the full message"
+                # plus the profile plus the sentence, and the chevron has no
+                # box of its own — so nothing can address it, and a click at
+                # the "control's" centre lands on the message instead. A real
+                # Material button paints its own node beside the row's.
+                content=ft.IconButton(
+                    icon=(
+                        ft.Icons.UNFOLD_LESS if expanded else ft.Icons.UNFOLD_MORE
+                    ),
+                    icon_size=12,
+                    icon_color=COLORS["text_dim"],
+                    width=20,
+                    height=20,
+                    padding=ft.Padding.all(0),
+                    style=ft.ButtonStyle(padding=ft.Padding.all(0)),
+                    tooltip=(_HIDE_TIP if expanded else _REVEAL_TIP),
+                    on_click=(lambda _: on_toggle(line)) if on_toggle else None,
                 ),
             )
         )
