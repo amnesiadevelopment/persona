@@ -20,8 +20,11 @@ WHAT IT DRIVES
    rendered geometry is read before and after.
 4. The short line (``Launching shop-de-03``) is checked for the ABSENCE of a
    reveal node (AC2).
-5. All of it twice: at 1280x820 and after resizing into the app's minimum
-   1024x680, where the character budget is tighter.
+5. All of it twice: at 1280x820 and at the app's minimum 1024x680, where the
+   character budget is tighter. The browser is resized and the view is then
+   OPENED at that size — the view does not track a resize (nothing binds
+   ``page.on_resize``), so what is driven is the budget at the minimum, not a
+   resize-follows behaviour the code does not have.
 
 THE TRAP THIS SCRIPT AVOIDS, STATED UP FRONT
 --------------------------------------------
@@ -244,11 +247,15 @@ def _char_budget(drv: FletDriver) -> int:
 
     The same arithmetic ``dialogs/log.py`` budgets with, recomputed here from
     the live viewport rather than imported — so the driven check and the
-    implementation cannot agree merely by sharing one wrong number. Floored at
-    the app minimum for the same reason the implementation floors it.
+    implementation cannot agree merely by sharing one wrong number.
+
+    No floor, matching the implementation: the floor belongs to the widths the
+    app can be at (1024 is ``window.min_width``), not to the arithmetic. Both
+    sizes this script runs at are at or above it anyway, so the term never
+    fired — it is dropped so the two readings stay literally the same formula.
     """
     vw = drv.page.evaluate("() => window.innerWidth")
-    return max(1, int((max(vw, 1024) - 297) / (11.5 * 0.6)))
+    return max(1, int((vw - 297) / (11.5 * 0.6)))
 
 
 def _message_of(words: str) -> str:
@@ -449,8 +456,19 @@ def main() -> int:
         # -------------------------------------------------------------
         # The app's MINIMUM, reached by RESIZING INTO it — the path a
         # launch-only check misses, and where the budget is tighter.
+        #
+        # THE VIEW IS OPENED AFTER THE RESIZE, DELIBERATELY, and this is not
+        # the same thing as resizing with the view already open. The fullscreen
+        # dialog pins its container and paints its rows when it opens; nothing
+        # in dialogs/log.py binds page.on_resize, so a window resized while the
+        # view is open keeps the width it opened with. What is driven here is
+        # therefore "the budget is right at the app's minimum", NOT "the budget
+        # follows a resize" — the latter is behaviour the code does not have
+        # and this script does not claim.
         # -------------------------------------------------------------
-        print("\nAPP MINIMUM — resize INTO 1024x680, do not launch at it")
+        print("\nAPP MINIMUM — the browser is resized to 1024x680 and the")
+        print("fullscreen view is then opened AT that size (the view does not")
+        print("track a resize; see dialogs/log.py repaint()).")
         with FletDriver(app.url, width=1280, height=820) as drv:
             _dismiss(drv)
             drv.page.wait_for_timeout(10000)

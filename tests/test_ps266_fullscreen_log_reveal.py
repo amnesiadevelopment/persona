@@ -21,6 +21,7 @@ from __future__ import annotations
 import flet as ft
 
 from src.ui.dialogs.log import (
+    _FALLBACK_WINDOW_WIDTH,
     _MESSAGE_EXPANDED_MAX_LINES,
     _HIDE_TIP,
     _REVEAL_TIP,
@@ -28,6 +29,7 @@ from src.ui.dialogs.log import (
     fullscreen_message_text,
     message_char_budget,
     message_needs_reveal,
+    page_width,
 )
 from src.ui.log_console import ROW_HEIGHT, event_row
 
@@ -169,13 +171,43 @@ def test_ac2_the_budget_is_tighter_at_the_app_minimum_than_at_1280():
     assert 130 <= message_char_budget(1280) <= 155
 
 
-def test_ac2_an_unknown_width_budgets_for_the_TIGHTER_cell():
-    """Over-estimating the budget is the dangerous direction: it withholds the
-    reveal from a line that IS cut. A page that has not reported a width yet,
-    and one reporting less than the app's own minimum, both budget at 1024."""
-    assert message_char_budget(None) == message_char_budget(1024)
-    assert message_char_budget(0) == message_char_budget(1024)
-    assert message_char_budget(600) == message_char_budget(1024)
+def test_ac2_an_unknown_width_budgets_AS_THE_CELL_IS_ACTUALLY_LAID_OUT():
+    """One width read, one fallback — the budget and the box it budgets.
+
+    This is the invariant that broke in review: the dialog pinned its container
+    to 1280px when ``page.width`` was unset while the budget floored at 1024,
+    so a 120-char line was rendered in a cell that fits ~142 chars and told it
+    needed a reveal. Both callers now go through :func:`page_width`, so an
+    unreported width budgets for the width the cell is genuinely given.
+    """
+    assert message_char_budget(None) == message_char_budget(_FALLBACK_WINDOW_WIDTH)
+    assert message_char_budget(0) == message_char_budget(_FALLBACK_WINDOW_WIDTH)
+    assert _FALLBACK_WINDOW_WIDTH == 1280.0
+
+
+def test_ac2_the_two_readers_of_the_page_width_cannot_disagree():
+    """The FUNCTION, not the number: both the container and the budget resolve
+    their width here, so there is no second fallback to drift."""
+
+    class _NoWidth:
+        width = None
+
+    class _Wide:
+        width = 1600
+
+    assert page_width(_NoWidth()) == _FALLBACK_WINDOW_WIDTH
+    assert page_width(object()) == _FALLBACK_WINDOW_WIDTH
+    assert page_width(_Wide()) == 1600.0
+    # And the budget derived from it is the budget for THAT box.
+    assert message_char_budget(page_width(_NoWidth())) == message_char_budget(1280)
+
+
+def test_ac2_a_narrower_window_gets_a_TIGHTER_budget_all_the_way_down():
+    """No floor in the arithmetic. Floors belong to the widths the app can be
+    at; over-estimating the budget withholds the reveal from a line that IS
+    cut, which is the dangerous direction."""
+    assert message_char_budget(900) < message_char_budget(1024)
+    assert message_char_budget(1024) < message_char_budget(1280)
 
 
 def test_ac2_a_line_that_fits_at_1280_but_not_at_1024_gets_the_reveal_only_there():
@@ -272,6 +304,36 @@ def test_ac4_the_dock_row_is_the_same_height_whatever_the_message():
         event_row(_LONG_LINE, ROSTER).height,
     }
     assert heights == {ROW_HEIGHT}
+
+
+def test_ac4_a_collapsed_fullscreen_row_is_the_dock_ruler_column_for_column():
+    """The row's docstring claims the columns are "the dock's, at the dock's
+    widths". A collapsed row is where that claim has to hold literally — same
+    height, same column widths, same timestamp alignment. The stamp moves to
+    the TOP only when the row is tall enough for the distinction to exist."""
+    dock = event_row(_SHORT_LINE, ROSTER)
+    full = fullscreen_event_row(_SHORT_LINE, ROSTER, window_width=1280)
+
+    d_dot, d_profile, _d_msg, d_time = dock.content.controls
+    f_dot, f_profile, _f_msg, f_time = full.content.controls
+
+    assert full.height == dock.height == ROW_HEIGHT
+    assert f_profile.width == d_profile.width
+    assert f_time.width == d_time.width
+    assert f_dot.width == d_dot.width
+    assert f_time.alignment.y == d_time.alignment.y  # CENTER, not TOP
+    assert f_time.alignment.x == d_time.alignment.x == 1.0  # right
+
+
+def test_ac1_a_revealed_row_moves_the_timestamp_to_the_top():
+    """On five wrapped lines the stamp belongs beside the message's FIRST line,
+    not floating in the middle of the block."""
+    revealed = fullscreen_event_row(
+        _LONG_LINE, ROSTER, expanded=True, window_width=1024
+    )
+    time_col = revealed.content.controls[-1]
+    assert time_col.alignment.y == -1.0  # TOP
+    assert time_col.alignment.x == 1.0  # RIGHT
 
 
 # --- AC5: the docstring is true again ---------------------------------------
