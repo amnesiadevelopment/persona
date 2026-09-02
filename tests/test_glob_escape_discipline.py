@@ -23,10 +23,21 @@ this file cannot be read as claiming more than it checks:
   * SAME-FUNCTION, SINGLE-ASSIGNMENT resolution only.  `glob.glob(pattern)`
     where `pattern` was computed in another function, or arrived as a parameter,
     is reported UNRESOLVED and does NOT fail this ratchet.
+  * A BARE `escape(...)` call is trusted whatever module it came from.  The
+    ATTRIBUTE form is receiver-checked — only `glob.escape(...)` is accepted, so
+    the plausible half-fix `re.escape(dir)` fires (it emits backslash escapes
+    glob does not honour and matches nothing under a bracketed directory, just
+    like the unescaped form).  But a single `ast.Name` node carries no receiver,
+    so `from re import escape` is indistinguishable from `from glob import
+    escape` at that node.  There are no bare `escape` imports under src/ today.
   * STRING CONCATENATION and %-formatting are not decomposed.  `dir + "/*.log"`
     is caught by the fallback rule (its value is not literal-only and not
     escaped), but a mixed concatenation's component structure is not analysed,
     so a partially-escaped concatenation is judged as a whole.
+  * `str.join` (`sep.join([...])`) is not a path join.  The join receiver is
+    checked, so it is not decomposed as one: a literal-only `str.join` is
+    recognised as safe, and any other is reported by the fallback rule as a
+    whole rather than per component.
   * `Path.glob` / `Path.rglob` are NOT modeled at all.  There are zero
     occurrences under src/ today (PS-265 measured this); the gap is named rather
     than built for, and a future author reaching for pathlib's globbing is
@@ -204,6 +215,35 @@ def test_every_arm_of_a_multi_arm_function_is_classified(tmp_path):
             "    return glob.glob(pattern)\n",                               # OK
             {3},
         ),
+        (
+            "re.escape used as if it were glob.escape — the plausible half-fix",
+            # `re.escape` is already in this tree three times, so it is the
+            # escape helper an author here already has in hand — and it does NOT
+            # work: it emits backslash escapes glob does not honour, so an
+            # re.escape-wrapped bracketed directory matches nothing exactly as
+            # the unescaped form does (measured: 0 matches vs glob.escape's 2).
+            # A detector that blessed any attribute named `escape` would be
+            # GREEN on that broken sweep.
+            "import glob, os, re\n"
+            "def f(d):\n"
+            "    pattern = os.path.join(re.escape(d), '*.log')\n"            # MISS
+            "    return glob.glob(pattern)\n"
+            "def g(d):\n"
+            "    pattern = os.path.join(glob.escape(d), '*.log')\n"          # OK
+            "    return glob.glob(pattern)\n",
+            {3},
+        ),
+        (
+            "str.join with an operator-derived part is not a safe path join",
+            # `fn.attr == "join"` alone matches `sep.join(...)` as readily as
+            # `os.path.join(...)`. The receiver is checked, so this is NOT
+            # decomposed as a path join; it falls to the fallback rule and is
+            # reported as a whole.
+            "import glob\n"
+            "def f(sep, d):\n"
+            "    return glob.glob(sep.join([d, '*.log']))\n",                # MISS
+            {3},
+        ),
     ],
 )
 def test_the_detector_fires_on_each_injected_shape(
@@ -244,6 +284,22 @@ def test_the_detector_fires_on_each_injected_shape(
             "import glob\n"
             "def f(d):\n"
             "    return glob.glob(glob.escape(d))\n",
+        ),
+        (
+            "glob.escape on the directory half is still ACCEPTED",
+            # The companion to the re.escape injection proof above: tightening
+            # the receiver check must not make the CORRECT fix look defective,
+            # or the ratchet would fire on the very shape it exists to enforce.
+            "import glob, os, tempfile\n"
+            "def f():\n"
+            "    pattern = os.path.join(glob.escape(tempfile.gettempdir()), 'p*.exe')\n"
+            "    return glob.glob(pattern)\n",
+        ),
+        (
+            "a literal-only str.join is not operator-derived",
+            "import glob\n"
+            "def f():\n"
+            "    return glob.glob('/'.join(['/fixed', '*.log']))\n",
         ),
     ],
 )

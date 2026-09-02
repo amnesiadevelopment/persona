@@ -39,16 +39,27 @@ WHAT COUNTS AS SAFE:
   * a whole pattern that is itself glob.escape(...).
 
 Anything else — a bare name, an f-string interpolating a value, a call — is
-operator-derived and unescaped, and is reported.
+operator-derived and unescaped, and is reported.  `glob.escape` means
+GLOB's escape and nothing else: `re.escape(dir)` is reported, because it emits
+backslash escapes glob does not honour and matches nothing under a bracketed
+directory exactly as the unescaped form does.
 
 WHAT THIS DOES NOT MODEL (stated rather than left to be discovered):
 
   * resolution is SAME-FUNCTION and ASSIGNMENT-ONLY.  A pattern computed in one
     function and globbed in another, or arriving as a parameter, is reported as
     UNRESOLVED and does not fire.
+  * a BARE `escape(...)` call is trusted whatever it was imported from.  The
+    attribute form is receiver-checked (`glob.escape` only), but a single
+    `ast.Name` node carries no receiver, so `from re import escape` is
+    indistinguishable from `from glob import escape` here.  There are no bare
+    `escape` imports under src/ today.
   * string CONCATENATION (`dir + "/*.log"`) and %-formatting are not classified
     as joins; a concatenation of non-literals is reported by the fallback rule,
     but its component structure is not analysed.
+  * `str.join` (`sep.join([...])`) is not a path join and is not decomposed.  A
+    literal-only one is recognised as safe; any other is reported by the
+    fallback rule as a whole, without per-component analysis.
   * Path.glob / Path.rglob are not modeled at all.  There are zero occurrences
     in src/ today; the gap is named here instead of built for.
 
@@ -77,23 +88,79 @@ def _is_glob_call(node: ast.Call) -> bool:
 
 
 def _is_escape_call(node: ast.AST) -> bool:
-    """glob.escape(...) — or a bare escape(...) from `from glob import escape`."""
+    """glob.escape(...) — or a bare escape(...) from `from glob import escape`.
+
+    The RECEIVER is checked, not just the attribute name.  `re.escape` is
+    already in this tree three times, so it is the escape helper an author here
+    already has in hand and the most likely wrong reach for someone trying to
+    "escape a path" — and it does NOT work: it emits backslash escapes that glob
+    does not honour, so an `re.escape`-wrapped directory matches nothing exactly
+    as an unescaped bracketed one does.  Blessing any attribute named `escape`
+    would make this detector green on that half-fix.
+
+    The bare-Name arm stays permissive: a single AST node carries no receiver to
+    constrain, so `from re import escape` is indistinguishable from
+    `from glob import escape` here.  That limit is named in the boundary section
+    of the module docstring rather than silently assumed away.
+    """
     if not isinstance(node, ast.Call):
         return False
     fn = node.func
     if isinstance(fn, ast.Attribute):
-        return fn.attr == "escape"
+        return (
+            fn.attr == "escape"
+            and isinstance(fn.value, ast.Name)
+            and fn.value.id == "glob"
+        )
     return isinstance(fn, ast.Name) and fn.id == "escape"
 
 
+# Receivers whose `.join` is a PATH join.  A `str.join` (`sep.join([...])`) has
+# the opposite argument shape and must not be read as one — see _literal_only.
+_PATH_JOIN_RECEIVERS = {"path", "posixpath", "ntpath", "genericpath", "os"}
+
+
 def _is_join_call(node: ast.AST) -> bool:
-    """os.path.join(...) / a bare join(...)."""
+    """os.path.join(...) / posixpath.join(...) / a bare join(...).
+
+    Receiver-checked for the same reason `_is_escape_call` is: `fn.attr ==
+    "join"` alone matches `sep.join(...)` and `"/".join(...)`, which take a
+    SEQUENCE rather than varargs, so treating one as a path join classifies its
+    components wrongly in both directions.
+    """
     if not isinstance(node, ast.Call):
         return False
     fn = node.func
     if isinstance(fn, ast.Attribute):
-        return fn.attr == "join"
+        if fn.attr != "join":
+            return False
+        recv = fn.value
+        if isinstance(recv, ast.Attribute):
+            return recv.attr in _PATH_JOIN_RECEIVERS
+        if isinstance(recv, ast.Name):
+            return recv.id in _PATH_JOIN_RECEIVERS
+        return False
     return isinstance(fn, ast.Name) and fn.id == "join"
+
+
+def _is_str_join_of_literals(node: ast.AST) -> bool:
+    """`"/".join(["/fixed", "*.log"])` — a str.join whose every part is literal.
+
+    Recognised only to keep the fallback rule from reporting a literal-only
+    pattern.  A str.join with any non-literal part is NOT decomposed; it falls
+    through to the fallback and is reported.
+    """
+    if not isinstance(node, ast.Call):
+        return False
+    fn = node.func
+    if not (isinstance(fn, ast.Attribute) and fn.attr == "join"):
+        return False
+    if not _literal_only(fn.value) or node.keywords or len(node.args) != 1:
+        return False
+    seq = node.args[0]
+    if not isinstance(seq, (ast.List, ast.Tuple)):
+        return False
+    return all(_literal_only(e) for e in seq.elts)
 
 
 def _literal_only(node: ast.AST) -> bool:
@@ -106,6 +173,8 @@ def _literal_only(node: ast.AST) -> bool:
         return _literal_only(node.left) and _literal_only(node.right)
     if _is_join_call(node):
         return all(_literal_only(a) for a in node.args) and not node.keywords
+    if _is_str_join_of_literals(node):
+        return True
     return False
 
 
