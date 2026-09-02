@@ -23,20 +23,74 @@ Three separate faults, and the borders were only the one he could name.
    size — severity filters, a profile filter, and a search — rather than the
    same six columns stretched wider.
 
-The row itself is deliberately the SAME :func:`event_row` the dock uses. One
-row renderer means the log he scans in the dock and the log he searches at full
-screen have their columns in the same places, so his eye does not have to
-re-learn the layout when he opens it.
+The row keeps the dock's COLUMNS — severity, profile, message, time, in the
+same places and at the same widths — so his eye does not have to re-learn the
+layout when he opens it. What it does NOT keep is the dock's hard one-line
+message cell (PS-266): a message that is cut carries a reveal here, because
+this is where the dock's own docstring sends him to read the whole line. The
+columns are the shared property; the message cell is where the two reading
+tasks genuinely differ. See :func:`fullscreen_event_row`.
 """
 
 from __future__ import annotations
 
 import flet as ft
 
-from ..log_console import SEV_COLOR, SEV_FAIL, SEV_INFO, SEV_OK, event_row, parse_event
+from ..log_console import (
+    NO_PROFILE,
+    PROFILE_COL_WIDTH,
+    ROW_HEIGHT,
+    SEV_COLOR,
+    SEV_FAIL,
+    SEV_INFO,
+    SEV_OK,
+    TEXT_SIZE,
+    TIME_COL_WIDTH,
+    parse_event,
+)
 from ..theme.colors import COLORS
 
 MONO = "monospace"
+
+#: How many wrapped lines a REVEALED message may occupy before it is cut.
+#:
+#: The reveal has to be bounded too, or "expand" just re-creates the defect one
+#: click later — the same argument :data:`~src.ui.app._STATUS_EXPANDED_MAX_LINES`
+#: records for the engines rail (PS-229), which this applies to the log.
+#:
+#: FIVE, and the arithmetic is the app's MINIMUM window, not a comfortable one.
+#: The message column is the window width minus 297px of fixed chrome
+#: (PROFILE_COL_WIDTH 132 + TIME_COL_WIDTH 62 + the 7px dot + 14x2 row padding
+#: + 12x3 row spacing + 18+14 dialog padding), and monospace at TEXT_SIZE=11.5
+#: advances ~0.6em per character:
+#:
+#:     1280px -> (1280-297)/6.9 = ~142 chars/line
+#:     1024px -> (1024-297)/6.9 = ~105 chars/line     (window.min_width)
+#:
+#: The longest refusal this product composes is TimezoneUnderivableError
+#: (process.py:233-241), which reaches the log as
+#: "Error starting process: ..." at 460 characters -> 4 lines at 1280px and
+#: 5 at 1024px. Five therefore clears the worst REAL message at the smallest
+#: window the app can be at, and stops well short of turning one pasted stack
+#: trace into a screenful.
+_MESSAGE_EXPANDED_MAX_LINES = 5
+
+#: The fixed chrome the message column does NOT get, in pixels. Kept as one
+#: named number because the budget above and :func:`message_char_budget` must
+#: not drift apart.
+_ROW_CHROME_PX = 297
+
+#: Monospace advance per character at :data:`~src.ui.log_console.TEXT_SIZE`.
+#: The standard 0.6em ratio — an ESTIMATE, and the only estimated term here:
+#: flet returns no text metrics, so the cell cannot be measured, only budgeted.
+_CHAR_ADVANCE = TEXT_SIZE * 0.6
+
+#: The reveal's tooltips. They are the control's LABEL as far as the
+#: accessibility tree is concerned — a bare GestureDetector paints no semantics
+#: node, so without a tooltip the affordance is unaddressable by the live
+#: driver and untestable by anything but a source grep.
+_REVEAL_TIP = "Show the full message"
+_HIDE_TIP = "Hide the full message"
 
 #: The severity filters offered, in the order they are shown. "all" is not a
 #: severity — it is the cleared state, and it is first because it is the one
@@ -49,10 +103,200 @@ _FILTERS = (
 )
 
 
+def message_char_budget(window_width: float | None) -> int:
+    """How many characters of message fit on ONE line at this window width.
+
+    Character-budgeted rather than measured, and that is not a shortcut: flet
+    returns no text metrics back (``src/ui/app.py:2545-2551`` says so and
+    budgets for the same reason), so a measured approach is not available. The
+    TRUNCATION itself is certain from ``max_lines=1`` + ``ELLIPSIS`` regardless
+    of where exactly the cut lands; only the exact column count is an estimate.
+
+    Floors at the app's own minimum window (``page.window.min_width`` = 1024,
+    ``theme/page.py:160``) so a page that has not reported a width yet — and a
+    page reporting a width smaller than the app allows — budgets for the
+    TIGHTER cell rather than the roomier one. Over-estimating the budget is the
+    dangerous direction: it withholds the reveal from a line that is cut.
+    """
+    width = float(window_width or 0) or 1024.0
+    width = max(width, 1024.0)
+    return max(1, int((width - _ROW_CHROME_PX) / _CHAR_ADVANCE))
+
+
+def message_needs_reveal(message: str, window_width: float | None) -> bool:
+    """Whether this message is longer than its one-line cell.
+
+    Follows :meth:`~src.ui.app.App._status_needs_reveal` exactly: a line that is
+    already whole gets NO affordance, because "an affordance on a line that is
+    already whole is noise, and worse, it invites a click that visibly does
+    nothing".
+    """
+    return len(message or "") > message_char_budget(window_width)
+
+
+def fullscreen_message_text(
+    message: str, colour: str, *, expanded: bool
+) -> ft.Text:
+    """The fullscreen message cell — the ONE place this view departs from the dock.
+
+    THREE PROPERTIES, and dropping any one of them re-creates the defect:
+
+    1. ``expanded`` swaps ``max_lines=1``/``no_wrap=True`` for
+       :data:`_MESSAGE_EXPANDED_MAX_LINES` wrapped lines. Bounded, because an
+       unbounded reveal is the original defect deferred by one click.
+    2. ``expand=True`` in BOTH states, because bounding the lines without
+       bounding the WIDTH is the fix that looks right and changes nothing — a
+       ``Text`` in a ``Row`` is granted its intrinsic width unless it asks to
+       flex, so the ellipsis never engages. ``app.py:92-103`` records this
+       trap; it is repeated here because it is the half that gets dropped.
+    3. ``selectable=True`` in both states (AC3). Selection costs no vertical
+       metric, and it is what makes a refusal sentence COPYABLE — the
+       capability v2.8.4's fullscreen row had (``selectable=True``, no
+       ``no_wrap``) and PS-229 removed with no recorded argument.
+
+    NOT ``log_console._cell``: that renderer is the DOCK's contract — one line,
+    always, so the region cannot change extent while profiles launch — and it
+    is right for the dock. Loosening it would change what the dock renders,
+    which is explicitly out of scope. So the fullscreen view gets its own cell
+    rather than a shared one with a flag.
+    """
+    return ft.Text(
+        message,
+        size=TEXT_SIZE,
+        font_family=MONO,
+        color=colour,
+        expand=True,
+        selectable=True,
+        no_wrap=not expanded,
+        max_lines=_MESSAGE_EXPANDED_MAX_LINES if expanded else 1,
+        overflow=ft.TextOverflow.ELLIPSIS,
+    )
+
+
+def _message_colour(sev: str) -> str:
+    return (
+        COLORS["error"]
+        if sev == SEV_FAIL
+        else COLORS["text_main"]
+        if sev == SEV_OK
+        else COLORS["text_dim"]
+    )
+
+
+def fullscreen_event_row(
+    line: str,
+    profiles: frozenset[str] | set[str],
+    *,
+    expanded: bool = False,
+    window_width: float | None = None,
+    on_toggle=None,
+) -> ft.Control:
+    """One event, in the FULLSCREEN view: the dock's columns, a readable message.
+
+    The columns — severity dot, profile ruler, message, right-aligned time —
+    are the dock's, at the dock's widths, so the layout does not have to be
+    re-learned. What differs is the message cell and the row's HEIGHT: a
+    revealed row is allowed to be taller, because the uniform-height rule is a
+    property of the WATCHED dock (a wrapping row changes the region's extent on
+    every repaint while profiles launch) and not of a view you open to look one
+    thing up.
+
+    The reveal control is drawn only when the message actually overruns its
+    cell (:func:`message_needs_reveal`), and it carries a TOOLTIP — which is
+    also what makes Flutter emit a semantics node for it, so the live driver
+    can address it at all (``live_log_dock.py:37-42`` recorded the bare
+    ``GestureDetector`` grip as undrivable for exactly that reason).
+    """
+    stamp, profile, message, sev = parse_event(line, profiles)
+
+    time_col = ft.Container(
+        width=TIME_COL_WIDTH,
+        alignment=ft.Alignment.TOP_RIGHT,
+        content=ft.Text(
+            stamp,
+            size=TEXT_SIZE,
+            font_family=MONO,
+            color=COLORS["text_sub"],
+            no_wrap=True,
+            max_lines=1,
+            overflow=ft.TextOverflow.ELLIPSIS,
+        ),
+    )
+    profile_col = ft.Container(
+        width=PROFILE_COL_WIDTH,
+        content=ft.Text(
+            profile or NO_PROFILE,
+            size=TEXT_SIZE,
+            font_family=MONO,
+            color=COLORS["accent"] if profile else COLORS["text_sub"],
+            no_wrap=True,
+            max_lines=1,
+            overflow=ft.TextOverflow.ELLIPSIS,
+        ),
+    )
+    message_col = ft.Container(
+        expand=True,
+        content=fullscreen_message_text(
+            message, _message_colour(sev), expanded=expanded
+        ),
+    )
+    dot_col = ft.Container(
+        width=7,
+        height=ROW_HEIGHT,
+        alignment=ft.Alignment.CENTER,
+        content=ft.Container(
+            width=7, height=7, border_radius=4, bgcolor=SEV_COLOR[sev]
+        ),
+    )
+
+    controls: list[ft.Control] = [dot_col, profile_col, message_col]
+    if message_needs_reveal(message, window_width) or expanded:
+        controls.append(
+            ft.Container(
+                width=16,
+                height=ROW_HEIGHT,
+                alignment=ft.Alignment.CENTER,
+                border_radius=3,
+                ink=True,
+                on_click=(lambda _: on_toggle(line)) if on_toggle else None,
+                tooltip=(
+                    _HIDE_TIP if expanded else _REVEAL_TIP
+                ),
+                content=ft.Icon(
+                    ft.Icons.UNFOLD_LESS if expanded else ft.Icons.UNFOLD_MORE,
+                    size=12,
+                    color=COLORS["text_dim"],
+                ),
+            )
+        )
+    controls.append(time_col)
+
+    return ft.Container(
+        # No fixed height when revealed: the whole point is the extra lines.
+        # Collapsed rows keep ROW_HEIGHT so an unrevealed list is the same
+        # ruler the dock is.
+        height=None if expanded else ROW_HEIGHT,
+        padding=ft.Padding.symmetric(horizontal=14, vertical=0),
+        content=ft.Row(
+            spacing=12,
+            vertical_alignment=(
+                ft.CrossAxisAlignment.START
+                if expanded
+                else ft.CrossAxisAlignment.STRETCH
+            ),
+            controls=controls,
+        ),
+    )
+
+
 def open_log_dialog(page: ft.Page, log_lines: list[str], profiles=None) -> None:
     """Open the Activity Log at full size, with the tools that size deserves."""
     profiles = frozenset(profiles or ())
     state = {"sev": "all", "profile": "", "query": ""}
+    #: Which lines the operator has revealed. Keyed by the LINE ITSELF, not by
+    #: an index: the log grows underneath this view while it is open, and an
+    #: index would silently move the reveal onto a different event.
+    expanded: set[str] = set()
 
     body = ft.ListView(expand=True, spacing=0)
     count_label = ft.Text("", size=11, color=COLORS["text_sub"], font_family=MONO)
@@ -71,10 +315,32 @@ def open_log_dialog(page: ft.Page, log_lines: list[str], profiles=None) -> None:
             out.append(line)
         return out
 
+    def toggle(line: str) -> None:
+        """Reveal or re-collapse ONE line, then repaint the list."""
+        if line in expanded:
+            expanded.discard(line)
+        else:
+            expanded.add(line)
+        repaint()
+
     def repaint(_=None) -> None:
         rows = matching()
+        # The page's CURRENT width, read at paint time rather than captured
+        # once: the operator can resize the window with this view open, and the
+        # budget at 1024px is tighter than at 1280px — a stale width withholds
+        # the reveal from a line that is now cut.
+        win_w = getattr(page, "width", None)
         body.controls = (
-            [event_row(ln, profiles) for ln in rows]
+            [
+                fullscreen_event_row(
+                    ln,
+                    profiles,
+                    expanded=ln in expanded,
+                    window_width=win_w,
+                    on_toggle=toggle,
+                )
+                for ln in rows
+            ]
             if rows
             else [
                 ft.Container(

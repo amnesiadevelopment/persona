@@ -24,7 +24,15 @@ UNIFORM HEIGHT IS A FEATURE, NOT AN OVERSIGHT. Every row is exactly
 profiles launch, and a wrapping row changes the region's extent on every
 repaint — that jitter is a real part of what the owner called uncomfortable to
 read. A long message is therefore ellipsised rather than reflowed; the full
-line is always one click away in the fullscreen Activity Log.
+line is one click away in the fullscreen Activity Log, where a cut message
+carries a reveal that wraps it over up to five lines and is selectable so it
+can be copied (``dialogs/log.py`` — :func:`~src.ui.dialogs.log.fullscreen_event_row`).
+
+That escape hatch is a LIVE CLAIM, and it has been false once already: between
+PS-229 and PS-266 the fullscreen view rendered through this very ``event_row``,
+so the click led to the identical truncation. If the fullscreen message cell
+ever loses its reveal, this sentence is what has to change with it — the
+justification for truncating here rests on it.
 """
 
 from __future__ import annotations
