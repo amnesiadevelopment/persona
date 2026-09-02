@@ -5,6 +5,7 @@ import flet as ft
 from ...core.strings import get_string
 from ...interfaces.protocols import IBrowserLauncher, IProfileManager, IProxyService
 from ...models.bookmark import Bookmark
+from ...services.profile.cert_assignment import CertDirective
 from ...services.profile.coherence import IncoherentProfile
 from ...services.profile.pool_assignment import PoolDirective
 from ...services.profile.proxy_assignment import ProxyDirective
@@ -67,7 +68,7 @@ def edit_profile(
         new_notes: str = "",
         new_engine: str = "chromium",
         new_resolution: str = "auto",
-        new_certificate: str = "",
+        new_certificate: str | CertDirective = "",
     ) -> str | None:
         if new_name != original and bl.is_running(original):
             return "Stop the browser before renaming"
@@ -139,7 +140,7 @@ def add_profile(
         notes: str = "",
         engine: str = "chromium",
         resolution: str = "auto",
-        certificate: str = "",
+        certificate: str | CertDirective = "",
     ) -> str | None:
         # Unreachable from the dialog (its dropdowns are narrowed), but the model
         # RAISES now — catch it so a bypassed/regressed narrowing surfaces the
