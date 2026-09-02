@@ -86,8 +86,17 @@ def test_gate_goes_red_when_a_protocol_falls_behind_its_implementation(
 
     # Induce the exact PS-165 drift: remove a parameter from the PROTOCOL that
     # the implementation still accepts.
+    # The ANNOTATION is deliberately matched loosely (`[^\n]*`) rather than
+    # spelled out. This regex named `str | None` verbatim and went stale the
+    # first time the parameter's type was legitimately widened (PS-263 widened
+    # it to `str | CertDirective | None`), turning a green gate-verification
+    # test red for a reason that had nothing to do with the gate. What the test
+    # needs to find is the PARAMETER, not its current type — so it matches the
+    # name and the default and lets the type move. `\n *certificate:` also
+    # keeps it off `new_certificate:` on update_profile, which is a different
+    # parameter on a different method.
     drifted, count = re.subn(
-        r"\n *certificate: str \| None = None,",
+        r"\n *certificate: [^\n]*= None,",
         "",
         target.read_text(encoding="utf-8"),
         count=1,

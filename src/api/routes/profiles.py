@@ -196,6 +196,44 @@ def update_profile(
         # no pool, which stays expressible.
         new_bookmark_pool = POOL_NONE
 
+    # The same distinction only a route can draw, for the certificate — but
+    # with a DIFFERENT MAPPING from proxy/pool above, deliberately, and this
+    # lane's behaviour is UNCHANGED by PS-263: the branches below only STATE
+    # what `supplied.get("certificate")` already did, they do not alter it.
+    #
+    # Why the mapping differs. On proxy/pool the model reads absence AND
+    # emptiness alike, so the route must send a *_UNCHANGED directive to mean
+    # "silent". On the certificate the model already reads None as "leave
+    # alone" and "" as the explicit clear (manager.py: `if new_certificate is
+    # not None:`), so absence was ALREADY correct here — correct BY ACCIDENT,
+    # because `dict.get` returning None for a missing key is a property of the
+    # dict, not a statement of intent. Copying proxy/pool's `elif supplied[k]:`
+    # shape wholesale would inherit their POLICY as well as their SHAPE and
+    # silently flip `{"certificate": null}` from preserve to clear — the exact
+    # "the idiom transfers but the policy does not" trap that
+    # services/profile/cert_assignment.py exists to document.
+    #
+    # So THREE inputs, two of which mean "leave alone":
+    #   key omitted        -> None : silent, leave the stored assignment alone
+    #   {"certificate": null} -> None : ALSO silent (unchanged from before PS-263)
+    #   {"certificate": ""}   -> ""   : the deliberate clear, pinned by
+    #                                   tests/test_profile_certificate_persist.py
+    # A non-empty string is the assignment itself.
+    #
+    # No CERT_UNCHANGED is sent: it means "I cannot account for the stored
+    # assignment", which is the DIALOG's state, never a route's — an API caller
+    # that omits the key is not confused about the certificate, it is silent
+    # about it, and None already says exactly that. See
+    # services/profile/cert_assignment.py.
+    if "certificate" not in supplied or supplied["certificate"] is None:
+        new_certificate: str | None = None
+    elif supplied["certificate"]:
+        new_certificate = supplied["certificate"]
+    else:
+        # Explicitly supplied as "" — the caller is deliberately choosing no
+        # certificate. "" is the model's clear on this field.
+        new_certificate = ""
+
     # Coherence is enforced by the model, which sees the PATCH's fields AND the
     # stored ones — so `PATCH {"os_type": "macos"}` on a profile already stored
     # as firefox is judged on the pair it would RESULT IN, not on the one field
@@ -215,7 +253,7 @@ def update_profile(
             new_notes=new_notes,
             new_engine=supplied.get("engine"),
             new_resolution=supplied.get("resolution"),
-            new_certificate=supplied.get("certificate"),
+            new_certificate=new_certificate,
         )
     except IncoherentProfile as e:
         raise HTTPException(status_code=400, detail=str(e)) from e

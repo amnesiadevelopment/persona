@@ -4,6 +4,7 @@ from typing import Protocol
 from ..models.profile import Profile
 from ..services.browser.refusal import Refusal
 from ..services.browser.session_registry import SessionRecord
+from ..services.profile.cert_assignment import CertDirective
 from ..services.profile.pool_assignment import POOL_UNCHANGED, PoolDirective
 from ..services.profile.proxy_assignment import PROXY_UNCHANGED, ProxyDirective
 
@@ -35,7 +36,11 @@ class IProfileManager(Protocol):
         notes: str = "",
         engine: str = "chromium",
         resolution: str = "auto",
-        certificate: str | None = None,
+        # A certificate NAME, "" to clear, None to leave alone, or
+        # CERT_UNCHANGED. Widened in lockstep with the implementation — see
+        # services/profile/cert_assignment.py, and PS-165 for what a protocol
+        # that drifts from its implementation costs.
+        certificate: str | CertDirective | None = None,
         ai_control: bool = False,
     ) -> bool: ...
 
@@ -73,7 +78,12 @@ class IProfileManager(Protocol):
         new_notes: str | None = None,
         new_engine: str | None = None,
         new_resolution: str | None = None,
-        new_certificate: str | None = None,
+        # A certificate NAME, "" to CLEAR, None to leave alone, or
+        # CERT_UNCHANGED (what the dialog sends when it cannot account for the
+        # stored assignment). "" still clears here, unlike the two fields
+        # above — see services/profile/cert_assignment.py for why the asymmetry
+        # is deliberate.
+        new_certificate: str | CertDirective | None = None,
     ) -> bool: ...
 
     # Declared ONCE. This was written twice until PS-165 — harmless at runtime,
