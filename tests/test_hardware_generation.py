@@ -592,16 +592,18 @@ console.log(JSON.stringify(require('vm').runInContext(
 )));
 """
 
-_RES_TAIL = "[1680, 1050, 0], [1920, 1200, 0], [2560, 1080, 0], [2560, 1440, 0],"
-_RES_APPENDED = _RES_TAIL + " [3840, 2160, %d]," % NEXT_GEN
+_RES_APPENDED = (3840, 2160)
 
 
-def _screen_seen(tmp_path, seed, generation, tag):
+def _screen_seen(tmp_path, seed, generation, tag, os_type="windows"):
     node = shutil.which("node")
     if not node:
         pytest.skip("node not available")
     d = pathlib.Path(
-        build_device_extension(seed, str(tmp_path / f"{tag}{seed}"), generation)
+        build_device_extension(
+            seed, str(tmp_path / f"{tag}{os_type}{seed}"), generation,
+            os_type=os_type,
+        )
     )
     harness = d / "harness.js"
     harness.write_text(_SCREEN_READ, encoding="utf-8")
@@ -617,15 +619,50 @@ def _screen_seen(tmp_path, seed, generation, tag):
     return (seen["width"], seen["height"])
 
 
-def _append_screen_res(monkeypatch):
-    assert _RES_TAIL in device_ext._CONTENT_SCRIPT, (
-        "RES tail anchor no longer matches — re-derive it before trusting this "
-        "test, which otherwise silently appends nothing"
+# THE `_RES_TAIL` TEXT ANCHOR IS RETIRED (PS-264), AND ITS REMOVAL IS THE
+# IMPROVEMENT — record why, do not read this as a deleted guard.
+#
+# This helper used to append a resolution by rewriting a literal substring of
+# `device_ext._CONTENT_SCRIPT`:
+#
+#     _RES_TAIL = "[1680, 1050, 0], [1920, 1200, 0], [2560, 1080, 0], [2560, 1440, 0],"
+#
+# with `assert _RES_TAIL in device_ext._CONTENT_SCRIPT` guarding it. That
+# assertion was genuinely load-bearing while the pool WAS a JS string: without
+# it, a reformat of the literal would have made the `.replace()` a no-op and
+# this test would have "appended nothing" and passed — measuring two identical
+# builds. It is retired for the same reason PS-190 retired `_LINUX_GPUS_TAIL`:
+# the pool is now Python DATA, so the append is a list append against the
+# registry the extension renders from and there is no formatting for an anchor
+# to go stale against. The failure mode it protected against is now
+# unrepresentable rather than merely unguarded.
+#
+# The registry is what must be patched, NOT only a module-level name: patching
+# `device_ext.WIN_SCREEN_RESOLUTIONS` alone would leave `SCREEN_RES_POOLS`
+# pointing at the original list and append nothing — the modern form of exactly
+# the failure the old text anchor existed to catch.
+_POOL_FOR_OS = {
+    "windows": "WIN_SCREEN_RESOLUTIONS",
+    "macos": "MAC_SCREEN_RESOLUTIONS",
+}
+
+
+def _append_screen_res(monkeypatch, os_type="windows", since=None):
+    """Append a resolution to the pool the ``os_type`` arm renders from.
+
+    ``since=None`` means an UNTAGGED append — the edit a maintainer widening a
+    pool actually writes, and the one the census guard exists to catch.
+    """
+    name = _POOL_FOR_OS[os_type]
+    entry = (
+        device_ext.ScreenResolutionEntry(*_RES_APPENDED)
+        if since is None
+        else device_ext.ScreenResolutionEntry(*_RES_APPENDED, since=since)
     )
-    monkeypatch.setattr(
-        device_ext, "_CONTENT_SCRIPT",
-        device_ext._CONTENT_SCRIPT.replace(_RES_TAIL, _RES_APPENDED),
-    )
+    widened = device_ext.SCREEN_RES_POOLS[name] + [entry]
+    monkeypatch.setattr(device_ext, name, widened)
+    monkeypatch.setitem(device_ext.SCREEN_RES_POOLS, name, widened)
+    return entry
 
 
 _SCREEN_SEEDS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 42]
@@ -635,26 +672,303 @@ def test_appending_a_screen_resolution_moves_no_existing_profile(
     tmp_path, monkeypatch
 ):
     before = {s: _screen_seen(tmp_path, s, 0, "before") for s in _SCREEN_SEEDS}
-    _append_screen_res(monkeypatch)
+    _append_screen_res(monkeypatch, since=NEXT_GEN)
     after = {s: _screen_seen(tmp_path, s, 0, "after") for s in _SCREEN_SEEDS}
 
     assert after == before
-    assert (3840, 2160) not in set(after.values())
+    assert _RES_APPENDED not in set(after.values())
 
 
 def test_appended_screen_resolution_is_reachable_by_a_new_profile(
     tmp_path, monkeypatch
 ):
-    _append_screen_res(monkeypatch)
+    _append_screen_res(monkeypatch, since=NEXT_GEN)
     # Scan until found rather than sampling a fixed handful — same reason as the
     # GPU case above: a fixed sample can miss the new entry by chance and make
     # the verdict depend on which seeds happen to be listed.
     for s in range(60):
-        if _screen_seen(tmp_path, s, NEXT_GEN, "new") == (3840, 2160):
+        if _screen_seen(tmp_path, s, NEXT_GEN, "new") == _RES_APPENDED:
             return
     pytest.fail(
         "no seed in 0..59 was picked onto the appended resolution at the new "
         "generation — the append is inert and the list cannot be maintained"
+    )
+
+
+# --------------------------------------------------------------------------
+# PS-264 — the screen pools' UNTAGGED-append tripwire, and the pool-CLASS guard
+# --------------------------------------------------------------------------
+#
+# WHAT WAS MISSING, PRECISELY. The two tests above are genuinely behavioural,
+# but `_append_screen_res` appends a `since=NEXT_GEN` entry — a TAGGED one. So
+# they prove the TAGGED path works and can never catch the edit a maintainer
+# actually writes when widening a pool, which is an append with no `since` at
+# all. This is NOT coverage from zero and must not be written up as such: it is
+# the same gap PS-190 found and closed on the GPU side, arriving one pool
+# later. Measured on the shipped tree at a1cc9d4, before the pools were lifted:
+# an untagged append to BOTH arms re-indexed 18 of 20 generation-0 seeds onto a
+# different monitor — 90.0% on windows, 90.0% on macos, through the emitted
+# device.js under node:vm — and the full suite went GREEN on that commit.
+#
+# WHY A FROZEN CENSUS RATHER THAN `all(e.since == 0)` — see the long note above
+# `_GPU_GENERATION_ZERO_CENSUS`; the polarity argument is identical and is not
+# restated here. Contents AND ORDER are pinned, because
+# `pool[seed % len(visible(pool, 0))]` depends on both.
+#
+# WHY THE macOS ARM IS PINNED AT ALL. Before PS-264 it existed only inside the
+# JS string, with no Python twin anywhere in the tree, and every behavioural
+# generation test drove the default `os_type="windows"` — so it was the one
+# seed-indexed pool no test reached in any direction. Its divisor is 5 against
+# the windows arm's 9, so an untagged append here is SHARPER, not milder.
+_SCREEN_GENERATION_ZERO_CENSUS: dict[str, tuple[tuple[int, int], ...]] = {
+    "WIN_SCREEN_RESOLUTIONS": (
+        (1366, 768), (1440, 900), (1536, 864), (1600, 900), (1920, 1080),
+        (1680, 1050), (1920, 1200), (2560, 1080), (2560, 1440),
+    ),
+    "MAC_SCREEN_RESOLUTIONS": (
+        (1440, 900), (1512, 982), (1680, 1050), (1728, 1117), (2560, 1440),
+    ),
+}
+
+
+def test_the_screen_census_covers_every_shipped_pool():
+    # AC4, and the half that makes the tests below cover the pool CLASS rather
+    # than the two arms someone thought of. A THIRD pool added to
+    # device_ext.SCREEN_RES_POOLS later — a linux screen pool, say — fails
+    # HERE until its shipped contents are pinned, so it cannot be added
+    # silently and then widened untagged.
+    #
+    # Asserted in BOTH directions (the completeness claim PS-176 failed audit
+    # twice for making with a probe that could not have matched the remaining
+    # case): every registered pool has a census, and every census names a
+    # registered pool — a stale key for a deleted pool would otherwise sit here
+    # forever, quietly covering nothing.
+    assert set(device_ext.SCREEN_RES_POOLS) == set(
+        _SCREEN_GENERATION_ZERO_CENSUS
+    ), (
+        "SCREEN_RES_POOLS and the generation-0 census disagree about which "
+        "pools exist — a new pool must be pinned here before it ships, and a "
+        "removed one must be unpinned"
+    )
+    # And the registry is what the product RENDERS FROM, not a list beside it:
+    # if these came apart, the census could cover a pool the extension never
+    # emits while the emitted one went unguarded.
+    for name, pool in device_ext.SCREEN_RES_POOLS.items():
+        assert getattr(device_ext, name) is pool, (
+            f"{name} in SCREEN_RES_POOLS is not the module-level {name} the "
+            "extension renders from"
+        )
+
+
+def test_generation_zero_sees_every_screen_pool_exactly_as_it_shipped():
+    # THE TRIPWIRE. An UNTAGGED append to either arm lands in generation 0's
+    # visible pool, changing its length and therefore the divisor of every
+    # existing profile's pick — so it fails here. A correctly TAGGED append
+    # (since = the bumped CURRENT_HARDWARE_GENERATION) is invisible to
+    # generation 0 and leaves this untouched, so the documented procedure stays
+    # green. Reordering or substituting a shipped size fails too: the census
+    # pins order and identity, not just the count.
+    for name, pool in device_ext.SCREEN_RES_POOLS.items():
+        shipped = tuple(
+            e.size
+            for e in device_ext.screen_resolutions_for_generation(pool, 0)
+        )
+        # An unpinned pool is a MISSING GUARD, not a KeyError. Say so, because
+        # the maintainer who trips this is the one adding a third arm and the
+        # remedy is not obvious from a bare key name.
+        assert name in _SCREEN_GENERATION_ZERO_CENSUS, (
+            f"{name} is registered in SCREEN_RES_POOLS but has no entry in "
+            "_SCREEN_GENERATION_ZERO_CENSUS, so nothing is guarding it against "
+            "an untagged append. Pin its shipped contents there (sizes, in "
+            "shipped order) in the same commit that adds the pool."
+        )
+        assert shipped == _SCREEN_GENERATION_ZERO_CENSUS[name], (
+            f"generation 0's visible {name} is no longer the pool as it "
+            f"shipped. An existing profile's spoofed screen is picked with "
+            f"`fits[h(...) % len(fits)]` over the generation-filtered pool, so "
+            f"this re-indexes live profiles onto a different monitor under "
+            f"their session cookies. If you are ADDING a resolution: bump "
+            f"CURRENT_HARDWARE_GENERATION and tag the new entry "
+            f"`since=<that number>` — see models/hardware_generation.py."
+        )
+
+
+def test_no_shipped_screen_entry_is_tagged_beyond_the_current_generation():
+    # The other half of the generalised latch, over the pool CLASS: an entry
+    # tagged with a generation nobody has been minted into yet is unreachable
+    # until the constant catches up — the "tag first, bump never" mistake,
+    # which makes a newly-added resolution silently dead rather than loudly
+    # failing.
+    for name, pool in device_ext.SCREEN_RES_POOLS.items():
+        for e in pool:
+            assert 0 <= e.since <= CURRENT_HARDWARE_GENERATION, (
+                f"{name} has an entry tagged since={e.since}, but "
+                f"CURRENT_HARDWARE_GENERATION is "
+                f"{CURRENT_HARDWARE_GENERATION} — bump the constant in the "
+                f"same commit, or nothing can ever be picked onto it: "
+                f"{e.size}"
+            )
+
+
+@pytest.mark.parametrize("os_type", ["windows", "macos"])
+def test_an_untagged_screen_append_really_does_re_index_existing_profiles(
+    tmp_path, monkeypatch, os_type
+):
+    # AC2's RED half and AC3 — the BEHAVIOURAL measurement, and the control
+    # that stops the census guard from being a test of its own fixture.
+    #
+    # READ THE CLAIM CAREFULLY. It is NOT "an untagged append moves nobody" —
+    # that is false and always will be, because nothing in the generation
+    # mechanism can protect a profile from an append it can SEE. An untagged
+    # entry is `since=0`, so it lands squarely in generation 0's visible pool
+    # and re-indexes it; that is the hazard, not a bug to be fixed here.
+    #
+    # So what is asserted is the LINK the tripwire rests on, in both
+    # directions: (a) an untagged append genuinely moves existing profiles when
+    # MEASURED THROUGH A PAGE, and (b) the census guard rejects exactly that
+    # pool state. Without (a) the guard could be pinning a census that no
+    # longer corresponds to anything a page reads; without (b) the measurement
+    # would be a finding nobody acts on.
+    #
+    # BOTH arms, because before PS-264 the macOS one was driven by no test at
+    # all — and its narrower divisor (5 vs 9) makes the re-index sharper there.
+    before = {
+        s: _screen_seen(tmp_path, s, 0, "ubefore", os_type)
+        for s in _SCREEN_SEEDS
+    }
+
+    # The edit a maintainer widening the pool actually writes: NO `since` tag.
+    untagged = _append_screen_res(monkeypatch, os_type=os_type)
+    assert untagged.since == 0, (
+        "an untagged entry must default to generation 0 — that default is "
+        "what makes this append dangerous, and what the census guard catches"
+    )
+
+    after = {
+        s: _screen_seen(tmp_path, s, 0, "uafter", os_type)
+        for s in _SCREEN_SEEDS
+    }
+
+    # (a) It really moves EXISTING (generation-0) profiles, page-observably.
+    moved = [s for s in _SCREEN_SEEDS if after[s] != before[s]]
+    assert moved, (
+        f"an untagged append to the {os_type} screen pool moved NO profile "
+        f"across {len(_SCREEN_SEEDS)} seeds — the divisor cannot have changed, "
+        "so this test is no longer measuring the hazard the census guard "
+        "exists for"
+    )
+
+    # (b) And the guard rejects this exact pool state. Asserted by CALLING the
+    # guard, so the two cannot drift apart: if someone weakens the census, this
+    # fails here rather than leaving a green suite over a re-indexing pool.
+    with pytest.raises(AssertionError):
+        test_generation_zero_sees_every_screen_pool_exactly_as_it_shipped()
+
+
+@pytest.mark.parametrize("os_type", ["windows", "macos"])
+def test_a_tagged_screen_append_moves_nobody_and_keeps_the_guard_green(
+    tmp_path, monkeypatch, os_type
+):
+    # AC2's GREEN half, AC6's macOS arm, and the counterweight that proves the
+    # tripwire is not simply "any edit fails". The DOCUMENTED CORRECT procedure
+    # — bump CURRENT_HARDWARE_GENERATION, tag the new entry with it — leaves
+    # every existing profile's screen untouched AND leaves the census guard
+    # green, so a maintainer who follows the procedure is not fought by the
+    # suite.
+    #
+    # This is the polarity the old `all(e.since == 0)` latch got backwards: it
+    # went green on the untagged append above and RED on this one.
+    #
+    # NOT A DUPLICATE of `test_appending_a_screen_resolution_moves_no_existing
+    # _profile`: that one drives the default windows arm and does not touch the
+    # guard. This one covers the macOS arm through the same `_screen_seen`
+    # helper and asserts the guard's verdict alongside the reading.
+    before = {
+        s: _screen_seen(tmp_path, s, 0, "tbefore", os_type)
+        for s in _SCREEN_SEEDS
+    }
+    _append_screen_res(monkeypatch, os_type=os_type, since=NEXT_GEN)
+    after = {
+        s: _screen_seen(tmp_path, s, 0, "tafter", os_type)
+        for s in _SCREEN_SEEDS
+    }
+
+    assert after == before
+    assert _RES_APPENDED not in set(after.values())
+    # The guard stays green on the correct edit — no exception.
+    test_generation_zero_sees_every_screen_pool_exactly_as_it_shipped()
+
+
+def test_the_windows_screen_pool_matches_desktop_resolutions_at_generation_zero():
+    # THE PRICE OF KEEPING TWO COPIES, PAID EXPLICITLY (PS-264).
+    #
+    # `device_ext.WIN_SCREEN_RESOLUTIONS` and `resolution.DESKTOP_RESOLUTIONS`
+    # are byte-identical today and are deliberately separate objects — one is
+    # the MONITOR pool a spoofed `screen` is picked from, the other the WINDOW
+    # -size pool, and they are free to diverge (the macOS screen arm already has
+    # no counterpart in `DESKTOP_RESOLUTIONS` at all). But two hand-maintained
+    # copies of one list is precisely the drift hazard `CORES_MEMORY`'s own
+    # docstring records having been bitten by, where "the worker copy silently
+    # shadowed the page copy". So the parity is a TEST rather than an eyeball.
+    #
+    # ⚠️ PINNED AT GENERATION 0, NOT OVER THE WHOLE LIST, AND THE DIFFERENCE IS
+    # THE POLARITY LESSON PS-190 RECORDS. A whole-list equality was written
+    # first and executed: it goes RED on the DOCUMENTED CORRECT edit (add a
+    # resolution to the screen pool, tagged with the bumped generation — a
+    # decision a maintainer is entitled to make about the monitor pool alone)
+    # while adding nothing the census guard above does not already catch. A
+    # guard that fires on the correct edit trains people to work around it.
+    #
+    # Generation 0 is the right pin because it is the half that must NEVER
+    # diverge: it is the shipped baseline both lists inherited from the single
+    # literal they were split out of, and every existing profile reads it. A
+    # tagged append to either list is invisible here (green, correctly); an
+    # UNTAGGED edit to either — the drift this exists for — lands in generation
+    # 0 on one side only and fails (red, correctly). Sizes AND order, because
+    # a reorder re-indexes as hard as an append.
+    assert [
+        e.size
+        for e in device_ext.screen_resolutions_for_generation(
+            device_ext.WIN_SCREEN_RESOLUTIONS, 0
+        )
+    ] == [e.size for e in visible_entries(DESKTOP_RESOLUTIONS, 0)], (
+        "the windows screen pool and DESKTOP_RESOLUTIONS have diverged at "
+        "generation 0. They are kept as separate lists on purpose (different "
+        "questions: spoofed monitor vs real window extent) and may diverge for "
+        "NEW, tagged entries — but their generation-0 baseline is the single "
+        "literal they were split out of and is read by every existing profile. "
+        "An untagged edit to either copy lands here: tag it instead."
+    )
+
+
+def test_a_pool_that_is_not_registered_is_not_emitted(tmp_path, monkeypatch):
+    # AC1's teeth. The registry is load-bearing only if the emitted JS is
+    # rendered THROUGH it: a guard that iterates `SCREEN_RES_POOLS` says
+    # nothing about the product if `build_device_extension` reads the two
+    # module-level names directly.
+    #
+    # So: replace what the REGISTRY holds (leaving the module-level names
+    # alone) and demand the emitted script changes. If the renderer bypassed
+    # the registry, the emitted literal would still be the shipped one and this
+    # would fail.
+    marker = device_ext.ScreenResolutionEntry(3000, 2000, since=0)
+    monkeypatch.setitem(
+        device_ext.SCREEN_RES_POOLS, "MAC_SCREEN_RESOLUTIONS", [marker]
+    )
+    js = pathlib.Path(
+        build_device_extension(
+            1, str(tmp_path / "reg"), 0, os_type="macos"
+        ) + "/device.js"
+    ).read_text(encoding="utf-8")
+
+    assert "[[3000, 2000, 0]]" in js, (
+        "the emitted script does not reflect SCREEN_RES_POOLS, so the registry "
+        "is decorative and the census guards cover nothing the product renders"
+    )
+    # And the de-registered contents are genuinely gone from the emitted arm.
+    assert "[1728, 1117, 0]" not in js, (
+        "a pool removed from the registry is still being emitted — "
+        "'registered' and 'shipped' can drift apart"
     )
 
 

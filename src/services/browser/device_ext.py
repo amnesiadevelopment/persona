@@ -67,6 +67,141 @@ def cores_memory_for_generation(generation: int) -> list[tuple[int, int]]:
     return [e.pair for e in visible_entries(CORES_MEMORY, generation)]
 
 
+@dataclass(frozen=True)
+class ScreenResolutionEntry:
+    """One logical (CSS-px) screen resolution for the emitted ``ALL_RES`` pool,
+    tagged with the generation it was added in.
+
+    ``since`` is a promise to the profiles already pinned to this entry, not
+    bookkeeping: never renumber it on a shipped entry. New entries get the
+    bumped ``CURRENT_HARDWARE_GENERATION``. See ``hardware_generation.py``.
+
+    This is deliberately NOT ``resolution.ResolutionEntry`` even though the two
+    carry the same three fields — see ``SCREEN_RES_POOLS`` below for why the
+    two pools are separate objects, and for the parity test that keeps the
+    windows arm from drifting away from ``DESKTOP_RESOLUTIONS``.
+    """
+
+    width: int
+    height: int
+    since: int = 0
+
+    @property
+    def size(self) -> tuple[int, int]:
+        return (self.width, self.height)
+
+
+# THE SCREEN-RESOLUTION POOLS THAT ACTUALLY SET ``screen.width`` (PS-264).
+#
+# These two lists used to be a JS array literal inside ``_CONTENT_SCRIPT``, and
+# that made them the last seed-indexed pick site no census guard could iterate:
+# an UNTAGGED append passed the whole suite while re-indexing 18 of 20 gen-0
+# profiles onto a different monitor, on BOTH arms (measured at a1cc9d4 through
+# the emitted device.js under node:vm — 90.0% / 90.0%). They are lifted here for
+# exactly the reason PS-190 lifted the four GPU pools: a regex over the emitted
+# script could only ever find the pools whose formatting it already anticipated,
+# so the pool is turned into DATA and the script is rendered FROM it.
+#
+# WHICH POOL DRIVES WHAT. ``process.py`` passes
+# ``resolution=parse_resolution(profile.resolution)``, which is ``None`` for an
+# "auto" profile — so ``FORCED`` is null and it is THIS pool, not
+# ``resolution.DESKTOP_RESOLUTIONS``, that the page ends up reading
+# ``screen.width`` from. ``DESKTOP_RESOLUTIONS`` drives the real WINDOW extent
+# (and an explicit "WIDTHxHEIGHT" profile), which is a different question.
+#
+# WHY A SEPARATE ``WIN_SCREEN_RESOLUTIONS`` RATHER THAN REGISTERING
+# ``DESKTOP_RESOLUTIONS`` ITSELF (PS-264 asked for this choice to be stated):
+# the two lists are byte-identical today, and they are still kept apart, for
+# three reasons. (1) They answer different questions and are free to diverge:
+# this one is a MONITOR pool for a spoofed ``screen``, that one is a WINDOW-size
+# pool, and the macOS arm here already has no counterpart there at all. (2)
+# Registering a pool from ``resolution.py`` in this module's registry would make
+# an append to the window pool silently move every auto profile's spoofed
+# screen — coupling two maintenance decisions that a maintainer makes for
+# different reasons. (3) The census guard pins each registered pool's
+# generation-0 contents independently, which a shared object cannot express.
+# The cost of the choice is the drift hazard ``CORES_MEMORY``'s docstring above
+# records having already been bitten by, so it is PAID FOR by an explicit
+# parity test —
+# ``test_the_windows_screen_pool_matches_desktop_resolutions_at_generation_zero``
+# in tests/test_hardware_generation.py — which fails if either copy's
+# GENERATION-0 baseline is edited without the other. It is pinned at generation
+# 0 rather than over the whole list on purpose: a whole-list equality goes RED
+# on the documented correct edit (a tagged append to the monitor pool alone,
+# which a maintainer is entitled to make), and a guard that fires on the
+# correct edit trains people to work around it. Two hand-maintained copies with
+# a test between them; not two hand-maintained copies kept in sync by eye.
+#
+# ADDING ONE: give it `since=<CURRENT_HARDWARE_GENERATION after you bump it>`
+# and leave every entry below untouched. Order is free to stay readable — the
+# generation filter is by tag, not by position.
+WIN_SCREEN_RESOLUTIONS: list[ScreenResolutionEntry] = [
+    ScreenResolutionEntry(1366, 768),
+    ScreenResolutionEntry(1440, 900),
+    ScreenResolutionEntry(1536, 864),
+    ScreenResolutionEntry(1600, 900),
+    ScreenResolutionEntry(1920, 1080),
+    ScreenResolutionEntry(1680, 1050),
+    ScreenResolutionEntry(1920, 1200),
+    ScreenResolutionEntry(2560, 1080),
+    ScreenResolutionEntry(2560, 1440),
+]
+
+# macOS panel sizes (MacBook Air/Pro + Studio Display), in logical CSS px. This
+# arm has NO Python twin anywhere else in the tree — before PS-264 it existed
+# only inside the JS string, and every behavioural generation test drove the
+# default ``os_type="windows"``, so nothing exercised it. Its divisor is 5,
+# narrower than the windows arm's 9, which makes an untagged append here
+# sharper rather than milder.
+MAC_SCREEN_RESOLUTIONS: list[ScreenResolutionEntry] = [
+    ScreenResolutionEntry(1440, 900),
+    ScreenResolutionEntry(1512, 982),
+    ScreenResolutionEntry(1680, 1050),
+    ScreenResolutionEntry(1728, 1117),
+    ScreenResolutionEntry(2560, 1440),
+]
+
+
+# THE POOL REGISTRY, AND WHY IT IS A REGISTRY RATHER THAN TWO NAMES.
+#
+# The guards in tests/test_hardware_generation.py iterate THIS mapping, so they
+# cover the pool CLASS rather than the two arms someone happened to think of: a
+# third arm (a linux screen pool, say) registered here is picked up by the
+# existing tests with no edit to them at all, and FAILS until its shipped
+# contents are pinned in the generation-0 census. That is the same property
+# PS-190 established for ``gpu_ext.GPU_POOLS``, and it is only load-bearing
+# because ``build_device_extension`` renders the emitted JS THROUGH this
+# mapping: a pool that is not registered is not emitted.
+SCREEN_RES_POOLS: dict[str, list[ScreenResolutionEntry]] = {
+    "WIN_SCREEN_RESOLUTIONS": WIN_SCREEN_RESOLUTIONS,
+    "MAC_SCREEN_RESOLUTIONS": MAC_SCREEN_RESOLUTIONS,
+}
+
+
+def screen_resolutions_for_generation(
+    pool: list[ScreenResolutionEntry], generation: int
+) -> list[ScreenResolutionEntry]:
+    """The entries a profile of ``generation`` may be picked onto.
+
+    The emitted JS divides by the length of THIS, never of the whole list —
+    taking the whole list's length is the original defect.
+    """
+    return visible_entries(pool, generation)
+
+
+def _render_screen_pool(pool: list[ScreenResolutionEntry]) -> str:
+    """Render a screen-resolution pool as the JS array literal the template
+    substitutes.
+
+    Rendered UNFILTERED, three-element rows, with each entry's ``since``
+    carried through — mirroring ``gpu_ext._render_pool`` and NOT the
+    pre-filtered ``__HCMEM__`` render above. The emitted JS keeps its own
+    ``RES = ALL_RES.filter(r[2] <= GEN)``, so pre-filtering here would change
+    the emitted shape and drop the third element.
+    """
+    return json.dumps([[e.width, e.height, e.since] for e in pool])
+
+
 # Common real desktop resolutions (StatCounter-ish top set). Picking from a
 # real-world distribution keeps each profile plausible while differing between
 # profiles. availHeight subtracts a typical Windows taskbar (40px); availWidth
@@ -166,14 +301,12 @@ __SCREEN_REALM_SLOT__
     // 0, i.e. everything that shipped before generations existed). A profile
     // only sees entries at or below its own frozen generation, so appending one
     // here cannot change the divisor of the pick below for an existing profile.
-    // See models/hardware_generation.py. Append with `, N` and never renumber a
-    // shipped row.
-    var ALL_RES = IS_MAC ? [
-      [1440, 900, 0], [1512, 982, 0], [1680, 1050, 0], [1728, 1117, 0], [2560, 1440, 0],
-    ] : [
-      [1366, 768, 0], [1440, 900, 0], [1536, 864, 0], [1600, 900, 0], [1920, 1080, 0],
-      [1680, 1050, 0], [1920, 1200, 0], [2560, 1080, 0], [2560, 1440, 0],
-    ];
+    // See models/hardware_generation.py.
+    //
+    // BOTH ARMS ARE RENDERED FROM THE TAGGED PYTHON RECORDS in this module, so
+    // a maintainer edits `MAC_SCREEN_RESOLUTIONS` / `WIN_SCREEN_RESOLUTIONS`
+    // rather than a JS literal, and the generation guards can iterate them.
+    var ALL_RES = IS_MAC ? __MAC_RES__ : __WIN_RES__;
     var RES = ALL_RES.filter(function (r) { return (r[2] || 0) <= GEN; });
 
     // Reuse the top window's already-computed W/H so every realm agrees. Only
@@ -417,6 +550,24 @@ def build_device_extension(
         "__SEED__", str(int(seed) & 0xFFFFFFFF)
     ).replace("__GEN__", str(gen)).replace(
         "__HCMEM__", hcmem
+    ).replace(
+        # The two screen-resolution pools are RENDERED from the tagged Python
+        # records above, so a maintainer edits a `ScreenResolutionEntry` list
+        # rather than a JS literal and the generation guards can iterate them.
+        # Rendered unfiltered, `since` carried through: the emitted
+        # `ALL_RES.filter(r[2] <= GEN)` does the per-profile filtering.
+        #
+        # RENDERED THROUGH `SCREEN_RES_POOLS`, NOT THROUGH THE TWO NAMES
+        # DIRECTLY. That makes the registry load-bearing rather than
+        # decorative: a pool that is not registered is not emitted, so
+        # "registered" and "shipped" cannot drift apart, and the class-covering
+        # guards in tests/test_hardware_generation.py iterate the same mapping
+        # the product actually renders from.
+        "__MAC_RES__",
+        _render_screen_pool(SCREEN_RES_POOLS["MAC_SCREEN_RESOLUTIONS"]),
+    ).replace(
+        "__WIN_RES__",
+        _render_screen_pool(SCREEN_RES_POOLS["WIN_SCREEN_RESOLUTIONS"]),
     ).replace(
         "__FORCED_RES__", forced
     ).replace(
