@@ -148,6 +148,7 @@ def rollback_row(
     cost: str = "",
     cost_color: str | None = None,
     on_click=None,
+    indent: int = 36,
 ) -> ft.Control:
     """One engine's rollback row: icon + SHORT label, with the COST of the
     gesture on its own short second line.
@@ -178,6 +179,13 @@ def rollback_row(
     BOTH LINES GO THROUGH :func:`sidebar_status_text`, so both are
     width-bounded and single-line. The bound round 2 established is not
     weakened by adding a line beneath it — it is applied to that line too.
+
+    ``indent`` is the row's LEFT inset and defaults to the engine rows' 36px,
+    which aligns them under the engine name they belong to. The APP version
+    panel's rollback row is not nested under anything — it is a top-level
+    child of that panel, level with the version line and the status line
+    beneath it — so it passes ``indent=0``. This is a POSITION parameter only:
+    the bound above applies identically at either value.
     """
     text_line = ft.Row(
         spacing=6,
@@ -208,7 +216,7 @@ def rollback_row(
             ],
         )
     return ft.Container(
-        padding=ft.Padding.only(left=36, right=10, top=4, bottom=2),
+        padding=ft.Padding.only(left=indent, right=10, top=4, bottom=2),
         on_click=(lambda _: on_click()) if on_click else None,
         ink=bool(on_click),
         tooltip=tooltip,
@@ -724,29 +732,35 @@ class App:
             self._log("Update: couldn't read the update-hold state")
             held = ""
         if held:
-            return ft.Container(
-                on_click=lambda _: self._on_app_resume_updates(),
-                ink=True,
+            # THE HELD VERSION LEAVES THE LABEL AND STAYS IN THE TOOLTIP —
+            # the same relocation PS-229 performed on the engine rows, for the
+            # same reason. `f"resume updates (held {held})"` is 27 characters
+            # with a short tag and 35 with `3.0.10-beta.1`, against a rail with
+            # room for about 22: an interpolated identifier in a visible label
+            # is unbounded by construction. The tooltip directly below already
+            # names the held build verbatim, so nothing is lost by taking it
+            # out of the text — it moves from a place that cannot hold it to a
+            # place that already did. See _RESUME_LABEL.
+            return rollback_row(
+                label=_RESUME_LABEL,
+                icon=ft.Icons.HISTORY,
+                # THE SECOND LINE SAYS THE STATE, NOT THE GESTURE — the phrase
+                # both engine resume rows already use, because the app updater
+                # and the engines must not describe the same situation
+                # differently. What the operator cannot see from the label is
+                # WHY the row is offering this at all: the hold is keeping
+                # automatic updates off right now.
+                cost="auto-update held off",
                 tooltip=(
                     f"persona {held} is held back because you went back from "
                     "it. Clear the hold and let it install again."
                 ),
-                padding=ft.Padding.only(top=4, bottom=2),
-                content=ft.Row(
-                    spacing=6,
-                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                    controls=[
-                        ft.Icon(
-                            ft.Icons.HISTORY, size=13, color=COLORS["text_dim"]
-                        ),
-                        ft.Text(
-                            f"resume updates (held {held})",
-                            size=10,
-                            color=COLORS["text_dim"],
-                            font_family="monospace",
-                        ),
-                    ],
-                ),
+                on_click=self._on_app_resume_updates,
+                # FLUSH LEFT, unlike the engine rows. Theirs sit beneath an
+                # engine name and are indented under it; this one is a
+                # top-level child of the version panel, level with the version
+                # line and the status line beneath it. See rollback_row.
+                indent=0,
             )
         try:
             target = app_update.rollback_target()
@@ -756,29 +770,15 @@ class App:
         if not target:
             return None
 
-        return ft.Container(
-            on_click=lambda _: self._on_app_rollback(),
-            ink=True,
+        return rollback_row(
+            label=_ROLLBACK_LABEL,
+            icon=ft.Icons.HISTORY,
             tooltip=(
                 "Go back to the previous version of persona, kept from the "
                 "last update — no download needed"
             ),
-            padding=ft.Padding.only(top=4, bottom=2),
-            content=ft.Row(
-                spacing=6,
-                vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                controls=[
-                    ft.Icon(
-                        ft.Icons.HISTORY, size=13, color=COLORS["text_dim"]
-                    ),
-                    ft.Text(
-                        "go back to the previous version",
-                        size=10,
-                        color=COLORS["text_dim"],
-                        font_family="monospace",
-                    ),
-                ],
-            ),
+            on_click=self._on_app_rollback,
+            indent=0,
         )
 
     def _on_app_resume_updates(self) -> None:
@@ -1025,13 +1025,21 @@ class App:
         # needs to be read. Rendered here, every outcome of the gesture has a
         # visible surface whether or not the button survives it.
         if self._app_rollback_status:
+            # BOUNDED, like every other label in this 200px rail — the status
+            # is service prose ("can't go back while an update is pending" is
+            # 40 characters) rendered into a cell with room for about 22, and
+            # a bare ft.Text lays it out at full length and runs past the
+            # panel's edge. sidebar_status_text is the same bound PS-229 put
+            # on the identically-long engine statuses next door.
+            #
+            # INSIDE A ROW, deliberately, and not appended straight to the
+            # panel Column: expand=True is what bounds the WIDTH, and it does
+            # that on a Row's MAIN axis. It is the shape every other converted
+            # site uses (rollback_row's text_line, _engine_rollback_pending_row)
+            # — see sidebar_status_text for why bounding lines without width is
+            # the fix that looks right and changes nothing.
             rows.append(
-                ft.Text(
-                    self._app_rollback_status,
-                    size=10,
-                    color=COLORS["text_dim"],
-                    font_family="monospace",
-                )
+                ft.Row(controls=[sidebar_status_text(self._app_rollback_status)])
             )
 
         return ft.Container(
