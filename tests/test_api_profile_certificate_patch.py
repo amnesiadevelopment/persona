@@ -11,7 +11,22 @@ clear, so a route that forwarded ``supplied.get(...)`` verbatim would have made
 ``None`` preserves, ``""`` clears — so ``supplied.get("certificate")`` was
 already correct. It was correct BY ACCIDENT: nothing in the route said which it
 meant, and ``dict.get`` returning ``None`` for an absent key is a property of
-the dict, not a statement of intent. The route now states it in two branches.
+the dict, not a statement of intent. The route now states it in three branches
+that preserve, to the byte, the mapping it had before PS-263:
+
+===================================  ==========  =========================
+input                                sent        result
+===================================  ==========  =========================
+key omitted                          ``None``    assignment left alone
+``{"certificate": null}``            ``None``    assignment left alone
+``{"certificate": ""}``              ``""``      assignment cleared
+``{"certificate": "other-ca"}``      name        reassigned
+===================================  ==========  =========================
+
+The second row is the one that is easy to get wrong, and the reason this file
+exists: an explicit ``null`` IS present in ``model_dump(exclude_unset=True)``,
+so mirroring the sibling routes' ``elif supplied[k]:`` shape maps it to the
+clear and changes a public API behaviour. See the inverted test below.
 
 These tests assert the PATCH behaviour through the ROUTE, so they hold whether
 the distinction is drawn deliberately or by luck — which is the point: they are
@@ -97,17 +112,34 @@ def test_patch_with_an_explicitly_empty_certificate_clears_it(client):
     assert pm.profiles["acct"].certificate is None
 
 
-def test_patch_with_an_explicitly_null_certificate_clears_it(client):
-    """``null`` and ``""`` are the same instruction on this field: the schema
-    types it ``str | None``, so both arrive as a SUPPLIED falsy value and the
-    route maps both to the model's clear."""
+def test_patch_with_an_explicitly_null_certificate_keeps_the_assignment(client):
+    """``null`` and ``""`` are NOT the same instruction on this field, and the
+    asymmetry is deliberate.
+
+    This assertion was INVERTED rather than deleted (PS-25/PS-33 precedent).
+    The first draft of this file pinned ``null`` as a clear — which is what the
+    route did after copying proxy/pool's ``elif supplied[k]:`` shape, and which
+    is a REGRESSION: ``ProfileUpdate(certificate=None).model_dump(exclude_unset
+    =True)`` is ``{'certificate': None}``, so an explicit ``null`` IS in
+    ``supplied`` and used to reach the model as ``None`` = leave alone. Copying
+    the sibling routes' shape inherited their POLICY too and silently flipped a
+    public API behaviour — the same trap ``cert_assignment.py`` documents on the
+    model side.
+
+    On proxy/pool ``null`` must mean "choose DIRECT/no pool" because the model
+    there refuses to read absence as a clear, so there is nothing else ``null``
+    could mean. Here the model already distinguishes them, so ``null`` keeps
+    meaning what it always meant: silence. ``""`` remains the clear.
+    """
     c, headers, container = client
     pm = _make_certified(container)
+    pm.set_cert_trust_status("acct", "trusted")
 
     r = c.patch("/api/v1/profiles/acct", json={"certificate": None}, headers=headers)
 
     assert r.status_code == 200
-    assert pm.profiles["acct"].certificate is None
+    assert pm.profiles["acct"].certificate == "corp-ca"
+    assert pm.profiles["acct"].cert_trust_status == "trusted"
 
 
 def test_patch_with_a_name_reassigns(client):

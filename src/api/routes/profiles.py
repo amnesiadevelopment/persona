@@ -196,27 +196,42 @@ def update_profile(
         # no pool, which stays expressible.
         new_bookmark_pool = POOL_NONE
 
-    # The same distinction only a route can draw, for the certificate — with
-    # the opposite mapping, deliberately. On this field the model already reads
-    # None as "leave alone" and "" as the explicit clear, so an omitted key was
-    # ALREADY correct here. It was correct BY ACCIDENT: nothing in this lane
-    # said which it meant, and `supplied.get("certificate")` returning None for
-    # an absent key is a property of `dict.get`, not a statement of intent. The
-    # two branches below say it, so a later edit cannot quietly break it and a
-    # reader does not have to reconstruct it from a coincidence.
+    # The same distinction only a route can draw, for the certificate — but
+    # with a DIFFERENT MAPPING from proxy/pool above, deliberately, and this
+    # lane's behaviour is UNCHANGED by PS-263: the branches below only STATE
+    # what `supplied.get("certificate")` already did, they do not alter it.
+    #
+    # Why the mapping differs. On proxy/pool the model reads absence AND
+    # emptiness alike, so the route must send a *_UNCHANGED directive to mean
+    # "silent". On the certificate the model already reads None as "leave
+    # alone" and "" as the explicit clear (manager.py: `if new_certificate is
+    # not None:`), so absence was ALREADY correct here — correct BY ACCIDENT,
+    # because `dict.get` returning None for a missing key is a property of the
+    # dict, not a statement of intent. Copying proxy/pool's `elif supplied[k]:`
+    # shape wholesale would inherit their POLICY as well as their SHAPE and
+    # silently flip `{"certificate": null}` from preserve to clear — the exact
+    # "the idiom transfers but the policy does not" trap that
+    # services/profile/cert_assignment.py exists to document.
+    #
+    # So THREE inputs, two of which mean "leave alone":
+    #   key omitted        -> None : silent, leave the stored assignment alone
+    #   {"certificate": null} -> None : ALSO silent (unchanged from before PS-263)
+    #   {"certificate": ""}   -> ""   : the deliberate clear, pinned by
+    #                                   tests/test_profile_certificate_persist.py
+    # A non-empty string is the assignment itself.
     #
     # No CERT_UNCHANGED is sent: it means "I cannot account for the stored
     # assignment", which is the DIALOG's state, never a route's — an API caller
     # that omits the key is not confused about the certificate, it is silent
     # about it, and None already says exactly that. See
     # services/profile/cert_assignment.py.
-    if "certificate" not in supplied:
+    if "certificate" not in supplied or supplied["certificate"] is None:
         new_certificate: str | None = None
     elif supplied["certificate"]:
         new_certificate = supplied["certificate"]
     else:
-        # Explicitly supplied as null/"" — the caller is deliberately choosing
-        # no certificate. "" is the model's clear on this field.
+        # Explicitly supplied as "" — the caller is deliberately choosing no
+        # certificate. "" is the model's clear on this field.
         new_certificate = ""
 
     # Coherence is enforced by the model, which sees the PATCH's fields AND the

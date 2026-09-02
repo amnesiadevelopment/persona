@@ -16,6 +16,11 @@ from ...utils.atomic import atomic_write_json
 from ...utils.store_guard import StoreGuardMixin
 from ...utils.trashable import TrashableMixin
 from ...utils.validation import validate_profile_name
+from .cert_assignment import (
+    CertDirective,
+    cert_for_new_profile,
+    resolve_cert_assignment,
+)
 from .coherence import (
     DEFAULT_DEVICE_TYPE,
     assert_coherent,
@@ -24,12 +29,6 @@ from .coherence import (
     coherence_error,
     coherent_engine,
     normalize_engine,
-)
-from .cert_assignment import (
-    CERT_UNCHANGED,
-    CertDirective,
-    cert_for_new_profile,
-    resolve_cert_assignment,
 )
 from .pool_assignment import (
     POOL_UNCHANGED,
