@@ -5,8 +5,8 @@ import flet as ft
 from ...core.strings import get_string
 from ...interfaces.protocols import IBrowserLauncher, IProfileManager, IProxyService
 from ...models.bookmark import Bookmark
-from ...services.profile.coherence import IncoherentProfile
 from ...services.profile.cert_assignment import CertDirective
+from ...services.profile.coherence import IncoherentProfile
 from ...services.profile.pool_assignment import PoolDirective
 from ...services.profile.proxy_assignment import ProxyDirective
 from ..dialogs import open_bulk_dialog, open_confirm_dialog, open_profile_dialog
