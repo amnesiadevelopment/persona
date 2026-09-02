@@ -102,7 +102,19 @@ def _unlink_legacy_entry(entry_dir: pathlib.Path, profile_name: str) -> None:
         body = path.read_text(encoding="utf-8")
     except FileNotFoundError:
         return
-    except OSError as e:
+    except (OSError, UnicodeDecodeError) as e:
+        # `UnicodeDecodeError` is here because it is NOT an `OSError` — it
+        # inherits from `ValueError`, so an undecodable file at the legacy path
+        # walked straight through an `OSError`-only arm and out of this
+        # best-effort helper. Both callers feel it, differently:
+        # `write_window_entry` is called unguarded from `process.py`, so the
+        # profile LAUNCH aborted; `remove_window_entry` is wrapped in
+        # `except Exception` by `ProfileManager`, so the delete path instead
+        # left the legacy file as cleartext-name residue. Declining is also the
+        # correct outcome on its own terms: ownership is proven from
+        # `StartupWMClass`, and a body we cannot decode cannot prove it — so
+        # returning here leaves the file, exactly as the un-owned arm below
+        # does. Mirrors `verify/exit_guard.py:406`; NOT bare `Exception`.
         logger.warning(
             "Could not read legacy desktop entry for %s: %s", profile_name, e
         )

@@ -434,3 +434,65 @@ def test_write_converges_off_a_pre_v218_entry_whose_name_holds_a_separator(
         assert f"StartupWMClass={app_id_for(name)}" in new_path.read_text(
             encoding="utf-8"
         )
+
+
+# --- PS-270: a non-UTF-8 file at the LEGACY filename ------------------------
+#
+# `_unlink_legacy_entry` reads the candidate's body to prove ownership from
+# StartupWMClass. `UnicodeDecodeError` inherits from `ValueError` — NOT from
+# `OSError` — so an undecodable file at the legacy path walked straight through
+# the best-effort arm and out of the helper. The two callers felt it
+# differently: `write_window_entry` is called unguarded from `process.py`, so
+# the profile LAUNCH aborted; `remove_window_entry` is wrapped in
+# `except Exception` by ProfileManager, so the delete path silently left the
+# legacy file behind as cleartext-name residue.
+#
+# These assert on FILES ON DISK, never that a helper was called. The correct
+# outcome for an undecodable body is DECLINE — ownership cannot be proven from
+# bytes we cannot read, so the file is left exactly as
+# test_legacy_cleanup_leaves_an_entry_it_cannot_prove_it_owns requires.
+
+_NON_UTF8_LEGACY_BODY = (
+    b"[Desktop Entry]\nType=Application\nName=acct1\n"
+    b"Comment[de]=Profil f\xfcr Sie\nStartupWMClass=persona-acct1\n"
+)
+
+
+def test_write_survives_non_utf8_legacy_entry(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    d = pathlib.Path(tmp_path) / ".local/share/applications"
+    d.mkdir(parents=True, exist_ok=True)
+    legacy = d / "persona-acct1.desktop"
+    legacy.write_bytes(_NON_UTF8_LEGACY_BODY)
+
+    # returns normally — the profile launch is not aborted
+    new_path = pathlib.Path(write_window_entry("acct1"))
+
+    # and the current-scheme entry IS still written, correctly labelled
+    assert new_path.exists()
+    assert new_path.name != legacy.name
+    assert _entries(tmp_path) == sorted([legacy.name, new_path.name])
+    assert f"StartupWMClass={app_id_for('acct1')}" in new_path.read_text(
+        encoding="utf-8"
+    )
+
+    # the undecodable file is DECLINED, not unlinked-by-name and not rewritten
+    assert legacy.read_bytes() == _NON_UTF8_LEGACY_BODY
+
+
+def test_remove_survives_non_utf8_legacy_entry(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    d = pathlib.Path(tmp_path) / ".local/share/applications"
+    d.mkdir(parents=True, exist_ok=True)
+    current = pathlib.Path(write_window_entry("acct1"))
+    legacy = d / "persona-acct1.desktop"
+    legacy.write_bytes(_NON_UTF8_LEGACY_BODY)
+
+    # returns normally — ProfileManager's blanket `except Exception` no longer
+    # has to absorb this, so the delete really runs to completion
+    remove_window_entry("acct1")
+
+    # the current entry IS gone (the delete path did its actual job)
+    assert not current.exists()
+    # and the undecodable legacy file is declined rather than unlinked by name
+    assert legacy.read_bytes() == _NON_UTF8_LEGACY_BODY

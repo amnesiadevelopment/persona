@@ -122,3 +122,35 @@ def test_install_survives_readonly_home(fake_home, on_linux, monkeypatch):
 
     monkeypatch.setattr(desktop_entry.pathlib.Path, "mkdir", boom)
     assert install_desktop_entry() is None
+
+
+# --- PS-270: a non-UTF-8 entry already on disk ------------------------------
+#
+# ~/.local/share/applications is a SHARED directory persona does not own, and
+# the module docstring names "stale hand-made entries" as the population it
+# maintains against. freedesktop's localized keys (Name[xx]/Comment[xx]) were
+# historically written in latin-1, so a foreign entry at persona.desktop can
+# be undecodable. `install_desktop_entry` reads it before deciding whether to
+# rewrite, and `UnicodeDecodeError` inherits from `ValueError` — NOT from
+# `OSError` — so it walked straight through the handler that the docstring's
+# "never let this break startup" promise rests on. `main.py` calls this bare,
+# so the app did not start.
+
+
+def test_install_survives_non_utf8_entry(fake_home, on_linux, monkeypatch):
+    monkeypatch.setenv("APPIMAGE", "/home/user/persona-x86_64.AppImage")
+    entry = entry_path()
+    entry.parent.mkdir(parents=True, exist_ok=True)
+    planted = (
+        b"[Desktop Entry]\nType=Application\nName=persona\n"
+        b"Comment[de]=Profil f\xfcr Sie\n"
+    )
+    entry.write_bytes(planted)
+
+    # Asserted on the RETURN VALUE, not on a helper being called: startup
+    # continues because this returns instead of raising.
+    assert install_desktop_entry() is None
+
+    # And on the BYTES on disk: a file persona cannot decode is not one
+    # persona wrote, so it is DECLINED, never clobbered or re-encoded.
+    assert entry.read_bytes() == planted
