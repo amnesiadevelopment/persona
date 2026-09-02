@@ -46,6 +46,7 @@ from ..log_console import (
     SEV_OK,
     TEXT_SIZE,
     TIME_COL_WIDTH,
+    _dot,
     parse_event,
 )
 from ..theme.colors import COLORS
@@ -69,16 +70,36 @@ MONO = "monospace"
 #:
 #: The longest refusal this product composes is TimezoneUnderivableError
 #: (process.py:233-241), which reaches the log as
-#: "Error starting process: ..." at 460 characters -> 4 lines at 1280px and
-#: 5 at 1024px. Five therefore clears the worst REAL message at the smallest
-#: window the app can be at, and stops well short of turning one pasted stack
-#: trace into a screenful.
+#: "Error starting process: ..." at 460 characters -> ceil(460/142) = 4 lines
+#: at 1280px and ceil(460/105) = 5 at 1024px. Five therefore clears the worst
+#: REAL message at the smallest window the app can be at, and stops well short
+#: of turning one pasted stack trace into a screenful.
+#:
+#: THOSE TWO NUMBERS ARE A CEILING, NOT A PREDICTION, and the driven run says
+#: so: the live screenshots show that refusal wrapping over THREE lines at
+#: 1280px and FOUR at 1024px, one fewer than the arithmetic each time. The
+#: 0.6em advance below is the conservative end of the monospace range, so the
+#: budget under-counts how much fits and the line count over-counts. That is
+#: the safe direction for a BOUND — a bound one line too generous shows the
+#: whole sentence, a bound one line too tight cuts the payload off the end —
+#: but the comment should not be read as a claim about what renders.
 _MESSAGE_EXPANDED_MAX_LINES = 5
 
 #: The fixed chrome the message column does NOT get, in pixels. Kept as one
 #: named number because the budget above and :func:`message_char_budget` must
 #: not drift apart.
 _ROW_CHROME_PX = 297
+
+#: The window width assumed when the page has not reported one.
+#:
+#: ONE fallback, used by BOTH the cell's layout and the cell's budget. It is
+#: not a preference: the fullscreen dialog pins its own container to this width
+#: when ``page.width`` is unset (see :func:`open_log_dialog`), so this IS the
+#: width the message cell is laid out at in that case. Budgeting against any
+#: other number would mean the budget and the box it budgets disagree — which
+#: is exactly how the reveal ends up on a line that is already whole, "an
+#: affordance ... that invites a click that visibly does nothing".
+_FALLBACK_WINDOW_WIDTH = 1280.0
 
 #: Monospace advance per character at :data:`~src.ui.log_console.TEXT_SIZE`.
 #: The standard 0.6em ratio — an ESTIMATE, and the only estimated term here:
@@ -103,7 +124,30 @@ _FILTERS = (
 )
 
 
-def message_char_budget(window_width: float | None) -> int:
+def page_width(page) -> float:
+    """The width this view is laid out at — read ONCE, in one place.
+
+    THE POINT OF THIS FUNCTION IS THAT THERE IS ONLY ONE OF IT. Two readers of
+    ``page.width`` live in this file: the dialog's container, which is what
+    actually makes the message cell that wide, and :func:`message_char_budget`,
+    which decides whether a line fits in it. An earlier revision gave them
+    different fallbacks — ``None``-floored-to-1024 for the budget, 1280 for the
+    container — so with the width unreported the cell was laid out 1280px wide
+    and budgeted as if it were 1024px, and a 120-character line that fits
+    perfectly well got a chevron whose click does nothing visible. That is
+    verbatim what :func:`message_needs_reveal` exists to prevent.
+
+    So: one read, one fallback, both callers. Whatever number comes out of
+    here, the box and the budget are talking about the same box.
+
+    The fallback is :data:`_FALLBACK_WINDOW_WIDTH`, which is not a guess at the
+    operator's monitor — it is the width the container itself falls back to, so
+    the two agree by construction rather than by coincidence.
+    """
+    return float(getattr(page, "width", None) or 0) or _FALLBACK_WINDOW_WIDTH
+
+
+def message_char_budget(window_width_px: float | None) -> int:
     """How many characters of message fit on ONE line at this window width.
 
     Character-budgeted rather than measured, and that is not a shortcut: flet
@@ -112,14 +156,16 @@ def message_char_budget(window_width: float | None) -> int:
     TRUNCATION itself is certain from ``max_lines=1`` + ``ELLIPSIS`` regardless
     of where exactly the cut lands; only the exact column count is an estimate.
 
-    Floors at the app's own minimum window (``page.window.min_width`` = 1024,
-    ``theme/page.py:160``) so a page that has not reported a width yet — and a
-    page reporting a width smaller than the app allows — budgets for the
-    TIGHTER cell rather than the roomier one. Over-estimating the budget is the
-    dangerous direction: it withholds the reveal from a line that is cut.
+    NO FLOOR. A narrower window means a TIGHTER cell and therefore a smaller
+    budget, all the way down — floors belong to the widths the app can actually
+    be at (``page.window.min_width`` = 1024, ``theme/page.py:160``), not to
+    this arithmetic. An earlier revision floored here at 1024, which
+    over-estimated the budget for any smaller width and so withheld the reveal
+    from a line that was cut — the dangerous direction. An unreported width is
+    not a narrow width; that case is :func:`page_width`'s, and it resolves to
+    the same number the cell is laid out at.
     """
-    width = float(window_width or 0) or 1024.0
-    width = max(width, 1024.0)
+    width = float(window_width_px or 0) or _FALLBACK_WINDOW_WIDTH
     return max(1, int((width - _ROW_CHROME_PX) / _CHAR_ADVANCE))
 
 
@@ -149,16 +195,16 @@ def fullscreen_message_text(
        ``Text`` in a ``Row`` is granted its intrinsic width unless it asks to
        flex, so the ellipsis never engages. ``app.py:92-103`` records this
        trap; it is repeated here because it is the half that gets dropped.
+    3. ``selectable=True`` in both states (AC3). Selection costs no vertical
+       metric, and it is what makes a refusal sentence COPYABLE — the
+       capability v2.8.4's fullscreen row had (``selectable=True``, no
+       ``no_wrap``) and PS-229 removed with no recorded argument.
 
     NOT ``log_console._cell``: that renderer is the DOCK's contract — one line,
     always, so the region cannot change extent while profiles launch — and it
     is right for the dock. Loosening it would change what the dock renders,
     which is explicitly out of scope. So the fullscreen view gets its own cell
     rather than a shared one with a flag.
-    3. ``selectable=True`` in both states (AC3). Selection costs no vertical
-       metric, and it is what makes a refusal sentence COPYABLE — the
-       capability v2.8.4's fullscreen row had (``selectable=True``, no
-       ``no_wrap``) and PS-229 removed with no recorded argument.
 
     ``semantics_label`` is NOT decoration and NOT a test hook. MEASURED here:
     a ``selectable`` Text is a canvas-level SelectableText and paints an
@@ -223,7 +269,14 @@ def fullscreen_event_row(
 
     time_col = ft.Container(
         width=TIME_COL_WIDTH,
-        alignment=ft.Alignment.TOP_RIGHT,
+        # TOP_RIGHT only when the row is TALL. On a revealed row the stamp
+        # belongs beside the message's FIRST line, not floating in the middle
+        # of five; on a collapsed row the dock's own CENTER_RIGHT is what keeps
+        # this view's ruler identical to the dock's, which is the claim this
+        # row's docstring makes about the columns.
+        alignment=(
+            ft.Alignment.TOP_RIGHT if expanded else ft.Alignment.CENTER_RIGHT
+        ),
         content=ft.Text(
             stamp,
             size=TEXT_SIZE,
@@ -256,9 +309,10 @@ def fullscreen_event_row(
         width=7,
         height=ROW_HEIGHT,
         alignment=ft.Alignment.CENTER,
-        content=ft.Container(
-            width=7, height=7, border_radius=4, bgcolor=SEV_COLOR[sev]
-        ),
+        # The dock's own _dot, not a copy of it: the severity mark is a shared
+        # property of both surfaces, so a future change to its size or radius
+        # must land on both at once.
+        content=_dot(sev),
     )
 
     controls: list[ft.Control] = [dot_col, profile_col, message_col]
@@ -348,11 +402,18 @@ def open_log_dialog(page: ft.Page, log_lines: list[str], profiles=None) -> None:
 
     def repaint(_=None) -> None:
         rows = matching()
-        # The page's CURRENT width, read at paint time rather than captured
-        # once: the operator can resize the window with this view open, and the
-        # budget at 1024px is tighter than at 1280px — a stale width withholds
-        # the reveal from a line that is now cut.
-        win_w = getattr(page, "width", None)
+        # The width the list is PAINTED at. repaint() has five callers — the
+        # reveal toggle, the severity filter, the search field, the profile
+        # filter, and the initial paint — and a window RESIZE is not among
+        # them: nothing in this file binds page.on_resize, and the app's own
+        # handler (app.py:1082) adjusts the dock without rebuilding these rows.
+        # So a window resized while this view is open keeps the budget it
+        # opened with, and the dialog's container keeps the width it was pinned
+        # to at :func:`open_log_dialog`. That is the honest description of the
+        # behaviour; making the view track a resize is a separate change to
+        # both the container and this list, and is not what this ticket asks
+        # for.
+        win_w = page_width(page)
         body.controls = (
             [
                 fullscreen_event_row(
@@ -526,7 +587,12 @@ def open_log_dialog(page: ft.Page, log_lines: list[str], profiles=None) -> None:
     # as a tall column with the app still visible down both edges — a framed
     # box again, by accident rather than by decoration. Reading the page's own
     # dimensions is what makes "fullscreen" mean the window.
-    win_w = getattr(page, "width", None) or 1280
+    #
+    # THE SAME READ the row budget uses — page_width(), not a second
+    # getattr with its own fallback. When the two disagreed, the cell was laid
+    # out at one width and budgeted at another, and a line that fitted got a
+    # chevron that did nothing. One number, one box.
+    win_w = page_width(page)
     win_h = getattr(page, "height", None) or 800
 
     dlg = ft.AlertDialog(
