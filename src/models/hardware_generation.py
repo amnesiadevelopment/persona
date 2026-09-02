@@ -21,8 +21,12 @@ the claim is that THESE SEVEN are all of them:
      by process.py; was a bare ``(5, 10)[seed % 2]`` tuple, 50% moved on append
   4. ``resolution.resolve_resolution`` — DESKTOP_RESOLUTIONS (9)
   5. ``gpu_ext`` ``pick()``            — WIN/MAC/ANDROID/LINUX GPU pools
-  6. ``device_ext`` ``ALL_RES``        — the JS copy of the desktop resolutions,
-     which is what actually sets screen.width for an "auto" profile
+  6. ``device_ext`` ``ALL_RES``        — WIN_SCREEN_RESOLUTIONS (9) /
+     MAC_SCREEN_RESOLUTIONS (5), the pool that actually sets screen.width for
+     an "auto" profile. Lifted out of the JS string into tagged Python records
+     behind ``device_ext.SCREEN_RES_POOLS`` by PS-264; before that it was a JS
+     array literal no census guard could iterate, and an untagged append moved
+     18 of 20 generation-0 profiles on BOTH arms while the suite stayed green.
   7. ``device_ext`` ``CORES_MEMORY``   — hardwareConcurrency + deviceMemory,
      rendered into BOTH realms (page + the applyHwPatch worker twin); 82% moved
 
