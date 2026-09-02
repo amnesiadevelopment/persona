@@ -3,7 +3,7 @@ import threading
 import time
 from types import SimpleNamespace
 
-from src.ui.app import App
+from src.ui.app import _ROLLBACK_LABEL, App
 
 
 class FakePage:
@@ -949,7 +949,11 @@ def test_the_nothing_retained_refusal_is_rendered_even_though_the_row_is_not(
 
     texts = _panel_texts(app, monkeypatch)
     assert "nothing to go back to" in texts
-    assert "go back to the previous version" not in texts  # the row is gone
+    # The label is read from the constant rather than quoted, so a later
+    # shortening cannot turn this negative assertion vacuously green: PS-271
+    # moved this row onto `rollback_row`, and a literal left behind here would
+    # then be a string the panel can no longer render under any circumstances.
+    assert _ROLLBACK_LABEL not in texts  # the row is gone
 
 
 def test_a_quiet_panel_renders_no_rollback_status_line(monkeypatch):
@@ -1157,7 +1161,7 @@ def test_the_panel_never_shows_both_restart_instructions_at_once(monkeypatch):
     # the staged update's own instruction is the one that stands...
     assert "[ restart to update ]" in found, found
     # ...and the gesture that would contradict it is not offered beside it
-    assert "go back to the previous version" not in found, found
+    assert _ROLLBACK_LABEL not in found, found
     # ...NOR is the STATUS TEXT that contradicts it. THIS is the assertion the
     # test is named for, and the row label above is not: the row is a GESTURE,
     # and the guard already removes it. The string that actually tells the
@@ -1269,7 +1273,7 @@ def test_a_refusal_does_not_outlive_a_download_that_failed(monkeypatch):
     found = _panel_texts_keeping_staged(app, monkeypatch)
 
     # the gesture is live again — nothing is pending, so it must be offered...
-    assert "go back to the previous version" in found, found
+    assert _ROLLBACK_LABEL in found, found
     # ...and the refusal that denied it must not still be sitting under it.
     assert "can't go back while an update is pending" not in found, found
 
@@ -1289,7 +1293,7 @@ def test_a_refusal_does_not_outlive_a_failed_manual_update_either(monkeypatch):
 
     found = _panel_texts_keeping_staged(app, monkeypatch)
 
-    assert "go back to the previous version" in found, found
+    assert _ROLLBACK_LABEL in found, found
     assert "can't go back while an update is pending" not in found, found
 
 

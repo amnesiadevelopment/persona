@@ -341,6 +341,41 @@ def _panel_texts(app, monkeypatch):
     return _walk_texts(app._build_version_panel())
 
 
+def _panel_tooltips(app, monkeypatch):
+    """Every TOOLTIP the version panel carries.
+
+    The companion to _panel_texts, and PS-271 is why it exists. That commit
+    moved the held version out of the row's visible label — 27 characters with
+    a short tag, 35 with a pre-release one, into a rail with room for about 22
+    — and into the tooltip that already named it verbatim, exactly as PS-229
+    relocated the engine build identifier. The hold is still ANNOUNCED on the
+    row the operator is looking at ("resume updates" over "auto-update held
+    off"); what moved is WHICH version is held, and this is where that now
+    lives. A test asserting the hold is visible has to be able to read it.
+    """
+    monkeypatch.setattr(
+        ui_app.app_settings, "is_auto_update_enabled", lambda: False
+    )
+    app._app_latest = ""
+    app._app_update_status = ""
+    app._update_staged = ""
+    found: list[str] = []
+
+    def walk(c):
+        tip = getattr(c, "tooltip", None)
+        if isinstance(tip, str):
+            found.append(tip)
+        for attr in ("content", "controls"):
+            child = getattr(c, attr, None)
+            if child is None:
+                continue
+            for k in (child if isinstance(child, list) else [child]):
+                walk(k)
+
+    walk(app._build_version_panel())
+    return found
+
+
 def test_the_held_state_is_visible_on_the_panel_not_only_in_the_log(
     monkeypatch, tmp_path
 ):
@@ -349,13 +384,31 @@ def test_the_held_state_is_visible_on_the_panel_not_only_in_the_log(
     # a hold that announced itself only there would be invisible to exactly the
     # operator who needs to know their updates are being held. It goes on the
     # row they are already looking at.
+    #
+    # PS-271 SPLIT THIS ACROSS THE ROW AND ITS TOOLTIP, and the split is the
+    # trade PS-229 already made for the engine build identifier. The GESTURE
+    # and the STATE stay on screen, because they are what the operator needs
+    # BEFORE deciding and a tooltip needs a hover a trackpad operator may never
+    # perform. WHICH version is held answers a question asked after reading the
+    # row, so it moves to the tooltip — which already named it verbatim — and
+    # out of a 22-character rail it never fitted. Both halves are asserted:
+    # dropping the version rather than relocating it would satisfy the first
+    # and lose the operator the answer.
     _really_revert(monkeypatch, tmp_path)
     monkeypatch.setattr(au, "APP_VERSION", RESTORED)
     app = _fresh_process_app(monkeypatch)
 
     texts = _panel_texts(app, monkeypatch)
 
-    assert f"resume updates (held {REJECTED})" in texts, texts
+    assert ui_app._RESUME_LABEL in texts, texts
+    assert "auto-update held off" in texts, (
+        f"the panel names the gesture but not the state it is offered in: {texts}"
+    )
+
+    app = _fresh_process_app(monkeypatch)
+    assert any(REJECTED in tip for tip in _panel_tooltips(app, monkeypatch)), (
+        "the held version was lost rather than relocated"
+    )
 
 
 def test_a_panel_with_no_hold_offers_no_resume_row(monkeypatch, tmp_path):
@@ -551,8 +604,12 @@ def test_the_panel_does_not_offer_an_update_to_the_release_it_says_is_held(
         f"the panel offered to install the release it says is held: {texts}"
     )
     # and the operator is still told WHY there is no offer — silence would read
-    # as "no update exists", which is a different and misleading claim
-    assert any(f"resume updates (held {REJECTED})" in t for t in texts), texts
+    # as "no update exists", which is a different and misleading claim.
+    # PS-271 shortened the visible label and moved the held version into the
+    # tooltip; what this assertion is about is that the panel still explains
+    # itself, so it reads the row's own two lines.
+    assert any(ui_app._RESUME_LABEL in t for t in texts), texts
+    assert any("auto-update held off" in t for t in texts), texts
 
 
 def test_a_held_check_leaves_no_url_for_any_later_caller_to_install_from(
@@ -743,7 +800,7 @@ def test_a_hold_the_running_build_moved_past_does_not_hide_the_revert_row(
 
     texts = _panel_texts_as_left(app, monkeypatch)
 
-    assert any("go back to the previous version" in t for t in texts), (
+    assert any(ui_app._ROLLBACK_LABEL in t for t in texts), (
         f"a retained bundle must still be revertable on {FIXED}: {texts}"
     )
     assert not any("held" in t for t in texts), (
