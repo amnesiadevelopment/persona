@@ -41,15 +41,49 @@ import re
 
 import flet as ft
 
+from .log_severity import (
+    SEV_FAIL,
+    SEV_IDLE,
+    SEV_INFO,
+    SEV_OK,
+    DeclaredMessage,
+    declare,
+    declared_severity,
+    event_severity,
+    severity,
+)
 from .theme import COLORS
 
-#: Severity vocabulary. Deliberately four values, not a colour per message:
-#: the dot exists so FAILURE is findable in a peripheral glance, and a palette
-#: with a dozen entries cannot do that.
-SEV_FAIL = "fail"
-SEV_OK = "ok"
-SEV_INFO = "info"
-SEV_IDLE = "idle"
+#: The severity vocabulary and the classifier live in :mod:`log_severity` and
+#: are re-exported here, so every existing
+#: ``from src.ui.log_console import severity, SEV_FAIL`` keeps working.
+#:
+#: They MOVED because ``state.py`` has to preserve a declaration through the log
+#: ring and must not import flet to do it — this module does, at line one. See
+#: that module's docstring for why a call site may now DECLARE its severity and
+#: why :func:`~src.ui.log_severity.severity` remains a permanent fallback rather
+#: than a transitional one.
+__all__ = [
+    "MONO",
+    "NO_PROFILE",
+    "PROFILE_COL_WIDTH",
+    "ROW_HEIGHT",
+    "SEV_COLOR",
+    "SEV_FAIL",
+    "SEV_IDLE",
+    "SEV_INFO",
+    "SEV_OK",
+    "TEXT_SIZE",
+    "TIME_COL_WIDTH",
+    "DeclaredMessage",
+    "StreamState",
+    "declare",
+    "declared_severity",
+    "event_row",
+    "event_severity",
+    "parse_event",
+    "severity",
+]
 
 SEV_COLOR = {
     SEV_FAIL: COLORS["error"],
@@ -103,54 +137,6 @@ TIME_COL_WIDTH = 62
 NO_PROFILE = "—"
 
 
-def severity(message: str) -> str:
-    """Classify one event message.
-
-    Kept alongside (not merged into) ``log_format.log_message_color``: that one
-    answers "what colour is this text", this one answers "what KIND of event is
-    this", which the dot and the collapsed strip's pulse both need as a value
-    rather than as a hex string.
-    """
-    low = message.lower()
-    if (
-        "fail" in low
-        or "error" in low
-        or "refused" in low
-        or "missing" in low
-        or "LAUNCH_FAILED" in message
-        or low.startswith("session ended")
-    ):
-        return SEV_FAIL
-    if (
-        "started" in low
-        or "installed" in low
-        or "imported" in low
-        or "exported" in low
-        or "ready" in low
-        or "reached" in low
-        or "updated to" in low
-        or "synced" in low
-        or "frozen" in low
-    ):
-        return SEV_OK
-    if (
-        "available" in low
-        or "downloading" in low
-        or "update" in low
-        or "launching" in low
-        # A start-up purge DESTROYED key material. It is not a failure — the
-        # retention floor working exactly as designed — but it is not idle
-        # housekeeping either, and SEV_IDLE gave a permanent destruction the
-        # dimmest dot in the console. "purged" is deliberately the whole token:
-        # it is the only word in the app's messages that carries it (the two
-        # purge lines in trash/service.py and main.py), so nothing unrelated is
-        # reclassified by adding it.
-        or "purged" in low
-    ):
-        return SEV_INFO
-    return SEV_IDLE
-
-
 def parse_event(line: str, profiles: frozenset[str] | set[str]) -> tuple:
     """Split a stored log line into ``(time, profile, message, severity)``.
 
@@ -161,6 +147,14 @@ def parse_event(line: str, profiles: frozenset[str] | set[str]) -> tuple:
 
     An event whose profile cannot be resolved against the roster returns an
     empty profile, which the row renders as :data:`NO_PROFILE`.
+
+    THE SEVERITY IS THE LINE'S OWN IF IT DECLARED ONE. Every consumer of an
+    event's severity — the row dot, the collapsed pulse, the fullscreen row and
+    the fullscreen severity FILTER — reaches it through this function, so the
+    declaration is read HERE and reaches all four or none. ``line`` is the
+    carrier (see :func:`~src.ui.log_severity.event_severity`); a line that
+    declares nothing, including every line seeded from a previous session's log
+    FILE, falls back to prose-matching exactly as before.
     """
     stamp, sep, rest = line.partition("  > ")
     if not sep:
@@ -197,7 +191,7 @@ def parse_event(line: str, profiles: frozenset[str] | set[str]) -> tuple:
                 rest = rest.strip(":,-  ") or "event"
                 break
 
-    return stamp, profile, rest, severity(rest)
+    return stamp, profile, rest, event_severity(line, rest)
 
 
 def _dot(sev: str) -> ft.Container:
