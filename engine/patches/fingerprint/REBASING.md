@@ -21,8 +21,33 @@ then applies ours and reports per-patch rejects. Exit status is 0 only when all
 16 apply with zero rejects **and zero fuzz**, so it works as a gate in the
 watch-and-bump automation.
 
+There are **three** exit statuses, and the third is the one to read carefully:
+
+| exit | meaning |
+|---|---|
+| `0` | all 16 apply, zero rejects, zero fuzz |
+| `1` | rejects and/or fuzz — a rebase is needed |
+| `2` | **the measurement could not be made at all** — clone failed, a file could not be fetched, ungoogled's own prerequisites failed, wrong patch count |
+
+`2` is **not** "the patches are fine". Nothing was measured. Do not let an
+automation treat it as anything other than a hard stop.
+
 **Green here is necessary, not sufficient.** A clean textual apply is not a
 compile — see "What this does NOT establish" at the bottom.
+
+### The gate is tested on its ability to FAIL
+
+`tests/test_ps299_rebase_probe_gate.py` exists because the first version of this
+probe **could not fail** on the most likely real breakage at a new tag: upstream
+renaming or deleting a file we patch. GNU patch emits no `Hunk #N FAILED` for an
+absent target — it says `can't find file to patch` and exits 1 — so a probe that
+scraped only for `FAILED` scored it zero rejects. Run against an **empty
+directory** it printed `81/81 hunks, 0 rejects, ✅` and exited 0.
+
+If you change how rejects are counted, run that test file. Four of its nine
+tests fail on the unfixed probe; the other five assert the fix does not break
+the healthy shapes — in particular that a **create-file hunk against an absent
+target is still not a reject**, which is trap #1 below seen from the other side.
 
 ---
 
