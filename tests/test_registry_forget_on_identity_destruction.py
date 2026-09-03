@@ -481,3 +481,51 @@ def test_the_app_installs_forget_identity_on_the_hook():
         "per-store method here puts only that store on the event — which is "
         "the PS-278 defect exactly."
     )
+
+
+# --------------------------------------------------------------------------
+# 9. THE ISOLATION IS ASSERTED, NOT ASSUMED.
+#
+# Round 2 of this ticket shipped a helper that reached PAST its temp store and
+# deleted records from the operator's real ~/.persona/running_sessions.json.
+# Nothing caught it, for a reason that generalises: that file is
+# `{"sessions": []}` on a clean container and in CI, so the leak is green
+# everywhere it is measured and only bites a host that actually runs persona.
+#
+# So the isolation gets a witness of its own. A leak of this shape is invisible
+# by construction; the only thing that makes it visible is a test that asks
+# where the default registry actually points.
+# --------------------------------------------------------------------------
+
+
+def test_a_default_launcher_does_not_touch_the_operators_real_registry():
+    """``BrowserLauncher()`` with no registry must resolve INSIDE the test's
+    tmp_path, never ``~/.persona/running_sessions.json``.
+
+    Nine test files construct a bare ``BrowserLauncher()``. Any of them can grow
+    a registry-touching path tomorrow — and two already have one: a successful
+    ``start_thread`` calls ``_registry.record`` (this predates PS-278; it is
+    reached by ``test_refusal_on_profile.py``'s "a new attempt supersedes"
+    case), and PS-278's own ``forget_identity`` calls ``_registry.forget``.
+
+    What that leak destroys is the PS-223 guard itself: a developer or CI runner
+    with persona open loses the record of a browser that is still ALIVE, which
+    is the double-launch lockout inversion PS-223 exists to prevent — produced
+    by the test suite.
+
+    Asserted on the RESOLVED PATH rather than by writing and checking, because
+    the failure this pins is precisely that a write goes somewhere the test did
+    not look. A path assertion cannot be satisfied by an empty file.
+    """
+    import os
+
+    bl = BrowserLauncher()
+    path = bl._registry.path
+    real = os.path.expanduser("~/.persona/running_sessions.json")
+
+    assert os.path.abspath(path) != os.path.abspath(real), (
+        f"a default BrowserLauncher resolved the REAL session registry ({path}). "
+        "tests/conftest.py's _isolate_sessions_file exists to make that "
+        "unreachable; a suite run would now reap records for browsers that are "
+        "genuinely still alive on the developer's machine."
+    )

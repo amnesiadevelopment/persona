@@ -37,6 +37,7 @@ import pytest
 from src.models.profile import Profile
 from src.services.browser.launcher import BrowserLauncher
 from src.services.browser.refusal import Refusal, classify_refusal
+from src.services.browser.session_registry import SessionRegistry
 from src.services.proxy.errors import (
     GeographyDisprovenError,
     GeographyUnknownError,
@@ -509,7 +510,29 @@ def _manager(tmp_path, monkeypatch):
     from src.services.profile.manager import ProfileManager
 
     pm = ProfileManager()
-    bl = BrowserLauncher()
+    # AN EXPLICIT REGISTRY, POINTED AT tmp_path — NOT the default.
+    #
+    # BrowserLauncher() with no registry falls back to default_registry(), which
+    # resolves config.SESSIONS_FILE: the operator's REAL
+    # ~/.persona/running_sessions.json. That was harmless while the identity
+    # hook below was `forget_refusal`, which only pops an in-memory dict. It
+    # stopped being harmless the moment the hook became `forget_identity`,
+    # whose second leg is forget_survivor -> self._registry.forget(name): the
+    # four door tests then reached PAST their temp store and deleted records
+    # from the host's real registry.
+    #
+    # What that destroys is the PS-223 guard itself — a developer or CI runner
+    # with persona open loses the record of a browser that is still ALIVE,
+    # which is the double-launch lockout inversion PS-223 exists to prevent.
+    # And it is invisible where it is measured: the file is {"sessions": []} on
+    # a clean container and in CI, so every run there is green and says nothing.
+    #
+    # The isolation therefore has to be asserted, not assumed. This is the same
+    # class of leak tests/conftest.py's docstring is about (a real write path
+    # driven into a real file under ~/.persona, latent until someone wires a new
+    # write path through it) — this helper is where that write path now runs.
+    registry = SessionRegistry(str(tmp_path / "running_sessions.json"))
+    bl = BrowserLauncher(registry=registry)
     # The production wiring (src/ui/app.py) — both hooks, so this test cannot
     # pass against a wiring the app does not actually perform.
     #
