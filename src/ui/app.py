@@ -4755,6 +4755,15 @@ class App:
             self.state.current_page = 1
             self._refresh_profiles()
             self._update_stats()
+            # The wipe PURGES THE TRASH IN FULL (wipe_all_profiles ->
+            # _purge_trash_for_wipe -> trash.clear()), so nothing is counting
+            # down any more — same reasoning as the three trash handlers. Left
+            # out, the rail keeps asserting "N items are about to be destroyed"
+            # over a trash that has just been destroyed in full, until the
+            # operator's next navigation happens to rebuild it. An operator who
+            # has typed DELETE is the last person who should be told something
+            # recoverable survives.
+            self._refresh_sidebar()
 
         open_wipe_confirm_dialog(self.page, count, _do_wipe)
 

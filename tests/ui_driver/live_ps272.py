@@ -14,7 +14,7 @@ WHAT IT DRIVES
 --------------
 Three REAL served apps, each with its own isolated home, because the property
 under test is a comparison BETWEEN trash states and one process cannot hold
-two:
+two — plus a fourth that changes its own trash state mid-session:
 
 1. **NEAR EXPIRY** — a trashed bookmark backdated so it is destroyed in 3 days,
    inside the 7-day warning window. The rail must carry the signal.
@@ -25,10 +25,24 @@ two:
    actually about.
 3. **EMPTY** — no trash at all. The rail must carry nothing.
 
-Then the FALSIFICATION pass (AC4), which is the only thing that makes the
-three above worth anything:
+Then the STALENESS pass, which is about a different thing entirely — not
+whether the rail can speak, but whether it stops:
 
-4. **SABOTAGED** — the same near-expiry home, served against a build whose
+4. **PANIC WIPE** — a near-expiry entry lights the badge, then the operator
+   performs the real panic wipe (the real ``[ wipe all ]`` button, the real
+   typed ``DELETE`` confirmation, the real destructive button). The wipe purges
+   the trash IN FULL, so the rail must fall silent IN THE SAME SESSION. Every
+   gesture that mutates the trash changes what is counting down; three of the
+   four rebuilt the rail and this one did not, which shipped the INVERSE of
+   this ticket's defect — a rail asserting that destroyed key material was
+   still recoverable, until the operator happened to navigate. Driven without a
+   restart on purpose: "it is right after you relaunch" is exactly the excuse
+   this ticket refuses.
+
+Then the FALSIFICATION pass (AC4), which is the only thing that makes the
+four above worth anything:
+
+5. **SABOTAGED** — the same near-expiry home, served against a build whose
    ``_nav_button`` is reverted to its pre-PS-272 body (icon + label, no
    badge). The check from pass 1 is re-run and MUST GO RED. If it stays green,
    pass 1's green says nothing about the rendered nav and this whole file is
@@ -63,6 +77,14 @@ WHAT IS NOT COVERED, RECORDED RATHER THAN SMOOTHED OVER
   asserted there — including the read-only-on-disk checks (AC2), which have no
   visual surface at all. What is driven here is the RAIL, which is what had
   none.
+* **The OTHER three trash-mutating gestures are not driven here** — restore,
+  permanent delete and empty-trash. Only the panic wipe is, because it is the
+  one that was BROKEN and the one whose gesture is reachable from the profiles
+  page without first navigating (navigation itself rebuilds the rail, which
+  would mask the very defect under test). All four are asserted as a SET in
+  ``tests/test_ps272_trash_expiry_signal.py`` against a real App on a real
+  Container, reading the real rebuilt sidebar tree — so the fifth handler
+  cannot be added without noticing.
 * **The 30-day boundary is not driven by waiting.** Obviously. The near-expiry
   state is reached by backdating ``deleted_at`` in the isolated home's
   ``trash.json``, which is the same field the product writes and reads.
@@ -166,6 +188,22 @@ def _seed_home(entries: list[tuple[str, float]]) -> str:
     return home
 
 
+def _seed_profile(home: str, name: str) -> None:
+    """Put one live profile in ``home``'s profiles.json.
+
+    The panic wipe returns early on an empty roster (``_on_wipe_all``: ``if not
+    count: return``), so driving that gesture needs a profile to wipe. Written
+    through the product's own ``Profile.to_dict`` rather than by hand, so the
+    fixture cannot drift from the schema the real loader reads.
+    """
+    from src.services.profile.manager import Profile
+
+    profile = Profile(name=name, proxy="", os_type="windows")
+    path = os.path.join(home, "profiles.json")
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump({name: profile.to_dict()}, fh)
+
+
 def _report(name: str, ok: bool, detail: str) -> bool:
     print(f"  [{'PASS' if ok else 'FAIL'}] {name}: {detail}")
     return ok
@@ -235,22 +273,60 @@ def _observe(home: str, label: str, shot: str, patch: str = "") -> dict:
         with FletDriver(app.url, width=1280, height=820) as drv:
             _dismiss(drv)
             drv.page.wait_for_timeout(9000)
-            trash = _trash_nav(drv)
-            present, blob = _signal_on(trash)
-            others = {
-                key: _signal_on(_nav_for(drv, key))[0]
-                for key in ("profiles", "network", "bookmarks", "tags",
-                            "certificates", "connect")
-            }
-            drv.screenshot(shot)
-            print(f"  screenshot: {shot}")
-            return {
-                "present": present,
-                "blob": blob,
-                "others": others,
-                "rail_nodes": len(_rail_nodes(drv)),
-                "box": trash.box if trash is not None else None,
-            }
+            return _read_rail(drv, shot)
+
+
+def _read_rail(drv: FletDriver, shot: str) -> dict:
+    """The rail's reading, as the operator would see it right now."""
+    trash = _trash_nav(drv)
+    present, blob = _signal_on(trash)
+    others = {
+        key: _signal_on(_nav_for(drv, key))[0]
+        for key in ("profiles", "network", "bookmarks", "tags",
+                    "certificates", "connect")
+    }
+    drv.screenshot(shot)
+    print(f"  screenshot: {shot}")
+    return {
+        "present": present,
+        "blob": blob,
+        "others": others,
+        "rail_nodes": len(_rail_nodes(drv)),
+        "box": trash.box if trash is not None else None,
+    }
+
+
+def _observe_across_the_panic_wipe(home: str, label: str) -> tuple[dict, dict]:
+    """Read the rail BEFORE and AFTER the operator's real panic wipe.
+
+    The wipe purges the trash IN FULL (``wipe_all_profiles`` ->
+    ``_purge_trash_for_wipe`` -> ``trash.clear()``), so nothing is counting down
+    once it returns. This is the one trash-mutating gesture that did NOT rebuild
+    the rail, which shipped the INVERSE of this ticket's defect: a rail asserting
+    that key material is still recoverable moments after the operator typed
+    DELETE to destroy all of it.
+
+    Driven through the real controls — the real ``[ wipe all ]`` button, the
+    real typed-confirmation field, the real destructive button — in ONE served
+    session, because the whole point is that the rail must correct itself
+    WITHOUT a restart and without the operator navigating away.
+    """
+    with serve_app(REPO_ROOT, home=home) as app:
+        print(f"\n{label}\n  served: {app.url}\n  home:   {app.home}")
+        with FletDriver(app.url, width=1280, height=820) as drv:
+            _dismiss(drv)
+            drv.page.wait_for_timeout(9000)
+            before = _read_rail(drv, "/tmp/ps272-wipe-before.png")
+
+            drv.press("[ wipe all ]")
+            # The confirmation field is the only one on screen at this point;
+            # its hint is "type DELETE to confirm".
+            drv.type_into("type DELETE to confirm", "DELETE")
+            drv.press("[ wipe 1 ]")
+            drv.page.wait_for_timeout(4000)
+
+            after = _read_rail(drv, "/tmp/ps272-wipe-after.png")
+            return before, after
 
 
 def main() -> int:
@@ -323,18 +399,52 @@ def main() -> int:
     )
 
     # -----------------------------------------------------------------
+    # 4 — THE PANIC WIPE. Every gesture that mutates the trash changes
+    # what is counting down, so each must leave the rail agreeing with
+    # the trash by the time it returns. Three of the four already did;
+    # this one — the most destructive, which empties the trash IN FULL —
+    # did not, and left the badge asserting that destroyed key material
+    # was still recoverable until the operator happened to navigate.
+    # Driven in ONE session, because "it is right after a restart" is
+    # exactly the excuse this ticket exists to refuse.
+    # -----------------------------------------------------------------
+    wipe_home = _seed_home([("old-jar", RETENTION_DAYS - 3)])
+    _seed_profile(wipe_home, "still-here")
+    wipe_before, wipe_after = _observe_across_the_panic_wipe(
+        wipe_home,
+        "4. PANIC WIPE — badge lit, then the operator types DELETE",
+    )
+    results.append(
+        _report(
+            "premise — the badge is lit BEFORE the wipe",
+            wipe_before["present"],
+            f"trash nav reads {wipe_before['blob']!r} — without this the "
+            f"check below passes on a rail that never spoke",
+        )
+    )
+    results.append(
+        _report(
+            "AC1 — the panic wipe leaves the rail SILENT, in the same session",
+            not wipe_after["present"],
+            f"trash nav reads {wipe_after['blob']!r} — a signal here would "
+            f"tell an operator who has just destroyed everything that "
+            f"something recoverable is still counting down",
+        )
+    )
+
+    # -----------------------------------------------------------------
     # AC4 — THE FALSIFICATION. Same home as pass 1, same near-expiry
     # entry, same store query, same count computed and passed in — with
     # the RENDER reverted. Pass 1's check is re-run and must go RED.
     # -----------------------------------------------------------------
     print("\n" + "-" * 74)
-    print("4. FALSIFICATION (AC4) — the SAME near-expiry home, served against a")
+    print("5. FALSIFICATION (AC4) — the SAME near-expiry home, served against a")
     print("   build whose _nav_button is reverted to its pre-PS-272 body.")
     print("   The AC1 check above is re-run and MUST FAIL here.")
     print("-" * 74)
     broken = _observe(
         near_home,
-        "4. SABOTAGED BUILD — the badge removed from the rendered nav",
+        "5. SABOTAGED BUILD — the badge removed from the rendered nav",
         "/tmp/ps272-falsification.png",
         patch=_SABOTAGE,
     )
@@ -356,6 +466,11 @@ def main() -> int:
     print("    Asserted structurally in tests/test_ps272_trash_expiry_signal.py.")
     print("  * AC2 (the query is read-only, on bytes on disk) has NO visual")
     print("    surface. Asserted at the store level on an injectable clock.")
+    print("  * Only the PANIC WIPE of the four trash-mutating gestures is")
+    print("    driven here — it is the one that was broken, and the one whose")
+    print("    gesture needs no navigation (navigation itself rebuilds the")
+    print("    rail and would mask the defect). All four are asserted as a")
+    print("    SET in tests/test_ps272_trash_expiry_signal.py.")
     print("  * The 30-day boundary is reached by backdating deleted_at, not by")
     print("    waiting. Same field the product writes and reads.")
     print("=" * 74)
