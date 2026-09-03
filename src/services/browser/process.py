@@ -429,6 +429,22 @@ def spawn_browser(profile: Profile, *, in_process: bool = False) -> subprocess.P
         proc._proxy_bridge = None  # type: ignore[attr-defined]
         return proc
 
+    store = ProxyStore()
+    proxy = store.get(profile.proxy) if profile.proxy else None
+    proxy_url = store.resolve(profile.proxy)
+    # Fail CLOSED: never open a DIRECT window for a profile that HAS a proxy.
+    _require_proxy_resolved(profile, proxy_url)
+    # Both fail-closed gates run BEFORE any launch work, matching the Firefox arm
+    # (_spawn_invisible: _require_proxy_resolved then _profile_timezone, both ahead
+    # of the desktop entry, bookmarks and the cert session). The timezone gate used
+    # to be asked 320 lines later, next to the flag that consumes it, so a launch
+    # this gate REFUSES still wrote the whole profile (11 extension dirs, prefs,
+    # bookmarks — 433 KB), a host desktop entry OUTSIDE the profile perimeter, and
+    # started the mTLS terminator (decrypted client key on disk + a bound port).
+    # A launch that will be refused must do no launch work. Computed once, here;
+    # the arg builder below consumes _tz rather than re-asking.
+    _tz = _profile_timezone(profile, proxy)
+
     seed_profile_prefs(profile_dir, profile.search_engine)
 
     chosen = BookmarkStore().resolve_selection(
@@ -437,12 +453,6 @@ def spawn_browser(profile: Profile, *, in_process: bool = False) -> subprocess.P
     seed_bookmarks(profile_dir, chosen)
     if _platform.supports_linux_desktop_integration():
         write_window_entry(profile.name)
-
-    store = ProxyStore()
-    proxy = store.get(profile.proxy) if profile.proxy else None
-    proxy_url = store.resolve(profile.proxy)
-    # Fail CLOSED: never open a DIRECT window for a profile that HAS a proxy.
-    _require_proxy_resolved(profile, proxy_url)
 
     # An assigned mTLS certificate starts a local terminator that presents the
     # client cert to the admin host only; its own upstream is the profile's real
@@ -762,7 +772,9 @@ def spawn_browser(profile: Profile, *, in_process: bool = False) -> subprocess.P
         # the host zone — CreepJS on a Kyiv host showed en-US paired with Europe/Kyiv,
         # a language⊥timezone tell. A US zone keeps the direct identity coherent and
         # hides the host location (matches the Firefox path).
-        args.append(f"--timezone={_profile_timezone(profile, proxy)}")
+        # _tz was resolved by the fail-closed geo gate at the top of this function,
+        # before any launch work; do not re-ask the helper here.
+        args.append(f"--timezone={_tz}")
 
         if getattr(profile, "ai_control", False):
             # Port 0 makes the kernel assign an unpredictable ephemeral port instead
