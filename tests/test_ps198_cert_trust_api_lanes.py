@@ -119,7 +119,9 @@ def pm(tmp_path, monkeypatch):
     """A REAL ProfileManager over a real file in tmp_path.
 
     Real on purpose: the verdict has to survive ``save_profiles`` AND the
-    hand-enumerated load allow-list in ``clean_data``. A fake manager would
+    real load path that rebuilds ``clean_data`` (a hand-enumerated allow-list
+    until PS-269, a ``dataclasses.fields(Profile)`` derivation since). A fake
+    manager would
     assert the lane called something, which is precisely the assertion this
     file exists to avoid making.
     """
@@ -332,9 +334,13 @@ def test_the_dropped_stale_verdict_does_not_come_back_on_reload(
 def test_the_verdict_recorded_by_an_api_lane_survives_a_fresh_manager(
     lane, launch, pm, monkeypatch, tmp_path
 ):
-    """``clean_data``'s load path is a HAND-ENUMERATED allow-list: a field
-    absent from it is silently dropped on reload even though to_dict() saved
-    it. Pinned here for the API lanes specifically."""
+    """The verdict has to cross the persistence boundary, not merely be set in
+    memory. ``clean_data``'s load path was a HAND-ENUMERATED allow-list where a
+    field absent from the list was silently dropped on reload even though
+    to_dict() had saved it; PS-269 derives those keys from
+    dataclasses.fields(Profile), so the field now round-trips because it is a
+    dataclass field. The reload is pinned here for the API lanes specifically —
+    that is the boundary an in-memory assertion cannot see."""
     _profile_with_cert(pm)
 
     proc = launch(pm, monkeypatch, [MSG_FAILED, "BROWSER_CLOSED"])

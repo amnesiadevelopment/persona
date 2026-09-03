@@ -136,10 +136,16 @@ def test_set_cert_trust_status_unknown_profile_returns_false(mgr):
 
 @pytest.mark.parametrize("status", ["trusted", "NOT TRUSTED: opening without trust"])
 def test_cert_trust_status_survives_reload(mgr, status):
-    """AC3 — the load path is a HAND-ENUMERATED allow-list (manager.py
-    clean_data). A field absent from it is silently dropped on reload even
-    though to_dict() saved it; transfer.py:117 records this as a repeat offence.
-    This test fails if the loader entry is omitted."""
+    """AC3 — the round trip across the persistence boundary, which an
+    in-memory assertion cannot see. The load path used to be a HAND-ENUMERATED
+    allow-list where a field absent from the list was silently dropped on
+    reload even though to_dict() had saved it (transfer.py:117 records this as
+    a repeat offence); PS-269 derived those keys from
+    dataclasses.fields(Profile), so this field now round-trips because it is a
+    dataclass field rather than because someone remembered to list it. The
+    boundary still needs testing: the derived build keeps two explicit
+    migration post-steps, and a reload is the only place a regression in
+    either of them — or in the derivation itself — becomes visible."""
     mgr.add_profile("p1", "", "windows")
     mgr.set_cert_trust_status("p1", status)
 

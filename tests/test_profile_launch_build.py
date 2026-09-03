@@ -101,12 +101,16 @@ def test_to_dict_roundtrips_the_pair():
 
 
 def test_the_recorded_build_survives_a_restart(mgr, tmp_path):
-    # THE REGRESSION THIS TEST EXISTS FOR. ProfileManager's load path is a
-    # HAND-ENUMERATED allow-list, so a field missing from it is written by
-    # to_dict() and then silently DROPPED on the next load — the record would
-    # look correct in memory and evaporate on restart, which is exactly the bug
-    # cookie_import_status hit (manager.py's own comment says so). An
-    # in-memory-only assertion cannot see that, so reload from disk.
+    # THE REGRESSION THIS TEST EXISTS FOR. ProfileManager's load path used to
+    # be a HAND-ENUMERATED allow-list, so a field missing from it was written
+    # by to_dict() and then silently DROPPED on the next load — the record
+    # looked correct in memory and evaporated on restart, which is exactly the
+    # bug cookie_import_status hit. PS-269 replaced that list with a
+    # derivation from dataclasses.fields(Profile), so the omission this test
+    # was written to catch is no longer expressible. The RESTART assertion
+    # still is: an in-memory-only assertion cannot see the persistence
+    # boundary at all, and the derived loader still carries two explicit
+    # migration post-steps that only a reload exercises. So reload from disk.
     mgr.add_profile("p1", "", "windows")
     mgr.set_last_launch_build("p1", "chromium", "151.0.8000.10")
 

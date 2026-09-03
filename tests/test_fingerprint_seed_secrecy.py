@@ -167,7 +167,9 @@ def test_a_legacy_profile_without_the_field_still_reads_crc32_of_its_name(
     # install would move with it.
     #
     # The fixture OMITS the field (rather than setting it to None in memory),
-    # so the load allow-list is exercised on the way through.
+    # so the real load path is exercised on the way through — since PS-269 the
+    # loader derives its keys from dataclasses.fields(Profile), and an absent
+    # key falls to the dataclass default of None, which IS this migration.
     import src.core.config as cfg
     import src.services.profile.manager as mod
 
