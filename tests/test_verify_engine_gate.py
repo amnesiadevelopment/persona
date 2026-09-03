@@ -608,6 +608,120 @@ def test_a_non_snapshot_is_refused_rather_than_compared(junk):
     assert not isinstance(exc.value, AssertionError)
 
 
+# --- THE INVENTORY THE VERDICT RESTS ON (PS-290) ----------------------------
+#
+# These pin a CROSS-RUN property, which is unusual for this file and is the
+# whole point. Every other test here asks whether one run's verdict is right;
+# these ask whether two runs' verdicts are COMPARABLE, which is the question an
+# operator actually faces on the eighth consecutive red day ("is this the same
+# three probes as yesterday?").
+
+
+def test_a_pass_states_how_many_probes_it_was_computed_over():
+    """A green verdict that does not say what it looked at is not checkable.
+
+    The failure this guards is silent by construction: a shrinking inventory
+    makes a gate MORE likely to pass, and every stage downstream reads the pass
+    exactly as it always did.
+    """
+    _, report = engine_gate.gate(*_pair())
+    assert "inventory:" in report
+    # The default fixture is one probe per realm, two realms.
+    assert "2 probe(s) across 2 realm(s)" in report
+
+
+def test_a_drift_verdict_states_the_inventory_too():
+    """Stated on BOTH outcomes, not only the pass.
+
+    The cross-run comparison an operator makes is almost always between two RED
+    runs — "did the same thing move again?" — so a count present only on the
+    green path would be absent from every report where it is actually needed.
+    """
+    before, after = _pair(after_window={"navigator.userAgent": {"value": "OTHER"}})
+    code, report = engine_gate.gate(before, after)
+    assert code == engine_gate.EXIT_DRIFT
+    assert "inventory:" in report
+
+
+def test_the_count_tracks_the_actual_probe_set():
+    """The number is COUNTED, never a constant restated in prose.
+
+    A hardcoded figure would keep reading correct as the inventory moved
+    underneath it, which is precisely the defect this line exists to reveal.
+    """
+    probes = {f"probe.{n}": {"value": n} for n in range(7)}
+    before = _snap(dict(probes), dict(probes))
+    after = _snap(dict(probes), dict(probes), build="firefox-21")
+    _, report = engine_gate.gate(before, after)
+    assert "14 probe(s) across 2 realm(s)" in report
+
+
+def test_two_sides_recorded_from_different_trees_are_called_out():
+    """THE REAL DEFECT, replayed from this gate's own archived recordings.
+
+    Two of the gate's firefox-21 recordings, taken two days apart, differ by one
+    probe: `realm.frameIdentity` is present in the later and absent in the
+    earlier, because PS-232 (`bdc96f2`) added it to the inventory in between.
+    Both runs reported "3 probes moved"; they were two different instruments
+    saying the same sentence.
+
+    Within one run this cannot normally happen (both recordings come from one
+    tree), so a disagreement means something is wrong with how the recordings
+    were produced — and the report must SAY so rather than print a single count
+    that is true of neither side.
+    """
+    before = _snap({"a": {"value": 1}}, {"a": {"value": 1}})
+    after = _snap(
+        {"a": {"value": 1}, "realm.frameIdentity": {"value": {"frameDepth": 0}}},
+        {"a": {"value": 1}},
+        build="firefox-21",
+    )
+    _, report = engine_gate.gate(before, after)
+    assert "DISAGREE ON THE INVENTORY" in report
+    assert "2 probe(s)" in report and "3 across" in report
+
+
+def test_an_inventory_disagreement_still_reports_the_odd_probe_itself():
+    """The stated count ANNOTATES the comparison; it never replaces it.
+
+    The added probe must still appear as its own reported entry — a summary line
+    that quietly stood in for the per-probe report would be a regression of the
+    exact guarantee `plant_absent_probe` proves on every run.
+    """
+    before = _snap({"a": {"value": 1}}, {"a": {"value": 1}})
+    after = _snap(
+        {"a": {"value": 1}, "newcomer": {"value": 2}},
+        {"a": {"value": 1}},
+        build="firefox-21",
+    )
+    code, report = engine_gate.gate(before, after)
+    assert code == engine_gate.EXIT_DRIFT
+    assert "newcomer" in report
+
+
+def test_the_inventory_line_counts_each_side_not_just_one():
+    """Counted per side, so neither side can hide the other's probes.
+
+    Counting only `before` would report the pre-PS-232 number and read as though
+    nothing had changed — wrong in exactly the case the line exists to surface.
+
+    (`_snap` substitutes its default probe for a realm passed as empty, so each
+    side carries one worker probe on top of the window probes named here.)
+    """
+    before = _snap({"a": {"value": 1}})
+    after = _snap({"a": {"value": 1}, "b": {"value": 2}})
+    line = engine_gate.inventory_line(before, after)
+    assert "2 probe(s)" in line and "3 across" in line
+
+
+def test_the_inventory_line_survives_a_snapshot_with_no_probes():
+    """Never raises. It runs inside verdict assembly, where an exception would
+    destroy a comparison that has already been computed — the same posture
+    `snapshot.engine_build` takes.
+    """
+    assert "inventory:" in engine_gate.inventory_line({}, {})
+
+
 # --- THE RE-RECORD TRAP, closed structurally --------------------------------
 
 
