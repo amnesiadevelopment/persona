@@ -52,6 +52,31 @@ logger = get_logger("trash.store")
 #: to notice a mistake, short enough that abandoned identities don't pile up.
 RETENTION_DAYS = 30
 
+#: How close to destruction an entry has to be before the rail says anything.
+#:
+#: A PRODUCT CHOICE, and it is the whole difference between a signal and
+#: permanent chrome. The number is bounded from both sides:
+#:
+#: * TOO SHORT (24-48h) is missed by exactly the operator this exists for. The
+#:   gap needs someone who trashed something and did not come back; a two-day
+#:   window can fall entirely inside one weekend away, so the badge lights and
+#:   goes out again with nobody ever at the machine.
+#: * TOO LONG (14 days, half the window) is worse than nothing. It would be lit
+#:   for most of the entry's life, which makes it chrome rather than a state —
+#:   and that is precisely the noise ``App._status_needs_reveal`` refuses: an
+#:   affordance on a line that is already whole invites a click that does
+#:   nothing. A badge that is always on stops meaning "act now".
+#:
+#: Seven days is the smallest window that survives an ordinary absence. Someone
+#: who opens persona on working days sees it on ~5 separate starts before the
+#: entry is destroyed; someone away for a weekend or a short trip still gets
+#: several. It is also under a quarter of ``RETENTION_DAYS``, so the rail is
+#: quiet for the great majority of every entry's life.
+#:
+#: It does NOT change the floor. ``RETENTION_DAYS`` is still what enforcement
+#: reads; this only decides when the operator is told.
+EXPIRY_WARNING_DAYS = 7
+
 KIND_PROFILE = "profile"
 KIND_BOOKMARK = "bookmark"
 KIND_POOL = "pool"
@@ -326,3 +351,35 @@ class TrashStore(StoreGuardMixin):
                 for e in self.entries.values()
                 if e.expires_at(retention_days) <= cutoff
             ]
+
+    def expiring_within(
+        self,
+        days: int = EXPIRY_WARNING_DAYS,
+        retention_days: int = RETENTION_DAYS,
+    ) -> list[TrashEntry]:
+        """Entries whose destruction falls inside the next ``days`` — READ ONLY.
+
+        The forward-looking sibling of :meth:`expired`, and deliberately built
+        the same way: it reads ``self.entries`` under the lock and returns
+        objects. It removes nothing, destroys no material, writes no
+        trash.json, and never touches ``deleted_at`` — an entry that is merely
+        LOOKED AT must not age, or the act of warning about the clock would
+        move it.
+
+        ALREADY-EXPIRED ENTRIES COUNT. An entry past the window is not yet
+        gone (nothing destroys it until the next app start), and it is the most
+        urgent thing the trash can hold — excluding it would leave the rail
+        silent for exactly the entry that is about to be destroyed on the very
+        next launch.
+
+        Most urgent first, so the caller can report the nearest deadline
+        without re-sorting.
+        """
+        horizon = self._now() + days * 86400
+        with self._lock:
+            due = [
+                e
+                for e in self.entries.values()
+                if e.expires_at(retention_days) <= horizon
+            ]
+        return sorted(due, key=lambda e: e.expires_at(retention_days))

@@ -150,6 +150,11 @@ def _app_with_trash(entries, *, deleted=None, emptied=None):
         _render_active_page=lambda: None,
         _safe_update=lambda: None,
         _refresh_profiles=lambda: None,
+        # PS-272: restoring / destroying / emptying changes what is counting
+        # down, so the rail's near-expiry badge is stale the instant these
+        # handlers return and they rebuild it. The stub carries it because the
+        # handlers call it, not because these tests assert on it.
+        _refresh_sidebar=lambda: None,
     )
     return app, page
 
@@ -232,7 +237,7 @@ def test_a_refused_restore_tells_the_operator_why():
     app = types.SimpleNamespace(
         page=page, trash_service=svc, _log=logged.append,
         _render_active_page=lambda: None, _safe_update=lambda: None,
-        _refresh_profiles=lambda: None,
+        _refresh_profiles=lambda: None, _refresh_sidebar=lambda: None,
     )
     App._restore_from_trash(app, "e1")
     assert "already exists" in _dialog_text(page.shown)
@@ -249,7 +254,7 @@ def test_a_successful_restore_opens_no_dialog():
     app = types.SimpleNamespace(
         page=page, trash_service=svc, _log=lambda m: None,
         _render_active_page=lambda: None, _safe_update=lambda: None,
-        _refresh_profiles=lambda: None,
+        _refresh_profiles=lambda: None, _refresh_sidebar=lambda: None,
     )
     App._restore_from_trash(app, "e1")
     assert page.shown is None

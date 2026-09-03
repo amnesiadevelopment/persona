@@ -138,6 +138,14 @@ def severity(message: str) -> str:
         or "downloading" in low
         or "update" in low
         or "launching" in low
+        # A start-up purge DESTROYED key material. It is not a failure — the
+        # retention floor working exactly as designed — but it is not idle
+        # housekeeping either, and SEV_IDLE gave a permanent destruction the
+        # dimmest dot in the console. "purged" is deliberately the whole token:
+        # it is the only word in the app's messages that carries it (the two
+        # purge lines in trash/service.py and main.py), so nothing unrelated is
+        # reclassified by adding it.
+        or "purged" in low
     ):
         return SEV_INFO
     return SEV_IDLE
