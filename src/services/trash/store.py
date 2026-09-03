@@ -339,6 +339,39 @@ class TrashStore(StoreGuardMixin):
             ]
         return sorted(items, key=lambda e: e.deleted_at, reverse=True)
 
+    def by_urgency(
+        self,
+        kind: str | None = None,
+        retention_days: int = RETENTION_DAYS,
+    ) -> list[TrashEntry]:
+        """Trashed records, nearest destruction FIRST — READ ONLY.
+
+        The same entries :meth:`list` returns, in the other useful order.
+        ``list`` is deliberately left alone: its recency order is a published
+        contract (``GET /trash`` serves it, and ``test_list_is_newest_first``
+        pins it), and with a constant ``RETENTION_DAYS`` recency-DESC *is*
+        time-remaining-DESC — so the entry nearest destruction is last there
+        for every possible data shape, not just for some. A reader that needs
+        to act on the clock needs the opposite order, and asking for it must
+        not silently re-order the REST lane.
+
+        Built the way :meth:`expiring_within` is, and sorted on the same key
+        (``expires_at``), so "most urgent first" means the same thing to the
+        nav rail's count and to the page it sends the operator to. It removes
+        nothing, writes no trash.json and never touches ``deleted_at`` — an
+        entry that is merely LOOKED AT must not age.
+
+        Ties (identical ``deleted_at``) fall back to recency-then-name so the
+        order is total and a repaint cannot shuffle rows under the pointer.
+        """
+        with self._lock:
+            items = [
+                e for e in self.entries.values() if kind is None or e.kind == kind
+            ]
+        return sorted(
+            items, key=lambda e: (e.expires_at(retention_days), e.name, e.id)
+        )
+
     def names(self, kind: str) -> list[str]:
         return [e.name for e in self.list(kind)]
 
