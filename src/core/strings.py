@@ -35,6 +35,61 @@ STRINGS = {
     "created_profile": "Created: {name}",
     "deleted_profile": "Deleted: {name}",
     "delete_profile_failed": "Could not delete {name}: its data could not be moved to the trash. The profile is unchanged.",
+    # PS-273 — bulk create used to report "created 45, skipped 5" and close the
+    # dialog, so the operator could not find out WHICH five or why. These are
+    # modelled on `delete_profile_failed`: the per-item line names the item and
+    # explains the refusal, rather than contributing to an integer.
+    #
+    # NOTE ON SEVERITY, deliberately: the per-name line below carries no new
+    # severity token, exactly as the aggregate line and "Created: {name}" carry
+    # none — `log_console.severity()` classifies all three as SEV_IDLE and is
+    # not touched here. The interpolated {reason} is data, not a token: it can
+    # in principle contain "fail"/"error" and would then read as SEV_FAIL,
+    # which is honest for a refusal and is not a change to the classifier.
+    # The name LEADS, deliberately. `log_console.parse_event` HOISTS a known
+    # profile name out of the prose into its own column, so "Not created:
+    # {name} - {reason}" renders as "Not created: - {reason}" with a dangling
+    # separator where the name was. (The shipped `delete_profile_failed` has
+    # the same artifact — "Could not delete: its data ..." — so this is not a
+    # deviation from the precedent, it is the precedent's rough edge avoided.)
+    # Leading with the name reads correctly BOTH ways: hoisted it becomes the
+    # profile column beside "not created: {reason}", and un-hoisted (an
+    # invalid name is not in the roster) it reads "bad/name not created:
+    # {reason}".
+    "bulk_create_not_created": "{name} not created: {reason}",
+    # The bulk lane's already-exists reason, deliberately NOT `profile_exists`.
+    #
+    # MEASURED, not stylistic: `log_console.severity()` substring-matches
+    # "ready", and "already" CONTAINS it — so "Profile already exists!" on a
+    # log line classifies as SEV_OK and paints the GREEN SUCCESS DOT next to a
+    # refusal. `profile_exists` never hit this because the single-create lane
+    # renders it into a dialog field, which no classifier reads; this is the
+    # first time that string would reach the Activity Log.
+    #
+    # Changing severity() is explicitly out of scope for PS-273 (it would
+    # re-classify every existing line carrying "already"), so the wording
+    # avoids the token instead — and it is the better line anyway, on the
+    # `delete_profile_failed` model: it says what happened to the EXISTING
+    # profile, which is the operator's real question.
+    "bulk_create_exists": (
+        "a profile with that name exists - the existing one was left unchanged"
+    ),
+    # The dialog's own message. It leads with what ALREADY HAPPENED, because
+    # the dialog now stays open on a partial success and the operator's first
+    # question is whether the 45 that worked need re-submitting. They do not.
+    "bulk_create_partial": (
+        "Created {created} profile{plural} - already saved, no need to submit "
+        "them again. {skipped} name{skipped_plural} not created:"
+    ),
+    "bulk_create_none": "No profiles created. {skipped} name{skipped_plural} refused:",
+    "bulk_create_refusal_line": "  - {name}: {reason}",
+    "bulk_create_more": "  ... and {count} more refusal{plural} - see the Activity Log",
+    # Repeats inside the paste are dropped BEFORE the loop, so they appear in
+    # neither list and `created + skipped` is fewer than the rows pasted. Said
+    # out loud rather than left as an unexplained arithmetic gap.
+    "bulk_create_repeats": (
+        "  ({count} repeated name{plural} in the paste {was} entered once: {names})"
+    ),
     "updated_profile": "Updated: {old} -> {new}",
     "launching_profile": "Launching {name}...",
     "stopping_profile": "Stopping {name}...",
