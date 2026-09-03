@@ -37,11 +37,26 @@ WHAT THIS GUARD DELIBERATELY DOES NOT MODEL, stated rather than left implied
      adopted here so the two panels in one rail are held to ONE bound rather
      than to two. (``_VERSION_MAX_CHARS = 17`` is a different, narrower budget
      for the ~110px engine version cell — do not conflate them.)
-  3. The STATUS strings are bounded, NOT budgeted, and that asymmetry is
-     deliberate — see ``test_every_status_the_panel_can_render_is_bounded``.
+  3. The STATUS strings are bounded-and-revealable, NOT budgeted, and that
+     asymmetry is deliberate — see
+     ``test_every_status_the_panel_can_render_is_bounded``.
   4. It covers the rollback row and the rollback status line. The version line
      and the auto-update toggle are fixed-width strings this ticket did not
      touch, and the download-progress rows belong to a different surface.
+  5. THE STATUS DISCOVERY WALK MODELS LITERALS AND CONDITIONAL EXPRESSIONS,
+     NOT INTERPOLATION. ``_status_strings_assigned_in_the_source`` reads
+     ``ast.Constant`` and ``ast.IfExp``; an f-string is an ``ast.JoinedStr``
+     and is modelled as its literal skeleton with a HOSTILE placeholder
+     substituted for each interpolation (see ``_literals``), which measures
+     the shape but NOT the true runtime length — the real value is whatever
+     the interpolated expression produces, and this file cannot know it. So an
+     f-string status is caught as a *bounded* line but its *budget* is only
+     probed, not proven. Today every one of the seven statuses is a literal,
+     and because the status line is a single call site through
+     ``sidebar_status_text`` (pinned by
+     ``test_the_panel_status_line_builds_no_bare_text``) an interpolated status
+     added later would still be bounded in practice. Stated here so the guard's
+     claim is not stronger than its mechanism.
 """
 
 import ast
@@ -68,6 +83,12 @@ BUDGET = 22
 #: that breaks it. A real persona pre-release tag, longer than the "3.0.2" the
 #: hold tests happen to use.
 LONG_HELD = "3.0.10-beta.1"
+
+#: What an interpolated value in a status string is modelled AS. The AST walk
+#: below cannot evaluate an f-string's expressions, so a JoinedStr is
+#: reconstructed with this standing in for each of them — long enough that a
+#: status which grew an interpolation is not silently modelled as a short one.
+HOSTILE_INTERPOLATION = LONG_HELD
 
 
 def _texts(control) -> list[ft.Text]:
@@ -241,6 +262,34 @@ def test_the_row_still_names_the_gesture_in_each_state(monkeypatch):
 # --- the statuses, DISCOVERED rather than listed ---------------------------
 
 
+def _literals_of(node) -> list[str]:
+    """The string value(s) an assignment's right-hand side can produce.
+
+    MODULE-LEVEL rather than nested inside the walk below, so the mechanism
+    itself is directly testable — see
+    ``test_the_status_discovery_does_not_silently_skip_an_interpolated_status``.
+    A guard whose discovery step can only be exercised through the real source
+    can only be proven by mutating that source.
+
+    An ``ast.JoinedStr`` (an f-string) is reconstructed as its literal skeleton
+    with :data:`HOSTILE_INTERPOLATION` standing in for each interpolated
+    expression. That models the SHAPE, not the runtime value — limitation 5.
+    """
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return [node.value]
+    if isinstance(node, ast.IfExp):
+        return _literals_of(node.body) + _literals_of(node.orelse)
+    if isinstance(node, ast.JoinedStr):
+        parts: list[str] = []
+        for piece in node.values:
+            if isinstance(piece, ast.Constant) and isinstance(piece.value, str):
+                parts.append(piece.value)
+            else:
+                parts.append(HOSTILE_INTERPOLATION)
+        return ["".join(parts)]
+    return []
+
+
 def _status_strings_assigned_in_the_source() -> list[str]:
     """Every string literal assigned to ``self._app_rollback_status`` in
     ``src/ui/app.py``, read out of the AST.
@@ -256,18 +305,23 @@ def _status_strings_assigned_in_the_source() -> list[str]:
     refusal was it?" site is a conditional expression spanning four lines, with
     the two strings in its branches — the member a hand-written table drops.
     Empty clears are skipped: erasing the line is not rendering a string.
+
+    AN F-STRING IS AN ``ast.JoinedStr`` AND IS MODELLED, NOT SKIPPED — but it
+    is modelled honestly, and the difference matters. Interpolation is exactly
+    the unbounded-by-construction defect class this ticket removed from the
+    HELD label (see ``_ROLLBACK_LABEL``'s comment), so a walk that returned
+    ``[]`` for it would silently miss the one form the ticket names as
+    dangerous. What is reconstructed is the literal skeleton with
+    :data:`HOSTILE_INTERPOLATION` standing in for every substituted
+    expression: that measures the SHAPE and proves the string reaches the
+    bound, but it does NOT prove the budget — the real value is whatever the
+    expression produces at runtime and this walk cannot know it. Recorded as
+    limitation 5 in the module docstring rather than left implied.
     """
     source = Path(inspect.getsourcefile(app_mod)).read_text(encoding="utf-8")
     tree = ast.parse(source)
 
     found: list[str] = []
-
-    def _literals(node) -> list[str]:
-        if isinstance(node, ast.Constant) and isinstance(node.value, str):
-            return [node.value]
-        if isinstance(node, ast.IfExp):
-            return _literals(node.body) + _literals(node.orelse)
-        return []
 
     for node in ast.walk(tree):
         if not isinstance(node, ast.Assign):
@@ -279,7 +333,7 @@ def _status_strings_assigned_in_the_source() -> list[str]:
         ]
         if not targets:
             continue
-        found.extend(s for s in _literals(node.value) if s)
+        found.extend(s for s in _literals_of(node.value) if s)
 
     return sorted(set(found))
 
@@ -305,21 +359,53 @@ def test_the_status_discovery_actually_finds_the_statuses():
     assert "can't go back while an update is pending" in found, found
 
 
+def test_the_status_discovery_does_not_silently_skip_an_interpolated_status():
+    """THE FORM THIS TICKET NAMES AS THE DANGEROUS ONE. An f-string is an
+    ``ast.JoinedStr``, and a walk handling only ``Constant``/``IfExp`` returns
+    ``[]`` for it — SILENTLY. A guard advertised as catching what a hardcoded
+    tuple misses, which then misses interpolation, has a claim stronger than
+    its mechanism: interpolation is exactly the unbounded-by-construction
+    defect removed from the HELD label (``_ROLLBACK_LABEL``'s comment is
+    written about this class).
+
+    Asserted against a synthetic module rather than by mutating the real one,
+    so the guard is proven WITHOUT depending on a status that does not exist
+    today. What is modelled is the SHAPE with a hostile placeholder, not the
+    runtime value — see limitation 5 in this module's docstring.
+    """
+    module = ast.parse(
+        'self._app_rollback_status = f"couldn\'t go back to {target} '
+        '— see the log"'
+    )
+    assignment = module.body[0]
+
+    found = _literals_of(assignment.value)
+
+    assert found, "an interpolated status was silently skipped"
+    assert HOSTILE_INTERPOLATION in found[0], found
+    assert found[0].startswith("couldn't go back to "), found
+    assert len(found[0]) > BUDGET, found
+
+
 def test_every_status_the_panel_can_render_is_bounded(monkeypatch):
-    """THE STATUS LINE IS BOUNDED, NOT BUDGETED — and the asymmetry with the
-    labels above is deliberate rather than an omission.
+    """THE STATUS LINE IS BOUNDED-AND-REVEALABLE, NOT BUDGETED — and the
+    asymmetry with the labels above is deliberate rather than an omission.
 
     A LABEL is a fixed phrase this product chooses, so it can be made to fit and
     is held to the 22-character budget. A STATUS is prose reporting an outcome
     ("can't go back while an update is pending" is 40 characters, and it must
     say what it says), and PS-229 treated the identically-long ENGINE statuses
-    exactly this way: bounded by ellipsis, not shortened. Truncating an
-    operator-facing explanation to fit a rail would be a copy decision this
-    ticket explicitly does not own.
+    exactly this way — BOTH halves of it: bounded by ellipsis
+    (``sidebar_status_text``) AND made recoverable in place
+    (``_status_needs_reveal`` → ``_status_reveal_button`` → ``_status_control``
+    re-rendering at ``expanded=True``). Shortening the copy would be a decision
+    this ticket explicitly does not own; ellipsising it with no way to read the
+    rest would not be PS-229's treatment at all, it would be half of it — and
+    the half it drops is the actionable tail of a refusal whose only visible
+    channel this line is.
 
-    So what is asserted here is that every status the panel can render goes
-    through the bound — which is what makes a 40-character string safe in a
-    22-character rail, and what a bare ft.Text does not do.
+    So this asserts the FIRST half, and
+    ``test_every_over_budget_status_is_recoverable_in_full`` asserts the second.
     """
     statuses = _status_strings_assigned_in_the_source()
 
@@ -354,6 +440,153 @@ def test_a_status_still_reaches_the_panel_as_readable_text(monkeypatch):
     assert "couldn't go back — see the log" in _walk_texts(
         app._build_version_panel()
     )
+
+
+# --- the truncated tail must be RECOVERABLE, not silently dropped ----------
+#
+# The bound alone converts an overflow into a silent truncation, and for the
+# status line that is not a strict improvement: "couldn't go back — see the
+# log" reaches the operator as roughly "couldn't go back — s…", and `see the
+# log` is the entire actionable half. _on_app_rollback's own docstring is
+# explicit that this line exists BECAUSE _log is not a visible surface. PS-229
+# solved exactly this next door with a reveal; these assert the app panel got
+# the same half, not only the first one.
+
+
+def _reveal_buttons(control) -> list[ft.Control]:
+    """Every clickable reveal chevron in a built tree.
+
+    Identified by its ICON rather than by its click handler, because a
+    Container's on_click is a lambda that says nothing about what it does — and
+    the panel legitimately carries other clickable containers (the rollback
+    row, the update button, the auto-update toggle).
+    """
+    found: list[ft.Control] = []
+
+    def walk(node) -> None:
+        icon = getattr(node, "content", None)
+        if (
+            getattr(node, "on_click", None) is not None
+            and isinstance(icon, ft.Icon)
+            and icon.icon in (ft.Icons.UNFOLD_MORE, ft.Icons.UNFOLD_LESS)
+        ):
+            found.append(node)
+        for attr in ("content", "controls"):
+            child = getattr(node, attr, None)
+            if child is None:
+                continue
+            for c in child if isinstance(child, list) else [child]:
+                walk(c)
+
+    walk(control)
+    return found
+
+
+def test_every_over_budget_status_is_recoverable_in_full(monkeypatch):
+    """THE SECOND HALF OF PS-229'S TREATMENT. Bounded is not enough on its own:
+    a 40-character refusal ellipsised into ~22 characters with no way to read
+    the rest has traded a visible overflow for an invisible amputation, of the
+    one channel the refusal has.
+
+    Asserted end to end rather than by the presence of a helper: the chevron is
+    found in the BUILT panel, clicked through its real handler, and the panel
+    is rebuilt — and the full string must then be readable off the tree by the
+    same ``.value`` walk every other spec here uses.
+    """
+    over = [
+        s for s in _status_strings_assigned_in_the_source() if len(s) > BUDGET
+    ]
+    assert over, "no status exceeds the budget — this guard is vacuous"
+
+    for status in over:
+        app = _panel_app(monkeypatch, status=status)
+
+        buttons = _reveal_buttons(app._build_version_panel())
+        assert len(buttons) == 1, (
+            status,
+            f"{len(buttons)} reveal controls — an over-budget status is "
+            "truncated with no way to read the rest",
+        )
+
+        buttons[0].on_click(None)
+        revealed = [
+            t for t in _texts(app._build_version_panel())
+            if (t.value or "") == status
+        ]
+        assert revealed, (status, "the revealed status left the panel")
+        for t in revealed:
+            assert t.no_wrap is False, (status, "revealed but still one line")
+            assert t.max_lines == app_mod._STATUS_EXPANDED_MAX_LINES, (
+                status, t.max_lines,
+            )
+            # THE REVEAL IS BOUNDED TOO. An unbounded one is the original
+            # defect deferred by one click — see _STATUS_EXPANDED_MAX_LINES.
+            assert t.overflow == ft.TextOverflow.ELLIPSIS, status
+            assert t.expand is True, status
+
+
+def test_a_status_that_already_fits_gets_no_reveal_control(monkeypatch):
+    """THE NEGATIVE CONTROL, and a rule rather than tidiness: an affordance on
+    a line that is already whole invites a click that visibly does nothing.
+    ``"nothing to go back to"`` is 21 characters — the one panel status that
+    fits — so it must render the text and NOT the chevron.
+
+    This is also what makes the test above non-vacuous: without it, drawing a
+    chevron unconditionally would satisfy it.
+    """
+    app = _panel_app(monkeypatch, status="nothing to go back to")
+
+    assert _reveal_buttons(app._build_version_panel()) == []
+
+
+def test_the_reveal_is_bound_to_the_message_it_was_opened_on(monkeypatch):
+    """A REVEAL MUST NOT OUTLIVE ITS OWN SENTENCE. The operator opens
+    "couldn't go back — see the log"; the next click refuses differently. If
+    the flag were a bool, the new sentence would arrive already expanded — a
+    panel silently open on a message nobody asked to expand, and a height
+    change with no gesture behind it.
+
+    So the flag holds the STRING it was opened on and is compared, not trusted.
+    """
+    app = _panel_app(monkeypatch, status="couldn't go back — see the log")
+    _reveal_buttons(app._build_version_panel())[0].on_click(None)
+    assert app._app_status_expanded() is True
+
+    app._app_rollback_status = "can't go back while an update is pending"
+    assert app._app_status_expanded() is False, (
+        "the reveal survived onto a different message"
+    )
+    collapsed = [
+        t for t in _texts(app._build_version_panel())
+        if (t.value or "") == app._app_rollback_status
+    ]
+    assert collapsed and all(t.max_lines == 1 for t in collapsed)
+
+
+def test_the_reveal_toggles_back_closed(monkeypatch):
+    """Reversible, like the engine one. A reveal that cannot be re-collapsed
+    leaves the panel permanently taller after a single click."""
+    app = _panel_app(monkeypatch, status="couldn't go back — see the log")
+
+    _reveal_buttons(app._build_version_panel())[0].on_click(None)
+    assert app._app_status_expanded() is True
+
+    _reveal_buttons(app._build_version_panel())[0].on_click(None)
+    assert app._app_status_expanded() is False
+
+
+def test_the_panel_reveal_survives_a_partially_constructed_app(monkeypatch):
+    """``_build_version_panel`` is reachable from construction paths that never
+    run ``__init__`` — every spec in this file builds the app through
+    ``App.__new__(App)``. Reading the reveal flag off the attribute directly
+    would raise ``AttributeError`` on all of them while working fine in the real
+    app, which is the coupling ``_status_expanded`` records for the engine side.
+    Asserted by deleting the attribute the constructor would have set."""
+    app = _panel_app(monkeypatch, status="couldn't go back — see the log")
+    app.__dict__.pop("_app_status_revealed", None)
+
+    assert app._app_status_expanded() is False
+    assert len(_reveal_buttons(app._build_version_panel())) == 1
 
 
 def test_a_quiet_panel_still_renders_no_status_line(monkeypatch):
