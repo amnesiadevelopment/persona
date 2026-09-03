@@ -1,0 +1,624 @@
+{
+  "app_version": "3.0.2",
+  "engine": "firefox",
+  "engine_build": "firefox-21",
+  "engine_stack": "21.16.0",
+  "probes": {
+    "window": {
+      "audio.digest": {
+        "value": {
+          "length": 44100,
+          "rate": 44100,
+          "sum": 35.749988
+        }
+      },
+      "audio.sampleRate": {
+        "value": 44100
+      },
+      "canvas.readback": {
+        "value": {
+          "bytes": 8192,
+          "digest": 2735004646,
+          "mid": 6144
+        }
+      },
+      "devices.kindCounts": {
+        "value": {
+          "audioinput": 1,
+          "videoinput": 1
+        }
+      },
+      "fonts.measureText": {
+        "value": {
+          "16px Arial": 190.033,
+          "16px Courier New": 208,
+          "16px DejaVu Sans": 186.867,
+          "16px Georgia": 198.367,
+          "16px Helvetica": 190.033,
+          "16px Noto Sans": 186.867,
+          "16px Roboto": 186.867,
+          "16px Segoe UI": 190.433,
+          "16px Tahoma": 188.467,
+          "16px Times New Roman": 186.867,
+          "16px Verdana": 210.35,
+          "16px monospace": 186.517,
+          "16px sans-serif": 190.033,
+          "16px serif": 186.867
+        }
+      },
+      "intl.dateToLocaleParts": {
+        "value": {
+          "date": "1/1/2020",
+          "iso": "Wed Jan 01 2020 22:04:05 GMT-0500 (Eastern Standard Time)",
+          "time": "10:04:05 PM"
+        }
+      },
+      "intl.numberToLocaleString": {
+        "value": "1,234,567.891"
+      },
+      "intl.resolvedOptions": {
+        "value": {
+          "calendar": "gregory",
+          "locale": "en-US",
+          "numberingSystem": "latn"
+        }
+      },
+      "intl.timeZone": {
+        "value": "America/New_York"
+      },
+      "intl.timezoneOffset": {
+        "value": 300
+      },
+      "intl.toLocaleString": {
+        "value": "1/1/2020, 10:04:05 PM"
+      },
+      "masking.functionToString": {
+        "value": {
+          "length": 0,
+          "name": "toString",
+          "src": "function toString() {\n    [native code]\n}"
+        }
+      },
+      "masking.getChannelData": {
+        "value": "function getChannelData() {\n    [native code]\n}"
+      },
+      "masking.getCurrentPosition": {
+        "value": "function getCurrentPosition() {\n    [native code]\n}"
+      },
+      "masking.getVoices": {
+        "value": "function getVoices() {\n    [native code]\n}"
+      },
+      "masking.hardwareConcurrencyGetter": {
+        "value": {
+          "own": false,
+          "src": "function hardwareConcurrency() {\n    [native code]\n}"
+        }
+      },
+      "masking.measureText": {
+        "value": "function measureText() {\n    [native code]\n}"
+      },
+      "masking.webglGetParameter": {
+        "value": "function getParameter() {\n    [native code]\n}"
+      },
+      "masking.workerConstructor": {
+        "value": "function Worker() {\n    [native code]\n}"
+      },
+      "mobile.Touch": {
+        "value": "undefined"
+      },
+      "mobile.TouchEvent": {
+        "value": "undefined"
+      },
+      "mobile.ontouchstart": {
+        "value": "undefined"
+      },
+      "mobile.pointerMedia": {
+        "value": {
+          "(any-pointer: coarse)": false,
+          "(any-pointer: fine)": true,
+          "(hover: hover)": true,
+          "(hover: none)": false,
+          "(pointer: coarse)": false,
+          "(pointer: fine)": true,
+          "(prefers-color-scheme: dark)": true,
+          "(prefers-reduced-motion: reduce)": false
+        }
+      },
+      "navigator.deviceMemory": {
+        "value": null
+      },
+      "navigator.hardwareConcurrency": {
+        "value": 12
+      },
+      "navigator.language": {
+        "value": "en-US"
+      },
+      "navigator.languages": {
+        "value": [
+          "en-US",
+          "en"
+        ]
+      },
+      "navigator.maxTouchPoints": {
+        "value": 0
+      },
+      "navigator.platform": {
+        "value": "Win32"
+      },
+      "navigator.userAgent": {
+        "value": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:151.0) Gecko/20100101 Firefox/151.0"
+      },
+      "navigator.userAgentData": {
+        "value": null
+      },
+      "navigator.vendor": {
+        "value": ""
+      },
+      "navigator.webdriver": {
+        "value": false
+      },
+      "realm.bootMarkers": {
+        "value": {
+          "markerCount": 0,
+          "markers": []
+        }
+      },
+      "realm.kind": {
+        "value": {
+          "ctor": "Window",
+          "hasDocument": true,
+          "hasWindow": true
+        }
+      },
+      "realm.seedRecoverable": {
+        "value": {
+          "candidateCount": 0,
+          "candidates": []
+        }
+      },
+      "screen.devicePixelRatio": {
+        "value": 1
+      },
+      "screen.geometry": {
+        "value": {
+          "availHeight": 1032,
+          "availWidth": 1920,
+          "colorDepth": 24,
+          "height": 1080,
+          "pixelDepth": 24,
+          "width": 1920
+        }
+      },
+      "screen.orientation.type": {
+        "value": "landscape-primary"
+      },
+      "stealth.apiPresence": {
+        "value": {
+          "BatteryManager": "undefined",
+          "Bluetooth": "undefined",
+          "ContactsManager": "undefined",
+          "HID": "undefined",
+          "IdleDetector": "undefined",
+          "MediaDevices": "function",
+          "NetworkInformation": "undefined",
+          "Notification": "function",
+          "OffscreenCanvas": "function",
+          "PaymentRequest": "undefined",
+          "Scheduler": "function",
+          "Serial": "undefined",
+          "ServiceWorkerRegistration": "function",
+          "SharedWorker": "function",
+          "SpeechSynthesis": "function",
+          "USB": "undefined",
+          "WakeLock": "function",
+          "Worker": "function",
+          "navigator.bluetooth": "undefined",
+          "navigator.clipboard": "object",
+          "navigator.connection": "undefined",
+          "navigator.credentials": "object",
+          "navigator.getBattery": "undefined",
+          "navigator.getGamepads": "function",
+          "navigator.hid": "undefined",
+          "navigator.ink": "undefined",
+          "navigator.mediaDevices": "object",
+          "navigator.mediaSession": "object",
+          "navigator.permissions": "object",
+          "navigator.presentation": "undefined",
+          "navigator.scheduling": "undefined",
+          "navigator.serial": "undefined",
+          "navigator.serviceWorker": "object",
+          "navigator.share": "undefined",
+          "navigator.storage": "object",
+          "navigator.usb": "undefined",
+          "navigator.userAgentData": "undefined",
+          "navigator.virtualKeyboard": "undefined",
+          "navigator.wakeLock": "object",
+          "navigator.webkitPersistentStorage": "undefined",
+          "navigator.xr": "undefined"
+        }
+      },
+      "stealth.connection": {
+        "value": null
+      },
+      "stealth.contentIndex": {
+        "value": {
+          "hasIndex": false
+        }
+      },
+      "voices.list": {
+        "value": [
+          "Microsoft David - English (United States)|en-US|1|1",
+          "Microsoft David Desktop - English (United States)|en-US|0|1",
+          "Microsoft Mark - English (United States)|en-US|0|1",
+          "Microsoft Zira - English (United States)|en-US|0|1",
+          "Microsoft Zira Desktop - English (United States)|en-US|0|1"
+        ]
+      },
+      "webgl.extensions": {
+        "value": [
+          "ANGLE_instanced_arrays",
+          "EXT_blend_minmax",
+          "EXT_color_buffer_half_float",
+          "EXT_float_blend",
+          "EXT_frag_depth",
+          "EXT_sRGB",
+          "EXT_shader_texture_lod",
+          "EXT_texture_compression_bptc",
+          "EXT_texture_compression_rgtc",
+          "EXT_texture_filter_anisotropic",
+          "OES_element_index_uint",
+          "OES_fbo_render_mipmap",
+          "OES_standard_derivatives",
+          "OES_texture_float",
+          "OES_texture_float_linear",
+          "OES_texture_half_float",
+          "OES_texture_half_float_linear",
+          "OES_vertex_array_object",
+          "WEBGL_color_buffer_float",
+          "WEBGL_compressed_texture_s3tc",
+          "WEBGL_compressed_texture_s3tc_srgb",
+          "WEBGL_debug_renderer_info",
+          "WEBGL_debug_shaders",
+          "WEBGL_depth_texture",
+          "WEBGL_draw_buffers",
+          "WEBGL_lose_context",
+          "WEBGL_provoking_vertex"
+        ]
+      },
+      "webgl.parameters": {
+        "value": {
+          "0x0D33": 16384,
+          "0x0D3A": [
+            32767,
+            32767
+          ],
+          "0x0D50": 4,
+          "0x1F00": "Mozilla",
+          "0x1F01": "ANGLE (NVIDIA, NVIDIA GeForce GTX 980 Direct3D11 vs_5_0 ps_5_0), or similar",
+          "0x1F02": "WebGL 1.0",
+          "0x846D": [
+            1,
+            1024
+          ],
+          "0x846E": [
+            1,
+            1
+          ],
+          "0x84E8": 16384,
+          "0x8869": 16,
+          "0x8872": 16,
+          "0x8B4D": 32,
+          "0x8B8C": "WebGL GLSL ES 1.0",
+          "0x8DFB": 4095,
+          "0x8DFC": 30
+        }
+      },
+      "webgl.readback": {
+        "value": {
+          "bytes": 4096,
+          "digest": 1121969883,
+          "mid": 3072
+        }
+      },
+      "webgl.unmasked": {
+        "value": {
+          "renderer": "ANGLE (NVIDIA, NVIDIA GeForce GTX 980 Direct3D11 vs_5_0 ps_5_0), or similar",
+          "vendor": "Google Inc. (NVIDIA)"
+        }
+      },
+      "window.innerSize": {
+        "value": {
+          "innerHeight": 815,
+          "innerWidth": 1280,
+          "outerHeight": 906,
+          "outerWidth": 1294
+        }
+      }
+    },
+    "worker": {
+      "canvas.readback": {
+        "value": {
+          "bytes": 8192,
+          "digest": 2735004646,
+          "mid": 6144
+        }
+      },
+      "fonts.measureText": {
+        "value": {
+          "16px Arial": 190.033,
+          "16px Courier New": 208,
+          "16px DejaVu Sans": 190.033,
+          "16px Georgia": 198.367,
+          "16px Helvetica": 190.033,
+          "16px Noto Sans": 190.033,
+          "16px Roboto": 190.033,
+          "16px Segoe UI": 190.433,
+          "16px Tahoma": 188.467,
+          "16px Times New Roman": 186.867,
+          "16px Verdana": 210.35,
+          "16px monospace": 186.517,
+          "16px sans-serif": 190.033,
+          "16px serif": 186.867
+        }
+      },
+      "intl.dateToLocaleParts": {
+        "value": {
+          "date": "1/1/2020",
+          "iso": "Wed Jan 01 2020 22:04:05 GMT-0500 (Eastern Standard Time)",
+          "time": "10:04:05 PM"
+        }
+      },
+      "intl.numberToLocaleString": {
+        "value": "1,234,567.891"
+      },
+      "intl.resolvedOptions": {
+        "value": {
+          "calendar": "gregory",
+          "locale": "en-US",
+          "numberingSystem": "latn"
+        }
+      },
+      "intl.timeZone": {
+        "value": "America/New_York"
+      },
+      "intl.timezoneOffset": {
+        "value": 300
+      },
+      "intl.toLocaleString": {
+        "value": "1/1/2020, 10:04:05 PM"
+      },
+      "masking.functionToString": {
+        "value": {
+          "length": 0,
+          "name": "toString",
+          "src": "function toString() {\n    [native code]\n}"
+        }
+      },
+      "masking.getChannelData": {
+        "value": "absent:undefined"
+      },
+      "masking.hardwareConcurrencyGetter": {
+        "value": {
+          "own": false,
+          "src": "function hardwareConcurrency() {\n    [native code]\n}"
+        }
+      },
+      "masking.measureText": {
+        "value": "absent:undefined"
+      },
+      "masking.webglGetParameter": {
+        "value": "function getParameter() {\n    [native code]\n}"
+      },
+      "masking.workerConstructor": {
+        "value": "function Worker() {\n    [native code]\n}"
+      },
+      "mobile.Touch": {
+        "value": "undefined"
+      },
+      "mobile.TouchEvent": {
+        "value": "undefined"
+      },
+      "navigator.deviceMemory": {
+        "value": null
+      },
+      "navigator.hardwareConcurrency": {
+        "value": 12
+      },
+      "navigator.language": {
+        "value": "en-US"
+      },
+      "navigator.languages": {
+        "value": [
+          "en-US",
+          "en"
+        ]
+      },
+      "navigator.maxTouchPoints": {
+        "value": null
+      },
+      "navigator.platform": {
+        "value": "Win32"
+      },
+      "navigator.userAgent": {
+        "value": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:151.0) Gecko/20100101 Firefox/151.0"
+      },
+      "navigator.userAgentData": {
+        "value": null
+      },
+      "navigator.vendor": {
+        "value": null
+      },
+      "navigator.webdriver": {
+        "value": null
+      },
+      "realm.bootMarkers": {
+        "value": {
+          "markerCount": 0,
+          "markers": []
+        }
+      },
+      "realm.kind": {
+        "value": {
+          "ctor": "DedicatedWorkerGlobalScope",
+          "hasDocument": false,
+          "hasWindow": false
+        }
+      },
+      "realm.seedRecoverable": {
+        "value": {
+          "candidateCount": 0,
+          "candidates": []
+        }
+      },
+      "stealth.apiPresence": {
+        "value": {
+          "BatteryManager": "undefined",
+          "Bluetooth": "undefined",
+          "ContactsManager": "undefined",
+          "HID": "undefined",
+          "IdleDetector": "undefined",
+          "MediaDevices": "undefined",
+          "NetworkInformation": "undefined",
+          "Notification": "function",
+          "OffscreenCanvas": "function",
+          "PaymentRequest": "undefined",
+          "Scheduler": "function",
+          "Serial": "undefined",
+          "ServiceWorkerRegistration": "function",
+          "SharedWorker": "undefined",
+          "SpeechSynthesis": "undefined",
+          "USB": "undefined",
+          "WakeLock": "undefined",
+          "Worker": "function",
+          "navigator.bluetooth": "undefined",
+          "navigator.clipboard": "undefined",
+          "navigator.connection": "undefined",
+          "navigator.credentials": "undefined",
+          "navigator.getBattery": "undefined",
+          "navigator.getGamepads": "undefined",
+          "navigator.hid": "undefined",
+          "navigator.ink": "undefined",
+          "navigator.mediaDevices": "undefined",
+          "navigator.mediaSession": "undefined",
+          "navigator.permissions": "object",
+          "navigator.presentation": "undefined",
+          "navigator.scheduling": "undefined",
+          "navigator.serial": "undefined",
+          "navigator.serviceWorker": "object",
+          "navigator.share": "undefined",
+          "navigator.storage": "object",
+          "navigator.usb": "undefined",
+          "navigator.userAgentData": "undefined",
+          "navigator.virtualKeyboard": "undefined",
+          "navigator.wakeLock": "undefined",
+          "navigator.webkitPersistentStorage": "undefined",
+          "navigator.xr": "undefined"
+        }
+      },
+      "stealth.connection": {
+        "value": null
+      },
+      "stealth.contentIndex": {
+        "value": {
+          "hasIndex": false
+        }
+      },
+      "webgl.extensions": {
+        "value": [
+          "ANGLE_instanced_arrays",
+          "EXT_blend_minmax",
+          "EXT_color_buffer_half_float",
+          "EXT_float_blend",
+          "EXT_frag_depth",
+          "EXT_sRGB",
+          "EXT_shader_texture_lod",
+          "EXT_texture_compression_bptc",
+          "EXT_texture_compression_rgtc",
+          "EXT_texture_filter_anisotropic",
+          "OES_element_index_uint",
+          "OES_fbo_render_mipmap",
+          "OES_standard_derivatives",
+          "OES_texture_float",
+          "OES_texture_float_linear",
+          "OES_texture_half_float",
+          "OES_texture_half_float_linear",
+          "OES_vertex_array_object",
+          "WEBGL_color_buffer_float",
+          "WEBGL_compressed_texture_s3tc",
+          "WEBGL_compressed_texture_s3tc_srgb",
+          "WEBGL_debug_renderer_info",
+          "WEBGL_debug_shaders",
+          "WEBGL_depth_texture",
+          "WEBGL_draw_buffers",
+          "WEBGL_lose_context",
+          "WEBGL_provoking_vertex"
+        ]
+      },
+      "webgl.parameters": {
+        "value": {
+          "0x0D33": 16384,
+          "0x0D3A": [
+            32767,
+            32767
+          ],
+          "0x0D50": 4,
+          "0x1F00": "Mozilla",
+          "0x1F01": "ANGLE (NVIDIA, NVIDIA GeForce GTX 980 Direct3D11 vs_5_0 ps_5_0), or similar",
+          "0x1F02": "WebGL 1.0",
+          "0x846D": [
+            1,
+            1024
+          ],
+          "0x846E": [
+            1,
+            1
+          ],
+          "0x84E8": 16384,
+          "0x8869": 16,
+          "0x8872": 16,
+          "0x8B4D": 32,
+          "0x8B8C": "WebGL GLSL ES 1.0",
+          "0x8DFB": 4095,
+          "0x8DFC": 30
+        }
+      },
+      "webgl.unmasked": {
+        "value": {
+          "renderer": "ANGLE (NVIDIA, NVIDIA GeForce GTX 980 Direct3D11 vs_5_0 ps_5_0), or similar",
+          "vendor": "Google Inc. (NVIDIA)"
+        }
+      }
+    }
+  },
+  "profile": "persona-fingerprint-baseline",
+  "provenance": {
+    "bookmarks": "none (explicitly cleared)",
+    "certificate": "none",
+    "device_type": "desktop",
+    "engine": "firefox",
+    "env_sensitive_probes": [
+      "canvas.readback",
+      "fonts.measureText",
+      "masking.webglGetParameter",
+      "webgl.extensions",
+      "webgl.parameters",
+      "webgl.readback",
+      "webgl.unmasked"
+    ],
+    "fingerprint_seed": 1042768975,
+    "os_type": "windows",
+    "profile_name": "persona-fingerprint-baseline",
+    "proxy": "none",
+    "realms": [
+      "window",
+      "worker"
+    ],
+    "resolution": "1920x1080",
+    "search_engine": "duckduckgo"
+  },
+  "realms": [
+    "window",
+    "worker"
+  ],
+  "schema_version": 1
+}

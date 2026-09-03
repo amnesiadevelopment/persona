@@ -470,6 +470,64 @@ def self_test(snapshot: dict) -> list[str]:
 # --- the gate ---------------------------------------------------------------
 
 
+def inventory_line(before: dict, after: dict) -> str:
+    """How many probes this verdict was computed over, and across how many realms.
+
+    WHY A VERDICT MUST STATE THE SIZE OF THE INSTRUMENT BEHIND IT (PS-290).
+    This gate's report is read ACROSS RUNS, not only within one: the operator
+    question that actually gets asked on the eighth consecutive red day is "is
+    this the same three probes as yesterday?". That question is only answerable
+    if the two runs measured the same probes — and nothing in the report said
+    whether they did.
+
+    They demonstrably do not always. Comparing two of this gate's own archived
+    recordings, both taken on firefox-21 two days apart, turns up
+    ``realm.frameIdentity`` present in the later and absent in the earlier: the
+    inventory grew underneath the gate when PS-232 (`bdc96f2`) added the probe.
+    Both runs reported "3 probes moved" and both were correct, but they were two
+    different instruments reporting the same sentence.
+
+    This is deliberately NOT a defect in the comparison itself, and the
+    distinction is worth keeping straight. WITHIN one run both recordings come
+    from one tree, so the two sides always agree on the inventory and there is
+    nothing to report; and were they ever to disagree, ``diff_snapshots`` walks
+    the UNION and reports the odd probe as added/removed rather than skipping it
+    (which is what ``plant_absent_probe`` proves on every run). The blind spot is
+    strictly ACROSS runs, which is exactly where a stated count fixes it and a
+    comparator change could not.
+
+    Counted from BOTH sides' union, for the same reason the comparator walks the
+    union: counting one side would report a number that is wrong in precisely the
+    case this line exists to surface. A disagreement between the two sides is
+    stated rather than averaged or hidden — it means the two recordings came from
+    different trees, which is itself a thing an operator needs to see, and the
+    probes that differ are already reported individually as added/removed below.
+    """
+    def _count(snapshot: dict) -> "tuple[int, int]":
+        probes = snapshot.get("probes")
+        if not isinstance(probes, dict):
+            return 0, 0
+        realms = [r for r in probes.values() if isinstance(r, dict)]
+        return sum(len(r) for r in realms), len(realms)
+
+    before_probes, before_realms = _count(before)
+    after_probes, after_realms = _count(after)
+
+    if (before_probes, before_realms) == (after_probes, after_realms):
+        return (
+            f"inventory: {before_probes} probe(s) across {before_realms} "
+            "realm(s) on both sides"
+        )
+    return (
+        f"inventory: {before_probes} probe(s) across {before_realms} realm(s) "
+        f"before, {after_probes} across {after_realms} after — THE TWO SIDES "
+        "DISAGREE ON THE INVENTORY, so they were recorded from different trees. "
+        "The probes present on only one side are reported as added/removed "
+        "below; a verdict comparing two different instruments is not a "
+        "comparison of two engines."
+    )
+
+
 def gate(before: dict, after: dict) -> tuple[int, str]:
     """Compare two recordings and return ``(exit_code, report)``.
 
@@ -507,6 +565,8 @@ def gate(before: dict, after: dict) -> tuple[int, str]:
 
     for proven in self_test(after):
         lines.append(f"self-test: {proven}")
+
+    lines.append(inventory_line(before, after))
 
     entries = diff_snapshots(before, after)
     unread = inconclusive_count(entries)
