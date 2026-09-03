@@ -1232,6 +1232,128 @@ def test_every_provider_answering_without_a_country_refuses_the_run(
     assert "could not observe the exit" not in str(observed)
 
 
+# --- PS-279: a NAME with no code is no country, not a code ------------------
+#
+# The third shape, and the one the two above could not see. Their non-answers
+# are FALSY after normalisation (a missing key, an error body), so the loop's
+# `if not candidate_observation["country"]` guard catches them. A degraded
+# ipwho body — the full country NAME with `country_code` absent, which is what
+# a rate-limited provider tends to emit — normalised to a TRUTHY "Poland", so
+# it walked straight past that guard, took the `break`, and refused a healthy
+# exit as "POLAND" while never asking the second provider.
+#
+# `proxy_checker.py::_geo_fields_from_payload` is the oracle: it gates the
+# dialect swap on the value being code-SHAPED rather than on the key merely
+# being absent. Its docstring already asserted this normaliser did the same;
+# these tests are what make that true rather than aspirational.
+
+
+def _degraded_name_only(ip="203.0.113.7"):
+    """The degraded shape a rate-limited ipwho.is emits: a country NAME, no
+    code at all, and a perfectly usable zone.
+
+    Deliberately NOT `_ipwho_payload(country_code=None)` — the point is a body
+    with the key ABSENT rather than present-and-empty, because "absent key" is
+    exactly what the old fallback keyed on. Mirrors the sibling suite's
+    `_DEGRADED_NAME_ONLY` (test_proxy_checker_geo_fallback.py:530-538).
+    """
+    return {
+        "ip": ip,
+        "success": True,
+        "country": "Poland",  # a NAME, and no `country_code` whatsoever
+        "region": "Masovian Voivodeship",
+        "city": "Warsaw",
+        "timezone": {"id": "Europe/Warsaw", "abbr": "CEST", "utc": "+02:00"},
+    }
+
+
+def test_a_name_without_a_code_advances_instead_of_refusing_as_POLAND(
+    monkeypatch
+):
+    """THE REGRESSION THIS EXISTS FOR — `exit_guard.py:618-623`'s own trap,
+    reached from the direction the docstring did not cover.
+
+    Before the shape gate, `country_code or country` read the NAME as the code:
+    "Poland" is truthy, so the non-answer guard did not fire, the loop broke on
+    the first provider, and the comparison refused a healthy Polish exit with
+    "the exit is in POLAND, expected PL" — naming the wrong country, which the
+    docstring calls a WORSE failure than the 429 the fallback exists to survive.
+
+    Asserted on the returned Exit and on WHO WAS ASKED. Either alone is too
+    weak: the country alone would pass if the second provider were consulted
+    for the wrong reason, and the URL list alone would pass even if the answer
+    never reached the caller.
+    """
+    observed, asked = _observe_scripted(
+        monkeypatch,
+        {
+            "ipinfo.io": _degraded_name_only(),
+            "ipwho.is": _ipwho_payload(),
+        },
+    )
+
+    assert isinstance(observed, Exit), f"refused a healthy exit: {observed}"
+    assert observed.country == "PL"
+    # Neither the trap nor its debris: not the 6-letter name, not an empty
+    # string that a laxer guard might have let through as "close enough".
+    assert observed.country not in ("POLAND", "Poland", "")
+    # The ANSWER came from the second provider, not the degraded first one.
+    assert observed.ip == "95.49.113.111"
+    assert observed.timezone == "Europe/Warsaw"
+    assert asked == list(exit_guard.EXIT_OBSERVATION_URLS), (
+        f"the degraded body was read as an answer — asked {asked}"
+    )
+
+
+def test_a_name_without_a_code_from_EVERY_provider_still_refuses(monkeypatch):
+    """AC3's line, and the one that keeps this from becoming a laundry.
+
+    Advancing past a degraded body must not mean tolerating one. When no
+    provider ever supplies a code the run is UNPROVEN and nothing may be
+    recorded — and it must refuse down the "answered, carried no country"
+    branch, NOT the country comparison, because those two messages send an
+    operator to opposite halves of the system.
+    """
+    observed, asked = _observe_scripted(
+        monkeypatch,
+        {
+            "ipinfo.io": _degraded_name_only(ip="203.0.113.7"),
+            "ipwho.is": _degraded_name_only(ip="95.49.113.111"),
+        },
+    )
+
+    assert isinstance(observed, ExitNotProven), (
+        f"a body with no usable code was accepted as proof: {observed}"
+    )
+    assert len(asked) == 2, "the guard stopped before exhausting the list"
+    # The RIGHT refusal branch. "POLAND" here would mean the name reached the
+    # comparison after all; the unreachable wording would misattribute a
+    # provider that answered perfectly well.
+    assert "carried no country" in str(observed)
+    assert "POLAND" not in str(observed)
+    assert "could not observe the exit" not in str(observed)
+
+
+def test_a_real_two_letter_country_is_still_read_from_the_ipinfo_dialect(
+    monkeypatch
+):
+    """The other side of the gate, and the reason it is `len == 2` rather than
+    "reject anything that is not a code".
+
+    ipinfo genuinely has no `country_code` key — `country` IS the code there.
+    A gate that demanded `country_code` outright would read every ipinfo answer
+    as no-country and walk the whole provider list on a healthy first reply.
+    """
+    observed, asked = _observe_scripted(
+        monkeypatch,
+        {"ipinfo.io": {"ip": "83.175.184.100", "country": "PL"}},
+    )
+
+    assert isinstance(observed, Exit), f"refused a healthy exit: {observed}"
+    assert observed.country == "PL"
+    assert len(asked) == 1, "a complete first answer was re-shopped"
+
+
 # --- PS-126: a dead sticky session token names ITSELF ------------------------
 #
 # The credential this project holds pins a sticky session token. When that
