@@ -146,6 +146,10 @@ def build_mcp(container: Container) -> FastMCP:
         "detail": ...}`` when a fail-closed guard refused the launch — the same
         refusal shape this tool already uses above, now covering the case that
         matters most.
+
+        Answers ``{"launched": False, "error": ...}`` — the two-key
+        precondition shape — when a check BEFORE the attempt refused it: no
+        such profile, already running, or the Firefox engine not installed.
         """
         pm = container.profile_manager
         bl = container.browser_launcher
@@ -154,6 +158,60 @@ def build_mcp(container: Container) -> FastMCP:
             return {"launched": False, "error": "no such profile"}
         if bl.is_running(name):
             return {"launched": False, "error": "already running"}
+        # ENGINE READINESS — the precondition the UI and REST doors both perform
+        # before start_thread, and the one this lane reached the launch path
+        # without (PS-222). Falling through does not fail fast: process.py hands
+        # the vendored engine `_needs_fetch: True` and nothing between here and
+        # there re-asks the question. The tree states the cost in three places —
+        # routes/browser.py ("falling through would let the engine start its own
+        # blocking, non-resumable download mid-launch"), ui/actions/browser.py,
+        # and process.py's own `_needs_fetch` note.
+        #
+        # Resolved on the EFFECTIVE engine, never profile.engine: a mobile
+        # profile storing "firefox" actually launches chromium, and reading the
+        # stored field would demand the Firefox engine for a launch that will
+        # really use chromium. effective_engine's docstring makes install checks
+        # follow it specifically; both guarding doors already do.
+        #
+        # Imported function-locally, like every other consumer: a module-level
+        # import closes an import cycle that fails at import time (see the note
+        # at effective_engine's own definition).
+        from ..services.browser.process import effective_engine
+
+        if effective_engine(profile) == "firefox":
+            from ..services.browser.invisible_launch import is_invisible_installed
+
+            if not is_invisible_installed():
+                # This lane's OWN two-key precondition shape, mirroring the two
+                # refusals directly above — not the four-key
+                # {kind, detail} shape, which belongs to a verdict
+                # `refusal_for_attempt` read back off the launcher after an
+                # attempt actually ran. No attempt runs here, so there is no
+                # verdict to report and no new refusal kind is minted.
+                #
+                # The sentence is deliberately NOT the REST lane's operator
+                # sentence. refusal.py explains why a settled sentence copied
+                # into a second module forks at the first edit — and REST's
+                # remedy ("download it from the app first") addresses a human at
+                # the app, which is not this lane's caller. Short lane-native
+                # label, exactly like "no such profile" and "already running".
+                return {"launched": False, "error": "firefox engine not installed"}
+        # CHROMIUM IS DELIBERATELY NOT GUARDED HERE, and the omission is a
+        # recorded decision rather than a gap (PS-222 required it be settled
+        # either way, never by silence). REST — the other off-machine
+        # programmatic door, and this lane's true peer — guards Firefox only;
+        # only the UI, where an operator can watch the download progress that
+        # makes the refusal legible, guards both. Matching REST keeps the two
+        # API doors answering identically. The chromium asymmetry is real and
+        # now spans BOTH API doors, which makes it one coherent second instance
+        # to close in one slice rather than a half-covered arm here.
+        #
+        # It is also not free to add: the shipped MCP suites drive
+        # chromium-effective profiles with no chromium installed
+        # (tests/test_mcp_launch_refusal.py, tests/test_ps198_cert_trust_api_lanes.py),
+        # so a chromium arm would refuse before the behaviour those files exist
+        # to test could run — inverting suites that own other lanes' semantics.
+        #
         # Stamped BEFORE the call: it is what tells a verdict THIS attempt
         # produced from one an earlier attempt left on record. See
         # api/refusal_report.py — the rule lives there so this lane and the REST
