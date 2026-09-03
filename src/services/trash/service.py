@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from ...core.logging import get_logger
 from .store import (
+    EXPIRY_WARNING_DAYS,
     KIND_BOOKMARK,
     KIND_CERTIFICATE,
     KIND_POOL,
@@ -61,6 +62,16 @@ class TrashService:
 
     def get(self, entry_id: str) -> TrashEntry | None:
         return self.trash.get(entry_id)
+
+    def expiring_within(self, days: int = EXPIRY_WARNING_DAYS) -> list[TrashEntry]:
+        """Entries about to be destroyed, most urgent first — READ ONLY.
+
+        Surfaced here the way :meth:`list` surfaces ``store.list()``, so the UI
+        never reaches past the service into the store. Purely a read: it is
+        what the nav rail asks on every rebuild, and a question asked on every
+        repaint must not be able to change anything.
+        """
+        return self.trash.expiring_within(days)
 
     # --- restore ---
 
