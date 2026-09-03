@@ -108,14 +108,26 @@ on:
     inputs:
       ungoogled_tag:
         description: >-
-          ungoogled-chromium-portablelinux tag to build. PICK BY WHETHER ITS
-          SOURCE EXISTS, NOT BY ITS NUMBER — fingerprint-chromium's
-          148.0.7778.215 tag contains FOUR files (two READMEs, a licence and an
-          image) with no source tree at all, while every other tag carries a
-          real one. 144.0.7559.132-1 is the newest portablelinux tag whose
-          fingerprint-chromium counterpart (144.0.7559.132) has a real tree.
+          ungoogled-chromium-portablelinux tag to build. PICK THE NEWEST TAG
+          OUR PATCHES APPLY TO — verify with `scripts/ps299_rebase_probe.py
+          --tag <tag>`, which measures that in about a minute without a
+          checkout or a compile.
+
+          THE OLD SELECTION RULE IS RETIRED, and this note records why so it is
+          not reinstated. It read "pick by whether fingerprint-chromium has a
+          source tree for it", which pinned us to 144.0.7559.132-1 because
+          adryfish/fingerprint-chromium's newest tag (148.0.7778.215) holds
+          four files and no source. That rule made sense only while we took the
+          patches FROM that upstream. Upstream is DEAD (last commit 2026-06-21)
+          and PS-299 rebased the 16 patches onto 152 ourselves, so the
+          constraint is now OUR patch set, not their release cadence.
+
+          A TAG WITH NO GITHUB RELEASE IS FINE. `actions/checkout` resolves a
+          GIT REF, and the tag list runs ahead of the release feed — on
+          2026-09-03 the newest tag was 152.0.7977.75-1 while releases/latest
+          was still 152.0.7977.64-1.
         required: true
-        default: "144.0.7559.132-1"
+        default: "152.0.7977.75-1"
       trees:
         description: >-
           Which trees to build. "both" runs the instrument check and then the
@@ -192,9 +204,21 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  # The fingerprint-chromium tag our 16 patches were vendored from. Recorded
-  # here so the manifest can state the exact provenance of the patch set rather
-  # than leaving a reader to guess which upstream revision they came from.
+  # The fingerprint-chromium tag our 16 patches were ORIGINALLY vendored from.
+  # Recorded here so the manifest can state the exact provenance of the patch
+  # set rather than leaving a reader to guess which upstream revision they came
+  # from.
+  #
+  # ⚠️ THIS IS A PROVENANCE STAMP, NOT A BUILD TARGET, and after PS-299 the two
+  # no longer coincide. The patches were vendored from fingerprint-chromium
+  # 144.0.7559.132 and then REBASED BY US onto Chromium 152 — that upstream is
+  # dead (last commit 2026-06-21; its newest tag ships no source tree), so no
+  # fingerprint-chromium tag corresponds to what we now build. The value stays
+  # at the last real upstream revision because that is the honest answer to
+  # "where did these patches come from"; where they currently APPLY is the
+  # `ungoogled_tag` input, and `scripts/ps299_rebase_probe.py` is what measures
+  # it. Do not "fix" this to match the ungoogled tag — that would assert an
+  # upstream revision that does not exist.
   FINGERPRINT_TAG: "144.0.7559.132"
 
 jobs:
