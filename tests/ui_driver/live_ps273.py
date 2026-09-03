@@ -47,11 +47,15 @@ WHAT IT DRIVES
    dialog must CLOSE (a repeat is not a refusal) and the repeat must still be
    accounted for in the Activity Log — the case the inline report structurally
    cannot cover.
-8. The whole-batch ``IncoherentProfile`` refusal is NOT reachable from the
+8. A FOURTH round: a paste that repeats names which are then REFUSED. The
+   durable record must not claim those names were created — the defect PR
+   #209's second round shipped, where the repeat line's wording asserted an
+   OUTCOME while `repeats` only knows about the PASTE.
+9. The whole-batch ``IncoherentProfile`` refusal is NOT reachable from the
    dropdown (it is narrowed), so that arm is recorded as NOT COVERED below
    rather than faked.
-9. The dialog is dismissed and the Activity Log is read for the durable
-   per-name record (AC3), for refusals AND for repeats.
+10. The dialog is dismissed and the Activity Log is read for the durable
+    per-name record (AC3), for refusals AND for repeats.
 
 THE TRAP THIS SCRIPT AVOIDS, STATED UP FRONT
 --------------------------------------------
@@ -137,6 +141,25 @@ REPEAT_PASTE = ", ".join(REPEAT_NAMES + REPEAT_NAMES + ["bad/name"])
 #: overflow line — comfortably under this. Chosen as a CEILING that the
 #: uncapped 40-repeat build already fails, so the check is falsifiable.
 MAX_ERROR_HEIGHT = 130
+
+#: ROUND 4 — the false-creation-claim paste (PR #209 review round 2). A
+#: repeated name that is REFUSED. `repeats` is a property of the PASTE, so the
+#: build under review wrote "was listed more than once - created once" for
+#: every repeated name whether or not it was created — a durable log line
+#: claiming `bad/name` (a string `validate_profile_name` refuses precisely
+#: because it can never be a profile) had been created, one row under the line
+#: saying it had not. Driven rather than reasoned, because the claim's whole
+#: harm is that it SURVIVES the dialog and is what the operator reads later.
+#:
+#: The two `zz*/x` names are deliberately INVALID: parse_event hoists a known
+#: profile name out of the message into the row's own column, so a name that
+#: IS a profile (alpha) has its text split across nodes and cannot be
+#: name-anchored in a negative assertion. An invalid name is never in the
+#: roster, so its line stays whole and the negative is exact. `alpha` is in the
+#: paste too — it exercises the already-exists cause — and is covered by the
+#: COUNT check instead, which is hoist-proof.
+FALSE_CLAIM_PASTE = "alpha, alpha, zz1/x, zz1/x, zz2/x, zz2/x, omega"
+CLAIM = "was listed more than once - created once"
 
 #: The two reason sentences that must reach the operator's eyes, verbatim.
 REASON_EXISTS = "a profile with that name exists"
@@ -577,6 +600,123 @@ def main() -> int:
                         "the clean batch really did create both names",
                         "delta" in clean_log and "gamma" in clean_log,
                         "the repeat cost neither creation",
+                    )
+                )
+
+            # --- ROUND 4: a repeated name that was REFUSED -----------------
+            #
+            # PR #209 review round 2's blocking defect, driven. `repeats` is
+            # computed from the PASTE before bulk_create runs, so the record
+            # was written with the creating wording for every repeated name
+            # regardless of outcome: a durable line saying `zz1/x` — which
+            # cannot be a profile at all — had been "created once", sitting one
+            # row below the refusal line saying it had not been created. The
+            # harm is entirely in the DURABLE surface, so this round is read
+            # from the Activity Log after the dialog is gone, not from the
+            # dialog.
+            print("\n  --- round 4: a repeated name that is REFUSED ---")
+            if not _open_bulk(drv):
+                results.append(
+                    _report("the dialog re-opens for round 4", False, "could not re-open")
+                )
+            else:
+                typed4 = _retype(drv, 0, FALSE_CLAIM_PASTE)
+                results.append(
+                    _report(
+                        "the mixed paste reaches the real field",
+                        "zz1/x" in typed4 and "alpha" in typed4,
+                        f"field holds {typed4!r}",
+                    )
+                )
+                drv.press("[ create ]", settle_ms=4000)
+                shown4 = _text_in_dialog(drv)
+                drv.screenshot("/tmp/ps273-refused-repeat-inline.png")
+                print("  screenshot: /tmp/ps273-refused-repeat-inline.png")
+                # The INLINE line must not assert an outcome either — it
+                # renders directly under the refusal lines and would otherwise
+                # contradict them on screen.
+                results.append(
+                    _report(
+                        "the inline repeats line does not claim an outcome "
+                        "for names refused right above it",
+                        "entered once" not in shown4
+                        and "attempted once" in shown4,
+                        "the repeats line states the ATTEMPT; the refusal "
+                        "lines above it and the log lines behind it carry the "
+                        "outcome, so the two surfaces cannot disagree",
+                    )
+                )
+                if drv.has_button("[ cancel ]"):
+                    drv.press("[ cancel ]", settle_ms=3000)
+                log4 = _log_lines(drv)
+                drv.screenshot("/tmp/ps273-refused-repeat-log.png")
+                print("  screenshot: /tmp/ps273-refused-repeat-log.png")
+
+                # THE NEGATIVE, anchored per name. zz1/x and zz2/x are invalid
+                # names, so parse_event never hoists them into the row's own
+                # column and their lines stay whole — which is what makes a
+                # name-anchored negative exact here.
+                bad_lines = [
+                    ln
+                    for ln in log4.split("\n")
+                    if ("zz1/x" in ln or "zz2/x" in ln) and "listed more than once" in ln
+                ]
+                results.append(
+                    _report(
+                        "the durable record does NOT claim a refused repeat "
+                        "was created",
+                        bool(bad_lines) and not any(CLAIM in ln for ln in bad_lines),
+                        f"{len(bad_lines)} repeat line(s) for the refused "
+                        f"names; none says 'created once'. A string containing "
+                        f"'/' can never be a profile, so that claim named a "
+                        f"thing the system cannot have made.",
+                    )
+                )
+                results.append(
+                    _report(
+                        "...and the repeat is STILL recorded, with what "
+                        "actually happened",
+                        any("not created" in ln for ln in bad_lines),
+                        "the operator did type the name twice and the inline "
+                        "cap defers to this record — so the line is corrected, "
+                        "not dropped",
+                    )
+                )
+                # The already-exists repeat (`alpha`) is read by ADJACENCY
+                # rather than by name. alpha IS in the roster, so parse_event
+                # hoists it into the row's own profile column and its message
+                # node no longer carries the name — the row renders as two
+                # adjacent nodes, "<stamp>alpha" then the bare message. A
+                # global "no 'created once' anywhere" check is WRONG here and
+                # was measured wrong: rounds 2 and 3 created their repeats
+                # legitimately and their lines are still in this region, so
+                # that check fails against a CORRECT build. Pairing the
+                # message with the profile column above it is the exact
+                # question.
+                rows = [ln.strip() for ln in log4.split("\n") if ln.strip()]
+                alpha_repeat = [
+                    rows[i]
+                    for i in range(1, len(rows))
+                    if "listed more than once" in rows[i]
+                    and rows[i - 1].endswith("alpha")
+                ]
+                results.append(
+                    _report(
+                        "the hoisted already-exists repeat does not claim a "
+                        "creation either",
+                        bool(alpha_repeat)
+                        and not any("created once" in ln for ln in alpha_repeat),
+                        f"alpha was listed twice and created ZERO times; "
+                        f"{len(alpha_repeat)} row(s) found under its profile "
+                        f"column, none claiming a creation",
+                    )
+                )
+                results.append(
+                    _report(
+                        "the batch still happened — 'omega' was created",
+                        "omega" in log4,
+                        "correcting the repeat record must not cost the "
+                        "successes",
                     )
                 )
 
