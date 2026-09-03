@@ -96,7 +96,7 @@ ENV_RECORD = f"""\
 == CPU as the RUNNER sees it ==
 nproc:            32
 nproc --all:      32
-Model name:                           13th Gen Intel(R) Core(TM) i9-14900K
+Model name:                           Synthetic(R) Fixture(TM) CPU F0-0000X
 CPU(s):                               32
 
 == SOURCE PROVENANCE ==
