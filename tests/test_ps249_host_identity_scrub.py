@@ -654,3 +654,124 @@ def test_the_borrow_never_republishes_the_values_this_ticket_removes(
             "Actions log, both of which are world-readable — republishing the "
             "value this ticket exists to remove"
         )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# THE ROUND-3 BLOCKER: the digest tool must be RESOLVED, not assumed.
+#
+# `sha256sum` ships with GNU coreutils, so it is present on Linux and ABSENT on
+# macOS, which carries `shasum`. Hardcoding it made every macOS caller fall
+# through to the `unknown` path, and because `is_readable()` correctly refuses
+# `unknown`, that REFUSED EVERY BORROW — defect 1's exact symptom reached by a
+# different route, in the very file written to cure it.
+#
+# It shipped to the approval gate because a Linux-only run structurally cannot
+# see it, and nothing pinned the behaviour. These two tests are that pin: they
+# force each branch by CONSTRUCTING A PATH, so a Linux runner exercises the
+# macOS and openssl-only code paths too.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# The minimum a POSIX shell script needs, so a restricted PATH can hide the
+# digest tools without breaking the script itself.
+_DIGEST_TEST_ESSENTIALS = (
+    "bash", "sh", "cat", "head", "grep", "sed", "awk", "cut", "tr",
+    "mkdir", "rm", "chmod", "od", "env", "printf", "dd",
+)
+_DIGEST_TOOLS = ("sha256sum", "shasum", "openssl")
+
+
+def _restricted_path(tmp_path: Path, name: str, available: tuple[str, ...]) -> Path:
+    """A PATH directory holding the shell essentials plus only `available`.
+
+    Absence is what matters, so the tools are genuinely NOT on the PATH rather
+    than shadowed by a failing stub: `command -v` must not find them, which is
+    the condition the resolver actually branches on.
+    """
+    binroot = tmp_path / f"bin-{name}"
+    binroot.mkdir(parents=True, exist_ok=True)
+    for tool in _DIGEST_TEST_ESSENTIALS + available:
+        found = shutil.which(tool)
+        if found:
+            link = binroot / tool
+            if not link.exists():
+                link.symlink_to(found)
+    return binroot
+
+
+def _pseudonymise_on_path(binroot: Path, salt: Path, value: str) -> str:
+    proc = subprocess.run(
+        [str(binroot / "bash"), "-c",
+         f'. "{HOST_ID_SH}"; pseudonymise "$1"', "_", value],
+        env={"PATH": str(binroot), "HOME": str(salt.parent),
+             "PS218_HOST_SALT_FILE": str(salt)},
+        capture_output=True, text=True, encoding="utf-8", timeout=60,
+    )
+    return proc.stdout.strip()
+
+
+@pytest.mark.skipif(
+    shutil.which("sha256sum") is None or shutil.which("openssl") is None,
+    reason="needs sha256sum and openssl present to build the alternate PATHs",
+)
+def test_every_digest_tool_yields_the_same_label_so_a_record_crosses_platforms(tmp_path):
+    """A record written where only one tool exists must compare EQUAL to one
+    read where only another does.
+
+    This is the invariant the hardcoded `sha256sum` broke. All three commands
+    compute the same SHA-256 over the same bytes — the digest is a property of
+    the input, not of the tool — but their OUTPUT FORMATS differ, and `openssl`
+    prefixes its line (`SHA2-256(stdin)= <hex>`). A positional `cut` is correct
+    for the first two and silently wrong for the third: it would emit a fragment
+    of the prefix and hand THAT out as a host label, so a Linux-written record
+    would stop matching itself. The hex run must be extracted by pattern.
+    """
+    salt = tmp_path / "salt"
+    salt.write_text("0123456789abcdef" * 4, encoding="utf-8")
+
+    labels = {}
+    for tool in _DIGEST_TOOLS:
+        if shutil.which(tool) is None:
+            continue
+        binroot = _restricted_path(tmp_path, tool, (tool,))
+        labels[tool] = _pseudonymise_on_path(binroot, salt, FAKE_HOSTNAME)
+
+    assert len(labels) >= 2, (
+        "fewer than two digest tools were exercisable, so this test proved "
+        f"nothing about portability: {labels}"
+    )
+    for tool, label in labels.items():
+        assert label.startswith("anon-"), (
+            f"{tool} did not produce a usable label ({label!r}) — a host where "
+            "only this tool exists would refuse every borrow"
+        )
+    assert len(set(labels.values())) == 1, (
+        "the digest tools disagree, so a record written on one platform would "
+        f"no longer match itself when read on another: {labels}"
+    )
+
+
+@pytest.mark.skipif(
+    shutil.which("sha256sum") is None,
+    reason="needs a real digest tool present to build the restricted PATH",
+)
+def test_with_no_digest_tool_at_all_it_fails_closed_and_never_emits_the_value(tmp_path):
+    """Fail-closed survives the portability fix.
+
+    With no digest tool the label must be `unknown` — which `is_readable()`
+    refuses, so a borrow is REFUSED LOUDLY rather than silently comparing two
+    constants. It must NEVER fall back to the real value to keep working.
+    """
+    salt = tmp_path / "salt"
+    salt.write_text("0123456789abcdef" * 4, encoding="utf-8")
+
+    binroot = _restricted_path(tmp_path, "none", ())
+    label = _pseudonymise_on_path(binroot, salt, FAKE_HOSTNAME)
+
+    assert label == "unknown", (
+        f"with no digest tool the label was {label!r}, not the fail-closed "
+        "`unknown` that is_readable() refuses"
+    )
+    assert FAKE_HOSTNAME not in label, (
+        "the value was emitted as its own label when no digest tool existed — "
+        "a fallback to the real value is the one outcome the scrub forbids"
+    )
