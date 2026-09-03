@@ -693,7 +693,27 @@ class App:
             engine_panel=engine_panel,
             version_panel=self._build_version_panel(),
             on_logo_click=self._on_logo_click,
+            trash_expiring=self._trash_expiring_count(),
         )
+
+    def _trash_expiring_count(self) -> int:
+        """How many trashed entries are inside the near-expiry window.
+
+        Asked on every sidebar rebuild — which is navigation and refresh, both
+        paths that already exist, so NO timer and NO polling loop is added for
+        this. The query is read-only by construction (see
+        ``TrashStore.expiring_within``), which is what makes it safe to ask on
+        a repaint.
+
+        Never raises. A count is decoration on a rail that must paint; a
+        corrupt or quarantined trash.json has to cost the operator the badge,
+        not the window.
+        """
+        try:
+            return len(self.trash_service.expiring_within())
+        except Exception:
+            logger.exception("Could not read the trash near-expiry count")
+            return 0
 
     def _update_button(self, label: str) -> ft.Control:
         # full-width, single-line: the sidebar is only ~200px so a default
@@ -1398,6 +1418,10 @@ class App:
                 )
         self._refresh_profiles()
         self._render_active_page()
+        # A restored entry is no longer counting down, so the rail's badge is
+        # stale the instant this returns. Rebuilt through the SAME path
+        # navigation and the engine rows already use — no timer, no poll.
+        self._refresh_sidebar()
         self._safe_update()
 
     def _delete_from_trash_permanently(self, entry_id: str) -> None:
@@ -1412,6 +1436,7 @@ class App:
             if ok:
                 self._log(f"permanently deleted {entry.label}: {entry.name}")
             self._render_active_page()
+            self._refresh_sidebar()
             self._safe_update()
 
         # This dialog DOES claim irreversibility, because this path really is
@@ -1443,6 +1468,7 @@ class App:
             deleted = self.trash_service.empty()
             self._log(f"emptied trash ({deleted} item(s))")
             self._render_active_page()
+            self._refresh_sidebar()
             self._safe_update()
 
         open_confirm_dialog(
@@ -4871,6 +4897,15 @@ class App:
             self.state.current_page = 1
             self._refresh_profiles()
             self._update_stats()
+            # The wipe PURGES THE TRASH IN FULL (wipe_all_profiles ->
+            # _purge_trash_for_wipe -> trash.clear()), so nothing is counting
+            # down any more — same reasoning as the three trash handlers. Left
+            # out, the rail keeps asserting "N items are about to be destroyed"
+            # over a trash that has just been destroyed in full, until the
+            # operator's next navigation happens to rebuild it. An operator who
+            # has typed DELETE is the last person who should be told something
+            # recoverable survives.
+            self._refresh_sidebar()
 
         open_wipe_confirm_dialog(self.page, count, _do_wipe)
 
