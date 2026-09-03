@@ -138,6 +138,36 @@ def launch_env(monkeypatch, tmp_path):
             argv.append(list(args))
             self.pid = 4242
 
+    def _pin_platform(name: str) -> None:
+        """Pin the OS the arg builder branches on, coherently.
+
+        The Chromium arg builder is heavily platform-branched (``IS_LINUX``
+        gates ``--appimage-extract-and-run`` and the SwiftShader block,
+        ``not IS_LINUX`` gates ``.persona-search-ext``, ``IS_MACOS`` gates the
+        keychain flags, ``supports_linux_desktop_integration`` gates
+        ``--class=``), so an argv claim is only meaningful against a NAMED
+        platform. Pinning all four together is what keeps the pinned argv
+        coherent — forcing the desktop entry on while leaving ``IS_LINUX`` at
+        the runner's real value describes a platform that does not exist.
+
+        ``_host_display_scale`` reads real CoreGraphics on macOS and the real
+        system DPI on Windows, so a HiDPI runner would append
+        ``--force-device-scale-factor`` that no other runner emits; pin it to
+        1.0. ``no_window_kwargs`` touches ``subprocess.CREATE_NO_WINDOW``,
+        which only exists on Windows, so it must be neutralised whenever the
+        Windows arm is pinned from another host.
+        """
+        monkeypatch.setattr(process._platform, "IS_LINUX", name == "linux")
+        monkeypatch.setattr(process._platform, "IS_MACOS", name == "macos")
+        monkeypatch.setattr(process._platform, "IS_WINDOWS", name == "windows")
+        monkeypatch.setattr(
+            process._platform,
+            "supports_linux_desktop_integration",
+            lambda: name == "linux",
+        )
+        monkeypatch.setattr(process, "_host_display_scale", lambda: 1.0)
+        monkeypatch.setattr(process._platform, "no_window_kwargs", lambda: {})
+
     monkeypatch.setattr(process.subprocess, "Popen", _FakePopen)
     monkeypatch.setattr(
         process, "popen_in_new_session", lambda args, **kw: _FakePopen(args, **kw)
@@ -149,6 +179,7 @@ def launch_env(monkeypatch, tmp_path):
         data_dir = data
         apps_dir = home / ".local/share/applications"
         spawned = argv
+        pin_platform = staticmethod(_pin_platform)
 
         @staticmethod
         def use(proxy):
@@ -156,11 +187,19 @@ def launch_env(monkeypatch, tmp_path):
 
         @staticmethod
         def profile_files(name) -> list[str]:
+            """Relative paths, POSIX-separated on EVERY platform.
+
+            ``relative_to`` yields an ``os.sep``-joined string, so on Windows a
+            bare ``str()`` gives ``Default\\Preferences`` and every ``"…/…" in
+            files`` assertion below is False for a reason that has nothing to do
+            with the product — including the AC6 falsification control, which
+            would then stop guarding anything there.
+            """
             root = data / name
             if not root.exists():
                 return []
             return sorted(
-                str(p.relative_to(root))
+                p.relative_to(root).as_posix()
                 for p in root.rglob("*")
                 if p.is_file()
             )
@@ -333,74 +372,179 @@ def test_the_cert_session_spy_does_fire_on_a_launch_that_proceeds(
 
 
 def _normalise(argv, profile_dir, data_dir):
-    return [
+    """Mask the machine-specific values, and make separators comparable.
+
+    ``profile_dir`` reaches argv ``os.sep``-joined (``--user-data-dir=`` and
+    every ``--load-extension=`` entry), so on Windows the extension list is
+    ``<PROFILE>\\.persona-gpu-ext``. The pinned lists below are written with
+    ``/``, which is a presentation choice, not a claim about the product — so
+    normalise the separator here rather than pinning three copies of the same
+    list that differ only in a slash.
+    """
+    out = [
         a.replace(str(profile_dir), "<PROFILE>").replace(str(data_dir), "<DATA>")
         for a in argv
     ]
+    if os.sep != "/":
+        out = [a.replace(os.sep, "/") for a in out]
+    return out
 
 
-#: The FULL argv a launched profile produced before the hoist, captured from
-#: pristine ``main`` (14c9b24) with a DE/Europe-Berlin proxy and tmp paths
-#: normalised. Pinned as a whole LIST, not as "contains --timezone": the claim
-#: is that the hoist changed nothing about a launch that proceeds, and only
-#: full-list equality can carry that claim.
-_PRISTINE_ARGV = [
-    "<ENGINE>",
-    "--appimage-extract-and-run",
-    "--user-data-dir=<PROFILE>",
-    "--fingerprint=<SEED>",
-    "--fingerprint-platform=windows",
-    "--fingerprint-brand=Chrome",
-    "--lang=de-DE",
-    "--accept-lang=de-DE,de",
-    (
-        "--load-extension=<PROFILE>/.persona-native-ext,"
-        "<PROFILE>/.persona-locale-ext,<PROFILE>/.persona-voice-ext,"
-        "<PROFILE>/.persona-stealth-ext,<PROFILE>/.persona-measuretext-ext,"
-        "<PROFILE>/.persona-audio-ext,<PROFILE>/.persona-device-ext,"
-        "<PROFILE>/.persona-webgl-ext,<PROFILE>/.persona-gpu-ext,"
-        "<PROFILE>/.persona-canvas-ctx-ext,<PROFILE>/.persona-geo-ext"
-    ),
-    "--no-first-run",
-    "--no-default-browser-check",
-    "--disable-search-engine-choice-screen",
-    "--restore-last-session",
-    "--hide-crash-restore-bubble",
-    "--force-dark-mode",
-    "--disable-backgrounding-occluded-windows",
-    "--disable-renderer-backgrounding",
-    "--disable-background-timer-throttling",
-    "--use-gl=angle",
-    "--use-angle=swiftshader",
-    "--enable-unsafe-swiftshader",
-    "--password-store=basic",
-    "--use-mock-keychain",
-    "--disable-threaded-animation",
-    "--animation-duration-scale=0",
-    "--wm-window-animations-disabled",
-    "--disable-gpu-vsync",
-    "--class=<WMCLASS>",
-    "--timezone=Europe/Berlin",
-    "--proxy-server=socks5://1.2.3.4:1080",
-    "--dns-over-https-mode=off",
-    "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
-    "--dns-prefetch-disable",
-    "--disable-quic",
-    (
-        "--disable-features=CalculateNativeWinOcclusion,VaapiVideoDecoder,"
-        "VaapiVideoEncoder,DnsOverHttps,EnableQuic"
-    ),
-]
+#: The FULL argv a launched profile produced BEFORE the hoist, captured from
+#: pristine ``main`` with a DE/Europe-Berlin proxy and tmp paths normalised —
+#: one list per platform, because the Chromium arg builder branches on the OS
+#: and an argv claim is only meaningful against a NAMED platform. Pinned as
+#: whole LISTS, not as "contains --timezone": the claim is that the hoist
+#: changed nothing about a launch that proceeds, and only full-list equality
+#: can carry that claim.
+#:
+#: Re-baselined per platform by driving pristine ``main`` in a ``git worktree``
+#: with the same four platform seams pinned that ``Env.pin_platform`` pins; all
+#: three came back byte-identical to the post-hoist tree, which is the AC4
+#: measurement itself.
+_PRISTINE_ARGV = {
+    "linux": [
+        "<ENGINE>",
+        "--appimage-extract-and-run",
+        "--user-data-dir=<PROFILE>",
+        "--fingerprint=<SEED>",
+        "--fingerprint-platform=windows",
+        "--fingerprint-brand=Chrome",
+        "--lang=de-DE",
+        "--accept-lang=de-DE,de",
+        (
+            "--load-extension=<PROFILE>/.persona-native-ext,"
+            "<PROFILE>/.persona-locale-ext,<PROFILE>/.persona-voice-ext,"
+            "<PROFILE>/.persona-stealth-ext,<PROFILE>/.persona-measuretext-ext,"
+            "<PROFILE>/.persona-audio-ext,<PROFILE>/.persona-device-ext,"
+            "<PROFILE>/.persona-webgl-ext,<PROFILE>/.persona-gpu-ext,"
+            "<PROFILE>/.persona-canvas-ctx-ext,<PROFILE>/.persona-geo-ext"
+        ),
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-search-engine-choice-screen",
+        "--restore-last-session",
+        "--hide-crash-restore-bubble",
+        "--force-dark-mode",
+        "--disable-backgrounding-occluded-windows",
+        "--disable-renderer-backgrounding",
+        "--disable-background-timer-throttling",
+        "--use-gl=angle",
+        "--use-angle=swiftshader",
+        "--enable-unsafe-swiftshader",
+        "--password-store=basic",
+        "--use-mock-keychain",
+        "--disable-threaded-animation",
+        "--animation-duration-scale=0",
+        "--wm-window-animations-disabled",
+        "--disable-gpu-vsync",
+        "--class=<WMCLASS>",
+        "--timezone=Europe/Berlin",
+        "--proxy-server=socks5://1.2.3.4:1080",
+        "--dns-over-https-mode=off",
+        "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+        "--dns-prefetch-disable",
+        "--disable-quic",
+        (
+            "--disable-features=CalculateNativeWinOcclusion,VaapiVideoDecoder,"
+            "VaapiVideoEncoder,DnsOverHttps,EnableQuic"
+        ),
+    ],
+    # macOS: no AppImage flag, no SwiftShader block, no Wayland --class; the
+    # keychain pair IS emitted (IS_MACOS), and .persona-search-ext IS built
+    # (the `not IS_LINUX` branch).
+    "macos": [
+        "<ENGINE>",
+        "--user-data-dir=<PROFILE>",
+        "--fingerprint=<SEED>",
+        "--fingerprint-platform=windows",
+        "--fingerprint-brand=Chrome",
+        "--lang=de-DE",
+        "--accept-lang=de-DE,de",
+        (
+            "--load-extension=<PROFILE>/.persona-native-ext,"
+            "<PROFILE>/.persona-locale-ext,<PROFILE>/.persona-voice-ext,"
+            "<PROFILE>/.persona-stealth-ext,<PROFILE>/.persona-measuretext-ext,"
+            "<PROFILE>/.persona-search-ext,<PROFILE>/.persona-audio-ext,"
+            "<PROFILE>/.persona-device-ext,<PROFILE>/.persona-webgl-ext,"
+            "<PROFILE>/.persona-gpu-ext,<PROFILE>/.persona-canvas-ctx-ext,"
+            "<PROFILE>/.persona-geo-ext"
+        ),
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-search-engine-choice-screen",
+        "--restore-last-session",
+        "--hide-crash-restore-bubble",
+        "--force-dark-mode",
+        "--disable-backgrounding-occluded-windows",
+        "--disable-renderer-backgrounding",
+        "--disable-background-timer-throttling",
+        "--password-store=basic",
+        "--use-mock-keychain",
+        "--timezone=Europe/Berlin",
+        "--proxy-server=socks5://1.2.3.4:1080",
+        "--dns-over-https-mode=off",
+        "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+        "--dns-prefetch-disable",
+        "--disable-quic",
+        "--disable-features=CalculateNativeWinOcclusion,DnsOverHttps,EnableQuic",
+    ],
+    # Windows: as macOS minus the keychain pair (that block is IS_MACOS-gated).
+    "windows": [
+        "<ENGINE>",
+        "--user-data-dir=<PROFILE>",
+        "--fingerprint=<SEED>",
+        "--fingerprint-platform=windows",
+        "--fingerprint-brand=Chrome",
+        "--lang=de-DE",
+        "--accept-lang=de-DE,de",
+        (
+            "--load-extension=<PROFILE>/.persona-native-ext,"
+            "<PROFILE>/.persona-locale-ext,<PROFILE>/.persona-voice-ext,"
+            "<PROFILE>/.persona-stealth-ext,<PROFILE>/.persona-measuretext-ext,"
+            "<PROFILE>/.persona-search-ext,<PROFILE>/.persona-audio-ext,"
+            "<PROFILE>/.persona-device-ext,<PROFILE>/.persona-webgl-ext,"
+            "<PROFILE>/.persona-gpu-ext,<PROFILE>/.persona-canvas-ctx-ext,"
+            "<PROFILE>/.persona-geo-ext"
+        ),
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-search-engine-choice-screen",
+        "--restore-last-session",
+        "--hide-crash-restore-bubble",
+        "--force-dark-mode",
+        "--disable-backgrounding-occluded-windows",
+        "--disable-renderer-backgrounding",
+        "--disable-background-timer-throttling",
+        "--timezone=Europe/Berlin",
+        "--proxy-server=socks5://1.2.3.4:1080",
+        "--dns-over-https-mode=off",
+        "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+        "--dns-prefetch-disable",
+        "--disable-quic",
+        "--disable-features=CalculateNativeWinOcclusion,DnsOverHttps,EnableQuic",
+    ],
+}
 
 
-def test_the_happy_path_argv_is_byte_identical_to_before_the_hoist(launch_env):
+@pytest.mark.parametrize("platform", sorted(_PRISTINE_ARGV))
+def test_the_happy_path_argv_is_byte_identical_to_before_the_hoist(
+    launch_env, platform
+):
     """A launch that PROCEEDS must be unchanged, argument for argument.
+
+    Run for EACH platform the product ships on, with the OS seams pinned — not
+    for whichever OS the runner happens to be. An argv recorded on Linux and
+    asserted unconditionally is coherent on no platform but the one it was
+    recorded on, and it is the runner, not the product, that decides whether it
+    passes.
 
     Two values are masked and neither is the point of this test: the engine
     path (an absolute install path) and the fingerprint seed / WM class (salted
     per install, so they legitimately differ between machines). Everything
     else — including order — is compared verbatim.
     """
+    launch_env.pin_platform(platform)
     launch_env.use(_proxy(**_GOOD))
 
     process.spawn_browser(Profile(name="happy", proxy="p1"))
@@ -419,9 +563,10 @@ def test_the_happy_path_argv_is_byte_identical_to_before_the_hoist(launch_env):
     ]
     argv = ["--class=<WMCLASS>" if a == "<WMCLASS>" else a for a in argv]
 
-    assert argv == _PRISTINE_ARGV, (
-        "the hoist changed a launch that PROCEEDS. This is meant to be a move "
-        "of WHERE the gate is asked, not a change to what is launched."
+    assert argv == _PRISTINE_ARGV[platform], (
+        f"the hoist changed a launch that PROCEEDS on {platform}. This is meant "
+        "to be a move of WHERE the gate is asked, not a change to what is "
+        "launched."
     )
 
 
@@ -587,7 +732,18 @@ def test_the_extension_builders_really_do_write_when_a_launch_proceeds(
     process.spawn_browser(Profile(name="writes", proxy="p1"))
 
     files = launch_env.profile_files("writes")
+    # ``profile_files`` yields POSIX-separated relative paths on every platform,
+    # so this really does take the DIRECTORY component. It used to split an
+    # ``os.sep``-joined string on "/", which on Windows is a no-op: the set then
+    # held FILE paths, and 11 extension dirs x >=2 files each cleared ">= 10"
+    # without measuring what the assertion claims — the anti-vacuity control
+    # itself going vacuous (PS-11's "a green test is a claim about the
+    # assertion"). Assert the shape as well as the count so it cannot recur.
     ext_dirs = {f.split("/")[0] for f in files if f.startswith(".persona-")}
+    assert all("/" not in d and d.endswith("-ext") for d in ext_dirs), (
+        "these are file paths, not extension directories — the split did not "
+        f"take a directory component: {sorted(ext_dirs)}"
+    )
     assert len(ext_dirs) >= 10, (
         f"expected the full extension build, saw {sorted(ext_dirs)}"
     )
