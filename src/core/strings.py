@@ -1,3 +1,30 @@
+#: OUR name for the Chromium engine, shown to the OPERATOR only.
+#:
+#: ⚠️ THIS NAME MUST NEVER REACH ANYTHING A WEB PAGE CAN READ (PS-224).
+#:
+#: To a site, the browser presents as Chrome and nothing else — that is what
+#: ``--fingerprint-brand=Chrome`` is for (``services/browser/process.py`` and
+#: ``services/verify/chromium_tier.py``). A product-specific string appearing in
+#: a user agent, a brand list, or any JS-reachable surface is a UNIQUE MARKER
+#: identifying every one of our users, which is the exact opposite of what this
+#: product exists to do. So this constant is imported by the UI layer and by
+#: nothing on the launch path: ``src/services/browser/`` and
+#: ``src/services/engine/`` must never import ``core.strings``, and a test pins
+#: that (``tests/test_ps224_engine_name.py``).
+#:
+#: IT IS A DISPLAY VALUE, NEVER A STORED ONE. The persisted engine key is
+#: ``"chromium"`` (``models/profile.py:137``, ``verify/snapshot.py``,
+#: ``browser/automation_channel.py``) and is untouched by this name, so an
+#: existing installation's profiles keep resolving after an upgrade. The
+#: dropdown option that displays this string still carries ``key="chromium"``.
+#:
+#: IT IS NOT THE ARTIFACT'S NAME EITHER. ``fpchrome.AppImage``
+#: (``core/platform.py:31``) is the UPSTREAM build's filename, resolved by the
+#: platform layer to find and launch the downloaded binary; renaming it breaks
+#: the download and the launch. It becomes ours only once we ship a binary we
+#: built ourselves.
+CHROMIUM_ENGINE_NAME = "Personium"
+
 STRINGS = {
     "app_name": "persona",
     "app_subtitle": "persona@host:~$",

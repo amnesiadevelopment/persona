@@ -84,13 +84,20 @@ def _requirements() -> None:
 #: part of what is being checked, not just one member of it.
 _OS_OPTIONS = ("windows", "macos", "linux", "android", "ios")
 
-#: ``build_engine_dropdown`` (``src/ui/theme/page.py:150-151``). The visible
-#: text is deliberately NOT the stored key: the option keyed ``chromium``
-#: reads ``Chrome ("fingerprint-chromium")``. That gap is the point of driving
-#: the second dropdown — a technique that assumed label == key would pass on
-#: the OS control and break here.
+#: ``build_engine_dropdown`` (``src/ui/theme/page.py``). The visible text is
+#: deliberately NOT the stored key: the option keyed ``chromium`` reads
+#: ``Chrome ("Personium")``. That gap is the point of driving the second
+#: dropdown — a technique that assumed label == key would pass on the OS
+#: control and break here.
+#:
+#: PS-224 made that gap LOAD-BEARING rather than incidental: the visible text
+#: was renamed from ``fingerprint-chromium`` to our own name while the stored
+#: key stayed ``chromium``, so an existing installation's saved profiles keep
+#: resolving. This pair is what pins that — it drives the real control and
+#: then reads back what the SERVICE LAYER persisted, so a rename that leaked
+#: into the stored value fails here.
 _ENGINE_OPTIONS = (
-    ('Chrome ("fingerprint-chromium")', "chromium"),
+    ('Chrome ("Personium")', "chromium"),
     ('Firefox ("invisible_playwright")', "firefox"),
 )
 
