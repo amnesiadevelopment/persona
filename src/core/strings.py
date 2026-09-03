@@ -35,6 +35,118 @@ STRINGS = {
     "created_profile": "Created: {name}",
     "deleted_profile": "Deleted: {name}",
     "delete_profile_failed": "Could not delete {name}: its data could not be moved to the trash. The profile is unchanged.",
+    # PS-273 — bulk create used to report "created 45, skipped 5" and close the
+    # dialog, so the operator could not find out WHICH five or why. These are
+    # modelled on `delete_profile_failed`: the per-item line names the item and
+    # explains the refusal, rather than contributing to an integer.
+    #
+    # NOTE ON SEVERITY, deliberately: the per-name line below carries no new
+    # severity token, exactly as the aggregate line and "Created: {name}" carry
+    # none — `log_console.severity()` classifies all three as SEV_IDLE and is
+    # not touched here. The interpolated {reason} is data, not a token: it can
+    # in principle contain "fail"/"error" and would then read as SEV_FAIL,
+    # which is honest for a refusal and is not a change to the classifier.
+    # The name LEADS, deliberately. `log_console.parse_event` HOISTS a known
+    # profile name out of the prose into its own column, so "Not created:
+    # {name} - {reason}" renders as "Not created: - {reason}" with a dangling
+    # separator where the name was. (The shipped `delete_profile_failed` has
+    # the same artifact — "Could not delete: its data ..." — so this is not a
+    # deviation from the precedent, it is the precedent's rough edge avoided.)
+    # Leading with the name reads correctly BOTH ways: hoisted it becomes the
+    # profile column beside "not created: {reason}", and un-hoisted (an
+    # invalid name is not in the roster) it reads "bad/name not created:
+    # {reason}".
+    "bulk_create_not_created": "{name} not created: {reason}",
+    # The bulk lane's already-exists reason, deliberately NOT `profile_exists`.
+    #
+    # MEASURED, not stylistic: `log_console.severity()` substring-matches
+    # "ready", and "already" CONTAINS it — so "Profile already exists!" on a
+    # log line classifies as SEV_OK and paints the GREEN SUCCESS DOT next to a
+    # refusal. `profile_exists` never hit this because the single-create lane
+    # renders it into a dialog field, which no classifier reads; this is the
+    # first time that string would reach the Activity Log.
+    #
+    # Changing severity() is explicitly out of scope for PS-273 (it would
+    # re-classify every existing line carrying "already"), so the wording
+    # avoids the token instead — and it is the better line anyway, on the
+    # `delete_profile_failed` model: it says what happened to the EXISTING
+    # profile, which is the operator's real question.
+    "bulk_create_exists": (
+        "a profile with that name exists - the existing one was left unchanged"
+    ),
+    # The dialog's own message. It leads with what ALREADY HAPPENED, because
+    # the dialog now stays open on a partial success and the operator's first
+    # question is whether the 45 that worked need re-submitting. They do not.
+    "bulk_create_partial": (
+        "Created {created} profile{plural} - already saved, no need to submit "
+        "them again. {skipped} name{skipped_plural} not created:"
+    ),
+    "bulk_create_none": "No profiles created. {skipped} name{skipped_plural} refused:",
+    "bulk_create_refusal_line": "  - {name}: {reason}",
+    "bulk_create_more": "  ... and {count} more refusal{plural} - see the Activity Log",
+    # The fallback reason, for a skipped name that arrived without one.
+    #
+    # Deliberately NOT `get_string("error")` ("Error"): this text is
+    # interpolated into a line that reaches the Activity Log, and
+    # `log_console.severity()` matches "error", so the bare word would paint
+    # the RED FAILURE dot — a louder outcome than every other line this lane
+    # writes, on the one case where the lane knows LESS than usual rather than
+    # more. `bulk_create` writes `skipped` and `reasons` together through
+    # `_refuse`, so this is unreachable today and pinned by
+    # test_bulk_create_every_skipped_name_is_explained; it exists so a future
+    # caller that skips a name without a reason still gets a line, and that
+    # line reads as the idle record the rest of the batch does.
+    "bulk_create_no_reason": "no reason was recorded",
+    # Repeats inside the paste are dropped BEFORE the loop, so they appear in
+    # neither list and `created + skipped` is fewer than the rows pasted. Said
+    # out loud rather than left as an unexplained arithmetic gap.
+    #
+    # The DURABLE half, one line per repeated name, on the same model as the
+    # refusal lines above and the bulk-DELETE lane: it is written whether or
+    # not anything was refused, because a clean paste that silently made two
+    # profiles out of three rows is exactly the unexplained arithmetic — and
+    # it is what lets the inline line below be capped without losing anything.
+    # No severity token: this is an ordinary batch record, not a failure.
+    #
+    # TWO STRINGS, NOT ONE, and the split is the point (PR #209 review round
+    # 2). The repeat record is a property of the PASTE — it is computed from
+    # the text before `bulk_create` runs — but "created once" is a claim about
+    # the OUTCOME, and the two are independent: a name can be listed twice and
+    # created zero times. Writing the creating wording for a REFUSED repeat
+    # produced a durable line saying `bad/name` — a string
+    # `validate_profile_name` refuses precisely because it can never be a
+    # profile — had been created, sitting one row below the refusal line that
+    # said it had not. In a wholly-refused batch (one bad os_type refuses
+    # EVERY name, the case this ticket singles out) that was the majority of
+    # what the log held: 200 false "created once" lines against zero profiles.
+    #
+    # The repeat is still worth recording when the name was refused — the
+    # operator did type it twice — so the line is kept and the OUTCOME half of
+    # the wording is corrected, rather than the line being dropped. Neither
+    # wording carries a severity token ("refused" is a SEV_FAIL substring, so
+    # the refused variant says "not created", matching `bulk_create_not_created`).
+    "bulk_create_repeat_logged": "{name} was listed more than once - created once",
+    "bulk_create_repeat_refused_logged": (
+        "{name} was listed more than once - not created"
+    ),
+    # The INLINE half, capped like the refusal list for the same reason: this
+    # renders into a 460px dialog above the controls the operator needs to
+    # correct the paste with.
+    #
+    # "attempted once", not "entered once": this ONE line covers a mixed set —
+    # some repeated names were created, some were refused (their reasons are
+    # in the refusal lines directly above it) — so it must not assert an
+    # outcome for any of them. What is true of every name in the list, whatever
+    # happened next, is that the batch tried it once rather than twice. The
+    # per-name Activity Log lines carry the outcome; this line carries the
+    # arithmetic. Same correction as `bulk_create_repeat_logged` above, one
+    # level softer, applied so the two surfaces cannot disagree.
+    "bulk_create_repeats": (
+        "  ({count} repeated name{plural} in the paste {was} attempted once: {names})"
+    ),
+    "bulk_create_repeats_more": (
+        "  ... and {count} more repeated name{plural} - see the Activity Log"
+    ),
     "updated_profile": "Updated: {old} -> {new}",
     "launching_profile": "Launching {name}...",
     "stopping_profile": "Stopping {name}...",

@@ -1,6 +1,12 @@
 import pytest
 
-from src.services.profile.bulk import bulk_create, parse_names
+from src.core.strings import get_string
+from src.services.profile.bulk import (
+    bulk_create,
+    duplicate_names,
+    parse_names,
+    paste_tokens,
+)
 from src.services.profile.manager import ProfileManager
 
 
@@ -93,5 +99,167 @@ def test_bulk_create_passes_attributes(mgr):
 
 
 def test_bulk_create_empty_list(mgr):
+    # PS-273 widened this ONE assertion, and it is the only shipped assertion
+    # the additive `reasons` key moves. It was a whole-dict equality; every
+    # other assertion in this file and in test_ps187_os_type_write_doors.py
+    # reads `result["skipped"]` / `result["created"]` BY KEY and is unaffected.
+    #
+    # WIDENED RATHER THAN OMITTING `reasons` WHEN EMPTY, deliberately: an
+    # always-present key means a caller writes `result["reasons"]` once and it
+    # works on every batch. A conditionally-present key would make the shape
+    # depend on the outcome — so a caller that indexes it would work on the
+    # failure path and raise KeyError on the SUCCESS path, which is the worst
+    # possible place to put a crash. The `reasons == {}` assertion below is
+    # what pins the empty case now, and it is a stronger claim than the old
+    # equality made: not merely "the dict has this shape" but "nothing was
+    # refused, so nothing is explained".
     result = bulk_create(mgr, [])
-    assert result == {"created": [], "skipped": []}
+    assert result["created"] == []
+    assert result["skipped"] == []
+    assert result["reasons"] == {}
+
+
+# --- PS-273: the reason for each refusal reaches the caller -----------------
+#
+# Each of these asserts the REASON TEXT, not that a key exists. A test that
+# only checked `name in result["reasons"]` would pass just as happily against
+# an implementation that mapped every refusal to the empty string — which is
+# the defect (an unexplained refusal) wearing the fix's shape.
+
+
+def test_bulk_create_reason_for_an_invalid_name(mgr):
+    result = bulk_create(mgr, ["good", "bad/name"])
+
+    assert result["created"] == ["good"]
+    assert result["skipped"] == ["bad/name"]
+    # The sentence validate_profile_name computes, carried out intact — it
+    # names the OFFENDING CHARACTER, which is what makes the paste fixable.
+    assert result["reasons"]["bad/name"] == (
+        "Name contains invalid characters: /"
+    )
+    # And the working name is not explained, because it was not refused.
+    assert "good" not in result["reasons"]
+
+
+def test_bulk_create_reason_for_a_name_that_already_exists(mgr):
+    mgr.add_profile("alpha", "", "windows")
+
+    result = bulk_create(mgr, ["alpha", "beta"])
+
+    assert result["created"] == ["beta"]
+    assert result["skipped"] == ["alpha"]
+    # Routed through core/strings like the delete lane, so the service holds no
+    # user-facing literal of its own.
+    #
+    # `bulk_create_exists`, NOT `profile_exists` — and the difference is
+    # measured, not stylistic: this reason reaches the ACTIVITY LOG, and
+    # `log_console.severity()` substring-matches "ready", which "already"
+    # contains. "Profile already exists!" therefore classifies as SEV_OK and
+    # paints the green SUCCESS dot beside a refusal. severity() is out of
+    # scope for PS-273, so the wording avoids the token. Pinned below.
+    assert result["reasons"]["alpha"] == get_string("bulk_create_exists")
+    assert result["reasons"]["alpha"] == (
+        "a profile with that name exists - the existing one was left unchanged"
+    )
+    from src.ui.log_console import SEV_IDLE, severity
+
+    assert severity(f"Not created: alpha - {result['reasons']['alpha']}") == SEV_IDLE
+    assert severity("Not created: alpha - Profile already exists!") != SEV_IDLE, (
+        "if this ever passes, severity() stopped matching 'ready' inside "
+        "'already' and this lane may go back to using `profile_exists`"
+    )
+
+
+def test_bulk_create_reason_for_an_incoherent_profile(mgr):
+    # A non-canonical os_type is unstorable (PS-187), and the whole batch
+    # shares one os_type — so EVERY name is refused. That whole-batch refusal
+    # is exactly the case that used to reach the operator as a bare integer.
+    names = ["one", "two", "three"]
+
+    result = bulk_create(mgr, names, "", "win")
+
+    assert result["created"] == []
+    assert sorted(result["skipped"]) == sorted(names)
+    # Every refused name carries the reason, and it is the coherence rule's own
+    # sentence — the one that says WHICH spelling to use instead. Asserted on
+    # content, not on presence.
+    for name in names:
+        why = result["reasons"][name]
+        assert "os_type 'win'" in why
+        assert "'windows'" in why, (
+            f"the refusal must name the spelling that WOULD work; got {why!r}"
+        )
+
+
+def test_bulk_create_every_skipped_name_is_explained(mgr):
+    """The invariant, across all three causes in ONE batch.
+
+    This is the claim the dialog rests on: it renders a line per skipped name,
+    so a skipped name with no reason would render a blank explanation.
+    """
+    mgr.add_profile("exists", "", "windows")
+
+    result = bulk_create(mgr, ["fresh", "exists", "bad/name"])
+
+    assert sorted(result["skipped"]) == ["bad/name", "exists"]
+    assert set(result["reasons"]) == set(result["skipped"]), (
+        "reasons must cover exactly the skipped names — no gaps, no extras"
+    )
+    assert all(r.strip() for r in result["reasons"].values()), (
+        "an empty reason is an unexplained refusal wearing the fix's shape"
+    )
+
+
+def test_duplicate_names_reports_repeats_in_the_paste(mgr):
+    # Repeats are dropped BEFORE the loop, so they land in neither list and
+    # `created + skipped` is fewer than the rows pasted. This is what lets the
+    # dialog account for the difference instead of leaving it unexplained.
+    assert duplicate_names("a\nb\na\nc\nb\nb") == ["a", "b"]
+    assert duplicate_names("a\nb\nc") == []
+    # A blank row is not a repeat and is not reported — it is not a name the
+    # operator asked for.
+    assert duplicate_names("a\n\n\n,,\nb") == []
+
+
+def test_parse_names_and_duplicate_names_account_for_every_pasted_row(mgr):
+    """The two halves must agree about what a ROW is, or the dialog reports a
+    repeat the batch never dropped.
+
+    They used to re-implement the same split/strip loop side by side with
+    nothing holding them together — a later edit to one (accepting semicolons,
+    say) would have made ``duplicate_names`` measure against a tokenisation the
+    batch does not use. Both now derive from ``paste_tokens``, and this is the
+    identity that pins it: every non-blank row is either a name the batch
+    attempts or a row dropped as a repeat, with nothing left over.
+    """
+    for text in (
+        "a\nb\na\nc\nb\nb",
+        "a\nb\nc",
+        "a\n\n\n,,\nb",
+        " a \n a ",
+        "alpha, beta, alpha",
+        "one, one, one",
+        "",
+    ):
+        rows = paste_tokens(text)
+        names = parse_names(text)
+        dropped = len(rows) - len(names)
+        assert dropped >= 0, f"more names than rows for {text!r}"
+        # Every non-blank row is either a name the batch attempts or a row
+        # dropped as a repeat, with nothing left over — and every dropped row
+        # is one of the repeats that is REPORTED, so the operator is never
+        # told about a repeat that did not happen and never left with an
+        # unexplained row.
+        assert bool(dropped) == bool(duplicate_names(text)), (
+            f"rows went missing without a repeat to explain them, or a repeat "
+            f"was reported with no row dropped, for {text!r}: {len(rows)} "
+            f"rows, {len(names)} names, repeats={duplicate_names(text)}"
+        )
+        # And every reported repeat is a name the batch really did attempt —
+        # a repeat of a row that never became a name would be a lie on screen.
+        for dupe in duplicate_names(text):
+            assert dupe in names, f"{dupe!r} reported as a repeat but never attempted"
+    # The unit of `duplicate_names` is the NAME, once each — not one entry per
+    # dropped row. Three "a" rows are one repeated name and two dropped rows.
+    assert duplicate_names("a\na\na") == ["a"]
+    assert len(paste_tokens("a\na\na")) - len(parse_names("a\na\na")) == 2
