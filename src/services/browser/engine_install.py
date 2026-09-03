@@ -47,6 +47,38 @@ _WHOLE_BUILD_BYTES = 50_000_000
 # for it; a direct library call with no UI has no session state to defer to.
 _in_use_provider = None  # Callable[[], bool] | None
 
+# The NARROWING oracle (PS-221): WHICH firefox builds running profiles are
+# executing from, rather than merely WHETHER anything is running.
+#
+# A zero-arg callable returning a set of firefox-NN tags, or None. The two
+# answers are not interchangeable and the difference is the whole guard:
+#
+#   set  — every running profile was resolved to a firefox build, and these
+#          are the builds they are on. Every OTHER build is provably not being
+#          executed from and may be reclaimed.
+#   None — at least one running profile could not be resolved. That is
+#          "UNKNOWN", never "using no build", so pruning defers wholesale
+#          exactly as it did before this narrowing existed.
+#
+# Four real populations produce None, all of them ordinary rather than exotic:
+# a stamp that is None (launch_provenance returns None on ANY read failure,
+# deliberately — a wrong stamp is worse than no stamp), a profile carrying no
+# stamp at all (last launched before the record shipped, or imported from an
+# archive), a CHROMIUM stamp (its build string is not comparable to firefox-NN
+# and must not be read as "no firefox build"), and a profile still in
+# `_starting` whose current launch has not been stamped yet. Reading any of
+# those as "not in use" would delete a build out from under a live session —
+# the precise harm the wholesale guard above exists to prevent, and strictly
+# worse than the disk it would reclaim.
+#
+# Unset ⇒ None ⇒ defer wholesale. This one fails CLOSED where _in_use_provider
+# fails open, and the asymmetry is deliberate: an unwired _in_use_provider means
+# "no session state exists to defer to" (a library call with no UI), whereas an
+# unwired _in_use_builds_provider is only ever reached when the OTHER oracle has
+# already said a profile IS running — so "cannot say which build" is the honest
+# reading, and today's wholesale deferral is the correct fallback.
+_in_use_builds_provider = None  # Callable[[], set[str] | None] | None
+
 
 def set_in_use_provider(fn) -> None:
     """Wire the oracle pruning consults before deleting an engine build.
@@ -56,6 +88,19 @@ def set_in_use_provider(fn) -> None:
     clears it (pruning then proceeds unguarded)."""
     global _in_use_provider
     _in_use_provider = fn
+
+
+def set_in_use_builds_provider(fn) -> None:
+    """Wire the NARROWING oracle: which firefox builds running profiles are on.
+
+    `fn` is a zero-arg callable returning a set of firefox-NN tags, or None
+    when that cannot be established for every running profile (see
+    _in_use_builds_provider above for the four populations that produce None).
+    Called once at startup by the UI, which owns both the launcher and the
+    profile store; passing None clears it, and pruning then defers wholesale
+    while anything is running — i.e. exactly the pre-PS-221 behaviour."""
+    global _in_use_builds_provider
+    _in_use_builds_provider = fn
 
 
 def _engine_in_use(log=None) -> bool:
@@ -79,6 +124,55 @@ def _engine_in_use(log=None) -> bool:
                 "no profile running; pruning proceeds"
             )
         return False
+
+
+def _in_use_build_numbers(log=None) -> "set[int] | None":
+    """The firefox build NUMBERS running profiles are executing from, or None.
+
+    None means UNKNOWN — defer wholesale — and it is returned for every case
+    where the answer is not positively established:
+
+    * no narrowing provider is wired (fail CLOSED — see
+      _in_use_builds_provider; this is only reached once _engine_in_use has
+      already said something IS running);
+    * the provider RAISED. An unreadable profile store is not evidence that
+      nothing is running, so unlike _engine_in_use's fail-OPEN default this
+      one fails closed. The two are opposite on purpose: a broken in-use
+      oracle must not wedge disk reclamation forever, but a broken *build*
+      oracle only ever removes a NARROWING — deferring is exactly today's
+      behaviour, so failing closed costs one prune cycle and risks nothing;
+    * the provider itself returned None, i.e. at least one running profile
+      could not be resolved to a firefox build (an absent or None stamp, a
+      chromium stamp, a launch still in flight).
+
+    A tag that does not parse as firefox-NN is dropped from the SET rather
+    than turning the whole answer into None: build_number already answers -1
+    for a non-firefox shape, and a set the prune cannot compare against is
+    just a build it will not spare. The provider is responsible for never
+    handing over a chromium stamp in the first place (it returns None for one,
+    which is the honest reading); this is defence in depth, not the guard."""
+    fn = _in_use_builds_provider
+    if fn is None:
+        return None
+    try:
+        tags = fn()
+    except Exception as e:
+        if log:
+            log(
+                f"Firefox engine: in-use build check failed ({e!r}) — cannot "
+                "say which builds are in use; pruning defers"
+            )
+        return None
+    if tags is None:
+        return None
+    from ..engine.firefox import build_number
+
+    nums = set()
+    for tag in tags:
+        n = build_number(tag)
+        if n >= 0:
+            nums.add(n)
+    return nums
 
 
 def _build_is_whole(build_dir) -> bool:
@@ -604,18 +698,50 @@ def _prune_old_engine_builds(keep: str, log=None) -> None:
     remove; a markerless dir at any OTHER version is a half-finished download,
     left alone.
 
-    Defers entirely while any profile is running (see set_in_use_provider):
+    Defers while a profile is running and the build it is executing from
+    cannot be ruled out (see set_in_use_provider / set_in_use_builds_provider):
     prune keeps the HIGHEST build, so a profile pinned to the PREVIOUS one when
     a new build lands would otherwise have the tree it is executing from
     deleted out from under it. POSIX does not refuse that unlink, so this check
     — not the `except OSError` below — is what actually protects a live
     session. Disk is reclaimed on the next prune once profiles have closed.
 
-    The check is made ONCE, before the loop, so a profile that launches between
-    it and an rmtree below is still exposed — this narrows the window, it does
-    not close it. Closing it needs per-session build provenance, which nothing
-    records today (the launcher keeps only the Popen per name); treat this as a
-    strong default, not a hard guarantee.
+    WHICH BUILD, NOT WHETHER ANYTHING IS RUNNING (PS-221)
+    -----------------------------------------------------
+    This used to defer WHOLESALE on "is any profile running?", so an operator
+    who keeps any profile open never reclaimed a byte. It now asks the sharper
+    question the record can answer: a build no running profile is executing
+    from is reclaimed even while other profiles run.
+
+    A previous version of this docstring said the sharper question could not be
+    asked — "per-session build provenance, which nothing records today (the
+    launcher keeps only the Popen per name)". THAT IS NO LONGER TRUE, and it
+    was left standing after the record shipped. `Profile.last_launch_engine` /
+    `last_launch_build` are written on every launch by a hook the composition
+    root wires (core/container.py → launcher.set_launch_record_hook), covering
+    all three launch lanes. The launcher half of the diagnosis still holds —
+    running_profile_names() returns NAMES — so the live fact is the JOIN of the
+    two: the stamp alone is LAST-launch and is stale for a stopped profile.
+
+    UNKNOWN DEFERS, and that is the load-bearing half. A running profile whose
+    build cannot be established (no stamp, a None stamp, a CHROMIUM stamp whose
+    string is not comparable to firefox-NN, or a launch still in flight and not
+    yet stamped) collapses the answer to None and this prune defers wholesale
+    exactly as it did before. Absence of a reading is not a reading of absence:
+    treating an unstamped running profile as "using no build" would delete a
+    build out from under a live session, which is strictly worse than the disk
+    it would reclaim.
+
+    THE MID-LOOP RACE IS CLOSED BY ARGUMENT, not by the check's timing. The
+    reading is still taken ONCE, before the loop, so a profile that LAUNCHES
+    between it and an rmtree below is not covered by it — but such a launch
+    cannot land on a build this loop deletes. active_build() resolves a launch
+    to the pin if it is installed, else the highest installed build; the loop
+    only considers builds strictly below `keep`, and `keep` IS the highest
+    installed build on both call paths (a fresh install passes the build it
+    just installed; prune_superseded_builds passes builds[-1]). The pin is
+    spared unconditionally. So a mid-loop launch resolves either `keep` or the
+    pin, and both are already spared. Do not re-open this as an open residual.
 
     RETENTION — WHY THIS NO LONGER PRUNES EVERYTHING BELOW `keep`
     -------------------------------------------------------------
@@ -670,13 +796,21 @@ def _prune_old_engine_builds(keep: str, log=None) -> None:
     Not worth the footprint until it is reachable. Pinned by
     test_prune_with_keep_above_cap_leaves_no_rollback_target so this limit
     fails loudly if someone makes it reachable."""
+    in_use_ns: "set[int] | None" = None
     if _engine_in_use(log=log):
+        in_use_ns = _in_use_build_numbers(log=log)
+        if in_use_ns is None:
+            if log:
+                log(
+                    "Firefox engine: skipped pruning old builds — a profile is "
+                    "running and may be executing from one"
+                )
+            return
         if log:
             log(
-                "Firefox engine: skipped pruning old builds — a profile is "
-                "running and may be executing from one"
+                "Firefox engine: a profile is running; pruning only builds no "
+                "running profile is executing from"
             )
-        return
     from ..engine.firefox import build_number
 
     try:
@@ -716,6 +850,19 @@ def _prune_old_engine_builds(keep: str, log=None) -> None:
             continue  # the retained previous build — the undo path
         if n >= 0 and n == pin_n:
             continue  # the build the operator reverted to
+        # PS-221: a build a RUNNING profile is executing from. Deleting it is
+        # the exact harm the wholesale guard prevented; sparing it individually
+        # is what lets every OTHER stale build be reclaimed while that profile
+        # stays open. `in_use_ns` is None whenever nothing is running (we never
+        # asked) or the answer was UNKNOWN (we already returned above), so this
+        # branch only ever fires on a positively-established set.
+        if in_use_ns is not None and n in in_use_ns:
+            if log:
+                log(
+                    f"Firefox engine: kept build {tag} — a running profile is "
+                    "executing from it"
+                )
+            continue
         # Prune a build we fully installed (has our marker) OR the shipped
         # pinned build now that a newer one is active. Any other markerless
         # dir is a half-finished download — leave it for a later resume.
@@ -744,7 +891,16 @@ def prune_superseded_builds(log=None) -> None:
     invert this into pruning everything ABOVE it — deleting the newest build
     the instant an operator went back one. Retention is measured from the
     newest build on disk; which build LAUNCHES is a separate question that
-    active_build() answers, and the pin is honoured inside the prune itself."""
+    active_build() answers, and the pin is honoured inside the prune itself.
+
+    PS-221: the per-profile narrowing is INHERITED rather than restated. This
+    is the path where the ~600MB actually accumulates — an operator who keeps a
+    profile open across an engine bump reclaimed nothing here — and it now
+    reclaims every build no running profile is executing from, because it
+    delegates. Pinned by test_prune_startup_housekeeping_narrows_to_the_live_
+    build; a future refactor that gave this function its own guard would have
+    to re-derive the UNKNOWN-defers rule and would be the obvious place to get
+    it wrong."""
     from ..engine.firefox import build_number
 
     builds = installed_builds()
