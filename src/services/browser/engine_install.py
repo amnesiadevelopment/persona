@@ -143,14 +143,28 @@ def _in_use_build_numbers(log=None) -> "set[int] | None":
       behaviour, so failing closed costs one prune cycle and risks nothing;
     * the provider itself returned None, i.e. at least one running profile
       could not be resolved to a firefox build (an absent or None stamp, a
-      chromium stamp, a launch still in flight).
+      chromium stamp, a launch still in flight);
+    * the provider returned an EMPTY set while the gate says something IS
+      running. The two oracles then contradict each other, and an empty set is
+      the most dangerous shape this function can return — it is an affirmative
+      "no build is in use", i.e. a licence to delete every prunable build. It
+      is only ever reached once ``_engine_in_use`` has said otherwise, so the
+      honest reading of the disagreement is that the two are looking at
+      different state (a profile stopped between the two reads, or one of them
+      is wired to a launcher the other is not) and the answer is not known.
+      Deferring costs one prune cycle; trusting it costs a live session.
 
     A tag that does not parse as firefox-NN is dropped from the SET rather
     than turning the whole answer into None: build_number already answers -1
     for a non-firefox shape, and a set the prune cannot compare against is
     just a build it will not spare. The provider is responsible for never
     handing over a chromium stamp in the first place (it returns None for one,
-    which is the honest reading); this is defence in depth, not the guard."""
+    which is the honest reading); this is defence in depth, not the guard.
+
+    That dropping is also why the empty-set rule above is checked on the
+    RESULT rather than on the provider's raw answer: a set of tags that all
+    fail to parse reduces to an empty set of numbers, which is the same
+    "no build is in use" claim arrived at by a different route."""
     fn = _in_use_builds_provider
     if fn is None:
         return None
@@ -172,6 +186,13 @@ def _in_use_build_numbers(log=None) -> "set[int] | None":
         n = build_number(tag)
         if n >= 0:
             nums.add(n)
+    if not nums:
+        if log:
+            log(
+                "Firefox engine: a profile is running but no build could be "
+                "attributed to it — pruning defers"
+            )
+        return None
     return nums
 
 

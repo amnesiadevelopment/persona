@@ -1298,6 +1298,14 @@ def test_prune_defers_when_a_running_profiles_stamp_is_none(monkeypatch, tmp_pat
     it enables returns a confident false answer. So None reaching the prune
     means "not known", and the prune must defer wholesale. Reading it as "this
     profile is on no build" would authorise deleting every build.
+    A SECOND running profile is stamped and resolvable, deliberately. With only
+    the unresolved one, an implementation that silently SKIPPED it would return
+    an EMPTY set and be caught by the separate empty-set backstop — so the test
+    would stay green over an inverted UNKNOWN rule and prove nothing about it.
+    With a resolved profile beside it, skipping yields a NON-empty set, the
+    backstop does not fire, and the only thing between the prune and a live
+    build is the UNKNOWN rule itself. It is also the realistic shape: one
+    profile launched normally, one that cannot be accounted for.
     """
     _fake_cache(
         monkeypatch,
@@ -1312,8 +1320,11 @@ def test_prune_defers_when_a_running_profiles_stamp_is_none(monkeypatch, tmp_pat
     )
     _wire_narrowing(
         monkeypatch,
-        {"live-one"},
-        {"live-one": _stamped("firefox", None)},
+        {"live-one", "resolved-one"},
+        {
+            "live-one": _stamped("firefox", None),
+            "resolved-one": _stamped("firefox", "firefox-15"),
+        },
     )
     logs = []
     inv._prune_old_engine_builds(keep="firefox-16", log=logs.append)
@@ -1334,6 +1345,14 @@ def test_prune_defers_when_a_running_profile_has_no_stamp_field(
     shipping, and one imported from an archive. Neither carries the attribute,
     and `getattr(..., None)` must land in the same defer branch as an explicit
     None rather than raising or reading as free.
+    A SECOND running profile is stamped and resolvable, deliberately. With only
+    the unresolved one, an implementation that silently SKIPPED it would return
+    an EMPTY set and be caught by the separate empty-set backstop — so the test
+    would stay green over an inverted UNKNOWN rule and prove nothing about it.
+    With a resolved profile beside it, skipping yields a NON-empty set, the
+    backstop does not fire, and the only thing between the prune and a live
+    build is the UNKNOWN rule itself. It is also the realistic shape: one
+    profile launched normally, one that cannot be accounted for.
     """
     _fake_cache(
         monkeypatch,
@@ -1347,7 +1366,14 @@ def test_prune_defers_when_a_running_profile_has_no_stamp_field(
         binary_version="firefox-15",
     )
     # No last_launch_* attributes at all — a pre-record / imported profile.
-    _wire_narrowing(monkeypatch, {"legacy-one"}, {"legacy-one": SimpleNamespace()})
+    _wire_narrowing(
+        monkeypatch,
+        {"legacy-one", "resolved-one"},
+        {
+            "legacy-one": SimpleNamespace(),
+            "resolved-one": _stamped("firefox", "firefox-15"),
+        },
+    )
     logs = []
     inv._prune_old_engine_builds(keep="firefox-16", log=logs.append)
 
@@ -1371,6 +1397,14 @@ def test_prune_defers_on_a_chromium_stamp_because_the_shapes_do_not_compare(
     — which silently asserts "no firefox build is in use" on the strength of a
     string that says nothing about firefox. It must collapse the answer to
     UNKNOWN instead.
+    A SECOND running profile is stamped and resolvable, deliberately. With only
+    the unresolved one, an implementation that silently SKIPPED it would return
+    an EMPTY set and be caught by the separate empty-set backstop — so the test
+    would stay green over an inverted UNKNOWN rule and prove nothing about it.
+    With a resolved profile beside it, skipping yields a NON-empty set, the
+    backstop does not fire, and the only thing between the prune and a live
+    build is the UNKNOWN rule itself. It is also the realistic shape: one
+    profile launched normally, one that cannot be accounted for.
     """
     _fake_cache(
         monkeypatch,
@@ -1385,8 +1419,11 @@ def test_prune_defers_on_a_chromium_stamp_because_the_shapes_do_not_compare(
     )
     _wire_narrowing(
         monkeypatch,
-        {"chrome-one"},
-        {"chrome-one": _stamped("chromium", "151.0.8000.10")},
+        {"chrome-one", "resolved-one"},
+        {
+            "chrome-one": _stamped("chromium", "151.0.8000.10"),
+            "resolved-one": _stamped("firefox", "firefox-15"),
+        },
     )
     logs = []
     inv._prune_old_engine_builds(keep="firefox-16", log=logs.append)
@@ -1412,6 +1449,14 @@ def test_prune_defers_for_a_launch_still_in_flight(monkeypatch, tmp_path):
     Driven through the REAL launcher rather than a hand-made name set, because
     the property under test is that `running_profile_names()` reports an
     in-flight launch at all.
+    A SECOND running profile is stamped and resolvable, deliberately. With only
+    the unresolved one, an implementation that silently SKIPPED it would return
+    an EMPTY set and be caught by the separate empty-set backstop — so the test
+    would stay green over an inverted UNKNOWN rule and prove nothing about it.
+    With a resolved profile beside it, skipping yields a NON-empty set, the
+    backstop does not fire, and the only thing between the prune and a live
+    build is the UNKNOWN rule itself. It is also the realistic shape: one
+    profile launched normally, one that cannot be accounted for.
     """
     from src.services.browser.launcher import BrowserLauncher
 
@@ -1433,10 +1478,14 @@ def test_prune_defers_for_a_launch_still_in_flight(monkeypatch, tmp_path):
     )
     # The store holds the profile with NO stamp for the launch now in flight —
     # the hook has not fired yet.
+    bl._starting.add("resolved-one")
     _wire_narrowing(
         monkeypatch,
         bl.running_profile_names(),
-        {"spawning-one": _stamped("firefox", None)},
+        {
+            "spawning-one": _stamped("firefox", None),
+            "resolved-one": _stamped("firefox", "firefox-15"),
+        },
     )
     logs = []
     inv._prune_old_engine_builds(keep="firefox-16", log=logs.append)
@@ -1456,6 +1505,14 @@ def test_prune_defers_when_a_running_profile_is_absent_from_the_store(
 
     Renamed since the launch, or a store this caller cannot see. There is no
     stamp to read, so there is nothing to say which build it is on.
+    A SECOND running profile is stamped and resolvable, deliberately. With only
+    the unresolved one, an implementation that silently SKIPPED it would return
+    an EMPTY set and be caught by the separate empty-set backstop — so the test
+    would stay green over an inverted UNKNOWN rule and prove nothing about it.
+    With a resolved profile beside it, skipping yields a NON-empty set, the
+    backstop does not fire, and the only thing between the prune and a live
+    build is the UNKNOWN rule itself. It is also the realistic shape: one
+    profile launched normally, one that cannot be accounted for.
     """
     _fake_cache(
         monkeypatch,
@@ -1467,7 +1524,11 @@ def test_prune_defers_when_a_running_profile_is_absent_from_the_store(
         ],
         binary_version="firefox-15",
     )
-    _wire_narrowing(monkeypatch, {"ghost-one"}, {})
+    _wire_narrowing(
+        monkeypatch,
+        {"ghost-one", "resolved-one"},
+        {"resolved-one": _stamped("firefox", "firefox-15")},
+    )
     logs = []
     inv._prune_old_engine_builds(keep="firefox-16", log=logs.append)
 
@@ -1577,6 +1638,76 @@ def test_prune_defers_wholesale_when_only_the_boolean_guard_is_wired(
         "an unwired narrowing oracle must defer, not authorise a prune"
     )
     assert any("running" in m for m in logs), logs
+
+
+def test_prune_defers_when_the_two_oracles_disagree(monkeypatch, tmp_path):
+    """The gate says something IS running and the narrowing says NO build is in
+    use. That pair is a contradiction, and an empty set is the single most
+    dangerous shape the narrowing can return — it is an affirmative "every
+    prunable build is free", i.e. a licence to delete all of them.
+
+    NOT HYPOTHETICAL, and it is how this was found. `_in_use_builds_provider`
+    is a module global, so any test (or any lane) that constructs an App leaks
+    a REAL provider wired to a launcher with no browsers running. It answers an
+    empty set perfectly truthfully; combined with a gate that says True it
+    authorised pruning the live build. Caught only by the full suite —
+    `test_prune_defers_while_a_profile_is_running` went red in a run where an
+    earlier file had built an App, and passed in isolation.
+
+    The rule is the UNKNOWN rule applied to a disagreement rather than to a
+    missing stamp: when the two oracles are demonstrably looking at different
+    state, we do not know, so we defer. Deferring costs one prune cycle.
+    """
+    _fake_cache(
+        monkeypatch,
+        tmp_path,
+        [
+            ("firefox-13", True, True),
+            ("firefox-15", True, True),
+            ("firefox-16", True, True),
+        ],
+        binary_version="firefox-15",
+    )
+    monkeypatch.setattr(eng, "_in_use_provider", lambda: True)
+    monkeypatch.setattr(eng, "_in_use_builds_provider", lambda: set())
+    logs = []
+    inv._prune_old_engine_builds(keep="firefox-16", log=logs.append)
+
+    assert (tmp_path / "firefox-13").exists(), (
+        "a gate saying 'running' beside a narrowing saying 'no build in use' "
+        "is a contradiction, not a licence to prune everything"
+    )
+    assert (tmp_path / "firefox-15").exists()
+    assert any("no build could be attributed" in m for m in logs), logs
+
+
+def test_prune_defers_when_every_in_use_tag_is_unparseable(monkeypatch, tmp_path):
+    """The same claim reached by the other route: a provider that hands over
+    only non-firefox-NN tags reduces to an empty set of build numbers, which is
+    the identical "no build is in use" assertion. The emptiness must be checked
+    on the RESULT, after parsing, not on the provider's raw answer."""
+    _fake_cache(
+        monkeypatch,
+        tmp_path,
+        [
+            ("firefox-13", True, True),
+            ("firefox-15", True, True),
+            ("firefox-16", True, True),
+        ],
+        binary_version="firefox-15",
+    )
+    monkeypatch.setattr(eng, "_in_use_provider", lambda: True)
+    monkeypatch.setattr(
+        eng, "_in_use_builds_provider", lambda: {"151.0.8000.10", "not-a-build"}
+    )
+    logs = []
+    inv._prune_old_engine_builds(keep="firefox-16", log=logs.append)
+
+    assert (tmp_path / "firefox-13").exists(), (
+        "tags that all fail to parse are no evidence at all — dropping them "
+        "and pruning is the empty-set bug wearing a different hat"
+    )
+    assert any("no build could be attributed" in m for m in logs), logs
 
 
 def test_prune_startup_housekeeping_narrows_to_the_live_build(
