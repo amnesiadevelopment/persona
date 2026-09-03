@@ -219,6 +219,7 @@ def build_profile_card(
     on_notes_change: Callable[[str, str], None] | None = None,
     cdp_channel_open: bool = False,
     refusal: Refusal | None = None,
+    cert_unresolved: bool = False,
 ) -> ft.Container:
     """Build a single profile row as a terminal-style line."""
     launch_btn = build_launch_button(
@@ -326,6 +327,17 @@ def build_profile_card(
                                 if not is_running
                                 else []
                             ),
+                            # Same splice, same row, same list-returning form
+                            # as the two above — see _unresolved_cert_chip for
+                            # why this state needs a marker at all. NOT gated
+                            # on is_running: unlike a refusal (a fact about one
+                            # past attempt) this is a standing property of the
+                            # profile's configuration, and it is just as true —
+                            # and just as worth saying — while the browser this
+                            # certificate was meant to authenticate is open.
+                            *_unresolved_cert_chip(
+                                cert_unresolved, profile.certificate
+                            ),
                         ],
                     ),
                 ],
@@ -424,6 +436,75 @@ def _refusal_chip(refusal, now: float) -> list[ft.Control]:
                 f"refused · {refusal.label} · {humanize_since(refusal.at, now)}",
                 size=10,
                 color=COLORS["error"],
+                font_family=MONO,
+            ),
+        )
+    ]
+
+
+def _unresolved_cert_chip(
+    cert_unresolved: bool, cert_name: str | None
+) -> list[ft.Control]:
+    """The 'this profile's certificate does not resolve' marker, or nothing.
+
+    Returned as a list so the caller splices it in — a profile whose
+    certificate resolves, and a profile with no certificate at all, render
+    EXACTLY as they did before this marker existed: no empty box, no
+    placeholder, no spacing change. The marker's PRESENCE is the signal, on
+    ``_refusal_chip``'s argument.
+
+    WHY THIS EXISTS. A profile can name a certificate the store does not hold —
+    a record skipped as malformed (``cert/store.py``), or a whole quarantined
+    ``certificates.json``. That assignment used to be destroyed on sight: the
+    next profile-dialog save collapsed it to "no certificate". Since the
+    preserve fix it is DURABLE and deliberate, and nothing downstream was built
+    for a state that sticks around — the launch drops the client certificate in
+    silence, the certificates page lists only records that EXIST, and the one
+    warning that does exist lives inside the profile dialog, which the operator
+    opens to EDIT a profile, not to check one. The launch button is here, on the
+    card.
+
+    IT IS DERIVED, NEVER REMEMBERED. The caller answers it from the certificate
+    store on the render path (a dict lookup under a lock, no IO); nothing is
+    persisted and no verdict is resurrected. The pre-launch clear of
+    ``cert_trust_status`` stays exactly as it is — that clear is correct, and a
+    marker rebuilt from a stale affirmative verdict would be the precise
+    dishonesty it exists to prevent.
+
+    IT NAMES THE CERTIFICATE. "certificate not found" alone sends the operator
+    to a certificates page where, by construction, the missing name is absent —
+    so the name is the one thing the row must carry. The full sentence, with
+    what actually happens at launch, rides the TOOLTIP: one hover away for the
+    row the operator cares about, rather than a paragraph on every card.
+
+    WHAT IT DOES NOT CLAIM. It says the assignment does not resolve, not that
+    the launch will fail: the launch proceeds, correctly and safely, WITHOUT the
+    client certificate. That is exactly the outcome the operator cannot
+    currently see, and stating it as a failure would be its own dishonesty.
+
+    Pure render — it draws the values it is handed and performs no IO.
+    """
+    if not cert_unresolved:
+        return []
+    name = cert_name or ""
+    return [
+        ft.Container(
+            border_radius=3,
+            border=ft.Border.all(1, COLORS["warning"]),
+            padding=ft.Padding.symmetric(horizontal=6, vertical=1),
+            tooltip=(
+                f"The certificate {name!r} is assigned to this profile but was "
+                "not found.\n\n"
+                "Launching opens the browser WITHOUT a client certificate, so "
+                "a site that expects one will not recognise this profile.\n\n"
+                "The assignment is kept, not silently dropped — re-add the "
+                "certificate under the same name, or reassign one in the "
+                "profile dialog."
+            ),
+            content=ft.Text(
+                f"cert not found · {name}",
+                size=10,
+                color=COLORS["warning"],
                 font_family=MONO,
             ),
         )
