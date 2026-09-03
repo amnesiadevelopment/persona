@@ -143,6 +143,12 @@ FRESH_NAME = "unchecked-exit"
 #: remedy could not clear it. A seeded proxy cannot exercise it: the defect is
 #: precisely that no record exists yet when [ check ] runs.
 ADD_NAME = "added-exit"
+#: A check that PASSED and carried NO COUNTRY — a SOCKS endpoint that lied
+#: about its geography, which `_validate_geo` sanitises to ''. It cannot
+#: launch, but NOT for a reason declaring a zone can fix (a declaration is made
+#: FOR a country and both gates refuse without one), so the note must NOT be on
+#: its row: following it would end in two refusals and no way out.
+LIAR_NAME = "liar-exit"
 ZONE = "Europe/Bucharest"
 
 #: The sentence the row must carry. Imported from the product rather than
@@ -175,6 +181,11 @@ _seed_store.set_manual_timezone({MOVED_NAME!r}, {ZONE!r})
 _seed_store.mark_checked({MOVED_NAME!r}, "CZ", "Czechia", "3.3.3.3", "", None, None)
 # Added but never checked — the ordinary "fill in the whole form first" case.
 _seed_store.add({FRESH_NAME!r}, "socks5://u:pw@4.4.4.4:1080")
+# A check that PASSED and returned NO geography at all — what `_validate_geo`
+# leaves behind for a SOCKS endpoint that lies about where it exits. Written
+# through the product's own `mark_checked`, exactly as the checker writes it.
+_seed_store.add({LIAR_NAME!r}, "socks5://u:pw@6.6.6.6:1080")
+_seed_store.mark_checked({LIAR_NAME!r}, "", "", "6.6.6.6", "", None, None)
 
 # THE NETWORK IS STUBBED, AND NOTHING ELSE IS. There is no reachable Romanian
 # SOCKS5 exit in this container, so the one thing a driven [ check ] cannot
@@ -354,6 +365,51 @@ def _tz_field_value(drv: FletDriver) -> str | None:
     return loc.input_value()
 
 
+def _name_index(drv: FletDriver) -> int | None:
+    """DOM index of the dialog's NAME field.
+
+    Addressed by POSITION for the same measured reason ``_tz_index`` is: the
+    driver labels a field by its visible HINT, and flet drops the hint the
+    moment the field holds a value — so on an EDIT (where the name is
+    prefilled, which is the only case a rename can be driven from) the label is
+    gone and a by-name lookup finds nothing. The paste field above it is always
+    empty, so its hint is always present and is a stable anchor.
+    """
+    fields = drv.fields()
+    for i, f in enumerate(fields):
+        if f.label == "e.g. home-socks":
+            return i
+    paste = [
+        i for i, f in enumerate(fields)
+        if f.label and f.label.startswith("scheme://")
+    ]
+    if not paste or paste[0] + 1 >= len(fields):
+        return None
+    return paste[0] + 1
+
+
+def _replace_at(drv: FletDriver, index: int | None, value: str) -> str | None:
+    """``_replace_tz``'s mechanism, addressed by DOM index — select-all then
+    type, because ``type_into`` APPENDS and every field the dialog opens on an
+    existing proxy is prefilled."""
+    if index is None:
+        return None
+    loc = drv.page.locator("input, textarea").nth(index)
+    loc.click()
+    drv.page.wait_for_timeout(300)
+    loc.press("Control+a")
+    # AN EMPTY REPLACEMENT NEEDS THE DELETE. Typing "" after a select-all types
+    # nothing at all, so the selection survives and the field still holds its
+    # old value — a "cleared" field that was never cleared. Only reachable when
+    # the escape from a refused declaration is what is being driven.
+    if value:
+        drv.page.keyboard.type(value)
+    else:
+        loc.press("Delete")
+    drv.page.wait_for_timeout(1200)
+    return loc.input_value()
+
+
 def _replace_tz(drv: FletDriver, value: str) -> str | None:
     """REPLACE the exit-timezone field's contents and return what it holds.
 
@@ -366,16 +422,7 @@ def _replace_tz(drv: FletDriver, value: str) -> str | None:
 
     Select-all then type, so the keystrokes land as a replacement.
     """
-    index = _tz_index(drv)
-    if index is None:
-        return None
-    loc = drv.page.locator("input, textarea").nth(index)
-    loc.click()
-    drv.page.wait_for_timeout(300)
-    loc.press("Control+a")
-    drv.page.keyboard.type(value)
-    drv.page.wait_for_timeout(1200)
-    return loc.input_value()
+    return _replace_at(drv, _tz_index(drv), value)
 
 
 def _stored(app, proxy_name: str) -> dict:
@@ -461,6 +508,23 @@ def main() -> int:
             )
             drv.screenshot("/tmp/ps274-network-unlaunchable.png")
             print("  screenshot: /tmp/ps274-network-unlaunchable.png")
+
+            # ---- AC8's SCOPE: a passing check that carried NO country --
+            # The note names a REMEDY, so it must only appear where the remedy
+            # is reachable. This proxy's check passed and returned no country
+            # at all; a declaration is made FOR a country, so both the dialog
+            # gate and the store gate refuse it. Marking the row would send the
+            # operator to [ edit ], have them type a zone, and then refuse the
+            # save — the same looping remedy this ticket exists to end.
+            liar_warned = _row_says_unlaunchable(drv, LIAR_NAME)
+            results.append(
+                _report(
+                    "AC8 scope — a PASSING check with NO country is not marked "
+                    "(the note's remedy is unreachable for it)",
+                    liar_warned is False,
+                    f"{LIAR_NAME} meta line: {_row_text(drv, LIAR_NAME)!r}",
+                )
+            )
 
             # ---- AC1, the door ---------------------------------------
             opened = _open_edit_for(drv, RO_NAME)
@@ -728,7 +792,57 @@ def main() -> int:
                     drv.press("[ cancel ]")
                     drv.page.wait_for_timeout(1500)
 
-            # ---- THE REMEDY SEAM: [ check ] then declare, on an ADD -----
+            # ---- and the refusal SAYS what else it dropped -------------
+            # The gate runs BEFORE on_save deliberately, so an unrelated edit
+            # made in the same gesture (here: a rename) is refused with the
+            # declaration. That is fail-closed and correct — but silently
+            # discarding a rename is invisible, and pressing [ save ] again
+            # just re-refuses, so the dialog must say so AND name the escape.
+            if _open_edit_for(drv, FRESH_NAME):
+                _replace_at(drv, _name_index(drv), FRESH_NAME + "-renamed")
+                drv.type_into(TZ_HINT, ZONE)
+                drv.press("[ save ]")
+                drv.page.wait_for_timeout(2500)
+                dropped = [
+                    (n.text or "") for n in drv.nodes()
+                    if "not been saved" in (n.text or "").lower()
+                ]
+                results.append(
+                    _report(
+                        "a refused declaration made alongside a RENAME says the "
+                        "rename was dropped too",
+                        bool(dropped),
+                        f"on screen: {dropped[:1]}",
+                    )
+                )
+                # And the ESCAPE it names has to work, or the sentence is the
+                # same looping remedy one layer further out.
+                _replace_tz(drv, "")
+                drv.press("[ save ]")
+                drv.page.wait_for_timeout(2500)
+                closed = not _dialog_open(drv)
+                renamed = _stored(app, FRESH_NAME + "-renamed")
+                results.append(
+                    _report(
+                        "and clearing the timezone box lets the rename through — "
+                        "the escape the sentence names actually works",
+                        closed and bool(renamed),
+                        f"closed={closed} renamed record present={bool(renamed)}",
+                    )
+                )
+                if _dialog_open(drv):
+                    drv.press("[ cancel ]")
+                    drv.page.wait_for_timeout(1500)
+                # Put the name back so the later control-path check still finds
+                # it: this harness drives ONE app, in order.
+                if renamed and _open_edit_for(drv, FRESH_NAME + "-renamed"):
+                    _replace_at(drv, _name_index(drv), FRESH_NAME)
+                    drv.press("[ save ]")
+                    drv.page.wait_for_timeout(2500)
+                    if _dialog_open(drv):
+                        drv.press("[ cancel ]")
+                        drv.page.wait_for_timeout(1500)
+
             # The refusal just driven above names a gesture — "press
             # [ check ] first" — and a refusal that names a gesture is a CLAIM
             # THAT THE GESTURE WORKS. It did not: `on_check_result` persists

@@ -42,7 +42,10 @@ from src.services.browser.launch_policy import (
     declared_timezone,
     proxy_is_checked_but_unlaunchable,
 )
-from src.services.proxy.errors import TimezoneUnderivableError
+from src.services.proxy.errors import (
+    GeographyUnknownError,
+    TimezoneUnderivableError,
+)
 from src.services.proxy.store import ProxyStore
 from src.services.proxy.tz_names import (
     ALL_ZONE_NAMES,
@@ -718,6 +721,89 @@ def test_the_predicate_answers_true_only_for_the_state_it_names(tmp_path):
         Proxy(**base, country_code=RO, checked_at=now, last_check_ok=False)
     ) is False
     assert proxy_is_checked_but_unlaunchable(Proxy(**base)) is False
+
+
+def test_a_passing_check_that_carried_no_country_is_not_marked(tmp_path):
+    """The fixture axis every other assertion here holds constant: a check that
+    PASSED and returned NO country at all.
+
+    It is a real shipped state, not a hypothetical — `_validate_geo` sanitises
+    the code to '' for a SOCKS endpoint that lies about its geography
+    (`test_proxy_checker_socks.py::test_socks5_geo_is_dropped_when_the_endpoint_lies`
+    asserts exactly `ok is True, code == ""`), and `_resolve_geo`'s
+    partial-answer path reaches it a second way.
+
+    Such a proxy cannot launch, but NOT for a reason declaring a zone can fix:
+    a declaration is made FOR a country, and both gates refuse without one. So
+    the predicate must answer False — the note it drives would otherwise name a
+    remedy the product then refuses, which is the "remedy that loops" this
+    whole ticket exists to end.
+    """
+    now = time.time()
+    stuck_without_a_country = Proxy(
+        name="liar", url="socks5://5.6.7.8:1080", country_code="",
+        country_name="", timezone="", checked_at=now, last_check_ok=True,
+    )
+    assert proxy_is_checked_but_unlaunchable(stuck_without_a_country) is False
+    # And it is genuinely unlaunchable — this is not a claim that the state is
+    # fine, only that THIS note is not its remedy. The refusal it gets is
+    # PS-31's "no geography", NOT the underivable-zone one, and unlike that one
+    # its remedy (a re-check) does NOT loop: a check that returns a country
+    # moves the proxy to a state that CAN be declared for.
+    with pytest.raises(GeographyUnknownError) as caught:
+        _proxy_timezone(stuck_without_a_country)
+    assert not isinstance(caught.value, TimezoneUnderivableError)
+
+
+def test_the_network_row_does_not_mark_a_passing_check_with_no_country(
+    tmp_path,
+):
+    """AC8 on the RENDER, for the state above. The row must keep its
+    pre-PS-274 text: the note is a claim about how to fix the proxy, and
+    following it here leads to two refusals and no way out.
+    """
+    from src.ui.components.network_page import (
+        UNLAUNCHABLE_NOTE,
+        build_network_page,
+    )
+
+    now = time.time()
+    liar = Proxy(name="liar", url="socks5://5.6.7.8:1080", country_code="",
+                 country_name="", checked_at=now, last_check_ok=True)
+    stuck = Proxy(name="ro-exit", url="socks5://1.2.3.4:1080", country_code=RO,
+                  country_name="Romania", checked_at=now, last_check_ok=True)
+    page = build_network_page(
+        [liar, stuck],
+        on_add=lambda _: None, on_edit=lambda n: None, on_delete=lambda n: None,
+        on_check=lambda n: None, on_rotate=lambda n: None,
+    )
+    texts = _all_text(page)
+    # Paired with the RO row on the same page, so this cannot pass by the note
+    # having stopped rendering everywhere.
+    noted = [t for t in texts if UNLAUNCHABLE_NOTE in t]
+    assert len(noted) == 1, texts
+    assert "Romania" in noted[0]
+    assert any("checked just now" in t and UNLAUNCHABLE_NOTE not in t
+               for t in texts), texts
+
+
+def test_the_store_and_dialog_gates_agree_that_no_country_cannot_be_declared(
+    tmp_path,
+):
+    """WHY the two assertions above are the right shape: the remedy the note
+    names really is refused for this state, at BOTH gates. If either ever
+    starts accepting it, this test goes red and the scoping conjunct should be
+    revisited rather than left silently over-tight."""
+    s = _store(tmp_path)
+    s.add("liar", "socks5://u:pw@5.6.7.8:1080")
+    # What `_validate_geo` leaves behind for a SOCKS endpoint that lies: the
+    # check PASSED, and every geo field was sanitised away.
+    s.mark_checked("liar", "", "", "5.6.7.8", "", None, None)
+    stored = _store(tmp_path).get("liar")
+    assert stored.last_check_ok is True and stored.country_code == ""
+    ok, message = s.set_manual_timezone("liar", RO_ZONE)
+    assert ok is False and message
+    assert _store(tmp_path).get("liar").manual_timezone == ""
 
 
 def test_the_predicate_is_pure_and_opens_no_socket(monkeypatch):
@@ -1434,6 +1520,58 @@ def test_declaring_on_a_proxy_whose_last_check_FAILED_is_refused(tmp_path):
     page = _drive_dialog(s, name, zone=RO_ZONE)
     assert page.popped is False
     assert any("check failed" in t.lower() for t in _all_text(page.shown))
+
+
+def test_a_refused_declaration_says_the_rest_of_the_gesture_was_dropped(
+    tmp_path,
+):
+    """The non-blocking finding from round 4.
+
+    The gate runs BEFORE `on_save` deliberately (an add must not create the
+    proxy and then report an error about a different field), and the price is
+    that an unrelated edit made in the SAME gesture is refused along with the
+    declaration. That is fail-closed and nothing is corrupted — but silently
+    dropping a rename is not something the operator can see, and pressing
+    [ save ] again just re-refuses, so the dialog must say so.
+    """
+    s, name = _ro_proxy(tmp_path)
+    s.mark_check_failed(name)
+
+    page = _drive_dialog(s, name, zone=RO_ZONE, name="renamed")
+    assert page.popped is False
+    told = _all_text(page.shown)
+    assert any("not been saved" in t.lower() for t in told), told
+    # And the claim is TRUE: the rename really did not land.
+    assert _store(tmp_path).get("renamed") is None
+    assert _store(tmp_path).get(name) is not None
+
+
+def test_the_disclosure_is_not_shown_when_nothing_else_was_edited(tmp_path):
+    """The other half of the pair: a bare declaration attempt on an unchanged
+    record loses nothing, so claiming otherwise would be noise the operator
+    learns to skip past — and it would be false."""
+    s, name = _ro_proxy(tmp_path)
+    s.mark_check_failed(name)
+
+    page = _drive_dialog(s, name, zone=RO_ZONE)
+    assert page.popped is False
+    assert not any("not been saved" in t.lower() for t in _all_text(page.shown))
+
+
+def test_clearing_the_timezone_box_lets_the_rest_of_the_gesture_through(
+    tmp_path,
+):
+    """The ESCAPE the sentence above names has to actually work, or it is the
+    same looping remedy one layer further out. Clearing the box makes
+    `declaring` false against an empty prefill, so the gate is not reached and
+    the rename lands."""
+    s, name = _ro_proxy(tmp_path)
+    s.mark_check_failed(name)
+
+    page = _drive_dialog(s, name, zone="", name="renamed")
+    assert page.popped is True
+    assert _store(tmp_path).get("renamed") is not None
+    assert _store(tmp_path).get("renamed").manual_timezone == ""
 
 
 def test_a_check_of_the_UNCHANGED_url_is_not_re_recorded_at_the_save(tmp_path):

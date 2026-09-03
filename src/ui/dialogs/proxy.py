@@ -339,6 +339,22 @@ def open_proxy_dialog(
         checked_country = (
             pending_check[1] if pending_check and pending_check[0] else ""
         )
+
+        def _other_edits_pending() -> bool:
+            """Is the operator losing anything BESIDES the declaration?
+
+            Only asked when the gate below is about to refuse, and only to
+            decide whether to say so. On an ADD every field is pending by
+            definition (nothing exists yet); on an EDIT it is the fields
+            `on_save` would have written, compared against the stored record.
+            """
+            if proxy is None:
+                return True
+            return (
+                name != proxy.name
+                or url != proxy.url
+                or (rotate_field.value or "").strip() != proxy.rotate_url
+            )
         if declaring and zone and not (stored_country or checked_country):
             # WHICH sentence depends on which state the operator is actually
             # in, because the remedy differs: "press [ check ]" is useless
@@ -358,6 +374,22 @@ def open_proxy_dialog(
                 else "Press [ check ] first — a timezone is declared for this "
                 "proxy's exit country, and there isn't one on file yet."
             )
+            # ⚠️ AND SAY WHAT THIS COSTS THE REST OF THE GESTURE. The gate runs
+            # BEFORE `on_save` for a good reason (an add must not create the
+            # proxy and then report an error about a different field), and the
+            # price is that an unrelated edit made in the same gesture — a
+            # rename, a rotate-URL change — is refused along with the
+            # declaration. The fields still hold what was typed, but pressing
+            # [ save ] again just re-refuses, so without this sentence the
+            # operator has no way to tell that the save is being blocked by the
+            # zone box rather than being broken. Clearing it is the escape, and
+            # it works: `declaring` goes False against an empty prefill, and
+            # against a non-empty one the gate's own `zone` term stops matching.
+            if _other_edits_pending():
+                tz_error.value += (
+                    " Your other changes here have NOT been saved — clear the "
+                    "timezone box to save them without a declaration."
+                )
             tz_error.visible = True
             page.update()
             return

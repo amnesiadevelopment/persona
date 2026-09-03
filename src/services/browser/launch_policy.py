@@ -783,8 +783,38 @@ def proxy_is_checked_but_unlaunchable(proxy) -> bool:
     honest rendering (the placeholder and the ✕). Folding them in here would
     relabel two states the operator already reads correctly and bury the one
     they cannot currently see at all.
+
+    ⚠️ AND SCOPED TO A COUNTRY BEING ON FILE — see the second guard. This
+    predicate does not merely mark a state, it drives a sentence that names a
+    REMEDY, so it must only answer True where that remedy is reachable.
     """
     if getattr(proxy, "last_check_ok", None) is not True:
+        return False
+    # A PASSING CHECK THAT CARRIED NO COUNTRY IS NOT THIS STATE, and the
+    # conjunct is load-bearing rather than defensive: it is what keeps the note
+    # this predicate drives from naming a remedy the product then refuses.
+    #
+    # The state is real and shipped, reached two ways — a SOCKS endpoint that
+    # lies about its geography (test_proxy_checker_socks.py asserts exactly
+    # ok=True, code="" for it) and `_resolve_geo`'s partial-answer path, where
+    # the one provider that answers gives a zone but no country and
+    # `_validate_geo` then drops an abbreviation zone. Both leave
+    # ok=True, country_code='', timezone=''.
+    #
+    # Such a proxy genuinely cannot launch — but NOT for the reason the note
+    # states, and not for a reason declaring a zone can fix: a declaration is
+    # made FOR a country, so both the store gate (`set_manual_timezone`) and
+    # the dialog gate refuse it while there is no country on file. Marking the
+    # row would send the operator to `[ edit ]`, have them type a zone, and
+    # then refuse the save — the same "remedy that loops" this whole ticket
+    # exists to end, one state over. It also contradicts the profile card,
+    # which reads this state as `geography_unknown`.
+    #
+    # So this state keeps its pre-PS-274 rendering, unchanged and honest, and
+    # its real remedy (a re-check, which here does NOT loop) stays available.
+    # Giving it its OWN note is defensible but is a wider change than this
+    # ticket: it also needs the profile card's "never checked" label corrected.
+    if not (getattr(proxy, "country_code", "") or ""):
         return False
     try:
         _proxy_timezone(proxy)
