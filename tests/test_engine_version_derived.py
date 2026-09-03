@@ -436,3 +436,147 @@ def _android_ext(base, version: ChromiumVersion | None = None) -> str:
         device_memory=8, hardware_concurrency=8, touch_points=5,
     )
     return (pathlib.Path(d) / "mobile.js").read_text(encoding="utf-8")
+
+
+# --------------------------------------------------------------------------
+# PS-280: an UNDECODABLE version.txt reaches the same named refusal
+# --------------------------------------------------------------------------
+#
+# `updater.current_version()`'s `except OSError` arm did not cover
+# `UnicodeDecodeError`, which inherits from `ValueError` — NOT from `OSError`.
+# So an undecodable version.txt (a torn write, disk corruption, an external
+# edit) escaped the guard and travelled up this chain as a raw
+# `UnicodeDecodeError`, straight past the `except EngineVersionUnreadableError`
+# in `process._mobile_chromium_version` that catches BY TYPE. The operator got
+# a traceback where this module was written to produce an actionable sentence.
+#
+# These drive the REAL chain against REAL bytes on disk — the version file is
+# NOT monkeypatched away, unlike `_spawn` above, because which exception a real
+# decoding read raises IS the defect. A mocked `open` could not see it.
+
+_UNDECODABLE_VERSIONS = {
+    "raw-0xff": b"151.0.7778.21\xff5",           # never a valid UTF-8 start byte
+    "utf-16": "151.0.7778.215".encode("utf-16"),  # BOM alone is undecodable
+}
+
+
+def _spawn_reading_real_version_file(monkeypatch, tmp_path, profile, raw: bytes):
+    """Like `_spawn`, but the engine's version comes from a REAL file holding
+    `raw` rather than from a stubbed `current_version`."""
+    import src.services.engine.updater as updater
+
+    version_file = tmp_path / "version.txt"
+    version_file.write_bytes(raw)
+    monkeypatch.setattr(updater, "VERSION_FILE", str(version_file))
+
+    captured = {}
+
+    class _FakePopen:
+        def __init__(self, args, **kwargs):
+            captured["args"] = args
+            self.pid = os.getpid()
+
+    monkeypatch.setattr(process, "DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setattr(process, "ProxyStore", _Store)
+    monkeypatch.setattr(process, "BookmarkStore", _Bookmarks)
+    monkeypatch.setattr(process, "write_window_entry", lambda name: None)
+    monkeypatch.setattr(process.subprocess, "Popen", _FakePopen)
+    process.spawn_browser(profile)
+    return captured["args"]
+
+
+@pytest.mark.parametrize("label", sorted(_UNDECODABLE_VERSIONS))
+def test_an_undecodable_version_file_reads_as_absent(monkeypatch, tmp_path, label):
+    """The first link: the real read answers "" rather than raising, so the
+    string that reaches `parse` is one `parse` already refuses by name."""
+    import src.services.engine.updater as updater
+
+    version_file = tmp_path / "version.txt"
+    version_file.write_bytes(_UNDECODABLE_VERSIONS[label])
+    monkeypatch.setattr(updater, "VERSION_FILE", str(version_file))
+
+    assert updater.current_version() == ""
+
+
+@pytest.mark.parametrize("label", sorted(_UNDECODABLE_VERSIONS))
+def test_an_undecodable_version_file_refuses_by_name_not_by_traceback(
+    monkeypatch, tmp_path, label
+):
+    """The derived read: `installed_chromium_version()` raises THIS module's own
+    refusal for an undecodable file.
+
+    The exception TYPE is the assertion, not merely that something raised — a
+    `UnicodeDecodeError` also 'raises', and it is exactly what the caller could
+    not catch. `pytest.raises(EngineVersionUnreadableError)` fails on a
+    `UnicodeDecodeError` because the two are unrelated types, which is the
+    regression this test exists to catch.
+    """
+    import src.services.engine.updater as updater
+
+    version_file = tmp_path / "version.txt"
+    version_file.write_bytes(_UNDECODABLE_VERSIONS[label])
+    monkeypatch.setattr(updater, "VERSION_FILE", str(version_file))
+
+    with pytest.raises(EngineVersionUnreadableError):
+        engine_version.installed_chromium_version()
+
+
+@pytest.mark.parametrize("label", sorted(_UNDECODABLE_VERSIONS))
+def test_an_android_launch_refuses_on_an_undecodable_version_file(
+    monkeypatch, tmp_path, label
+):
+    """THE WHOLE CHAIN, end to end: an undecodable version.txt on disk produces
+    the SAME named Android refusal a garbage-but-decodable one does — not a
+    `UnicodeDecodeError` traceback.
+
+    The direction matters and is asserted below: this converts an unnamed crash
+    into the module's own refusal. It must never become a path that lets the
+    launch PROCEED, so the assertion is that it still raises, and raises the
+    actionable sentence.
+    """
+    with pytest.raises(EngineVersionUnreadableError) as excinfo:
+        _spawn_reading_real_version_file(
+            monkeypatch, tmp_path, Profile(name="droid", os_type="android"),
+            _UNDECODABLE_VERSIONS[label],
+        )
+
+    msg = str(excinfo.value)
+    assert "droid" in msg
+    assert "engine check" in msg
+    # Fails CLOSED: nothing was advertised, so no guessed version escaped.
+    assert "Refusing to launch" in msg
+
+
+def test_a_garbage_but_decodable_version_file_still_refuses_by_name(
+    monkeypatch, tmp_path
+):
+    """CONTROL, and it is the load-bearing one: the guard already worked for
+    every OTHER unusable input, and widening the catch must not have changed
+    that. A merely garbage tag still produces the named refusal.
+    """
+    with pytest.raises(EngineVersionUnreadableError) as excinfo:
+        _spawn_reading_real_version_file(
+            monkeypatch, tmp_path, Profile(name="droid", os_type="android"),
+            b"not-a-version\n",
+        )
+
+    msg = str(excinfo.value)
+    assert "droid" in msg
+    assert "engine check" in msg
+    # The underlying cause is still NAMED and still distinguishes this input
+    # from the undecodable one — the widened arm did not flatten the two.
+    assert "not-a-version" in msg
+
+
+def test_a_good_version_file_still_launches_and_advertises_its_version(
+    monkeypatch, tmp_path
+):
+    """CONTROL. A perfectly ordinary version.txt read off real disk still
+    parses and still reaches the UA — the widened arm must not have turned a
+    readable file into "" and refused a launch that should succeed.
+    """
+    args = _spawn_reading_real_version_file(
+        monkeypatch, tmp_path, Profile(name="droid", os_type="android"),
+        b"151.0.7778.215\n",
+    )
+    assert f"Chrome/{ENGINE_REDUCED}" in _ua_arg(args)

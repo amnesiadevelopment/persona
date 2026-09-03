@@ -151,7 +151,25 @@ def current_version() -> str:
     try:
         with open(VERSION_FILE, encoding="utf-8") as f:
             return f.read().strip()
-    except OSError:
+    except (OSError, UnicodeDecodeError):
+        # `UnicodeDecodeError` is here because it is NOT an `OSError` — it
+        # inherits from `ValueError`, so an undecodable version.txt (a torn
+        # write, disk corruption, an external edit) walked straight through an
+        # `OSError`-only arm. This value is the SOLE source of the Chromium
+        # version an Android profile advertises: `engine_version.parse` turns
+        # it into the named `EngineVersionUnreadableError` refusal that
+        # `browser/process.py` catches BY TYPE to refuse the launch. A
+        # `UnicodeDecodeError` is not that type, so it sailed past that gate
+        # and reached the operator as a raw traceback instead of the
+        # actionable "run an engine check" sentence. Returning "" restores
+        # this function's own contract — the same answer a missing file gets,
+        # and the input `parse` already refuses by name.
+        #
+        # Named and narrow, mirroring `_from_file` in `verify/exit_guard.py`
+        # and `_read_builds` fifteen lines below: NOT bare `Exception`, and
+        # NOT `errors="replace"` — a version persona cannot decode must not be
+        # made to PARSE as something, which is the opposite of the fail-closed
+        # contract this whole module is built around.
         return ""
 
 

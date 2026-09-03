@@ -74,6 +74,22 @@ def read_token() -> str:
     try:
         with open(_path(), encoding="utf-8") as f:
             token = f.read().strip()
-    except OSError:
+    except (OSError, UnicodeDecodeError):
+        # `UnicodeDecodeError` is here because it is NOT an `OSError` — it
+        # inherits from `ValueError`, so an undecodable token file (a torn
+        # write, disk corruption, an external edit) walked straight through an
+        # `OSError`-only arm and out of this function, breaking the docstring's
+        # "'' if there is not a usable one yet" promise. Both callers are
+        # unguarded: `api/app.py` binds this at startup, so the entire local
+        # management API did not start; the UI's Connect page (`ui/app.py`)
+        # raised instead of rendering. Returning '' is this function's own
+        # documented answer, and the only caller's response is to mint a real
+        # token over it — which is exactly right for bytes that cannot be a
+        # token persona wrote.
+        #
+        # Named and narrow, mirroring `_from_file` in `verify/exit_guard.py`:
+        # NOT bare `Exception`, and NOT `errors="replace"` — mangling
+        # undecodable bytes into a string could hand `hmac.compare_digest` a
+        # credential nobody minted.
         return ""
     return token if len(token) >= _MIN_TOKEN_CHARS else ""

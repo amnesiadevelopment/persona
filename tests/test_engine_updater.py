@@ -832,3 +832,67 @@ def test_an_unwired_or_broken_oracle_defers(monkeypatch, tmp_path):
                 "http://x/e", digest=_digest_of(new), defer_if_in_use=True
             )
         assert binary.read_bytes() == b"OLD-ENGINE"
+
+
+# --- PS-280: an undecodable version.txt ------------------------------------
+#
+# `current_version()` is the SOLE source of the Chromium version an Android
+# profile advertises, and its `except OSError` arm did not cover
+# `UnicodeDecodeError` — which inherits from `ValueError`, not `OSError`. So an
+# undecodable version.txt escaped the guard and reached the caller as a raw
+# traceback, instead of the "" that `engine_version.parse` turns into the named
+# `EngineVersionUnreadableError` refusal `browser/process.py` catches BY TYPE.
+#
+# The files here are written as RAW BYTES against the real VERSION_FILE and
+# driven through the real function — a mocked `open` would prove nothing about
+# which exception a real decoding read raises, which is the entire defect.
+
+_UNDECODABLE_VERSIONS = {
+    # a lone 0xff mid-string: never a valid UTF-8 start byte
+    "raw-0xff": b"148.0.7559.13\xff2",
+    # a real encoding persona does not read: the BOM alone is undecodable
+    "utf-16": "148.0.7559.132".encode("utf-16"),
+}
+
+
+@pytest.mark.parametrize("label", sorted(_UNDECODABLE_VERSIONS))
+def test_an_undecodable_version_file_reads_as_absent_not_as_a_crash(
+    monkeypatch, tmp_path, label
+):
+    """The documented answer for an unusable version.txt is "" — the same
+    answer a missing one gets. Asserted on the RETURN VALUE of the real
+    function reading real bytes off disk: an escaping `UnicodeDecodeError`
+    fails this as an ERROR, which is precisely the regression."""
+    version_file = tmp_path / "version.txt"
+    version_file.write_bytes(_UNDECODABLE_VERSIONS[label])
+    monkeypatch.setattr(updater, "VERSION_FILE", str(version_file))
+
+    assert updater.current_version() == ""
+
+    # And the bytes are DECLINED, never clobbered or re-encoded: a file persona
+    # cannot decode is not one persona wrote.
+    assert version_file.read_bytes() == _UNDECODABLE_VERSIONS[label]
+
+
+def test_a_decodable_version_file_still_reads_its_version(monkeypatch, tmp_path):
+    """THE CONTROL, and it is the load-bearing half: the widened arm must not
+    have turned every read into "". A normal version.txt still reads."""
+    version_file = tmp_path / "version.txt"
+    version_file.write_text("148.0.7559.132\n", encoding="utf-8")
+    monkeypatch.setattr(updater, "VERSION_FILE", str(version_file))
+
+    assert updater.current_version() == "148.0.7559.132"
+
+
+def test_a_decodable_but_garbage_version_file_is_returned_verbatim(
+    monkeypatch, tmp_path
+):
+    """THE SECOND CONTROL. Deciding whether a version is READABLE is not this
+    function's job — it hands the string on and `engine_version.parse` refuses
+    it by name. A garbage-but-decodable file must therefore come back verbatim,
+    not as "": that is what keeps the two refusal causes distinguishable."""
+    version_file = tmp_path / "version.txt"
+    version_file.write_text("not-a-version\n", encoding="utf-8")
+    monkeypatch.setattr(updater, "VERSION_FILE", str(version_file))
+
+    assert updater.current_version() == "not-a-version"
