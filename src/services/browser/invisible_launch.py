@@ -52,7 +52,9 @@ from .engine_install import (  # noqa: F401
     # `from ... import` binds a name by VALUE, so a re-exported variable would
     # be a stale copy that the setter's rebind in engine_install never reaches.
     # Pruning reads its own module global, so going through set_in_use_provider
-    # is what makes the wiring visible to it.
+    # is what makes the wiring visible to it. The same argument, and the same
+    # rule, for the PS-221 narrowing oracle's setter beside it.
+    set_in_use_builds_provider,
     set_in_use_provider,
 )
 from .env_policy import (

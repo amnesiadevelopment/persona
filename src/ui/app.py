@@ -3282,6 +3282,17 @@ class App:
         every prune (startup housekeeping and post-download alike) is covered
         without each call site needing its own condition.
 
+        Wires TWO oracles into the firefox prune, not one (PS-221). The boolean
+        one is the GATE — "is anything running?" — and the second narrows it to
+        WHICH builds those profiles are executing from, so a build none of them
+        is on is reclaimed rather than the whole prune deferring while any
+        profile stays open. They are separate because they fail in OPPOSITE
+        directions when unwired: the gate fails open (a library call with no UI
+        has no session state to defer to), the narrowing fails closed (a prune
+        that cannot say which builds are live must defer, which is precisely
+        today's behaviour). A half-wired app therefore degrades to the old
+        wholesale deferral, never to deleting a live build.
+
         Wires the SAME oracle into the Chromium updater, for the same reason at
         a different moment: pruning must not DELETE a build a session is running
         from, and an unattended install must not REPLACE one. Chromium keeps a
@@ -3304,6 +3315,31 @@ class App:
             )
         except Exception:
             logger.exception("Could not wire the engine-prune in-use guard")
+        try:
+            # PS-221: the NARROWING oracle — WHICH firefox builds the running
+            # profiles are executing from, so a build none of them is on can be
+            # reclaimed instead of the prune deferring wholesale on "is anything
+            # running?". Wired separately from the boolean above, and on purpose:
+            # the two are not one oracle with a richer return type. The boolean
+            # is the gate (and fails OPEN when unwired — a library call with no
+            # UI has no session state); this is a narrowing INSIDE that gate and
+            # fails CLOSED when unwired, so a half-wired app defers exactly as it
+            # did before this existed rather than pruning a live build.
+            #
+            # The join needs both halves and the app is the only place that
+            # holds them: the launcher owns which names are running, the profile
+            # manager owns what each was launched under.
+            from ..services.browser.launch_provenance import firefox_builds_in_use
+
+            inv.set_in_use_builds_provider(
+                lambda: firefox_builds_in_use(
+                    self.bl.running_profile_names(), lambda: self.pm.profiles
+                )
+            )
+        except Exception:
+            logger.exception(
+                "Could not wire the engine-prune in-use BUILDS guard"
+            )
         try:
             engine.set_in_use_provider(
                 lambda: len(self.bl.running_profile_names()) > 0
