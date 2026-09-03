@@ -24,6 +24,7 @@ import os
 import pytest
 
 from src.services.app_update import updater as au
+from src.ui.app import _ROLLBACK_LABEL
 
 
 def _force_os(monkeypatch, *, win=False, mac=False, linux=False):
@@ -282,7 +283,7 @@ def test_the_go_back_row_renders_on_linux_when_a_binary_is_retained(
         monkeypatch, retained="/home/u/Applications/persona.AppImage.bak"
     )
 
-    assert "go back to the previous version" in texts
+    assert _ROLLBACK_LABEL in texts
 
 
 def test_the_go_back_row_is_absent_when_nothing_is_retained(monkeypatch):
@@ -291,7 +292,7 @@ def test_the_go_back_row_is_absent_when_nothing_is_retained(monkeypatch):
     # worse than no button.
     texts = _linux_panel_texts(monkeypatch, retained="")
 
-    assert "go back to the previous version" not in texts
+    assert _ROLLBACK_LABEL not in texts
 
 
 # --- AC3: a revert really restores the previous binary ----------------------
@@ -706,4 +707,4 @@ def test_falsification_ac2_goes_red_when_the_deletion_is_restored(
 
     assert au.rollback_target() == ""
     texts = _linux_panel_texts(monkeypatch, retained=au.rollback_target())
-    assert "go back to the previous version" not in texts
+    assert _ROLLBACK_LABEL not in texts
