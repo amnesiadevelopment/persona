@@ -6,6 +6,7 @@ import flet as ft
 from ...core.strings import get_string
 from ...interfaces.protocols import IProxyService
 from ...models.proxy import Proxy
+from ...services.proxy.tz_names import is_declarable_zone
 from ...utils.proxy_parse import parse_proxy_line
 from ...utils.proxy_parser import build_proxy_url, split_proxy_url
 from ...utils.validation import validate_proxy_format
@@ -53,6 +54,7 @@ def open_proxy_dialog(
     on_checked: Callable[..., None] | None = None,
     on_check_failed: Callable[[str], None] | None = None,
     ui: Callable[[Callable[[], None]], None] | None = None,
+    on_declare_timezone: Callable[[str, str], str | None] | None = None,
 ) -> None:
     is_edit = proxy is not None
     fields = split_proxy_url(proxy.url) if proxy is not None else split_proxy_url("")
@@ -98,6 +100,18 @@ def open_proxy_dialog(
         hint_text="provider endpoint that forces a new exit IP",
         hint_style=_hint, **DLG_INPUT_KWARGS,
     )
+    # THE DOOR PS-274 ADDS. `Proxy.timezone` is what the CHECK measured and is
+    # never edited here; this field is the operator's own declaration, for the
+    # ordinary case where the check reports a country and no usable zone and
+    # the country has no `_COUNTRY_TZ` row — a state whose only previously
+    # documented remedy was editing a python dict inside an installed desktop
+    # app, and whose one available UI action (re-check) loops forever.
+    tz_field = ft.TextField(
+        value=proxy.manual_timezone if proxy is not None else "",
+        hint_text="e.g. Europe/Bucharest  — only needed if launching is refused",
+        hint_style=_hint, **DLG_INPUT_KWARGS,
+    )
+    tz_error = ft.Text("", size=12, color=COLORS["error"], visible=False)
     name_error = ft.Text("", size=12, color=COLORS["error"], visible=False)
     addr_error = ft.Text("", size=12, color=COLORS["error"], visible=False)
 
@@ -220,7 +234,7 @@ def open_proxy_dialog(
 
     def on_submit(_: ft.ControlEvent) -> None:
         name = (name_field.value or "").strip()
-        name_error.visible = addr_error.visible = False
+        name_error.visible = addr_error.visible = tz_error.visible = False
 
         if not name:
             name_error.value = "Name cannot be empty"
@@ -241,13 +255,39 @@ def open_proxy_dialog(
             page.update()
             return
 
+        # VALIDATE BEFORE ANYTHING IS WRITTEN. The store validates too — it is
+        # the field's owner and a second caller must not be able to skip it —
+        # but doing it here as well means a typo never half-saves the proxy and
+        # then reports an error about a different field. The oracle is the same
+        # vendored name set in both places, so the two cannot disagree.
+        zone = (tz_field.value or "").strip()
+        if zone and not is_declarable_zone(zone):
+            tz_error.value = (
+                f"'{zone}' is not a timezone name. Use IANA Region/City form, "
+                "e.g. Europe/Bucharest"
+            )
+            tz_error.visible = True
+            page.update()
+            return
+
         error = on_save(name, url, (rotate_field.value or "").strip())
         if error:
             name_error.value = error
             name_error.visible = True
             page.update()
-        else:
-            page.pop_dialog()
+            return
+        # AFTER the save, and keyed on the SAVED name: on an add there is no
+        # record to hang a declaration off until on_save creates it, and on a
+        # rename the record now lives under the new name. Both paths therefore
+        # declare against `name`, not against `proxy.name`.
+        if on_declare_timezone is not None:
+            tz_err = on_declare_timezone(name, zone)
+            if tz_err:
+                tz_error.value = tz_err
+                tz_error.visible = True
+                page.update()
+                return
+        page.pop_dialog()
 
     dlg = ft.AlertDialog(
         modal=True,
@@ -338,6 +378,12 @@ def open_proxy_dialog(
                         rotate_field,
                         icon=ft.Icons.AUTORENEW,
                     ),
+                    labeled(
+                        "Exit timezone (optional)",
+                        tz_field,
+                        icon=ft.Icons.SCHEDULE,
+                    ),
+                    tz_error,
                     addr_error,
                     ft.Row(spacing=10, controls=[check_btn, copy_btn]),
                 ],

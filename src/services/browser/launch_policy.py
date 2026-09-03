@@ -580,18 +580,62 @@ def _host_display_scale() -> float:
         return 1.0
 
 
+def declared_timezone(proxy) -> str:
+    """The zone the OPERATOR declared for this exit, or "" when none applies.
+
+    Pure — two attribute reads and a string compare, no IO — so it is safe on a
+    render as well as on a launch.
+
+    GATED ON THE COUNTRY, and that gate is the whole reason this is a separate
+    field rather than a write into ``proxy.timezone``. A declaration is a claim
+    about ONE exit: "this proxy comes out in Romania, and Romania is
+    Europe/Bucharest". A backconnect exit moves, and a zone declared for an RO
+    exit says nothing true about a CZ one. So the declaration is consulted only
+    while the country it was declared for is still the country on file, and
+    retires itself the moment the exit moves — the launch then refuses again,
+    which is the correct answer, instead of shipping a clock that contradicts
+    the exit's own country.
+
+    An unchecked proxy has no country on file, so nothing matches and this
+    answers "" — a declaration cannot manufacture geography that was never
+    measured.
+
+    Read via ``getattr`` so the duck-typed proxy stand-ins on the launch-path
+    tests (which model geography but not this field) answer too, exactly as
+    ``proxy_indicator_state`` does.
+    """
+    zone = getattr(proxy, "manual_timezone", "") or ""
+    if not zone:
+        return ""
+    declared_for = (getattr(proxy, "manual_timezone_country", "") or "").upper()
+    country = (getattr(proxy, "country_code", "") or "").upper()
+    if not declared_for or declared_for != country:
+        return ""
+    return zone
+
+
 def _proxy_timezone(proxy) -> str:
     """The timezone for a proxied profile — or a REFUSAL when there isn't one.
 
-    Two branches try to answer: the zone the check recorded, else the zone
-    implied by the checked country. The first always answers; the second answers
-    only when the country has a ``_COUNTRY_TZ`` row, and REFUSES otherwise
-    rather than substituting ``UTC`` (see ``_timezone_for`` above, and
-    ``TimezoneUnderivableError``). Both describe the EXIT, which is the only
-    location a proxied persona may claim — but only while the product still
-    believes them. A stored zone whose most recent check FAILED is geography the
-    product's own latest evidence disproves, so it is refused BEFORE either
-    branch is consulted (see the guard below).
+    Three branches try to answer, in a precedence order that is load-bearing:
+    the zone the check MEASURED, else the zone the operator DECLARED for this
+    exit's country, else the zone implied by the checked country. The first
+    always answers; the second answers only while the declaration still applies
+    to the country on file (see ``declared_timezone``); the third answers only
+    when the country has a ``_COUNTRY_TZ`` row, and REFUSES otherwise rather
+    than substituting ``UTC`` (see ``_timezone_for`` above, and
+    ``TimezoneUnderivableError``). All three describe the EXIT, which is the
+    only location a proxied persona may claim — but only while the product
+    still believes them. A stored zone whose most recent check FAILED is
+    geography the product's own latest evidence disproves, so it is refused
+    BEFORE any branch is consulted (see the guard below).
+
+    ⚠️ MEASURED BEFORE DECLARED, and do not reorder it. The declaration exists
+    because a check can report a country and no usable zone, not because an
+    operator's typing is better evidence than a measurement. Consulting it
+    first would let a value typed once outlive every later measurement that
+    contradicts it — the stale-geography class this file already refuses in two
+    other places.
 
     An unchecked proxy (no geo at all) has no third answer. It used to fall back
     to the host zone, on the reasoning that UTC against a non-UTC exit IP is a
@@ -612,13 +656,15 @@ def _proxy_timezone(proxy) -> str:
 
     ⚠️ THE RE-CHECK REMEDY IS SCOPED TO THAT CASE AND DOES NOT GENERALISE. It
     holds for the no-geography raise below and for the disproven guard above,
-    and it does NOT hold for ``TimezoneUnderivableError`` from branch 2: there
+    and it does NOT hold for ``TimezoneUnderivableError`` from branch 3: there
     the check may already have PASSED and will keep passing, because what is
     missing is a ``_COUNTRY_TZ`` row rather than a check result. A re-check
-    writes the country, reaches branch 2 again and refuses again — the remedy
-    LOOPS. That refusal names the country and its remedy is to add the row; see
-    ``TimezoneUnderivableError``, which states this, and ``refusal.py``, which
-    gives it a label that is deliberately not a re-check prompt.
+    writes the country, reaches branch 3 again and refuses again — the re-check
+    remedy LOOPS. That is why branch 2 exists: the operator DECLARES the exit's
+    zone from the proxy dialog (``ProxyStore.set_manual_timezone``) and the
+    profile launches. Adding a ``_COUNTRY_TZ`` row is still the fix for a
+    country the product should know about; the declaration is the fix the
+    operator can reach without shipping a build.
 
     WHICH freshness states refuse, and why only these:
 
@@ -649,10 +695,11 @@ def _proxy_timezone(proxy) -> str:
             geography is disproven. A subclass of GeographyUnknownError, so
             every existing fail-closed handler catches it unchanged.
         TimezoneUnderivableError: the proxy carries a COUNTRY but the check
-            recorded no usable zone and the country has no ``_COUNTRY_TZ`` row
-            — raised THROUGH this function from branch 2, via
-            ``_timezone_for``. Also a subclass of GeographyUnknownError. Alone
-            among the three, its remedy is NOT a re-check (see above).
+            recorded no usable zone, no operator declaration applies to that
+            country, and the country has no ``_COUNTRY_TZ`` row — raised
+            THROUGH this function from branch 3, via ``_timezone_for``. Also a
+            subclass of GeographyUnknownError. Alone among the three, its
+            remedy is NOT a re-check (see above).
         GeographyUnknownError: the proxy carries neither timezone nor country.
     """
     # BEFORE the branches, not after: branch 1 would otherwise keep returning a
@@ -693,6 +740,14 @@ def _proxy_timezone(proxy) -> str:
     # read "unverified"). Called out in the PR rather than decided silently.
     if proxy.timezone:
         return proxy.timezone
+    # SECOND, never first. A declaration is the operator's answer for a
+    # question the CHECK could not answer, so a measured zone always wins: a
+    # hand-typed value that outranked a fresh measurement would be a stale
+    # clock with a longer life than the evidence contradicting it. Gated on the
+    # country it was declared for — see ``declared_timezone``.
+    declared = declared_timezone(proxy)
+    if declared:
+        return declared
     if proxy.country_code:
         return _timezone_for(proxy.country_code)
     raise GeographyUnknownError(
@@ -701,3 +756,42 @@ def _proxy_timezone(proxy) -> str:
         "real location inside the tunnel"
     )
 
+
+
+def proxy_is_checked_but_unlaunchable(proxy) -> bool:
+    """A proxy whose check PASSED and whose profiles still cannot launch.
+
+    This is the state PS-274 exists for: a check that succeeded, a country on
+    file, a flag drawn — and every profile using it refused at launch because
+    no zone can be derived for that country. The two surfaces disagreed and
+    neither was wrong alone: the network page said "verified, checked just
+    now", the profile card said "refused". The object that IS the problem, and
+    the only one the operator can act on, rendered as healthy.
+
+    ⚠️ DERIVED FROM THE LAUNCH PATH ITSELF, not re-stated. It CALLS
+    ``_proxy_timezone`` and reports whether it refused, so the renderer cannot
+    drift from the launcher — a new refusal branch, or a new way to answer
+    (this ticket added one), is reflected here the day it lands with no second
+    edit. Re-implementing the rule in the render layer is the specific mistake
+    ``services/proxy/freshness.py`` was created to stop; this follows it.
+
+    PURE. ``_proxy_timezone`` reads stored fields and ``time.time()`` and never
+    probes — that is stated and tested at ``proxy_indicator_state`` — so this
+    is safe to call on a render, once per row, with no socket and no disk.
+
+    SCOPED TO A PASSING CHECK, deliberately. A proxy that never checked, or
+    whose check failed, ALSO cannot launch, and both already have their own
+    honest rendering (the placeholder and the ✕). Folding them in here would
+    relabel two states the operator already reads correctly and bury the one
+    they cannot currently see at all.
+    """
+    if getattr(proxy, "last_check_ok", None) is not True:
+        return False
+    try:
+        _proxy_timezone(proxy)
+    except GeographyUnknownError:
+        # The parent — so GeographyDisprovenError and TimezoneUnderivableError
+        # are both caught, exactly as every fail-closed handler in the product
+        # catches them (errors.py explains why the hierarchy is that shape).
+        return True
+    return False

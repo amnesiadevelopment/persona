@@ -11,6 +11,7 @@ from ...utils.atomic import atomic_write_json
 from ...utils.proxy_parser import parse_proxy_server
 from ...utils.store_guard import StoreGuardMixin
 from ...utils.trashable import TrashableMixin, restore_kwargs
+from .tz_names import is_declarable_zone
 
 logger = get_logger("proxy.store")
 
@@ -60,6 +61,14 @@ class ProxyStore(StoreGuardMixin, TrashableMixin):
                         lon=p.get("lon"),
                         checked_at=p.get("checked_at", 0.0),
                         last_check_ok=p.get("last_check_ok"),
+                        # Absent in a pre-PS-274 proxies.json, which is exactly
+                        # what the .get defaults handle: an old file upgrades
+                        # with no migration, and a new file read by an old
+                        # build is ignored key-by-key rather than rejected.
+                        manual_timezone=p.get("manual_timezone", ""),
+                        manual_timezone_country=p.get(
+                            "manual_timezone_country", ""
+                        ),
                     )
                 except Exception:
                     skipped += 1
@@ -169,6 +178,16 @@ class ProxyStore(StoreGuardMixin, TrashableMixin):
                 lon=old.lon if keep_geo else None,
                 checked_at=old.checked_at if keep_geo else 0.0,
                 last_check_ok=old.last_check_ok if keep_geo else None,
+                # Rides `keep_geo` with the six measured fields, and for the
+                # same reason: a rename or a rotate-url edit leaves the exit
+                # exactly where it was, so the declaration still describes it;
+                # a URL change moves the exit, so it does not. This constructor
+                # is hand-enumerated, so a field omitted here is silently
+                # dropped on every rename — see app.py:1389 for the same shape.
+                manual_timezone=old.manual_timezone if keep_geo else "",
+                manual_timezone_country=(
+                    old.manual_timezone_country if keep_geo else ""
+                ),
             )
             self._save()
         logger.info("Updated proxy: %s -> %s", original_name, new_name)
@@ -235,6 +254,16 @@ class ProxyStore(StoreGuardMixin, TrashableMixin):
                 proxy.lon = None
                 proxy.checked_at = 0.0
                 proxy.last_check_ok = None
+                # INVALIDATED with the six, not preserved beside them. A
+                # declaration is a claim about ONE exit; a rotation replaces
+                # the exit, so keeping it would assert the previous exit's
+                # clock under a new URL — the durable-stale-affirmative shape
+                # this method's docstring was written about. The country gate
+                # would usually retire it anyway once a check ran, but a
+                # rotation followed by a crash leaves nothing to run the gate,
+                # so it is cleared at the WRITE like everything else here.
+                proxy.manual_timezone = ""
+                proxy.manual_timezone_country = ""
             proxy.url = url
             self._save()
         return True
@@ -313,6 +342,56 @@ class ProxyStore(StoreGuardMixin, TrashableMixin):
             proxy.last_check_ok = True
             self._save()
         return True
+
+    def set_manual_timezone(self, name: str, zone: str) -> tuple[bool, str]:
+        """Record the zone the OPERATOR declares for this proxy's exit.
+
+        The declaration is stored WITH the country it was made for (the proxy's
+        currently recorded ``country_code``), because that pair is what the
+        launch path gates on: the zone applies while the exit is still in that
+        country and retires itself when it moves. Storing the zone alone would
+        make a rotated backconnect exit declare its predecessor's clock.
+
+        VALIDATED HERE, at the write, rather than at the launch. The value is
+        handed to a browser engine as fact, so a bad one must never reach disk;
+        validating at the read would leave a stored value that looks fine in
+        the dialog and refuses at every launch. ``is_declarable_zone`` is a set
+        membership test against the VENDORED name list (``tz_names.py``), which
+        is why the accepted set is byte-identical on Windows, macOS and Linux
+        and why no OS timezone database is consulted.
+
+        An EMPTY zone clears the declaration — that is how an operator takes it
+        back — and clears the country with it so no half-record survives.
+
+        Returns ``(ok, error)``. The error is the operator-facing sentence; it
+        is empty on success.
+        """
+        zone = (zone or "").strip()
+        with self._lock:
+            proxy = self.proxies.get(name)
+            if proxy is None:
+                return False, f"No proxy named {name!r}."
+            if not zone:
+                proxy.manual_timezone = ""
+                proxy.manual_timezone_country = ""
+                self._save()
+                return True, ""
+            if not is_declarable_zone(zone):
+                return False, (
+                    f"{zone!r} is not a timezone name. Enter an IANA zone in "
+                    "Region/City form, e.g. 'Europe/Bucharest' — an "
+                    "abbreviation like 'EET' is not accepted because the "
+                    "browser engine is given this value as a real zone."
+                )
+            proxy.manual_timezone = zone
+            # May be "" when the proxy has never been checked. That is stored
+            # as-is rather than refused: the declaration then simply never
+            # matches a checked country and stays inert until a check writes
+            # one, which is the fail-closed direction.
+            proxy.manual_timezone_country = (proxy.country_code or "").upper()
+            self._save()
+        logger.info("Declared timezone for proxy %s: %s", name, zone)
+        return True, ""
 
     def mark_check_failed(self, name: str) -> bool:
         with self._lock:

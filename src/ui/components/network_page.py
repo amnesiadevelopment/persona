@@ -4,6 +4,7 @@ from collections.abc import Callable
 import flet as ft
 
 from ...models.proxy import Proxy
+from ...services.browser.launch_policy import proxy_is_checked_but_unlaunchable
 from ...utils.proxy_parser import split_proxy_url
 from ...utils.timefmt import humanize_since
 from ..flags import flag_path
@@ -78,7 +79,7 @@ def build_network_page(
     )
 
 
-def _flag_widget(proxy: Proxy, is_checking: bool) -> ft.Control:
+def _flag_widget(proxy: Proxy, is_checking: bool, unlaunchable: bool = False) -> ft.Control:
     if is_checking:
         return ft.Container(
             width=26,
@@ -95,7 +96,39 @@ def _flag_widget(proxy: Proxy, is_checking: bool) -> ft.Control:
         )
     path = flag_path(proxy.country_code)
     if path:
-        return ft.Image(src=path, width=26, height=18)
+        flag: ft.Control = ft.Image(src=path, width=26, height=18)
+        if unlaunchable:
+            # THE FLAG STOPS BEING THE WHOLE STORY. It still says where the
+            # exit is — that part was never wrong and the operator needs it —
+            # but a badge sits on it, so a passing check that cannot launch is
+            # no longer PIXEL-IDENTICAL to a working proxy in a list of twenty.
+            # The meta line below carries the sentence; this is what makes the
+            # row worth reading at a glance.
+            return ft.Stack(
+                width=26,
+                height=18,
+                controls=[
+                    flag,
+                    ft.Container(
+                        alignment=ft.Alignment(1, -1),
+                        content=ft.Text(
+                            "!",
+                            size=12,
+                            weight=ft.FontWeight.BOLD,
+                            color=COLORS["warning"],
+                            font_family=MONO,
+                        ),
+                    ),
+                ],
+            )
+        return flag
+    if unlaunchable:
+        return ft.Container(
+            width=26,
+            height=18,
+            alignment=ft.Alignment(0, 0),
+            content=ft.Text("!", size=16, color=COLORS["warning"], font_family=MONO),
+        )
     return ft.Container(
         width=26,
         height=18,
@@ -106,7 +139,15 @@ def _flag_widget(proxy: Proxy, is_checking: bool) -> ft.Control:
     )
 
 
-def _meta_line(proxy: Proxy, now: float) -> str:
+#: What the row says when a PASSING check still cannot launch a profile. It
+#: names the missing thing and the remedy the operator can actually reach, and
+#: it deliberately does NOT read as an invitation to re-check: the check already
+#: passed and will keep passing (see refusal.py's ``_UNDERIVABLE``, which makes
+#: the same choice for the profile card's label).
+UNLAUNCHABLE_NOTE = "cannot launch: set the exit timezone in [ edit ]"
+
+
+def _meta_line(proxy: Proxy, now: float, unlaunchable: bool = False) -> str:
     parts = [split_proxy_url(proxy.url)["scheme"]]
     if proxy.country_name:
         code = f"[{proxy.country_code}] " if proxy.country_code else ""
@@ -119,6 +160,8 @@ def _meta_line(proxy: Proxy, now: float) -> str:
         parts.append(f"checked {humanize_since(proxy.checked_at, now)}")
     else:
         parts.append("not checked yet")
+    if unlaunchable:
+        parts.append(UNLAUNCHABLE_NOTE)
     return "  ·  ".join(parts)
 
 
@@ -132,6 +175,10 @@ def _proxy_row(
     is_checking: bool,
 ) -> ft.Container:
     check_label = "[ ... ]" if is_checking else "[ check ]"
+    # ONE call to the launch path's own predicate, once per row, feeding both
+    # the badge and the sentence — never two independent opinions about the
+    # same state.
+    unlaunchable = not is_checking and proxy_is_checked_but_unlaunchable(proxy)
     return ft.Container(
         border_radius=3,
         border=ft.Border.all(1, COLORS["card_border"]),
@@ -145,7 +192,7 @@ def _proxy_row(
                     spacing=14,
                     vertical_alignment=ft.CrossAxisAlignment.CENTER,
                     controls=[
-                        _flag_widget(proxy, is_checking),
+                        _flag_widget(proxy, is_checking, unlaunchable),
                         ft.Column(
                             spacing=2,
                             controls=[
@@ -157,7 +204,7 @@ def _proxy_row(
                                     font_family=MONO,
                                 ),
                                 ft.Text(
-                                    _meta_line(proxy, now),
+                                    _meta_line(proxy, now, unlaunchable),
                                     size=11,
                                     color=COLORS["text_sub"],
                                     font_family=MONO,
