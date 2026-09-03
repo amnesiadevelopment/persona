@@ -757,7 +757,6 @@ def _proxy_timezone(proxy) -> str:
     )
 
 
-
 def proxy_is_checked_but_unlaunchable(proxy) -> bool:
     """A proxy whose check PASSED and whose profiles still cannot launch.
 

@@ -261,10 +261,41 @@ def open_proxy_dialog(
         # then reports an error about a different field. The oracle is the same
         # vendored name set in both places, so the two cannot disagree.
         zone = (tz_field.value or "").strip()
-        if zone and not is_declarable_zone(zone):
+        # PREFILLED FROM THE RAW STORED STRING, not from the country-gated
+        # `declared_timezone`, so this is what "the operator did not touch the
+        # field" looks like. Every test below is scoped to a CHANGED value: an
+        # untouched field must not be able to fail a save (a legacy record
+        # carrying a zone with no country would otherwise become unrenameable).
+        prefilled = proxy.manual_timezone if proxy is not None else ""
+        declaring = zone != prefilled
+        if declaring and zone and not is_declarable_zone(zone):
             tz_error.value = (
                 f"'{zone}' is not a timezone name. Use IANA Region/City form, "
                 "e.g. Europe/Bucharest"
+            )
+            tz_error.visible = True
+            page.update()
+            return
+        # A DECLARATION IS MADE *FOR* A COUNTRY, so it needs one on file. Caught
+        # here, BEFORE on_save, so an add does not create the proxy and then
+        # report an error about a different field — and so the operator is told
+        # rather than handed a silent success that never activates (the store
+        # used to store the zone with an empty country, which no later check
+        # ever re-bound: `mark_checked` writes the six measured fields and is
+        # untouched by this feature).
+        #
+        # A URL CHANGE COUNTS AS HAVING NO COUNTRY, because it is about to: the
+        # save invalidates all six geo fields plus the declaration (`update()`'s
+        # `keep_geo` term), since the exit moved. Declaring a zone in the same
+        # gesture that moves the exit is declaring it for a country nobody has
+        # measured yet, so it is refused here with the same sentence rather
+        # than saved-then-rejected by the store one line later.
+        moved = proxy is not None and url != proxy.url
+        has_country = proxy is not None and bool(proxy.country_code) and not moved
+        if declaring and zone and not has_country:
+            tz_error.value = (
+                "Press [ check ] first — a timezone is declared for this "
+                "proxy's exit country, and there isn't one on file yet."
             )
             tz_error.visible = True
             page.update()
@@ -280,7 +311,18 @@ def open_proxy_dialog(
         # record to hang a declaration off until on_save creates it, and on a
         # rename the record now lives under the new name. Both paths therefore
         # declare against `name`, not against `proxy.name`.
-        if on_declare_timezone is not None:
+        #
+        # ⚠️ ONLY WHEN THE OPERATOR ACTUALLY TOUCHED THE FIELD. An unconditional
+        # call re-submits a value nobody typed, and that bit two ways: a bare
+        # [ save ] after the exit moved RO->CZ re-armed a declaration the
+        # country gate had deliberately retired (the CZ exit then launched with
+        # a Romanian clock), and a URL edit re-wrote the declaration `update()`
+        # had just invalidated, leaving the half-record the store's docstring
+        # says cannot exist. The store refuses to re-stamp an unchanged zone
+        # too — it owns the field and a second caller must not be able to skip
+        # the rule — but a dialog should not be issuing a write for a field the
+        # operator never touched regardless.
+        if on_declare_timezone is not None and declaring:
             tz_err = on_declare_timezone(name, zone)
             if tz_err:
                 tz_error.value = tz_err

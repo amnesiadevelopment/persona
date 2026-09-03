@@ -363,6 +363,40 @@ class ProxyStore(StoreGuardMixin, TrashableMixin):
         An EMPTY zone clears the declaration — that is how an operator takes it
         back — and clears the country with it so no half-record survives.
 
+        ⚠️ RE-DECLARING A ZONE THAT IS ALREADY LIVE IS A NO-OP, NOT A RE-STAMP,
+        and that is the load-bearing half of this method rather than an
+        optimisation. The country gate is a READ-side guard: it retires a
+        declaration when the exit moves. Re-stamping
+        ``manual_timezone_country`` from the CURRENT country on every call
+        would let any caller re-arm a declaration the gate had already retired
+        — exactly the country/clock contradiction this design was chosen to
+        make unrepresentable, a zone declared for an RO exit re-affirmed for a
+        CZ one. It is reachable without anyone typing anything: the proxy
+        dialog prefills its field from the stored value, so a bare ``[ save ]``
+        re-submits it. The dialog now skips the call when the operator did not
+        touch the field, and this guard is why a SECOND caller cannot skip the
+        rule either (the same reasoning as the validation being duplicated at
+        the dialog).
+
+        The identical string re-submitted while the declaration is RETIRED is
+        REFUSED with a sentence rather than silently ignored: a silent success
+        that changes nothing is the shape of defect this method already carries
+        one warning about, so the operator is told what is on file, which
+        country it was declared for, and how to re-declare it (clear, save,
+        enter it again). That two-gesture path is the narrow residue of the
+        no-re-stamp rule, and it is fail-closed — the profile refuses to launch
+        in the meantime, which is the correct answer.
+
+        ⚠️ A DECLARATION NEEDS A CHECKED EXIT COUNTRY, and is REFUSED without
+        one. Storing it with an empty country was the fail-closed direction and
+        it was also SILENT AND PERMANENT: the operator typed a valid zone, got
+        a success and a closed dialog, and the declaration never activated —
+        not even after a later check found the country, because nothing re-binds
+        it (``mark_checked`` writes the six measured fields and is deliberately
+        untouched by this feature). Adding a proxy and filling in the whole form
+        before pressing ``[ check ]`` is an ordinary sequence, not an edge case,
+        so it gets a sentence instead of a shrug.
+
         Returns ``(ok, error)``. The error is the operator-facing sentence; it
         is empty on success.
         """
@@ -376,6 +410,21 @@ class ProxyStore(StoreGuardMixin, TrashableMixin):
                 proxy.manual_timezone_country = ""
                 self._save()
                 return True, ""
+            country = (proxy.country_code or "").upper()
+            declared_for = (proxy.manual_timezone_country or "").upper()
+            if zone == proxy.manual_timezone and declared_for:
+                if declared_for == country:
+                    # Already live for this exit. Nothing is written and
+                    # nothing is re-stamped — see the warning above.
+                    return True, ""
+                return False, (
+                    f"{zone!r} is already on file for this proxy, declared for "
+                    f"the {declared_for} exit, and the exit is now in "
+                    f"{country or 'an unknown country'}. A timezone is declared "
+                    "FOR a country, so it is not re-used automatically: clear "
+                    "the field and save, then enter the zone for the current "
+                    "exit."
+                )
             if not is_declarable_zone(zone):
                 return False, (
                     f"{zone!r} is not a timezone name. Enter an IANA zone in "
@@ -383,12 +432,14 @@ class ProxyStore(StoreGuardMixin, TrashableMixin):
                     "abbreviation like 'EET' is not accepted because the "
                     "browser engine is given this value as a real zone."
                 )
+            if not country:
+                return False, (
+                    "This proxy has no checked exit country yet, and a "
+                    "timezone is declared FOR a country — press [ check ] "
+                    "first, then declare the zone."
+                )
             proxy.manual_timezone = zone
-            # May be "" when the proxy has never been checked. That is stored
-            # as-is rather than refused: the declaration then simply never
-            # matches a checked country and stays inert until a check writes
-            # one, which is the fail-closed direction.
-            proxy.manual_timezone_country = (proxy.country_code or "").upper()
+            proxy.manual_timezone_country = country
             self._save()
         logger.info("Declared timezone for proxy %s: %s", name, zone)
         return True, ""

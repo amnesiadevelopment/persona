@@ -79,7 +79,11 @@ def build_network_page(
     )
 
 
-def _flag_widget(proxy: Proxy, is_checking: bool, unlaunchable: bool = False) -> ft.Control:
+# `unlaunchable` is REQUIRED, with no default, deliberately: a default of
+# False is exactly the silent-healthy render this ticket exists to remove,
+# and a future caller that forgets the argument should fail loudly at the
+# call site rather than quietly draw a clean flag on a stuck proxy.
+def _flag_widget(proxy: Proxy, is_checking: bool, unlaunchable: bool) -> ft.Control:
     if is_checking:
         return ft.Container(
             width=26,
@@ -147,7 +151,7 @@ def _flag_widget(proxy: Proxy, is_checking: bool, unlaunchable: bool = False) ->
 UNLAUNCHABLE_NOTE = "cannot launch: set the exit timezone in [ edit ]"
 
 
-def _meta_line(proxy: Proxy, now: float, unlaunchable: bool = False) -> str:
+def _meta_line(proxy: Proxy, now: float, unlaunchable: bool) -> str:
     parts = [split_proxy_url(proxy.url)["scheme"]]
     if proxy.country_name:
         code = f"[{proxy.country_code}] " if proxy.country_code else ""
