@@ -55,7 +55,16 @@ Usage:
     python3 scripts/ps299_rebase_probe.py --tag <t> --keep      # keep the tree
 
 Exit status is 0 only when all 16 apply with zero rejects, so this is usable
-as a gate in the watch-and-bump automation.
+as a gate in the watch-and-bump automation. Because it IS a gate, it must be
+able to FAIL: see the exit-status note in apply_ours() and the fetch-error note
+in main(). A gate that cannot fail is worse than no gate, because the
+automation it guards bumps the tag on its say-so.
+
+  0 = all 16 apply, zero rejects, zero fuzz
+  1 = rejects and/or fuzz — a rebase is needed
+  2 = the measurement could not be made at all (clone failed, a file could not
+      be fetched, ungoogled's own prerequisites failed, wrong patch count).
+      NOT the same as "the patches are fine"; nothing was measured.
 """
 
 import argparse
@@ -68,6 +77,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import urllib.error
 import urllib.request
 
 UCPL_REPO = "https://github.com/ungoogled-software/ungoogled-chromium-portablelinux.git"
@@ -213,6 +223,37 @@ def apply_ours(tree, fuzz):
         out = r.stdout + r.stderr
         rej = len(re.findall(r"^Hunk #\d+ FAILED", out, re.M))
         fz = len(re.findall(r"with fuzz \d", out))
+
+        # ⚠️ THE EXIT STATUS IS PART OF THE MEASUREMENT — scraping "Hunk #N
+        # FAILED" alone FAILS OPEN on the single most likely breakage at a new
+        # upstream tag: UPSTREAM RENAMED OR DELETED A FILE WE PATCH.
+        #
+        # GNU patch (2.8, measured) does NOT emit that string when the target
+        # file is absent. It emits, and exits 1:
+        #     can't find file to patch at input line 3
+        #     No file to patch.  Skipping patch.
+        #     1 out of 1 hunk ignored
+        # so `rej` stays 0 and the patch used to be reported OK. Against a tree
+        # containing NOTHING AT ALL this printed "81/81 hunks, 0 rejects, ✅"
+        # and exited 0 — a gate that certifies a patch set against an empty
+        # tree is worse than no gate, because the watch-and-bump automation
+        # bumps the tag on its say-so.
+        #
+        # Adding no false positive is not an assumption, it is measured: a
+        # clean apply exits 0, and so does a legitimate CREATE-file hunk
+        # (--- /dev/null) against a tree where the file is absent — which is
+        # exactly the "absent path is not a deleted path" case in the header.
+        # `apply_prereqs` has relied on this same invariant all along.
+        if r.returncode != 0 and rej == 0:
+            rej = hunks
+            why = "target file missing/renamed?"
+            for l in out.splitlines():
+                if "can't find file to patch" in l or "hunks ignored" in l or "hunk ignored" in l:
+                    why = l.strip()
+                    break
+            print("::error::%s did not apply (patch exit %d, no FAILED hunk reported) — %s"
+                  % (name, r.returncode, why))
+
         total_h += hunks
         total_r += rej
         total_fuzz += fz
@@ -226,7 +267,8 @@ def apply_ours(tree, fuzz):
         print("   %-46s %6d %8d %6d  %s" % (name, hunks, rej, fz, flag))
         if rej:
             for l in out.splitlines():
-                if "FAILED" in l or "can't find file" in l:
+                if ("FAILED" in l or "can't find file" in l
+                        or "hunk ignored" in l or "hunks ignored" in l):
                     print("        " + l)
     print("   " + "-" * 70)
     print("   %-46s %6d %8d %6d" % ("TOTAL", total_h, total_r, total_fuzz))
@@ -280,21 +322,37 @@ def main():
 
     def get(spec):
         repo, ref, path, dest = spec
+        # ⚠️ ONLY a 404 means "absent upstream". A bare `except Exception` here
+        # made a TRANSIENT NETWORK FAILURE indistinguishable from a file our
+        # patches legitimately create: the None fell into the counted-as-created
+        # branch below, the file was never written, and the patch that needed it
+        # then "applied" against a tree missing its target. Combined with the
+        # exit-status hole in apply_ours() that produced a green ✅ from a failed
+        # fetch. Re-raise anything that is not a 404 so the run dies loudly.
         try:
-            return dest, fetch_text(repo, ref, path)
-        except Exception:
-            return dest, None
+            return dest, fetch_text(repo, ref, path), None
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                return dest, None, None      # genuinely absent upstream — expected
+            return dest, None, "HTTP %s %s" % (e.code, e.reason)
+        except Exception as e:               # URLError, timeout, incomplete read…
+            return dest, None, "%s: %s" % (type(e).__name__, e)
 
     specs = [("chromium/src", chromium_tag, p, p) for p in chromium_paths]
     if v8_rev:
         specs += [("v8/v8", v8_rev, p[len("v8/"):], p) for p in v8_paths]
 
     ok = created = 0
+    errors = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
-        for dest, data in ex.map(get, specs):
+        for dest, data, err in ex.map(get, specs):
+            if err is not None:
+                errors.append((dest, err))
+                continue
             if data is None:
                 # NOT an error: our patches and ungoogled's create files that do
-                # not exist upstream. See the header's first trap.
+                # not exist upstream. See the header's first trap. This branch is
+                # now reached ONLY on a real 404, never on a network failure.
                 created += 1
                 continue
             full = os.path.join(tree, dest)
@@ -302,6 +360,17 @@ def main():
             open(full, "wb").write(data)
             ok += 1
     print("   fetched %d, %d absent upstream (created by a patch — expected)" % (ok, created))
+
+    if errors:
+        # A tree we could not fully reconstruct cannot measure anything. Say so
+        # and stop, rather than measuring our patches against a partial tree.
+        for dest, err in errors:
+            print("::error::could not fetch %s — %s" % (dest, err))
+        print("::error::%d file(s) failed to fetch — the reconstructed tree is "
+              "INCOMPLETE, so any apply result would be meaningless" % len(errors))
+        if not (args.keep or args.workdir):
+            shutil.rmtree(work, ignore_errors=True)
+        return 2
 
     wanted = set(chromium_paths) | set(v8_paths)
     print()
