@@ -160,12 +160,32 @@ def build_mcp(container: Container) -> FastMCP:
             return {"launched": False, "error": "already running"}
         # ENGINE READINESS — the precondition the UI and REST doors both perform
         # before start_thread, and the one this lane reached the launch path
-        # without (PS-222). Falling through does not fail fast: process.py hands
-        # the vendored engine `_needs_fetch: True` and nothing between here and
-        # there re-asks the question. The tree states the cost in three places —
-        # routes/browser.py ("falling through would let the engine start its own
-        # blocking, non-resumable download mid-launch"), ui/actions/browser.py,
-        # and process.py's own `_needs_fetch` note.
+        # without (PS-222).
+        #
+        # Falling through does NOT fail fast, and the failure is worse than a
+        # late error. With no engine installed `_binary_path_override()`
+        # (engine_install.py:325) returns None — "let the engine resolve its own
+        # build" — so the child reaches `from invisible_playwright import
+        # InvisiblePlaywright`, fails there, and emits LAUNCH_FAILED on the pipe
+        # (invisible_launch.py:3311-3316), AFTER the profile was marked running
+        # and a child was forked. That emission is a pipe message, not an
+        # exception, so the `refusal_for_attempt` read below finds no verdict and
+        # this tool answers {"launched": True} for a browser that never opened.
+        # That is the same class of defect PS-82 fixed on this very lane: the
+        # off-machine caller told the launch succeeded, with the real reason
+        # announced only on a pipe it cannot see.
+        #
+        # This is NOT the download hazard the two guarding doors describe, and
+        # the distinction is measured, not assumed (PS-222). That warning is
+        # about `ensure_invisible_installed`, which genuinely downloads and which
+        # the launch path correctly never calls — tests/test_process.py:113
+        # (`test_needs_fetch_never_triggers_download`) is the shipped guard on
+        # that. process.py's `_needs_fetch` flag (process.py:364) has ZERO
+        # consumers: `_child` reads cfg key-by-key via .get() and never forwards
+        # it, and the engine is handed an explicitly-constructed kwargs dict
+        # (invisible_launch.py:3329+), never cfg — so the flag reaches no
+        # vendored code and cannot trigger a fetch. Dead config, left in place
+        # deliberately; removing it is a separate slice.
         #
         # Resolved on the EFFECTIVE engine, never profile.engine: a mobile
         # profile storing "firefox" actually launches chromium, and reading the
