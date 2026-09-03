@@ -107,12 +107,42 @@ STRINGS = {
     # profiles out of three rows is exactly the unexplained arithmetic — and
     # it is what lets the inline line below be capped without losing anything.
     # No severity token: this is an ordinary batch record, not a failure.
+    #
+    # TWO STRINGS, NOT ONE, and the split is the point (PR #209 review round
+    # 2). The repeat record is a property of the PASTE — it is computed from
+    # the text before `bulk_create` runs — but "created once" is a claim about
+    # the OUTCOME, and the two are independent: a name can be listed twice and
+    # created zero times. Writing the creating wording for a REFUSED repeat
+    # produced a durable line saying `bad/name` — a string
+    # `validate_profile_name` refuses precisely because it can never be a
+    # profile — had been created, sitting one row below the refusal line that
+    # said it had not. In a wholly-refused batch (one bad os_type refuses
+    # EVERY name, the case this ticket singles out) that was the majority of
+    # what the log held: 200 false "created once" lines against zero profiles.
+    #
+    # The repeat is still worth recording when the name was refused — the
+    # operator did type it twice — so the line is kept and the OUTCOME half of
+    # the wording is corrected, rather than the line being dropped. Neither
+    # wording carries a severity token ("refused" is a SEV_FAIL substring, so
+    # the refused variant says "not created", matching `bulk_create_not_created`).
     "bulk_create_repeat_logged": "{name} was listed more than once - created once",
+    "bulk_create_repeat_refused_logged": (
+        "{name} was listed more than once - not created"
+    ),
     # The INLINE half, capped like the refusal list for the same reason: this
     # renders into a 460px dialog above the controls the operator needs to
     # correct the paste with.
+    #
+    # "attempted once", not "entered once": this ONE line covers a mixed set —
+    # some repeated names were created, some were refused (their reasons are
+    # in the refusal lines directly above it) — so it must not assert an
+    # outcome for any of them. What is true of every name in the list, whatever
+    # happened next, is that the batch tried it once rather than twice. The
+    # per-name Activity Log lines carry the outcome; this line carries the
+    # arithmetic. Same correction as `bulk_create_repeat_logged` above, one
+    # level softer, applied so the two surfaces cannot disagree.
     "bulk_create_repeats": (
-        "  ({count} repeated name{plural} in the paste {was} entered once: {names})"
+        "  ({count} repeated name{plural} in the paste {was} attempted once: {names})"
     ),
     "bulk_create_repeats_more": (
         "  ... and {count} more repeated name{plural} - see the Activity Log"

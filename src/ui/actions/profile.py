@@ -193,9 +193,11 @@ _INLINE_REFUSAL_LIMIT = 12
 #: Lower than the refusal cap deliberately: repeats render as one comma-joined
 #: line rather than one line per name, so N repeats cost N names' worth of
 #: WIDTH on a wrapped line, and a repeat is also less urgent than a refusal
-#: (nothing was lost — the name was created once). Like the refusal cap it can
+#: (the batch attempted the name once either way; whether it was created is
+#: the refusal list's business, not this line's). Like the refusal cap it can
 #: defer to the Activity Log only because every repeat is logged per name
-#: first, unconditionally.
+#: first, unconditionally — and the log line it defers to states the ACTUAL
+#: outcome per name, so the deferral does not point at a false claim.
 _INLINE_REPEAT_LIMIT = 8
 
 
@@ -254,8 +256,32 @@ def bulk_create_profiles(
         # profiles out, nothing anywhere accounting for the third. (2) The
         # inline repeats line can only be capped because this record exists to
         # defer to, exactly as the refusal cap defers to the lines above.
+        #
+        # THE WORDING IS CHOSEN PER NAME, on the OUTCOME (PR #209 review round
+        # 2). `repeats` is a property of the PASTE — computed from the text
+        # before `bulk_create` ran — so it says nothing about whether any of
+        # those names was created. Writing one creating wording for all of
+        # them produced a durable line claiming `bad/name` was created,
+        # directly under the refusal line saying it was not; and in a
+        # wholly-refused batch every repeat line made that false claim, which
+        # is worse than the aggregate integer this ticket replaced (the
+        # integer was uninformative, this was affirmatively wrong).
+        #
+        # The line is kept for a refused repeat rather than dropped: the
+        # operator DID type the name twice, the arithmetic still needs
+        # accounting for, and the inline cap defers to this record — so
+        # dropping it would leave `bulk_create_repeats_more` pointing at
+        # nothing for exactly those names. Only the outcome half changes.
+        created_set = set(created)
         for name in repeats:
-            log(get_string("bulk_create_repeat_logged", name=name))
+            log(
+                get_string(
+                    "bulk_create_repeat_logged"
+                    if name in created_set
+                    else "bulk_create_repeat_refused_logged",
+                    name=name,
+                )
+            )
         refresh()
 
         if not skipped:

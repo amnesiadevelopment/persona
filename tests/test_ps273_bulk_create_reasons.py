@@ -199,13 +199,28 @@ def test_a_wholly_refused_batch_does_not_claim_anything_was_created(mgr):
 def test_repeats_in_the_paste_are_accounted_for(mgr):
     """`created + skipped` is fewer than the rows pasted when the paste repeats
     a name — the repeat is dropped before the loop and counted nowhere. Said
-    out loud so the arithmetic on screen adds up."""
+    out loud so the arithmetic on screen adds up.
+
+    ASSERTED AGAINST THE REPEATS LINE ITSELF, not against the whole message
+    (PR #209 review round 2): ``"repeated name" in msg and "alpha" in msg`` is
+    satisfied by the head line and the refusal line independently, so it was
+    weaker than its own name — it would pass against a build whose repeats line
+    named the wrong profile, or none.
+    """
     on_create, _log, _page = _harness(mgr)
 
     msg = on_create("alpha\nalpha\nbad/name", "windows", "", [])
 
     assert msg is not None
-    assert "repeated name" in msg and "alpha" in msg, f"got {msg!r}"
+    repeat_line = next(
+        (line for line in msg.split("\n") if "repeated name" in line), None
+    )
+    assert repeat_line is not None, f"no repeats line at all; got {msg!r}"
+    assert "alpha" in repeat_line, (
+        f"the repeats line must name the repeated profile itself, not rely on "
+        f"the name appearing elsewhere in the message; got {repeat_line!r}"
+    )
+    assert "1 repeated name" in repeat_line, f"got {repeat_line!r}"
 
 
 def test_repeats_alone_do_not_open_the_dialog_report(mgr):
@@ -252,10 +267,130 @@ def test_a_repeat_is_recorded_even_when_nothing_was_refused(mgr):
 
 def test_the_repeat_log_line_carries_no_severity_token(mgr):
     """A repeat is an ordinary batch record, not a failure — it must not paint
-    the red dot in the Activity Log."""
+    the red dot in the Activity Log. BOTH wordings, since the refused variant
+    is the one whose vocabulary is closest to the SEV_FAIL substrings
+    ("refused" is one of them, which is why it says "not created")."""
     from src.ui.log_console import SEV_IDLE, severity
 
     assert severity(get_string("bulk_create_repeat_logged", name="alpha")) == SEV_IDLE
+    assert (
+        severity(get_string("bulk_create_repeat_refused_logged", name="alpha"))
+        == SEV_IDLE
+    )
+
+
+# --- the repeat record must not claim an outcome the batch did not produce ---
+#
+# MEASURED (PR #209 review round 2). `repeats` is a property of the PASTE — it
+# is computed from the text before `bulk_create` runs — but the line it wrote
+# ("was listed more than once - created once") is a claim about the OUTCOME.
+# For a repeated name that was REFUSED that claim is false, and it is durable:
+# it survives the dialog, it sits one row below the refusal line contradicting
+# it, and it carries the idle dot so nothing marks it suspect. Nothing in the
+# shipped suite separated the two behaviours — the nearest test pasted 150
+# repeated names that all DID get created, pinning only the true case.
+
+
+def test_a_repeated_name_that_was_REFUSED_is_not_logged_as_created(mgr):
+    """The defect, at its smallest: one name, listed twice, refused."""
+    mgr.add_profile("alpha", "", "windows")
+    on_create, log, _page = _harness(mgr)
+
+    on_create("alpha\nalpha\nbeta", "windows", "", [])
+
+    line = next(
+        (line for line in log if "alpha" in line and "listed more than once" in line),
+        None,
+    )
+    assert line is not None, f"the repeat must still be recorded; got {log!r}"
+    assert "created once" not in line, (
+        f"alpha was listed twice and created ZERO times — the durable record "
+        f"must not claim a creation the batch did not produce. This line sits "
+        f"one row below 'alpha not created: ...' in the same log. got {line!r}"
+    )
+    assert "not created" in line, (
+        f"the record must say what actually happened, not merely omit the "
+        f"false claim; got {line!r}"
+    )
+    # ...and the name that genuinely WAS created still gets the creating
+    # wording, so this is a per-name choice rather than a blanket downgrade.
+    beta_line = next(
+        (line for line in log if "beta" in line and "listed more than once" in line),
+        None,
+    )
+    assert beta_line is None, "beta was not repeated, so it gets no repeat line"
+
+
+def test_an_invalid_repeated_name_is_never_logged_as_created(mgr):
+    """`bad/name` contains "/", which `validate_profile_name` refuses precisely
+    because such a profile can never exist. A durable log line saying it was
+    created is not merely imprecise — it names a thing the system is incapable
+    of having made."""
+    on_create, log, _page = _harness(mgr)
+
+    on_create("bad/name\nbad/name\nfresh", "windows", "", [])
+
+    assert set(mgr.profiles) == {"fresh"}
+    blob = "\n".join(log)
+    assert "bad/name was listed more than once - created once" not in blob, (
+        f"a name containing '/' cannot be a profile; got {log!r}"
+    )
+    assert "bad/name was listed more than once - not created" in blob, f"got {log!r}"
+
+
+def test_a_wholly_refused_batch_logs_no_creation_claim_for_any_repeat(mgr):
+    """The case the ticket singles out as mattering most, and the case this
+    defect was WORST in.
+
+    The batch shares one os_type, so an unstorable spelling refuses EVERY
+    name — and every repeated name then got a "created once" line. At 200
+    names that is 200 durable lines asserting creation against zero profiles:
+    the majority of what the operator's log holds after the batch, and
+    affirmatively wrong rather than merely uninformative like the aggregate
+    integer it replaced.
+    """
+    names = [f"n{i}" for i in range(5)]
+    paste = "\n".join([n for n in names for _ in (0, 1)])
+    on_create, log, _page = _harness(mgr)
+
+    msg = on_create(paste, "win", "", [])
+
+    assert mgr.profiles == {}, "the whole batch must have been refused"
+    assert msg is not None and "No profiles created" in msg
+    blob = "\n".join(log)
+    assert "created once" not in blob, (
+        f"zero profiles were created; no line may say otherwise. got {log!r}"
+    )
+    # The repeats are STILL recorded — the operator did type each name twice,
+    # the inline cap defers to this record, and dropping the lines would leave
+    # `bulk_create_repeats_more` pointing at nothing for exactly these names.
+    for n in names:
+        assert f"{n} was listed more than once - not created" in blob, (
+            f"{n!r} missing its (corrected) repeat record; got {log!r}"
+        )
+
+
+def test_the_inline_repeats_line_does_not_claim_an_outcome_either(mgr):
+    """The same conflation one level softer: the inline line said the repeated
+    names were "entered once" while rendering directly under a refusal line
+    saying one of them was not created at all. The two surfaces must not
+    disagree, so the inline line states the ATTEMPT (true of every name in the
+    list, whatever happened next) and leaves the outcome to the refusal lines
+    above it and the per-name log lines behind it."""
+    on_create, _log, _page = _harness(mgr)
+
+    msg = on_create("bad/name\nbad/name\nfresh", "windows", "", [])
+
+    repeat_line = next(
+        (line for line in msg.split("\n") if "repeated name" in line), None
+    )
+    assert repeat_line is not None, f"got {msg!r}"
+    assert "bad/name" in repeat_line
+    assert "entered once" not in repeat_line, (
+        f"'entered once' reads as an outcome for a name that was refused, "
+        f"directly under the line refusing it; got {repeat_line!r}"
+    )
+    assert "attempted once" in repeat_line, f"got {repeat_line!r}"
 
 
 def test_a_long_repeat_list_is_capped_like_the_refusal_list(mgr):
