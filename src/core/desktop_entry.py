@@ -77,6 +77,17 @@ def install_desktop_entry() -> str | None:
         if not entry.exists() or entry.read_text(encoding="utf-8") != content:
             entry.write_text(content, encoding="utf-8")
         return str(entry)
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
+        # `UnicodeDecodeError` is here because it is NOT an `OSError` — it
+        # inherits from `ValueError`, so the `read_text` above walked straight
+        # through an `OSError`-only arm and the docstring's "never let this
+        # break startup" became false: `main()` calls this bare, so a foreign
+        # non-UTF-8 entry in the shared ~/.local/share/applications (localized
+        # `Name[xx]`/`Comment[xx]` keys are historically latin-1) aborted the
+        # app before the window opened. Named and narrow, mirroring
+        # `_from_file` in `verify/exit_guard.py`: NOT bare `Exception`, and NOT
+        # `errors="replace"` — a file persona cannot decode is not one persona
+        # wrote, so declining it (leaving its bytes intact) is the right
+        # semantic, not clobbering it.
         logger.warning("desktop entry install failed: %s", exc)
         return None
