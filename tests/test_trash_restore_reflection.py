@@ -102,7 +102,7 @@ def test_a_field_added_to_ssh_host_survives_delete_and_restore(
     # The restore door's other half: what it handed back is what got written.
     # (A FRESH store still drops it — the hand-enumerated _load path, which is
     # this slice's named out-of-scope sibling.)
-    on_disk = json.loads(pathlib.Path(tmp_path / "ssh.json").read_text())
+    on_disk = json.loads(pathlib.Path(tmp_path / "ssh.json").read_text(encoding="utf-8"))
     assert on_disk["box"]["jump_host"] == "bastion"
     assert SSHHostStore().get("box").host == "1.2.3.4", "restored record reloads"
 
@@ -177,7 +177,7 @@ def test_a_field_added_to_proxy_survives_delete_and_restore(
 
     assert (ok, msg) == (True, "")
     assert pstore.get("exit-us").exit_asn == "AS13335"
-    on_disk = json.loads(pathlib.Path(tmp_path / "proxies.json").read_text())
+    on_disk = json.loads(pathlib.Path(tmp_path / "proxies.json").read_text(encoding="utf-8"))
     assert on_disk["exit-us"]["exit_asn"] == "AS13335"
     fresh = ProxyStore(path=str(tmp_path / "proxies.json"))
     assert fresh.get("exit-us").url == "socks5://1.2.3.4:1080"
@@ -247,7 +247,7 @@ def test_a_field_added_to_certificate_survives_delete_and_restore(
 
     assert (ok, msg) == (True, "")
     assert cstore.get("admin").issuer_cn == "Corp Root CA"
-    on_disk = json.loads(pathlib.Path(tmp_path / "certs.json").read_text())
+    on_disk = json.loads(pathlib.Path(tmp_path / "certs.json").read_text(encoding="utf-8"))
     assert on_disk["admin"]["issuer_cn"] == "Corp Root CA"
     assert CertStore().get("admin").password == "p12pass", "record reloads"
 
@@ -375,7 +375,7 @@ def test_a_field_added_to_bookmark_survives_delete_and_restore(
 
     assert (ok, msg) == (True, "")
     assert bstore.get("leaks").icon == "shield.png"
-    on_disk = json.loads(pathlib.Path(tmp_path / "bookmarks.json").read_text())
+    on_disk = json.loads(pathlib.Path(tmp_path / "bookmarks.json").read_text(encoding="utf-8"))
     assert on_disk["bookmarks"]["leaks"]["icon"] == "shield.png"
     fresh = BookmarkStore(path=str(tmp_path / "bookmarks.json"))
     assert fresh.get("leaks").url == "https://browserleaks.com"
@@ -399,7 +399,7 @@ def test_a_field_added_to_pool_survives_delete_and_restore(
     pool = bstore.get_pool("checks")
     assert pool.toolbar_label == "Checks"
     assert pool.bookmark_names == ["leaks"], "the members still come back too"
-    on_disk = json.loads(pathlib.Path(tmp_path / "bookmarks.json").read_text())
+    on_disk = json.loads(pathlib.Path(tmp_path / "bookmarks.json").read_text(encoding="utf-8"))
     assert on_disk["pools"]["checks"]["toolbar_label"] == "Checks"
     fresh = BookmarkStore(path=str(tmp_path / "bookmarks.json"))
     assert fresh.get_pool("checks").bookmark_names == ["leaks"]
