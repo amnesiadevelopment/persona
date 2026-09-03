@@ -144,6 +144,33 @@ text fields reachable while the driver could not reach the multiline one, and
 **nothing failed** — the map was wrong and every test was green. These two
 tests are what make that specific silence impossible now.
 
+**The conditionally-revealed pair was falsified on BOTH of its halves
+(PS-219).** A control that only exists once another control is operated can
+break in two independent places, and one negative control covers only one of
+them, so both were mutated in the served child and the *positive* assertions
+re-run against each:
+
+| build | reveal census | stored resolution |
+|---|---|---|
+| unmodified | both fields appear | `1728x1117` — **green** |
+| `custom_row` pinned hidden | fields never appear | — **RED** |
+| typed size discarded at submit | both fields appear, and show what was typed | `1234x1234` — **RED** |
+
+```
+AssertionError: ['width', 'height'] did not appear after choosing Custom….
+  Fields present: ['e.g. Amazon US Shopper', 'shopping, us, amazon', 'optional']
+AssertionError: stored '1234x1234', wanted 1728x1117
+```
+
+The second row is the one a census alone would miss: the fields are revealed
+perfectly and the product still persists something the user never typed.
+
+**And the first three attempts at the reveal mutation came back GREEN while
+sabotaging nothing** — see the [reveal note](#reachable) for the two `Prop`
+traps behind that. The general form is worth more than the specifics: **a
+green negative control is a claim about the patch at least as much as about
+the product.** Prove the mutation took before trusting what it did not catch.
+
 ---
 
 ## The reach map
@@ -161,6 +188,7 @@ Measured by walking the real UI and recording what the semantics tree exposes.
 | Text fields — single-line | Real `<input>`; typing round-trips (`'ps71-driven-profile'` reached the saved profile) |
 | Text fields — multiline | Real `<textarea>`; typing round-trips (`'driven-notes-through-the-textarea'` reached the saved profile's `notes`). Reachable **only because the driver queries `input, textarea`** — see the correction note below |
 | **Dropdown options** | **Reachable (PS-74).** Every option of `build_os_dropdown` (`windows/macos/linux/android/ios`) and of `build_engine_dropdown` opens, is clickable, and the choice reaches the saved profile through `ProfileManager`. This row said **NOT reachable** until PS-74 — see the correction note below, which is the more important half |
+| **Conditionally-revealed controls** | **Reachable (PS-219).** `custom_w` / `custom_h` do not exist until the *Screen resolution* dropdown is set to `Custom…`. Setting it reveals both; typing into them reaches the saved profile's `resolution` (`'1728x1117'`). The reveal is **inverted, not assumed** — the fields are censused as ABSENT with the dialog open and the dropdown untouched, then as PRESENT after it is operated — and both halves are falsified against mutated builds. See the reveal note below |
 | Onboarding | `Skip` / `Next` |
 | Modal scoping | Correct — while onboarding is up, *only* `Skip`/`Next` are addressable. The driver cannot reach behind a modal, which matches what a user can do |
 
@@ -187,6 +215,50 @@ Measured by walking the real UI and recording what the semantics tree exposes.
 > `<textarea>` and reads the value back out of `ProfileManager`. If a future
 > flet backs a field with something new, those fail and this row gets
 > corrected instead of quietly drifting out of true.
+
+> **Reveal note (PS-219) — how a *conditionally-revealed* control is driven,
+> and the two traps that made its negative control certify nothing.**
+>
+> A control that appears **late** is where the text-field silence above
+> recurs, and worse: to a driver, "the field was never revealed" reads exactly
+> like "the framework cannot render it". So the reveal is inverted rather than
+> assumed — `_assert_custom_pair_absent` runs with the dialog open and the
+> dropdown untouched, `_assert_custom_pair_present` runs after it is operated,
+> and the second is worth nothing without the first.
+>
+> Three measured facts decide how the test is written:
+>
+> - The dropdown's addressable caption is **`Screen resolution`**, not
+>   `Resolution` (`src/ui/dialogs/profile.py:442-447`), and `find_dropdown`
+>   locates a dropdown by the caption node directly above it.
+> - The option's visible text is **`Custom…`** (a real ellipsis) while its
+>   stored key is `custom` (`:406`) — the same label≠key gap the Engine
+>   dropdown exercises, and `select_option` picks by visible text.
+> - `type_into("width", …)` works **only on first fill**: `_field_index`
+>   resolves a field by its hint, and Flutter drops the hint once the field
+>   holds a value. After typing, address the pair by index.
+>
+> **The negative control took four attempts, and the first three were green
+> while sabotaging nothing** — the exact vacuous pass this tier exists to
+> prevent. Two independent traps, neither visible from flet's API surface:
+>
+> 1. **`Row.visible` is a `Prop` DESCRIPTOR**, so a `__setattr__` wrapper
+>    fires and changes nothing. This is the lesson `test_ui_driven_dropdowns.py`
+>    records for `ft.Dropdown.value`, recurring on a different class — it is a
+>    property of `Prop`, not of that one control.
+> 2. **`controls` is NOT in `_values`.** `Prop` stores only *non-default*
+>    values there; `controls` lives in the instance `__dict__`. Measured:
+>    `row._values == {'visible': False}` while `row.__dict__` carries
+>    `controls`. So a detector reading `obj._values["controls"]` matches **no
+>    row at all**, and the patch installs cleanly, runs on every row and does
+>    nothing. (A third variant intercepting the backing dict also failed:
+>    setting `visible=True` **pops** the key, because `True` is the `Prop`
+>    default, rather than writing it.)
+>
+> Carry the general form: **a green negative control is a claim about the
+> patch at least as much as about the product.** Before trusting one, prove
+> the mutation actually took — here, by asserting the fields did not appear
+> under the frozen build.
 
 ### NOT reachable — recorded with the reason
 
@@ -276,15 +348,19 @@ explicitly — is **not reachable by this mechanism today**. See
 
 </details>
 
-*The text fields that inherited this limit are now reachable in principle.*
-`custom_w` and `custom_h` (`src/ui/dialogs/profile.py:299,305`) carry no
-visibility flag of their own; they sit inside `custom_row` (`:311`), which is
-declared `visible=res_value == "custom"` (`:313`) and re-toggled in
-`on_res_change` (`:318`). They render only once the **resolution** dropdown is
-set to `custom` — and that dropdown is now operable by the same mechanism. PS-74
-did not drive that specific pair (its scope was the OS and engine controls), so
-this is recorded as **not yet exercised**, no longer as blocked: the control
-that reveals them is reachable.
+*The text fields that inherited this limit are now **driven**, not merely
+reachable in principle.* `custom_w` and `custom_h`
+(`src/ui/dialogs/profile.py:373,379`) carry no visibility flag of their own;
+they sit inside `custom_row` (`:385`), which is declared
+`visible=res_value == "custom"` (`:387`) and re-toggled in `on_res_change`
+(`:391-393`), wired to `resolution_dropdown.on_select` at `:415`. They render
+only once the **resolution** dropdown is set to `custom`.
+
+This paragraph read **not yet exercised** until PS-219, and its line numbers
+had gone stale (it cited `:299,305,311,313,318` — every one of them wrong by
+the time anybody read it). Both are now corrected: the pair is exercised by
+`test_ui_driven_custom_resolution.py`, and the row for it in the
+[reachable map](#reachable) is asserted by tests rather than by this prose.
 
 **2. Native file dialogs.** `[ import ]` and `[ export ]` press cleanly and
 then nothing happens in the tree — measured: 22 controls before, 22 after, zero
@@ -312,30 +388,36 @@ which is shared, and is **not** evidence about desktop-specific behaviour.
 
 ## Cost
 
-Measured, whole committed suite: **11 tests, 549s** — one run of the whole
-tier against the committed tree (549.23s), rebased onto main. Per test the
+Measured, whole committed suite: **15 tests, 804s** — one run of the whole
+tier against the committed tree (804.43s), rebased onto main. Per test the
 spread is **31–111s**:
 
 | test | call |
 |---|---|
-| `test_selecting_each_os_option_reaches_the_saved_profile` | 111.2s |
-| `test_driven_selection_fails_when_the_selection_is_discarded` | 51.2s |
-| `test_selecting_in_the_engine_dropdown_reaches_the_saved_profile` | 47.7s |
-| `test_negative_control_is_surgical` | 47.6s |
-| `test_choosing_a_mobile_os_narrows_the_engine_choice` | 46.8s |
-| `test_typing_into_the_multiline_field_reaches_the_saved_product` | 44.4s |
-| `test_driven_test_fails_when_the_button_is_unwired` | 42.4s |
-| `test_creating_a_profile_through_the_controls_persists_it` | 42.8s |
-| `test_every_declared_option_of_both_dropdowns_is_reachable` | 42.1s |
-| `test_every_visible_text_field_is_reachable_including_the_multiline_one` | 39.1s |
-| `test_real_controls_are_addressable_in_the_shipped_ui` | 31.6s |
+| `test_selecting_each_os_option_reaches_the_saved_profile` | 110.2s |
+| `test_an_undersized_custom_resolution_is_refused_and_nothing_is_stored` | 84.4s |
+| `test_the_reveal_check_fails_when_the_row_can_never_be_shown` | 65.1s |
+| `test_the_stored_size_check_fails_when_the_typed_size_is_discarded` | 56.4s |
+| `test_the_dropdown_reveals_the_custom_pair_and_the_typed_size_is_stored` | 55.6s |
+| `test_driven_selection_fails_when_the_selection_is_discarded` | 51.1s |
+| `test_selecting_in_the_engine_dropdown_reaches_the_saved_profile` | 47.4s |
+| `test_choosing_a_mobile_os_narrows_the_engine_choice` | 46.4s |
+| `test_negative_control_is_surgical` | 46.4s |
+| `test_typing_into_the_multiline_field_reaches_the_saved_product` | 44.7s |
+| `test_driven_test_fails_when_the_button_is_unwired` | 43.1s |
+| `test_creating_a_profile_through_the_controls_persists_it` | 42.5s |
+| `test_every_declared_option_of_both_dropdowns_is_reachable` | 40.9s |
+| `test_every_visible_text_field_is_reachable_including_the_multiline_one` | 38.1s |
+| `test_real_controls_are_addressable_in_the_shipped_ui` | 31.5s |
 
-**The fixed-boot shape holds, and the 111s outlier confirms it rather than
-breaking it.** That test creates five profiles — one per OS option — inside a
-single boot: five full create-profile cycles for ~111s, against ~45s for a test
-that does one. So the *marginal* cost of another option is roughly **15s**,
-while the cost of another test is roughly **45s of boot before it does
-anything**. Drive more controls per boot; do not add a boot per assertion.
+**The fixed-boot shape holds, and the two outliers confirm it rather than
+breaking it.** The 110s test creates five profiles — one per OS option —
+inside a single boot: five full create-profile cycles for ~110s, against ~45s
+for a test that does one. The 84s test (PS-219) runs a *refusal* and a
+*recovery* create in one boot for the same reason. So the *marginal* cost of
+another cycle is roughly **15s**, while the cost of another test is roughly
+**45s of boot before it does anything**. Drive more controls per boot; do not
+add a boot per assertion.
 
 The cost is **dominated by fixed startup, not by the interaction**: the cheapest
 test bounds boot-plus-settle (a ~25s app-settle plus browser startup) at ≤31.6s.
@@ -350,10 +432,11 @@ marked, opt-in tier, not something to add to the default run.
 > First it read "3 tests, 117s / 45–60s per test" — accurate at `283993d`, left
 > untouched when two tests landed, understating the real 200.29s by 42% while
 > the per-test band excluded the entire measured spread. Then it read "5 tests,
-> 200s" while PS-74 added six more. Restated here against the committed
-> 11-test suite. **If you add a test, re-run and update this section** — a
-> stale number here is what the next ticket sizes against, and this specific
-> line has now failed that job twice.
+> 200s" while PS-74 added six more. Restated against the committed 11-test
+> suite, and restated again here by PS-219, which added four (549s → 804s).
+> **If you add a test, re-run and update this section** — a stale number here
+> is what the next ticket sizes against, and this specific line has now failed
+> that job twice.
 >
 > **This section is the single owner of the tier's cost figures.** The same
 > retired band shipped a second and third time in `conftest.py`'s `ui_driver`
