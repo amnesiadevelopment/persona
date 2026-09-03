@@ -512,8 +512,15 @@ def _manager(tmp_path, monkeypatch):
     bl = BrowserLauncher()
     # The production wiring (src/ui/app.py) — both hooks, so this test cannot
     # pass against a wiring the app does not actually perform.
+    #
+    # forget_identity, NOT forget_refusal: PS-278 put a SECOND name-keyed store
+    # (the durable survivor registry) on the same identity event, behind one
+    # named launcher method, and app.py installs that method. Wiring the bare
+    # per-store method here would keep these four door tests green while the
+    # refusal leg of forget_identity was deleted — which is exactly the coverage
+    # hole this line closes.
     pm.set_stop_hook(bl.stop_profile)
-    pm.set_forget_identity_hook(bl.forget_refusal)
+    pm.set_forget_identity_hook(bl.forget_identity)
     return pm, bl
 
 

@@ -33,6 +33,15 @@ that the app does not actually perform.
 The assertions are on OBSERVABLE BEHAVIOUR — the bytes in the registry file via
 ``registry.load()``, AND what ``bl.is_running`` / ``bl.survivor_for`` answer for
 the name — never that some method was called.
+
+ONE TEST HERE IS DELIBERATELY NOT BEHAVIOURAL:
+``test_the_app_installs_forget_identity_on_the_hook`` reads ``src/ui/app.py``'s
+AST. Every other test builds its own wiring in ``_manager``, which is right for
+what they measure and is precisely why none of them can see the composition
+root — reverting app.py's single ``set_forget_identity_hook`` argument restores
+the durable lockout in full with the whole suite green. That line is acceptance
+criterion 3, so it gets its own witness, in the idiom this repo already uses for
+composition-root pins (``tests/test_ps271_version_panel_rail.py``:295-330).
 """
 
 import sys
@@ -126,6 +135,25 @@ def _seed_survivor(bl, registry, name):
     bl.scan_survivors()
     assert bl.is_running(name) is True, f"precondition: {name} reads as running"
     assert bl.survivor_for(name) is not None, f"precondition: {name} has a survivor"
+
+
+def _refuse(bl, monkeypatch, name):
+    """Drive a real ``start_thread`` to a REFUSAL, synchronously.
+
+    The shipped recording path (``classify_refusal`` inside ``start_thread``'s
+    handler), mirrored from ``tests/test_refusal_on_profile.py``'s ``_refuse``
+    — a refusal written into ``_last_refusal`` by hand would prove nothing about
+    the store the app's hook actually has to clear.
+    """
+    import src.services.browser.launcher as launcher_mod
+    from src.models.profile import Profile
+    from src.services.proxy.errors import GeographyUnknownError
+
+    def boom(profile):
+        raise GeographyUnknownError("no geography")
+
+    monkeypatch.setattr(launcher_mod, "spawn_browser", boom)
+    bl.start_thread(Profile(name=name), lambda *a, **k: None)
 
 
 def _names(registry):
@@ -344,14 +372,112 @@ def test_the_hook_the_app_installs_is_the_one_that_disposes(tmp_path, monkeypatc
     was simply never on the event. Asserting the launcher's identity method
     drops BOTH name-keyed stores is what stops a future name-keyed dict being
     added beside them and silently missed.
+
+    BOTH STORES ARE GENUINELY OCCUPIED FIRST, and that is the whole point of the
+    ordering below. An earlier revision of this test asserted
+    ``last_refusal(...) is None`` over a name that had never been refused, so the
+    assertion was already true before the call and could not fail — "emptiness
+    rendered as success", under a docstring claiming it proved the opposite. The
+    refusal is therefore driven through the real ``start_thread`` (the shipped
+    recording path), and it is driven BEFORE the survivor is seeded: with a
+    survivor present ``start_thread`` refuses the launch as a duplicate and
+    returns before it can ever classify a spawn failure.
     """
     _alive(monkeypatch)
     pm, bl, registry = _manager(tmp_path, monkeypatch)
     pm.add_profile("acme", "", "windows")
+
+    _refuse(bl, monkeypatch, "acme")
+    assert bl.last_refusal("acme") is not None, (
+        "precondition: the refusal store must be OCCUPIED, or the assertion "
+        "below cannot fail"
+    )
     _seed_survivor(bl, registry, "acme")
 
     bl.forget_identity("acme")
 
     assert _names(registry) == []
     assert bl.survivor_for("acme") is None
-    assert bl.last_refusal("acme") is None
+    assert bl.last_refusal("acme") is None, (
+        "the identity event dropped the durable record but left the in-memory "
+        "refusal behind — the PS-53 disposal is silently no longer on the hook"
+    )
+
+
+# --------------------------------------------------------------------------
+# The INSTALLATION, at src/ui/app.py — the one line the tests above cannot see
+# --------------------------------------------------------------------------
+#
+# Every test above builds its own wiring in _manager, which is right for what
+# they measure (the launcher method, against a real ProfileManager) and is
+# exactly why none of them can see the composition root. Reverting app.py's
+# single ``set_forget_identity_hook`` argument to ``forget_refusal`` restores the
+# durable lockout in full — delete, recreate the name, launch refused — with the
+# whole suite green. That line is acceptance criterion 3 of PS-278 ("the
+# disposal is reached through the existing set_forget_identity_hook event"), so
+# it gets a witness.
+#
+# AN AST WALK RATHER THAN A CONSTRUCTED App: importing flet and building an App
+# through a Container is a heavy, environment-dependent way to observe one
+# argument, and the repo already reads app.py's source for exactly this kind of
+# composition-root pin (tests/test_ps271_version_panel_rail.py:295-330). What
+# this measures is honest and bounded: that the argument installed on the hook
+# is ``self.bl.forget_identity``. It does NOT prove the hook is ever fired —
+# that is what the four door tests above establish, through the real manager.
+
+
+def _forget_identity_hook_arguments() -> list[str]:
+    """The attribute name of every argument passed to
+    ``set_forget_identity_hook`` in ``src/ui/app.py``, read out of the AST.
+
+    A list rather than a single value so a second installation (or a removed
+    one) is visible as a count rather than silently taking the first match.
+    """
+    import ast
+    import inspect
+    from pathlib import Path
+
+    import src.ui.app as app_mod
+
+    source = Path(inspect.getsourcefile(app_mod)).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    found: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if not (isinstance(func, ast.Attribute) and func.attr == "set_forget_identity_hook"):
+            continue
+        if not node.args:
+            found.append("<no argument>")
+            continue
+        arg = node.args[0]
+        if isinstance(arg, ast.Attribute):
+            found.append(arg.attr)
+        elif isinstance(arg, ast.Constant) and arg.value is None:
+            found.append("None")
+        else:
+            # A lambda or a call — the shape the ticket explicitly asked us not
+            # to install, named so the failure message says what it found.
+            found.append(f"<{type(arg).__name__}>")
+    return found
+
+
+def test_the_app_installs_forget_identity_on_the_hook():
+    """The composition root actually installs the method the tests above prove.
+
+    Without this, app.py:348 can be reverted to ``self.bl.forget_refusal`` and
+    every other test in this file stays green while the durable lockout returns
+    in full: delete a profile, recreate the name, and its launch is refused by a
+    record naming a browser that belonged to a profile which no longer exists.
+    """
+    installed = _forget_identity_hook_arguments()
+
+    assert installed == ["forget_identity"], (
+        "src/ui/app.py must install BrowserLauncher.forget_identity on "
+        "set_forget_identity_hook (the single event that says the name has "
+        f"stopped meaning what it meant); found {installed!r}. Installing a "
+        "per-store method here puts only that store on the event — which is "
+        "the PS-278 defect exactly."
+    )
