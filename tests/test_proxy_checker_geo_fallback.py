@@ -504,6 +504,156 @@ def test_the_baseline_the_test_above_is_measured_against(tmp_path, monkeypatch):
 
 
 # --------------------------------------------------------------------------
+# THE EXHAUSTED CASE — nobody answered with a COUNTRY, but a body carried a
+# usable TIMEZONE.
+#
+# This is the one place the port deliberately diverges from `exit_guard`, and
+# the divergence is the ticket's own failure mode reappearing through a door
+# the fallback opened. `exit_guard` is a MEASUREMENT gate: running out of
+# providers costs it a measurement run. This is the OPERATOR lane, where the
+# same refusal walks the ticket's chain — mark_check_failed -> "failed" at any
+# age -> GeographyDisprovenError — and makes a HEALTHY proxy unlaunchable.
+#
+# The premise is the ticket's own, not an exotic hypothetical: the rate limit
+# attaches to the EXIT's SHARED address ("not ours to clear"), and that
+# reasoning does not stop at one provider — the same exit can be limited at
+# both, and a rate-limited provider's degraded body is exactly this
+# name-without-a-code / no-country-key shape.
+#
+# `launch_policy.py:420-423` reads `proxy.timezone` FIRST and derives from
+# `country_code` only when there is no zone, so refusing here would throw away
+# the very field the consumer wanted and then condemn the proxy for having no
+# geography. The single-provider version returned these bodies as ok=True with
+# their zone; this keeps that.
+# --------------------------------------------------------------------------
+
+#: The degraded shape a rate-limited ipwho.is emits: a country NAME, no code,
+#: but a perfectly usable zone. Read as NO COUNTRY (that is what stops the
+#: "POLAND" trap), so it advances — and if nothing better arrives it is the
+#: best thing the check saw.
+_DEGRADED_NAME_ONLY = {
+    "success": True,
+    "ip": "203.0.113.7",
+    "country": "Poland",                       # a NAME, and no code at all
+    "timezone": {"id": "Europe/Warsaw"},
+    "latitude": 52.23,
+    "longitude": 21.01,
+}
+
+#: The other degraded shape: no `country` key whatsoever, still zoned.
+_DEGRADED_NO_COUNTRY_KEY = {
+    "success": True,
+    "ip": "203.0.113.7",
+    "timezone": {"id": "Europe/Warsaw"},
+}
+
+
+@pytest.mark.parametrize(
+    "degraded", [_DEGRADED_NAME_ONLY, _DEGRADED_NO_COUNTRY_KEY],
+    ids=["name-without-a-code", "no-country-key"],
+)
+def test_socks_a_zone_survives_when_no_provider_answers_with_a_country(
+    tmp_path, monkeypatch, degraded
+):
+    """A usable ZONE with an unusable COUNTRY must not condemn the proxy.
+
+    Asserted past the fetch, exactly as AC3 is: the returned record goes
+    through `mark_checked`, the indicator must not read "failed", and the
+    profile must declare the EXIT's zone rather than raising
+    `GeographyDisprovenError`. Fetch-only assertions would miss the whole
+    point — the defect is what the refusal DOES downstream, not the refusal.
+
+    The host zone is patched to a distinctive value on `launch_policy` (its
+    own namespace; a patch on the `process` re-export is silently bypassed),
+    so a fallback to the real host zone would fail this loudly.
+    """
+    seen: dict = {}
+    ok, message, code, country, ip, tz, lat, lon = _check_via_socks(
+        monkeypatch,
+        {_FIRST: _http(200, degraded), _SECOND: _http(429)},
+        seen,
+    )
+
+    assert ok is True, f"{message} / server: {seen.get('error')}"
+    assert tz == "Europe/Warsaw"
+    # No provider answered with a country, so there legitimately is none. The
+    # zone is what makes the record usable, and it is what the launch path
+    # reads first.
+    assert code == ""
+    # And the partial did NOT short-circuit the order: the second provider was
+    # still asked, because a partial is not an answer.
+    assert [host for host, _ in seen["targets"]] == [_FIRST, _SECOND]
+
+    store = ProxyStore(path=str(tmp_path / "proxies.json"))
+    store.proxies["exit"] = Proxy(name="exit", url="socks5://gate.example.com:1080")
+    assert store.mark_checked("exit", code, country, ip, tz, lat, lon) is True
+
+    proxy = store.proxies["exit"]
+    assert proxy.timezone == "Europe/Warsaw"
+    assert proxy.last_check_ok is True
+
+    import time
+
+    state = proxy_indicator_state(proxy, time.time())
+    assert state != "failed", (
+        "a body with a usable zone but no usable country still condemns the proxy"
+    )
+
+    monkeypatch.setattr(launch_policy, "_host_timezone", lambda: "America/Chicago")
+    assert _proxy_timezone(proxy) == "Europe/Warsaw"
+
+
+def test_socks_a_partial_with_no_zone_is_still_a_failure(monkeypatch):
+    """The other half of the pair, so the rule above cannot widen into
+    "any 200 passes".
+
+    A partial is remembered only when it carried something the launch path can
+    actually use. Both providers degraded AND zoneless leaves nothing to
+    preserve, so the check fails and the refusal — which is CORRECT here —
+    stands.
+    """
+    seen: dict = {}
+    ok, message, code, country, ip, tz, lat, lon = _check_via_socks(
+        monkeypatch,
+        {
+            _FIRST: _http(200, {"success": True, "ip": "203.0.113.7"}),
+            _SECOND: _http(200, {"ip": "203.0.113.7"}),
+        },
+        seen,
+    )
+
+    assert ok is False
+    assert message == "Proxy geo lookup failed"
+    assert (code, country, ip, tz) == ("", "", "", "")
+    assert (lat, lon) == (None, None)
+    assert [host for host, _ in seen["targets"]] == [_FIRST, _SECOND]
+
+
+def test_socks_a_partial_never_pre_empts_a_real_country(monkeypatch):
+    """Remembering a partial must not become a way to STOP early.
+
+    The first provider gives a zone with no usable country; the second gives a
+    real one. The real answer wins — the partial is only ever the exhausted
+    case's value, never a competitor to an answer.
+    """
+    seen: dict = {}
+    ok, message, code, _country, _ip, tz, _lat, _lon = _check_via_socks(
+        monkeypatch,
+        {
+            _FIRST: _http(200, dict(_DEGRADED_NAME_ONLY,
+                                    timezone={"id": "Europe/Berlin"})),
+            _SECOND: _http(200, _IPINFO_BODY),
+        },
+        seen,
+    )
+
+    assert ok is True, f"{message} / server: {seen.get('error')}"
+    assert code == "PL"                        # the ANSWER, not the partial
+    assert tz == "Europe/Warsaw"               # ditto — not "Europe/Berlin"
+    assert [host for host, _ in seen["targets"]] == [_FIRST, _SECOND]
+
+
+# --------------------------------------------------------------------------
 # AC6 — the aiohttp branch, covered SEPARATELY. A fix covering one transport is
 # the shape this project forbids, so these exist even where they cannot run.
 # --------------------------------------------------------------------------
@@ -733,6 +883,50 @@ def test_aiohttp_all_providers_refusing_is_still_a_failure(tmp_path, monkeypatch
 
     assert ok is False
     assert message == "Proxy returned status 429"
+    assert (code, country, ip, tz) == ("", "", "", "")
+    assert (lat, lon) == (None, None)
+    assert seen["targets"] == [_FIRST, _SECOND]
+
+
+@_needs_aiohttp_lane
+def test_aiohttp_a_zone_survives_when_no_provider_answers_with_a_country(
+    tmp_path, monkeypatch
+):
+    """The exhausted-partial rule on the aiohttp lane — the SOCKS twin's pair.
+
+    Both branches get this from one `_resolve_geo`, but AC6 is not waivable and
+    a fix covering one transport is the shape this project forbids, so the
+    behaviour is pinned on each.
+    """
+    seen: dict = {}
+    ok, message, code, _country, _ip, tz, _lat, _lon = _check_via_aiohttp(
+        tmp_path, monkeypatch,
+        {_FIRST: _http(200, _DEGRADED_NAME_ONLY), _SECOND: _http(429)},
+        seen,
+    )
+
+    assert ok is True, f"{message} / server: {seen.get('error')}"
+    assert tz == "Europe/Warsaw"
+    assert code == ""
+    assert seen["targets"] == [_FIRST, _SECOND]
+
+
+@_needs_aiohttp_lane
+def test_aiohttp_a_partial_with_no_zone_is_still_a_failure(tmp_path, monkeypatch):
+    """The other half on this lane: nothing to preserve, so the refusal — which
+    is correct — stands."""
+    seen: dict = {}
+    ok, message, code, country, ip, tz, lat, lon = _check_via_aiohttp(
+        tmp_path, monkeypatch,
+        {
+            _FIRST: _http(200, {"success": True, "ip": "203.0.113.7"}),
+            _SECOND: _http(200, {"ip": "203.0.113.7"}),
+        },
+        seen,
+    )
+
+    assert ok is False
+    assert message == "Proxy geo lookup failed"
     assert (code, country, ip, tz) == ("", "", "", "")
     assert (lat, lon) == (None, None)
     assert seen["targets"] == [_FIRST, _SECOND]

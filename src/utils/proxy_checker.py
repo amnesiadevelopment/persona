@@ -314,8 +314,30 @@ async def _resolve_geo(
     two shapes this project's rule actually names — the 429 and the
     no-country 200 — are both answers FROM the provider, and both are handled
     below.
+
+    THE ONE PLACE THIS PORT DELIBERATELY DIVERGES FROM ITS PRECEDENT is what
+    happens when the loop RUNS OUT. exit_guard's loop simply refuses, because
+    it is a MEASUREMENT gate: refusing costs a measurement run and nothing
+    else. This is the OPERATOR lane, where the same refusal walks the ticket's
+    own chain — app.py -> mark_check_failed -> freshness reads "failed" at any
+    age -> launch_policy raises GeographyDisprovenError — and makes a HEALTHY
+    proxy unlaunchable, which is the exact defect this function exists to stop.
+    So the best PARTIAL answer seen along the way is remembered and used only
+    once nobody has answered with a country. A body carrying a usable TIMEZONE
+    is enough for the launch path, which reads `proxy.timezone` FIRST and
+    derives from `country_code` only when there is no zone
+    (launch_policy.py:420-423) — so throwing that zone away and then condemning
+    the proxy for having no geography discards the very field the consumer
+    wanted. It is also what the single-provider version did before this change:
+    a partial body used to come back ok=True with its zone.
+
+    A PARTIAL IS STILL NOT AN ANSWER, and that is what keeps the rule above
+    intact: remembering one never ends the loop early, so every remaining
+    provider is still asked, and it can never pre-empt a real country. It only
+    changes the value of the exhausted case, never the ORDER or the STOPPING.
     """
     status = 0
+    partial: tuple[str, str, str, str, object, object] | None = None
     for url in providers:
         status, data = await fetch(url)
         if status != 200:
@@ -337,12 +359,26 @@ async def _resolve_geo(
             # Answered, carried no country: a rate-limit body, an error page,
             # or a dialect this reader cannot read. Advancing here is what
             # stops a HEALTHY exit being refused and reported as "(unknown)".
+            #
+            # REMEMBERED, not discarded. If NOBODY ends up answering with a
+            # country, a body that did carry a usable TIMEZONE still beats
+            # condemning the proxy — see the divergence note in the docstring.
+            # FIRST such body wins, matching the ordering rule the answers
+            # themselves follow, and a zoneless partial is not remembered at
+            # all because it would be indistinguishable from the refusal.
+            if partial is None and fields[3]:
+                partial = fields
             continue
         return fields, ""
 
-    # Nobody answered. The message reports the LAST provider's outcome, which
-    # is the final word on the check: a 200 that carried nothing usable is a
-    # geo-lookup failure, anything else is the status it returned.
+    # Nobody answered WITH A COUNTRY. Before refusing outright — which on this
+    # lane means an unlaunchable proxy — fall back to the best partial.
+    if partial is not None:
+        return partial, ""
+
+    # Nothing usable at all. The message reports the LAST provider's outcome,
+    # which is the final word on the check: a 200 that carried nothing usable
+    # is a geo-lookup failure, anything else is the status it returned.
     if status == 200:
         return None, "Proxy geo lookup failed"
     return None, f"Proxy returned status {status}"
