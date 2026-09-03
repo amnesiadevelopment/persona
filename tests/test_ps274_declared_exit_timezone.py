@@ -130,7 +130,7 @@ def test_the_declaration_is_actually_written_to_the_json_file(tmp_path):
     so an external reader (or a future migration) sees them."""
     s, name = _ro_proxy(tmp_path)
     s.set_manual_timezone(name, RO_ZONE)
-    on_disk = json.loads((tmp_path / "proxies.json").read_text())[name]
+    on_disk = json.loads((tmp_path / "proxies.json").read_text(encoding="utf-8"))[name]
     assert on_disk["manual_timezone"] == RO_ZONE
     assert on_disk["manual_timezone_country"] == RO
 
@@ -146,7 +146,7 @@ def test_an_old_proxies_json_without_the_keys_loads_unmigrated(tmp_path):
             "country_code": "RO", "country_name": "Romania",
             "timezone": "", "checked_at": time.time(), "last_check_ok": True,
         }
-    }))
+    }), encoding="utf-8")
     proxy = ProxyStore(path=str(path)).get("legacy")
     assert proxy is not None
     assert proxy.manual_timezone == ""
