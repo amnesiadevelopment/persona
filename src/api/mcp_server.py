@@ -162,30 +162,51 @@ def build_mcp(container: Container) -> FastMCP:
         # before start_thread, and the one this lane reached the launch path
         # without (PS-222).
         #
-        # Falling through does NOT fail fast, and the failure is worse than a
-        # late error. With no engine installed `_binary_path_override()`
-        # (engine_install.py:325) returns None — "let the engine resolve its own
-        # build" — so the child reaches `from invisible_playwright import
-        # InvisiblePlaywright`, fails there, and emits LAUNCH_FAILED on the pipe
-        # (invisible_launch.py:3311-3316), AFTER the profile was marked running
-        # and a child was forked. That emission is a pipe message, not an
-        # exception, so the `refusal_for_attempt` read below finds no verdict and
-        # this tool answers {"launched": True} for a browser that never opened.
-        # That is the same class of defect PS-82 fixed on this very lane: the
-        # off-machine caller told the launch succeeded, with the real reason
-        # announced only on a pipe it cannot see.
+        # Falling through costs BOTH of the harms below, and the first is the
+        # one the two guarding doors name. Traced and executed here (PS-222),
+        # not inherited from those comments.
         #
-        # This is NOT the download hazard the two guarding doors describe, and
-        # the distinction is measured, not assumed (PS-222). That warning is
-        # about `ensure_invisible_installed`, which genuinely downloads and which
-        # the launch path correctly never calls — tests/test_process.py:113
-        # (`test_needs_fetch_never_triggers_download`) is the shipped guard on
-        # that. process.py's `_needs_fetch` flag (process.py:364) has ZERO
-        # consumers: `_child` reads cfg key-by-key via .get() and never forwards
-        # it, and the engine is handed an explicitly-constructed kwargs dict
-        # (invisible_launch.py:3329+), never cfg — so the flag reaches no
-        # vendored code and cannot trigger a fetch. Dead config, left in place
+        # (1) THE BLOCKING, NON-RESUMABLE DOWNLOAD — reachable, and reached.
+        # With no build installed `_binary_path_override()`
+        # (engine_install.py:325) returns None, meaning "let the engine resolve
+        # its own build", so `binary_path` is OMITTED from the engine kwargs
+        # entirely (invisible_launch.py:3333-3335). The engine's
+        # `resolve_executable` (invisible_playwright/_engine.py:20) branches on
+        # exactly that: a falsy `binary_path` takes the `ensure_binary(seal=...)`
+        # arm, which falls past its cache-hit and cache-adoption legs to
+        # `_download_file` (invisible_core/download.py:431) — a single
+        # `requests.get(stream=True, timeout=60)` with NO Range header and no
+        # resume, bounded only by a 1800s deadline. Verified by running it with
+        # an empty engine cache and the fetcher instrumented so nothing
+        # transferred: the fetch started against the firefox-20 release asset.
+        # This is the hazard `routes/browser.py:87` and `ui/actions/browser.py`
+        # describe, and the one persona's own `ensure_invisible_installed`
+        # docstring (engine_install.py:387-392) explains it wrote a resumable
+        # wrapper to avoid — "a single non-resumable request with a 60s timeout,
+        # which Tor reliably tears down mid-stream".
+        #
+        # DO NOT re-derive this from `_needs_fetch` — that flag is a dead end,
+        # and following it is what made this route look unreachable. process.py's
+        # `"_needs_fetch"` (process.py:364) has ZERO consumers: `_child` reads
+        # cfg key-by-key via .get() and never forwards it, and the engine is
+        # handed an explicitly-constructed kwargs dict, never cfg. So the flag
+        # cannot trigger anything — and ruling out the FLAG does not rule out the
+        # FETCH, because the fetch is reached by the omitted-`binary_path` route
+        # above, which never consults it. Dead config, left in place
         # deliberately; removing it is a separate slice.
+        #
+        # (2) AND THEN THE LAUNCH IS REPORTED AS A SUCCESS. Whatever the fetch
+        # does — fail, time out, or 404 on a host whose asset is missing — the
+        # enter raises inside the child, which emits LAUNCH_FAILED on the pipe
+        # (invisible_launch.py:3497-3502, and :3315 for the import-error case),
+        # AFTER the profile was marked running and a child was forked. That
+        # emission is a pipe message, not an exception, so the
+        # `refusal_for_attempt` read below finds no verdict and this tool answers
+        # {"launched": True} for a browser that never opened. Same class of
+        # defect PS-82 fixed on this very lane: the off-machine caller told the
+        # launch succeeded, with the real reason announced only on a pipe it
+        # cannot see. This second harm is what makes THIS door's version worse
+        # than REST's — REST at least fails visibly.
         #
         # Resolved on the EFFECTIVE engine, never profile.engine: a mobile
         # profile storing "firefox" actually launches chromium, and reading the

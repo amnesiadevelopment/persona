@@ -7,7 +7,15 @@ The MCP lane did not: ``grep -c is_invisible_installed src/api/mcp_server.py``
 answered 0, and nothing between the tool's body and ``_spawn_invisible``
 re-asked the question. The tree states the cost at both guarding doors —
 "falling through would let the engine start its own blocking, non-resumable
-download mid-launch".
+download mid-launch" — and that cost was CONFIRMED REACHABLE from this lane,
+by execution rather than by quotation: with no build installed
+``_binary_path_override()`` returns None, so ``binary_path`` is omitted from
+the engine kwargs, ``resolve_executable(None)`` takes its ``ensure_binary()``
+arm, and that reaches ``invisible_core.download._download_file`` — one
+``requests.get`` with no Range and no resume. The launch is then ALSO reported
+as ``{"launched": True}``, because the child announces LAUNCH_FAILED on a pipe
+rather than raising. Both harms are recorded at the decision site in
+``mcp_server.py``.
 
 EVERY ASSERTION BELOW BINDS TO WHETHER ``start_thread`` WAS CALLED, never to
 "a helper exists" or "the response shape changed". That is what makes the
@@ -147,6 +155,17 @@ def test_guard_only_checks_never_downloads(monkeypatch):
     for minutes. This is the MCP lane's copy of the UI door's
     test_firefox_launch_check_never_downloads, and of the shipped
     tests/test_process.py::test_needs_fetch_never_triggers_download.
+
+    ⚠️ SCOPE — READ BEFORE TREATING THIS AS DOWNLOAD COVERAGE. What is patched
+    here is persona's OWN ``ensure_invisible_installed``, the resumable wrapper,
+    which the launch path genuinely never calls. It is NOT the download this
+    lane could actually reach: that one comes from the VENDORED engine's
+    ``invisible_core.download.ensure_binary``, entered via
+    ``resolve_executable(None)`` when no build is installed, and nothing in this
+    test observes it. So this asserts "the guard did not call persona's
+    installer", not "no download is possible" — the reachable vendored fetch is
+    traced at the decision site in mcp_server.py and is deliberately not
+    exercised here (it would mean driving a real network fetch).
     """
     from src.services.browser import invisible_launch as il
 
