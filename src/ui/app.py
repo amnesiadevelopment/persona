@@ -54,6 +54,17 @@ from ..services.profile.filter import all_tags, filter_by_tag, filter_profiles
 #: taken theirs — so ~17 characters, with the ellipsis inside that budget.
 _VERSION_MAX_CHARS = 17
 
+#: How many monospace characters ONE FULL-WIDTH line of the 200px rail carries.
+#: PS-229's number, ADOPTED rather than re-derived, so the two panels sharing
+#: the rail are held to one bound instead of two. It is deliberately WIDER than
+#: :data:`_VERSION_MAX_CHARS`, which budgets the ~110px engine version CELL —
+#: the app version panel's status line is a top-level child of the panel and
+#: gets the whole rail, so measuring it against the cell's number would draw a
+#: reveal chevron on lines that are already whole (see
+#: :meth:`App._status_needs_reveal` for why that is a defect and not a
+#: kindness).
+_RAIL_MAX_CHARS = 22
+
 #: How many lines an EXPANDED status may occupy before it is cut. The reveal
 #: has to be bounded too, or "expand" just re-creates the defect one click
 #: later: a stack trace pasted into a status string would push the panel out of
@@ -148,6 +159,7 @@ def rollback_row(
     cost: str = "",
     cost_color: str | None = None,
     on_click=None,
+    indent: int = 36,
 ) -> ft.Control:
     """One engine's rollback row: icon + SHORT label, with the COST of the
     gesture on its own short second line.
@@ -178,6 +190,13 @@ def rollback_row(
     BOTH LINES GO THROUGH :func:`sidebar_status_text`, so both are
     width-bounded and single-line. The bound round 2 established is not
     weakened by adding a line beneath it — it is applied to that line too.
+
+    ``indent`` is the row's LEFT inset and defaults to the engine rows' 36px,
+    which aligns them under the engine name they belong to. The APP version
+    panel's rollback row is not nested under anything — it is a top-level
+    child of that panel, level with the version line and the status line
+    beneath it — so it passes ``indent=0``. This is a POSITION parameter only:
+    the bound above applies identically at either value.
     """
     text_line = ft.Row(
         spacing=6,
@@ -208,7 +227,7 @@ def rollback_row(
             ],
         )
     return ft.Container(
-        padding=ft.Padding.only(left=36, right=10, top=4, bottom=2),
+        padding=ft.Padding.only(left=indent, right=10, top=4, bottom=2),
         on_click=(lambda _: on_click()) if on_click else None,
         ink=bool(on_click),
         tooltip=tooltip,
@@ -378,6 +397,17 @@ class App:
         # surface, because the sidebar log panel is hidden entirely when
         # collapsed. Mirrors _engine2_status on the Firefox engine row.
         self._app_rollback_status: str = ""
+        # WHICH status string is currently REVEALED on the version panel, held
+        # as the string itself rather than as a bool. The status line is
+        # ellipsised into ~22 characters of rail, so "couldn't go back — see
+        # the log" reaches the operator as "couldn't go back — s…" and loses
+        # the actionable half; the reveal is what makes the tail recoverable,
+        # exactly as _status_reveal_button does for the engine statuses next
+        # door. It holds the STRING because a reveal belongs to the message it
+        # was opened on: the next refusal is a different sentence and must
+        # arrive collapsed rather than inheriting an open panel it never asked
+        # for. Compared, never trusted — see _app_status_expanded.
+        self._app_status_revealed: str = ""
         self._checking_proxies: set[str] = set()
         self._engine_latest: str = ""
         # _engine_busy = a real download is in flight (show the progress bar).
@@ -724,29 +754,35 @@ class App:
             self._log("Update: couldn't read the update-hold state")
             held = ""
         if held:
-            return ft.Container(
-                on_click=lambda _: self._on_app_resume_updates(),
-                ink=True,
+            # THE HELD VERSION LEAVES THE LABEL AND STAYS IN THE TOOLTIP —
+            # the same relocation PS-229 performed on the engine rows, for the
+            # same reason. `f"resume updates (held {held})"` is 27 characters
+            # with a short tag and 35 with `3.0.10-beta.1`, against a rail with
+            # room for about 22: an interpolated identifier in a visible label
+            # is unbounded by construction. The tooltip directly below already
+            # names the held build verbatim, so nothing is lost by taking it
+            # out of the text — it moves from a place that cannot hold it to a
+            # place that already did. See _RESUME_LABEL.
+            return rollback_row(
+                label=_RESUME_LABEL,
+                icon=ft.Icons.HISTORY,
+                # THE SECOND LINE SAYS THE STATE, NOT THE GESTURE — the phrase
+                # both engine resume rows already use, because the app updater
+                # and the engines must not describe the same situation
+                # differently. What the operator cannot see from the label is
+                # WHY the row is offering this at all: the hold is keeping
+                # automatic updates off right now.
+                cost="auto-update held off",
                 tooltip=(
                     f"persona {held} is held back because you went back from "
                     "it. Clear the hold and let it install again."
                 ),
-                padding=ft.Padding.only(top=4, bottom=2),
-                content=ft.Row(
-                    spacing=6,
-                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                    controls=[
-                        ft.Icon(
-                            ft.Icons.HISTORY, size=13, color=COLORS["text_dim"]
-                        ),
-                        ft.Text(
-                            f"resume updates (held {held})",
-                            size=10,
-                            color=COLORS["text_dim"],
-                            font_family="monospace",
-                        ),
-                    ],
-                ),
+                on_click=self._on_app_resume_updates,
+                # FLUSH LEFT, unlike the engine rows. Theirs sit beneath an
+                # engine name and are indented under it; this one is a
+                # top-level child of the version panel, level with the version
+                # line and the status line beneath it. See rollback_row.
+                indent=0,
             )
         try:
             target = app_update.rollback_target()
@@ -756,28 +792,85 @@ class App:
         if not target:
             return None
 
-        return ft.Container(
-            on_click=lambda _: self._on_app_rollback(),
-            ink=True,
+        return rollback_row(
+            label=_ROLLBACK_LABEL,
+            icon=ft.Icons.HISTORY,
             tooltip=(
                 "Go back to the previous version of persona, kept from the "
                 "last update — no download needed"
             ),
-            padding=ft.Padding.only(top=4, bottom=2),
-            content=ft.Row(
-                spacing=6,
-                vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                controls=[
-                    ft.Icon(
-                        ft.Icons.HISTORY, size=13, color=COLORS["text_dim"]
-                    ),
-                    ft.Text(
-                        "go back to the previous version",
-                        size=10,
-                        color=COLORS["text_dim"],
-                        font_family="monospace",
-                    ),
-                ],
+            on_click=self._on_app_rollback,
+            indent=0,
+        )
+
+    def _app_status_expanded(self) -> bool:
+        """Whether the version panel's CURRENT status is revealed.
+
+        READ THROUGH THIS, NEVER OFF THE ATTRIBUTE DIRECTLY, for the same
+        coupling reason :meth:`_status_expanded` states: ``_build_version_panel``
+        is reachable from construction paths that never run ``__init__`` (the
+        panel specs build the app with ``App.__new__(App)``), so a builder that
+        hard-requires an ``__init__``-only attribute raises ``AttributeError``
+        on every one of them while working fine in the real app.
+
+        THE FLAG IS COMPARED, NOT TRUSTED. It holds the string it was opened
+        on, so a reveal cannot outlive its own message: the operator opens
+        "couldn't go back — see the log", the next click refuses differently,
+        and the new sentence arrives collapsed rather than inheriting an open
+        panel it never asked for. A bool could not express that — it would
+        silently re-reveal whatever came next.
+        """
+        current = self._app_rollback_status
+        return bool(current) and getattr(
+            self, "_app_status_revealed", ""
+        ) == current
+
+    def _toggle_app_status(self) -> None:
+        """Reveal / re-collapse the version panel's status line in place."""
+        self._app_status_revealed = (
+            "" if self._app_status_expanded() else self._app_rollback_status
+        )
+        self._refresh_sidebar()
+
+    def _app_status_reveal_button(self, expanded: bool) -> ft.Control:
+        """The gesture that shows a truncated app status in full.
+
+        THE SAME AFFORDANCE THE ENGINE STATUSES ALREADY HAVE, deliberately
+        identical rather than merely similar: two panels in one rail that
+        truncate the same way must not recover differently, which is this
+        ticket's whole thesis. See :meth:`_status_reveal_button` for why it is
+        expand-in-place and not a tooltip — invisible in a screenshot, needs a
+        hover a trackpad operator may never perform, and the tooltip gesture on
+        the rollback row already means something else.
+
+        WHY THE STATUS LINE NEEDS IT AT ALL, which is the half a bound alone
+        does not supply. ``_on_app_rollback``'s own docstring argues that a
+        refusal must be VISIBLE because ``_log`` is not a surface — the sidebar
+        log renders only while expanded. Ellipsised into ~22 characters,
+        "couldn't go back — see the log" reaches the operator as roughly
+        "couldn't go back — s…", and *see the log* is the entire actionable
+        half of the sentence. Bounded-and-recoverable is the fix; bounded alone
+        would trade an overflow for a silent truncation of the one channel the
+        refusal has.
+
+        IT IS ITS OWN CONTROL, not the status line's click, for the same reason
+        the engine one is: the row above already owns a click that reverts the
+        application.
+        """
+        return ft.Container(
+            on_click=lambda _: self._toggle_app_status(),
+            ink=True,
+            width=16,
+            height=16,
+            border_radius=3,
+            alignment=ft.Alignment.CENTER,
+            tooltip=(
+                "Hide the full status" if expanded else "Show the full status"
+            ),
+            content=ft.Icon(
+                ft.Icons.UNFOLD_LESS if expanded else ft.Icons.UNFOLD_MORE,
+                size=12,
+                color=COLORS["text_dim"],
             ),
         )
 
@@ -1025,12 +1118,49 @@ class App:
         # needs to be read. Rendered here, every outcome of the gesture has a
         # visible surface whether or not the button survives it.
         if self._app_rollback_status:
+            # BOUNDED AND RECOVERABLE — both halves, because the first alone
+            # trades one defect for another.
+            #
+            # BOUNDED: the status is service prose ("can't go back while an
+            # update is pending" is 40 characters) rendered into a rail with
+            # room for about 22, and a bare ft.Text lays it out at full length
+            # and runs past the panel's edge. sidebar_status_text is the same
+            # bound PS-229 put on the identically-long engine statuses.
+            #
+            # RECOVERABLE: PS-229 did not only bound those statuses, it also
+            # gave them a REVEAL (_status_needs_reveal / _status_reveal_button
+            # / _status_control), so an ellipsised engine status can still be
+            # read in full. Bounding this line without that half would leave
+            # "couldn't go back — see the log" reaching the operator as
+            # "couldn't go back — s…", silently dropping the actionable half of
+            # the one channel a refusal has — _on_app_rollback's docstring is
+            # explicit that _log is NOT a visible surface. So the chevron is
+            # drawn on exactly the statuses that do not fit, and never on the
+            # one that does ("nothing to go back to", 21).
+            #
+            # AGAINST _RAIL_MAX_CHARS, not _VERSION_MAX_CHARS: this line is a
+            # top-level child of the panel and gets the whole rail, unlike an
+            # engine status sharing its row with an icon, a name and a dot.
+            #
+            # INSIDE A ROW, deliberately, and not appended straight to the
+            # panel Column: expand=True is what bounds the WIDTH, and it does
+            # that on a Row's MAIN axis. It is the shape every other converted
+            # site uses (rollback_row's text_line, _engine_rollback_pending_row)
+            # — see sidebar_status_text for why bounding lines without width is
+            # the fix that looks right and changes nothing.
+            expanded = self._app_status_expanded()
+            status_controls: list[ft.Control] = [
+                sidebar_status_text(self._app_rollback_status, expanded=expanded)
+            ]
+            if self._status_needs_reveal(
+                self._app_rollback_status, expanded, _RAIL_MAX_CHARS
+            ):
+                status_controls.append(self._app_status_reveal_button(expanded))
             rows.append(
-                ft.Text(
-                    self._app_rollback_status,
-                    size=10,
-                    color=COLORS["text_dim"],
-                    font_family="monospace",
+                ft.Row(
+                    spacing=4,
+                    vertical_alignment=ft.CrossAxisAlignment.START,
+                    controls=status_controls,
                 )
             )
 
@@ -2540,7 +2670,9 @@ class App:
         )
 
     @staticmethod
-    def _status_needs_reveal(value: str, expanded: bool) -> bool:
+    def _status_needs_reveal(
+        value: str, expanded: bool, limit: int = _VERSION_MAX_CHARS
+    ) -> bool:
         """Whether this status string is longer than its one-line cell.
 
         Character-budgeted rather than measured, because flet gives no text
@@ -2550,10 +2682,20 @@ class App:
         fits and gets NO reveal control — an affordance on a line that is
         already whole is noise, and worse, it invites a click that visibly
         does nothing.
+
+        ``limit`` DEFAULTS TO THE ENGINE CELL'S BUDGET so both engine call
+        sites are unchanged, and exists because the second caller measures a
+        different cell: the APP version panel's status line is a top-level
+        child of the panel and gets the FULL rail
+        (:data:`_RAIL_MAX_CHARS`, 22), not the ~110px version cell an engine
+        status shares with an icon, a name and a state dot. Passing the
+        narrower number there would draw the chevron on lines that already
+        fit — precisely the click-that-does-nothing this method exists to
+        avoid.
         """
         if expanded:
             return True
-        return len(value or "") > _VERSION_MAX_CHARS
+        return len(value or "") > limit
 
     @staticmethod
     def _status_expanded_attr(which: str) -> str:
