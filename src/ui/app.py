@@ -4834,6 +4834,20 @@ class App:
                     # never clicked. Like the fact above it is a dict lookup
                     # under a lock, no IO, so it is safe on this render path.
                     refusal=self.bl.last_refusal(p.name),
+                    # DERIVED HERE, on the render path, from the certificate
+                    # store the container already built (never a new CertStore,
+                    # which would _load() from disk on every repaint).
+                    # CertStore.get is a dict lookup under an RLock with no IO
+                    # — the same bar the two facts above are held to.
+                    #
+                    # A profile can name a certificate the store does not hold
+                    # (a record skipped as malformed, or a quarantined
+                    # certificates.json). That assignment is PRESERVED across
+                    # edits by design, so it is a durable state — and until the
+                    # marker it fed, the launch dropped the client certificate
+                    # in silence and the card said nothing.
+                    cert_unresolved=bool(p.certificate)
+                    and self.cert_store.get(p.certificate) is None,
                     proxy_checking=(
                         p.proxy in self._checking_proxies if p.proxy else False
                     ),
