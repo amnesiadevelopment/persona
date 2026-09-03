@@ -10,6 +10,7 @@ from ...services.profile.coherence import IncoherentProfile
 from ...services.profile.pool_assignment import PoolDirective
 from ...services.profile.proxy_assignment import ProxyDirective
 from ..dialogs import open_bulk_dialog, open_confirm_dialog, open_profile_dialog
+from ..log_severity import SEV_FAIL, declare
 
 
 def delete_profile(
@@ -26,11 +27,17 @@ def delete_profile(
         # identity was gone while it was still on disk — the claim-outlives-the-
         # code defect this ticket exists to close, on the safety-critical side.
         ok = pm.delete_profile(name)
-        log(
-            get_string("deleted_profile", name=name)
-            if ok
-            else get_string("delete_profile_failed", name=name)
-        )
+        if ok:
+            log(get_string("deleted_profile", name=name))
+        else:
+            # DECLARED. The failure line carries none of severity()'s twenty
+            # tokens, so it classified `idle` — and severity is not only the
+            # dot: dialogs/log.py filters the whole Activity Log by it, so a
+            # failed DESTRUCTIVE operation was absent from the list for an
+            # operator who explicitly filtered to `failures`. Asking what went
+            # wrong and being told nothing did. The wording is unchanged; only
+            # the claim about what kind of event it is has been made explicit.
+            log(declare(get_string("delete_profile_failed", name=name), SEV_FAIL))
         refresh()
 
     open_confirm_dialog(page, name, do_delete)
