@@ -113,6 +113,39 @@ def _cert_session_for(profile: Profile, profile_dir: str, upstream: str | None):
         # The profile still references a certificate record the operator has
         # deleted. Same reasoning: no session will start, so sweep here.
         sweep_key_material(work)
+        # SAY IT ONCE. Until this line, the ONE path that drops the operator's
+        # client certificate was the only path here that said nothing: the
+        # successful mTLS path logs, and every failure inside
+        # start_cert_session logs at error. The launch then succeeds — the
+        # browser opens, reaches the site the certificate was meant to
+        # authenticate it to, and is simply not recognised. Nothing in that
+        # sequence points at a certificate record that quietly stopped
+        # resolving.
+        #
+        # The record does not have to be DELETED to land here: it is also this
+        # branch when one malformed record was skipped on load, or the whole
+        # certificates.json was quarantined. Both are protections firing
+        # correctly, which is exactly why the outcome must be announced rather
+        # than inferred.
+        #
+        # WARNING, not INFO: the successful path is info and the in-session
+        # failures are error, and a configured protection silently not applying
+        # belongs between them. It also clears the console handler's WARNING
+        # floor, so the one place a launch drops a certificate is not the one
+        # place that is quiet.
+        #
+        # THE ADMIN HOST IS NOT NAMED, deliberately — the reason recorded at the
+        # successful chromium path below (an internal hostname identifying the
+        # operator's infra, landing one line per cert-profile launch in the
+        # persistent log + Activity Log) binds here too. There is no session to
+        # name one from in any case; the profile and the certificate NAME are
+        # what the operator needs to act, and neither is infrastructure.
+        logger.warning(
+            "mTLS: certificate %r assigned to profile %r was not found — "
+            "launching WITHOUT a client certificate",
+            cert_name,
+            profile.name,
+        )
         return None
     return start_cert_session(cert, upstream or None, work)
 
