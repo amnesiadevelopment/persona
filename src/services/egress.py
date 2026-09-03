@@ -49,6 +49,7 @@ import logging
 import urllib.request
 
 from ..core import settings
+from ..core.redaction import redact
 from ..utils.proxy_checker import fetch_json_via_proxy_sync
 from ..utils.proxy_parser import parse_proxy
 
@@ -326,10 +327,37 @@ def fetch_json(
             # Fail CLOSED: the request either went through the configured
             # transport or it did not happen. Retrying directly here is the one
             # thing this module exists to make impossible.
+            #
+            # The MESSAGE rides along, not just the class. Four distinct
+            # failures reach this arm and they carry only TWO classes (three of
+            # them are ValueError), so a class-only line reported "your proxy
+            # demands auth", "the release document grew past the cap" and "that
+            # was not a JSON document" with byte-identical text. This is the
+            # fail-closed path's ONLY notice to an operator whose unattended
+            # update poll stopped — they never asked for the request — so the
+            # reason this module's docstring (:40-44) promises to log has to
+            # actually be in it.
+            #
+            # (`fetch_json_via_proxy` declares a fifth, "no usable proxy
+            # transport", which cannot arrive here: `resolve()` above tests the
+            # same `parse_proxy(...) is None` condition first and returns REFUSE,
+            # so that input never reaches this try. Recorded because a reader
+            # counting `raise` statements in the transport will expect five.)
+            #
+            # Through `redact` because this is un-authored exception text landing
+            # in the DISK-BACKED daily log, which `ui/state.py` then seeds the
+            # Activity Log from. That is not a theoretical hazard here: settings
+            # store the proxy percent-ENCODED, `parse_proxy` decodes it, and a
+            # password decoding to a character `yarl` rejects (e.g. `%5B` -> `[`)
+            # makes aiohttp raise `InvalidURL` whose message is the WHOLE
+            # credentialed proxy URL. Observed on this path; without `redact` the
+            # password lands on disk verbatim. Same single answer PS-160 used for
+            # the two sibling sites — a second regex here is exactly what
+            # redaction.py's docstring forbids.
             logger.warning(
                 "App egress: request through the configured proxy failed (%s) — "
                 "NOT retrying directly.",
-                type(e).__name__,
+                redact(f"{type(e).__name__}: {e}"),
             )
             raise
 

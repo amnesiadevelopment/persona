@@ -287,6 +287,286 @@ def test_refusal_is_surfaced_to_the_operator(caplog):
 
 
 # --------------------------------------------------------------------------
+# PS-276 — the fail-closed warning must name the CAUSE, not just its class.
+#
+# The refusal above is only half the operator's notice. The other half is this
+# arm: a transport that IS configured and parseable, whose request then fails.
+# `fetch_json_via_proxy` raises five distinct failures and only TWO classes
+# (three of them are ValueError), so a line carrying `type(e).__name__` alone
+# reported "your proxy setting is unparseable", "your proxy demands auth" and
+# "the release document grew past the cap" with byte-identical text. These
+# polls are unattended — the operator never asked for the request — so this
+# line is the only place the reason can appear, and the module docstring
+# (:40-44) promises the reason IS logged.
+#
+# Third site of the class PS-160 (`21a300f`) fixed for exit_guard and bridge.
+#
+# THE MESSAGES ARE NOT INVENTED BY THESE TESTS. Each one is raised by the real
+# `fetch_json_via_proxy` — from a real fake-SOCKS5 server, a real oversized
+# body, a real non-200 status — driven through the real shipped
+# `egress.fetch_json`, and the assertion is on the EMITTED LOG RECORD's text.
+# Asserting "redact was called" would pass on a line that reached no log.
+# --------------------------------------------------------------------------
+
+
+def _socks_replying(raw_response: bytes) -> tuple[socket.socket, int, threading.Thread]:
+    """A fake SOCKS5 exit that completes the handshake, absorbs the request and
+    answers with `raw_response` verbatim.
+
+    Mirrors the harness the Accept tests above use; the difference is that this
+    one is pointed at responses that make `fetch_json_via_proxy` RAISE, which
+    is the arm under test.
+    """
+    srv, port = _listener()
+
+    def serve() -> None:
+        conn, _ = srv.accept()
+        conn.settimeout(10)
+        try:
+            greeting = _recv_exactly(conn, 2)
+            _recv_exactly(conn, greeting[1])  # the method list
+            conn.sendall(b"\x05\x00")  # no auth required
+            _recv_exactly(conn, 4)
+            _recv_exactly(conn, _recv_exactly(conn, 1)[0])  # host
+            _recv_exactly(conn, 2)  # port
+            conn.sendall(b"\x05\x00\x00\x01" + b"\x00" * 4 + b"\x00\x00")
+            request = b""
+            while b"\r\n\r\n" not in request:
+                chunk = conn.recv(4096)
+                if not chunk:
+                    break
+                request += chunk
+            conn.sendall(raw_response)
+        except Exception:  # pragma: no cover - the client's failure is the test
+            pass
+        finally:
+            conn.close()
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+    return srv, port, thread
+
+
+def _ok(body: bytes) -> bytes:
+    return (
+        b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+        b"Connection: close\r\n\r\n" + body
+    )
+
+
+def _proxy_failure_line(caplog) -> str:
+    """The one PROXIED-arm warning, as it was actually EMITTED."""
+    lines = [
+        r.getMessage()
+        for r in caplog.records
+        if "request through the configured proxy failed" in r.getMessage()
+    ]
+    assert len(lines) == 1, f"expected exactly one failure line, got {lines}"
+    return lines[0]
+
+
+def _drive_through_socks(caplog, raw_response: bytes) -> str:
+    """Run the REAL `egress.fetch_json` through a real SOCKS transport that
+    answers `raw_response`, and return the warning it emitted."""
+    srv, port, thread = _socks_replying(raw_response)
+    settings.set_app_egress_proxy(f"socks5://127.0.0.1:{port}")
+    try:
+        with caplog.at_level("WARNING", logger="persona"):
+            with pytest.raises(Exception):
+                egress.fetch_json("http://api.github.com/x", timeout=10)
+    finally:
+        thread.join(15)
+        srv.close()
+    return _proxy_failure_line(caplog)
+
+
+def test_the_proxy_failure_CAUSES_are_distinguishable_on_sight(caplog, monkeypatch):
+    """PS-276 AC1 — and the assertion the whole ticket rests on.
+
+    Not "a message is logged" (the old line logged one too) but that the four
+    causes an operator acts on DIFFERENTLY produce four DIFFERENT lines. Three
+    of these are `ValueError`, so on the old code they were byte-identical and
+    this test fails with `4 causes -> 2 distinct lines`.
+
+    Each cause is produced by the real transport, never by a raised stub:
+
+    * `response too large`   — a real body past `_MAX_RELEASE_BODY`
+    * `HTTP <status>`        — a real 407, the "your proxy wants auth" case
+    * `not a JSON object`    — a real 200 whose body is a bare JSON string
+    * `aiohttp not installed`— the real fail-closed guard on the http:// branch
+    """
+    lines: dict[str, str] = {}
+
+    caplog.clear()
+    oversized = b"x" * (proxy_checker._MAX_RELEASE_BODY + 1024)
+    lines["too_large"] = _drive_through_socks(caplog, _ok(oversized))
+
+    caplog.clear()
+    lines["http_407"] = _drive_through_socks(
+        caplog,
+        b"HTTP/1.1 407 Proxy Authentication Required\r\n"
+        b"Content-Length: 0\r\nConnection: close\r\n\r\n",
+    )
+
+    caplog.clear()
+    lines["not_json_object"] = _drive_through_socks(caplog, _ok(b'"just a string"'))
+
+    # The http:// branch's fail-closed guard. Patched on the module the code
+    # actually reads, so the REAL `raise RuntimeError(...)` executes — the
+    # exception is the shipped one, not one this test authored.
+    caplog.clear()
+    monkeypatch.setattr(proxy_checker, "AIOHTTP_AVAILABLE", False)
+    settings.set_app_egress_proxy("http://127.0.0.1:9")
+    with caplog.at_level("WARNING", logger="persona"):
+        with pytest.raises(RuntimeError):
+            egress.fetch_json("http://api.github.com/x", timeout=10)
+    lines["no_aiohttp"] = _proxy_failure_line(caplog)
+
+    distinct = set(lines.values())
+    assert len(distinct) == len(lines), (
+        f"{len(lines)} causes collapsed to {len(distinct)} distinct lines — the "
+        f"operator cannot tell them apart:\n"
+        + "\n".join(f"  {k}: {v}" for k, v in lines.items())
+    )
+
+    # And distinctness is not enough on its own: a line could differ by
+    # accident while still not NAMING the cause. Each must carry its own words.
+    assert "response too large" in lines["too_large"]
+    assert "HTTP 407" in lines["http_407"]
+    assert "not a JSON object" in lines["not_json_object"]
+    assert "aiohttp not installed" in lines["no_aiohttp"]
+
+    # The class survives too — the message is added, not substituted.
+    assert "ValueError" in lines["too_large"]
+    assert "RuntimeError" in lines["http_407"]
+
+
+def test_the_failure_line_never_carries_the_proxy_credential(caplog):
+    """PS-276 AC3. The message is UN-AUTHORED exception text landing in the
+    DISK-BACKED daily log (`core/logging.py`'s FileHandler, which `ui/state.py`
+    then seeds the Activity Log from), and `proxy_checker` builds a `proxy_url`
+    embedding `username:password` on its aiohttp branch — so carrying the
+    message without `redact` would trade a diagnosis problem for a
+    credential-on-disk one.
+
+    ⚠️ THE LEAK IS OBSERVED HERE, NOT ARGUED. The ticket rated it
+    reachable-in-principle; this drives it. `parse_proxy` percent-DECODES the
+    password, so a stored `%5B` becomes a literal `[`, which `yarl` rejects —
+    and aiohttp's `InvalidURL` echoes the WHOLE credentialed URL as its
+    message. The secret therefore reaches the message from the library itself,
+    exactly as PS-160 drove its own leak through a real `open()` rather than a
+    string the test wrote.
+
+    The host must SURVIVE: redacting the whole line would restore the very
+    defect this ticket fixes.
+    """
+    secret = "s3c[r3t"  # what the stored %5B decodes to
+    caplog.clear()
+    settings.set_app_egress_proxy("http://alice:s3c%5Br3t@127.0.0.1:1080")
+
+    with caplog.at_level("WARNING", logger="persona"):
+        with pytest.raises(Exception):
+            egress.fetch_json("http://api.github.com/x", timeout=10)
+
+    line = _proxy_failure_line(caplog)
+    assert secret not in line, f"the proxy PASSWORD reached the log: {line}"
+    assert "alice" not in line, f"the proxy USERNAME reached the log: {line}"
+    assert "***:***@" in line, (
+        f"nothing was redacted — the credential shape is not being neutralised: {line}"
+    )
+    # The diagnosis must survive the redaction, or the fix defeats itself.
+    assert "127.0.0.1:1080" in line, f"the host was redacted away too: {line}"
+    assert "InvalidURL" in line, f"the cause was lost: {line}"
+
+
+def test_the_single_shared_redaction_rule_is_the_one_used(caplog, monkeypatch):
+    """PS-276 AC3's other half: the rule must be `core.redaction.redact`, not a
+    second regex grown here. `redaction.py`'s own docstring forbids the copy —
+    "a redaction bug fixed in one copy and not the other is worse than no
+    redaction, because the second copy still looks guarded".
+
+    Asserted by DEFEATING the shared rule and watching the output change: if
+    egress carried its own regex, neutering the shared one would leave the line
+    redacted anyway and this test would fail.
+    """
+    monkeypatch.setattr(egress, "redact", lambda text: text)
+    caplog.clear()
+    settings.set_app_egress_proxy("http://alice:s3c%5Br3t@127.0.0.1:1080")
+
+    with caplog.at_level("WARNING", logger="persona"):
+        with pytest.raises(Exception):
+            egress.fetch_json("http://api.github.com/x", timeout=10)
+
+    assert "s3c[r3t" in _proxy_failure_line(caplog), (
+        "neutering core.redaction.redact did not change the emitted line, so "
+        "this module is not routing through the one shared rule"
+    )
+
+
+def test_carrying_the_message_did_not_weaken_fail_closed(caplog, monkeypatch):
+    """PS-276 AC4. The logging change must not have touched the CONTRACT: the
+    exception is still re-raised unchanged (identity, not just type), and
+    nothing retries directly after the proxy failed.
+
+    `test_a_failing_proxy_is_never_retried_directly` above pins the same
+    property from the other side; this one pins it on the arm that now
+    interpolates the message, where a `try/except` around the new f-string
+    could have swallowed the re-raise.
+    """
+    settings.set_app_egress_proxy("socks5://127.0.0.1:9")
+    original = OSError("proxy unreachable at socks5://alice:hunter2@gate.example:1080")
+
+    def boom(*a, **k):
+        raise original
+
+    monkeypatch.setattr(egress, "fetch_json_via_proxy_sync", boom)
+    monkeypatch.setattr(
+        egress.urllib.request,
+        "urlopen",
+        lambda *a, **k: pytest.fail("retried DIRECTLY after the proxy failed"),
+    )
+
+    caplog.clear()
+    with caplog.at_level("WARNING", logger="persona"):
+        with pytest.raises(OSError) as excinfo:
+            egress.fetch_json("http://api.github.com/x", timeout=10)
+
+    assert excinfo.value is original, (
+        "the bare `raise` no longer re-raises the ORIGINAL exception — the "
+        "fail-closed contract is about the object callers catch, not its class"
+    )
+    # ...and the new line is still doing its job on the way past.
+    line = _proxy_failure_line(caplog)
+    assert "OSError: proxy unreachable" in line
+    assert "hunter2" not in line, f"credential leaked on the re-raise path: {line}"
+
+
+def test_the_REFUSE_arms_deliberate_omission_is_untouched(caplog):
+    """PS-276 AC4's other edge, and explicitly OUT of this ticket's scope as a
+    change — pinned here so a later "normalisation" of the two warnings cannot
+    quietly undo it.
+
+    The REFUSE arm (`egress.py:307-317`) does NOT log the transport-derived
+    value, and argues why in a comment: it can embed credentials. Carrying the
+    message on the PROXIED arm must not have been mistaken for a licence to
+    echo the configured value on the REFUSE arm.
+    """
+    caplog.clear()
+    egress._reset_curl_refusal_log()
+    settings.set_app_egress_proxy("socks5://alice:hunter2@ not a proxy url")
+
+    with caplog.at_level("WARNING", logger="persona"):
+        with pytest.raises(egress.EgressRefused):
+            egress.fetch_json("http://api.github.com/x", timeout=10)
+
+    refusals = [r.getMessage() for r in caplog.records if "NOT SENT" in r.getMessage()]
+    assert refusals, "the refusal stopped being logged"
+    for line in refusals:
+        assert "hunter2" not in line, f"the REFUSE arm started echoing a credential: {line}"
+        assert "alice" not in line, f"the REFUSE arm started echoing a credential: {line}"
+
+
+# --------------------------------------------------------------------------
 # AC5 + AC6 — the premise-as-AC. The same probe that found the defect,
 # inverted by the fix: a SOCKS5 GREETING on the wire, not `CONNECT `.
 # --------------------------------------------------------------------------
