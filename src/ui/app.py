@@ -1,8 +1,10 @@
 import asyncio
 import contextlib
+import inspect
 import os
 import sys
 import threading
+import time
 
 import flet as ft
 
@@ -54,6 +56,15 @@ from ..services.profile.filter import all_tags, filter_by_tag, filter_profiles
 #: roughly 110px of the rail once the icon, the name and the state dot have
 #: taken theirs — so ~17 characters, with the ellipsis inside that budget.
 _VERSION_MAX_CHARS = 17
+
+#: How long the exit backstop waits for an ordinary teardown to end the process
+#: before forcing it (PS-303). Destroying the window SHOULD bring the flet
+#: server loop down and end the interpreter; this is the grace period in which
+#: that is allowed to happen by itself. Long enough that the normal path wins
+#: the race and ``os._exit`` never runs, short enough that a user who clicked X
+#: does not sit looking at a process that will not die. Not a timeout on the
+#: teardown itself — the teardown is run explicitly after it either way.
+_EXIT_GRACE_SECONDS = 1.5
 
 #: How many monospace characters ONE FULL-WIDTH line of the 200px rail carries.
 #: PS-229's number, ADOPTED rather than re-derived, so the two panels sharing
@@ -287,8 +298,8 @@ def _short_engine_version(version: str) -> str:
 
 
 def _show_window(page: ft.Page) -> None:
-    """Reveal the window (it starts hidden via hide_window_on_start). Idempotent
-    and best-effort: called once the centred splash is the current frame, and
+    """Reveal the window. Idempotent and best-effort: called once the centred
+    splash is the current frame, and
     again from the startup-error path so a crash can never leave a hidden window
     with the process alive. A failure to set visibility must not itself crash
     startup, so it's swallowed."""
@@ -583,10 +594,16 @@ class App:
             page.add(self._splash.control)
             self._splash.start(page)
         finally:
-            # The window starts HIDDEN (pyproject hide_window_on_start) so the
-            # user never sees the client's off-centre corner spinner or the jump
-            # to centre — the splash is the first frame. Reveal the window in a
-            # `finally` so it shows even if building the splash above raised:
+            # NOTE: this used to say "the window starts HIDDEN (pyproject
+            # hide_window_on_start)". It does NOT — pyproject.toml sets
+            # `hide_window_on_start = false`, flipped deliberately because
+            # `true` zombied the built macOS .app on a LaunchServices launch.
+            # Corrected in passing on PS-303, where the stale claim was noted
+            # on the ticket. _show_window is still real and still wanted: it
+            # keeps the reveal idempotent and, on the startup-error path,
+            # guarantees a failure is SEEN rather than leaving an invisible
+            # process. Reveal in a `finally` so it runs even if building the
+            # splash above raised:
             # with the window hidden, an unrevealed window + a live process is
             # exactly the invisible zombie the old ban feared. Revealed, any
             # failure is SEEN (blank/partial window > invisible process). The
@@ -4099,14 +4116,148 @@ class App:
         return names
 
     def _destroy_window(self) -> None:
-        """Close for real, past the ``prevent_close`` interception."""
+        """Close for real, past the ``prevent_close`` interception.
+
+        ⚠️ ``Window.destroy()`` IS A COROUTINE FUNCTION IN flet 0.85.3 (see
+        ``flet/controls/core/window.py``: ``async def destroy`` -> ``await
+        self._invoke_method("destroy")``). Calling it bare, as this method did,
+        builds a coroutine object and drops it: no ``INVOKE_METHOD`` message is
+        ever sent to the native client, so the window is never destroyed. With
+        ``prevent_close`` set, the OS close is already swallowed, so nothing
+        else ends the process either — the X does nothing at all, on every
+        desktop platform (PS-303). The only visible trace is a
+        ``RuntimeWarning: coroutine 'Window.destroy' was never awaited``, which
+        the flet launcher's stdout redirection makes easy to miss.
+
+        So the coroutine MUST be driven to completion on the session's event
+        loop. Three routes, in order of preference, because this runs from
+        several different contexts:
+
+        * **On the session loop already** (the ordinary case: flet dispatches
+          window events from a coroutine on that loop) — schedule a task on the
+          running loop. We cannot ``await`` here: this is a sync method called
+          from a sync handler, and making the whole chain async would change
+          the dialog callbacks' signatures too.
+        * **Off the loop** (a dialog button serviced on another thread, an
+          exit path reached from a worker thread) — ``page.run_task``, which
+          flet implements with ``run_coroutine_threadsafe`` against the
+          session's own loop.
+        * **Neither available** — close the coroutine explicitly (so the
+          warning is not merely relocated) and fall through to the hard exit.
+
+        AND THE PROCESS MUST ACTUALLY END. Destroying the window tears down the
+        native client, but persona's own interpreter can outlive it, and the
+        user cannot tell "closed" from "closed but still running" — the taskbar
+        gesture failing the same way is exactly that shape. ``_exit_process``
+        below is the backstop: it runs the ordinary teardown and then ends the
+        process for real if the window's destruction has not already done so.
+        Failing toward closing is the only safe direction once ``prevent_close``
+        has intercepted the close.
+        """
         page = self.page
         if page is None:
+            # No page means no window to destroy and no loop to destroy it on.
+            # We are still inside an intercepted close, so ending the process is
+            # the only way this gesture can succeed.
+            self._exit_process()
             return
+
         try:
-            page.window.destroy()
+            self._await_destroy(page)
         except Exception:
             logger.exception("Could not destroy the window on close")
+
+        # Whether or not destroy() reached the client, persona is on its way
+        # out: the user asked to close and the guard has already swallowed the
+        # OS's own close. Arm the backstop rather than trusting the window
+        # teardown to end the interpreter.
+        self._exit_process()
+
+    def _await_destroy(self, page) -> None:
+        """Actually drive ``page.window.destroy()`` to the client.
+
+        Split out from _destroy_window so the "did the coroutine get driven"
+        question is testable on its own, without the process-exit backstop
+        firing inside the test runner.
+        """
+        window = page.window
+        coro = window.destroy()
+
+        if not inspect.isawaitable(coro):
+            # A future flet (or a test double) with a synchronous destroy().
+            # Calling it was the whole job; nothing left to await.
+            return
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        if loop is not None:
+            loop.create_task(coro)
+            return
+
+        run_task = getattr(page, "run_task", None)
+        if callable(run_task):
+            # page.run_task takes a coroutine FUNCTION, not a coroutine, and it
+            # type-checks with iscoroutinefunction — so hand it a thin async
+            # wrapper that awaits the coroutine we already built.
+            async def _drive():
+                await coro
+
+            run_task(_drive)
+            return
+
+        # Nowhere to run it. Close the coroutine explicitly so this failure is
+        # a logged one rather than a stray "never awaited" warning, and let the
+        # caller's process-exit backstop do the closing.
+        coro.close()
+        raise RuntimeError(
+            "no event loop available to deliver window.destroy() to the client"
+        )
+
+    def _exit_process(self) -> None:
+        """End the process for real, after an intercepted close.
+
+        THE OS IS THE ORACLE, not a log line: the ticket's symptom is a window
+        that goes away (or does not) while the pid survives, and a user whose
+        only remaining exit is Task Manager. Destroying the window SHOULD end
+        the interpreter, so this waits briefly for that to happen on its own
+        before forcing it — on the happy path the native client tears down, the
+        flet server loop returns, and this thread's timer never fires.
+
+        ``os._exit`` rather than ``sys.exit``: we are called from an event
+        handler, so a SystemExit would be caught by flet's own
+        ``except Exception``/task machinery and swallow the exit. The teardown
+        that matters (``shutdown_all``, the PS-192 process-group reap) is run
+        explicitly first, since ``os._exit`` skips ``atexit`` — the same
+        reasoning ``_apply_update`` already applies before its execv.
+        """
+        if getattr(self, "_exiting", False):
+            return
+        self._exiting = True
+
+        threading.Thread(
+            target=self._finish_exit, name="persona-exit", daemon=True
+        ).start()
+
+    def _finish_exit(self) -> None:
+        """The exit backstop's body, on its own thread. Separated from
+        :meth:`_exit_process` so the teardown-then-force sequence can be driven
+        directly by a test without spawning a thread that would take the test
+        runner down with it."""
+        # Give the ordinary teardown a chance to end the process by itself
+        # first; only force it if we are still alive after the grace period.
+        time.sleep(_EXIT_GRACE_SECONDS)
+        with contextlib.suppress(Exception):
+            self.stop_api_server()
+        with contextlib.suppress(Exception):
+            self.bl.shutdown_all()
+        logger.info("Exiting persona after an intercepted window close")
+        with contextlib.suppress(Exception):
+            sys.stdout.flush()
+            sys.stderr.flush()
+        os._exit(0)
 
     def _scan_survivors(self) -> None:
         """Startup: find browsers a PREVIOUS persona left running, and SAY SO.
