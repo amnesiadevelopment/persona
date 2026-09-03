@@ -50,6 +50,7 @@ session.invoked``, and leaves the exit unarmed. Verified by reverting.
 
 import asyncio
 import inspect
+import threading
 import warnings
 import weakref
 
@@ -418,18 +419,44 @@ def test_the_exit_is_armed_only_once():
     """Two closes in flight must not race two exits.
 
     A user can click X twice, and the confirm path can be re-entered; arming
-    the teardown twice would run ``shutdown_all`` concurrently with itself.
+    the teardown twice would run ``shutdown_all`` concurrently with itself —
+    three racing ``os._exit(0)`` calls behind three ``persona-exit`` threads.
+
+    THE ASSERTION THAT CARRIES THIS TEST IS ``len(exits) == 1``, not the flag.
+    ``_exit_process`` sets ``_exiting = True`` on *every* call, guard or no
+    guard, so asserting the flag alone is green with the guard deleted — it
+    watches the wrong side of the branch. Counting the ``_finish_exit`` runs
+    is what notices the guard's removal: verified by deleting the two-line
+    ``if getattr(self, "_exiting", False): return`` from ``_exit_process``,
+    which turns this red (3 != 1) and leaves the rest of the suite green.
     """
     page, _ = _real_page()
     app = _app(page)
     app._exiting = False
     exits = []
-    app._finish_exit = lambda: exits.append(1)
+    lock = threading.Lock()
+
+    def _record():
+        with lock:
+            exits.append(1)
+
+    app._finish_exit = _record
 
     app._exit_process()
     app._exit_process()
     app._exit_process()
 
+    # ``_exit_process`` hands the teardown to a thread, so the count is not
+    # settled until those threads have run. Join every one this test started
+    # rather than sleeping: with the guard removed there are three of them and
+    # the assertion below must see all three, not race them.
+    for thread in threading.enumerate():
+        if thread.name == "persona-exit":
+            thread.join(timeout=5)
+            assert not thread.is_alive(), "the exit thread never finished"
+
+    with lock:
+        assert len(exits) == 1, exits
     assert app._exiting is True
 
 
