@@ -1,0 +1,340 @@
+"""PS-273 — the UI lane of "which five, and why".
+
+The service-layer half lives in ``tests/test_bulk.py`` (the reason text reaching
+the caller, for all three reasoned causes). This file covers the two things
+that happen ABOVE it, and that a service test cannot see:
+
+* ``bulk_create_profiles.on_create`` returns a MESSAGE instead of ``None`` when
+  anything was refused — which is the whole mechanism by which the dialog stays
+  open (``dialogs/bulk.py`` treats ``None`` as success and pops the dialog).
+* the Activity Log gets a durable line PER NAME, so the record survives the
+  dialog being dismissed.
+
+WHAT IS ASSERTED, AND WHAT IS DELIBERATELY NOT
+----------------------------------------------
+Every assertion here is about CONTENT: the reason sentence, the refused name,
+and the "already saved" reassurance are each matched as text. Asserting that a
+message is non-empty, or that a key exists, would pass against a build that
+returned "Error" for all five refusals — which is the defect this ticket is
+about, wearing the fix's shape.
+
+The RENDERING of that message (error_text becoming visible, the dialog staying
+on screen) is NOT asserted here, because a fake page proves nothing about a
+real widget. It is DRIVEN live, through a real pointer, in
+``tests/ui_driver/live_ps273.py``.
+"""
+import flet as ft
+import pytest
+
+from src.core.strings import get_string
+from src.services.profile.manager import ProfileManager
+from src.ui.actions.profile import bulk_create_profiles
+
+
+@pytest.fixture
+def mgr(tmp_path, monkeypatch):
+    pf = tmp_path / "profiles.json"
+    dd = tmp_path / "data"
+    monkeypatch.setenv("PERSONA_PROFILES_FILE", str(pf))
+    monkeypatch.setenv("PERSONA_DATA_DIR", str(dd))
+    import src.core.config as cfg
+    import src.services.profile.manager as mod
+
+    monkeypatch.setattr(cfg, "PROFILES_FILE", str(pf))
+    monkeypatch.setattr(cfg, "DATA_DIR", str(dd))
+    monkeypatch.setattr(mod, "PROFILES_FILE", str(pf))
+    monkeypatch.setattr(mod, "DATA_DIR", str(dd))
+    return ProfileManager()
+
+
+class _CapturePage:
+    """A page that records whether the dialog was popped.
+
+    ``pop_dialog`` is the observable consequence of ``on_create`` returning
+    ``None``, so the harness records it rather than the test having to trust
+    the return value alone.
+    """
+
+    def __init__(self):
+        self.shown = None
+        self.popped = 0
+
+    def show_dialog(self, dlg):
+        self.shown = dlg
+
+    def pop_dialog(self):
+        self.popped += 1
+        self.shown = None
+
+    def update(self):
+        pass
+
+
+def _harness(mgr):
+    """Open the real bulk dialog and hand back its real ``on_create``.
+
+    ``bulk_create_profiles`` closes over ``on_create`` and passes it to
+    ``open_bulk_dialog``; the dialog stores it on its ``[ create ]`` button.
+    Pulling it back out of the built control tree means these tests exercise
+    the function the BUTTON calls, not a re-implementation of it.
+    """
+    page = _CapturePage()
+    log: list[str] = []
+    refreshed: list[int] = []
+    captured: dict = {}
+
+    import src.ui.actions.profile as mod
+
+    real_open = mod.open_bulk_dialog
+
+    def _capture(p, on_create):
+        captured["on_create"] = on_create
+        return real_open(p, on_create)
+
+    mod.open_bulk_dialog = _capture
+    try:
+        bulk_create_profiles(page, mgr, log.append, lambda: refreshed.append(1))
+    finally:
+        mod.open_bulk_dialog = real_open
+
+    assert "on_create" in captured, "the dialog was never handed an on_create"
+    return captured["on_create"], log, page
+
+
+# --- AC2: the message that keeps the dialog open ---------------------------
+
+
+def test_a_clean_batch_returns_none_so_the_dialog_closes(mgr):
+    on_create, log, _page = _harness(mgr)
+
+    assert on_create("alpha\nbeta", "windows", "", []) is None, (
+        "nothing was refused, so there is nothing to keep the dialog open for"
+    )
+    assert set(mgr.profiles) == {"alpha", "beta"}
+
+
+def test_an_invalid_name_returns_its_reason_to_the_dialog(mgr):
+    on_create, _log, _page = _harness(mgr)
+
+    msg = on_create("good\nbad/name", "windows", "", [])
+
+    assert msg is not None, (
+        "a None return is read as success by dialogs/bulk.py and CLOSES the "
+        "dialog — the exact defect PS-273 fixes"
+    )
+    assert "bad/name" in msg, "the operator must be told WHICH name"
+    assert "Name contains invalid characters: /" in msg, (
+        f"the operator must be told WHY, with the offending character; got "
+        f"{msg!r}"
+    )
+    # And the name that worked is not listed as a problem.
+    assert "good" in mgr.profiles
+
+
+def test_an_existing_name_returns_its_reason_to_the_dialog(mgr):
+    mgr.add_profile("alpha", "", "windows")
+    on_create, _log, _page = _harness(mgr)
+
+    msg = on_create("alpha\nbeta", "windows", "", [])
+
+    assert msg is not None
+    assert "alpha" in msg
+    assert get_string("bulk_create_exists") in msg, (
+        f"the already-exists cause must be distinguishable from the other "
+        f"two; got {msg!r}"
+    )
+    assert "left unchanged" in msg, (
+        f"the operator's real question is what happened to the EXISTING "
+        f"profile; got {msg!r}"
+    )
+
+
+def test_an_incoherent_batch_returns_the_coherence_reason(mgr):
+    """The case that matters most: the whole batch is refused, as one integer.
+
+    Every name shares the batch's os_type, so an unstorable spelling refuses
+    all of them — "skipped 50" with the cause available at the moment of the
+    skip and thrown away.
+    """
+    on_create, _log, _page = _harness(mgr)
+
+    msg = on_create("one\ntwo\nthree", "win", "", [])
+
+    assert msg is not None
+    for name in ("one", "two", "three"):
+        assert name in msg, f"{name!r} was refused and must be named; got {msg!r}"
+    assert "os_type 'win'" in msg
+    assert "'windows'" in msg, (
+        f"the refusal must name the spelling that WOULD work; got {msg!r}"
+    )
+
+
+def test_a_partial_success_says_the_created_ones_are_already_saved(mgr):
+    """The dialog now STAYS OPEN on a partial success, so the operator's first
+    question is whether the successes need re-submitting. They do not, and the
+    message must say so — otherwise "keep the dialog open" invents a new way to
+    create duplicates-by-anxiety."""
+    mgr.add_profile("alpha", "", "windows")
+    on_create, _log, _page = _harness(mgr)
+
+    msg = on_create("alpha\nbeta\ngamma", "windows", "", [])
+
+    assert set(mgr.profiles) == {"alpha", "beta", "gamma"}
+    assert "Created 2 profiles" in msg, f"got {msg!r}"
+    assert "already saved" in msg and "no need to submit them again" in msg, (
+        f"the reassurance is load-bearing, not decoration; got {msg!r}"
+    )
+
+
+def test_a_wholly_refused_batch_does_not_claim_anything_was_created(mgr):
+    on_create, _log, _page = _harness(mgr)
+
+    msg = on_create("bad/one\nbad:two", "windows", "", [])
+
+    assert mgr.profiles == {}
+    assert "No profiles created" in msg, f"got {msg!r}"
+    assert "already saved" not in msg
+
+
+def test_repeats_in_the_paste_are_accounted_for(mgr):
+    """`created + skipped` is fewer than the rows pasted when the paste repeats
+    a name — the repeat is dropped before the loop and counted nowhere. Said
+    out loud so the arithmetic on screen adds up."""
+    on_create, _log, _page = _harness(mgr)
+
+    msg = on_create("alpha\nalpha\nbad/name", "windows", "", [])
+
+    assert msg is not None
+    assert "repeated name" in msg and "alpha" in msg, f"got {msg!r}"
+
+
+def test_repeats_alone_do_not_open_the_dialog_report(mgr):
+    """A repeat is NOT a refusal. A paste whose only oddity is a repeated name
+    created everything the operator asked for, so it must still close."""
+    on_create, _log, _page = _harness(mgr)
+
+    assert on_create("alpha\nalpha\nbeta", "windows", "", []) is None
+    assert set(mgr.profiles) == {"alpha", "beta"}
+
+
+def test_a_long_refusal_list_defers_to_the_log_instead_of_flooding(mgr):
+    names = [f"bad{i}/x" for i in range(30)]
+    on_create, log, _page = _harness(mgr)
+
+    msg = on_create("\n".join(names), "windows", "", [])
+
+    assert msg.count("\n") < 20, (
+        "a 30-refusal paste must not push the paste field and [ create ] off "
+        "the screen — that turns 'fix it in place' back into 'you cannot'"
+    )
+    assert "more refusals" in msg and "Activity Log" in msg, f"got {msg!r}"
+    # NOTHING is lost: the log still carries every one of them.
+    for n in names:
+        assert any(n in line for line in log), f"{n!r} missing from the log"
+
+
+def test_the_log_line_leads_with_the_name_so_parse_event_renders_it(mgr):
+    """MEASURED, and the reason the wording is not "Not created: {name} - ...".
+
+    `log_console.parse_event` HOISTS a known profile name out of the prose into
+    the row's own profile column. A message that puts the name in the MIDDLE
+    renders with a dangling separator where the name was ("Not created: - a
+    profile with that name exists"). Leading with the name reads correctly both
+    when it is hoisted and when it is not.
+    """
+    from src.ui.log_console import parse_event
+
+    mgr.add_profile("alpha", "", "windows")
+    on_create, log, _page = _harness(mgr)
+    on_create("alpha\nbad/name", "windows", "", [])
+
+    roster = set(mgr.profiles)
+    for line in log:
+        if "not created" not in line:
+            continue
+        _stamp, profile, message, _sev = parse_event(f"12:00:00  > {line}", roster)
+        assert not message.startswith("Not created: -"), (
+            f"the hoist left a dangling separator: {message!r}"
+        )
+        assert message.strip(), f"the hoist emptied the message: {line!r}"
+        if profile:
+            # The name went to its own column; what remains must still read as
+            # a sentence about that profile.
+            assert message.startswith("not created:"), f"got {message!r}"
+        else:
+            assert "not created:" in message, f"got {message!r}"
+
+
+# --- AC3: the durable per-name record --------------------------------------
+
+
+def test_the_log_carries_a_line_per_refused_name_with_its_reason(mgr):
+    mgr.add_profile("alpha", "", "windows")
+    on_create, log, _page = _harness(mgr)
+
+    on_create("alpha\nbeta\nbad/name", "windows", "", [])
+
+    blob = "\n".join(log)
+    # The aggregate line is KEPT as the batch header — it is not the defect,
+    # being the whole story was.
+    assert "bulk create: created 1, skipped 2" in blob, f"got {log!r}"
+    # Per NAME, with the reason, on the model of the bulk DELETE lane.
+    assert (
+        f"alpha not created: {get_string('bulk_create_exists')}" in blob
+    ), f"got {log!r}"
+    assert (
+        "bad/name not created: Name contains invalid characters: /" in blob
+    ), f"got {log!r}"
+    # The successes are named too, matching single-create's "Created: {name}".
+    assert "Created: beta" in blob, f"got {log!r}"
+
+
+def test_the_log_record_survives_without_the_dialog(mgr):
+    """AC3 is about DURABILITY: the log lines are written whether or not the
+    operator ever reads the inline message."""
+    on_create, log, _page = _harness(mgr)
+
+    on_create("one\ntwo", "win", "", [])
+
+    for name in ("one", "two"):
+        line = next((line for line in log if f"{name} not created:" in line), None)
+        assert line is not None, f"no per-name log line for {name!r}: {log!r}"
+        assert "os_type 'win'" in line, (
+            f"the log line must carry the REASON, not just the name; got {line!r}"
+        )
+
+
+def test_no_severity_token_was_added_for_the_new_lines(mgr):
+    """Out of scope, and pinned: `log_console.severity()` classifies the new
+    per-name line by the SAME rules as the aggregate line and "Created: {name}"
+    — no token was added and none was changed."""
+    from src.ui.log_console import SEV_IDLE, severity
+
+    assert severity("bulk create: created 1, skipped 2") == SEV_IDLE
+    assert severity("Created: beta") == SEV_IDLE
+    # The refusal line's own words carry no token either. (An interpolated
+    # REASON can contain "error"/"fail" and would then read as SEV_FAIL —
+    # which is honest for a refusal, and is data classified by the existing
+    # rules, not a rule change.)
+    assert severity("alpha not created: a name this build cannot store") == SEV_IDLE
+    # THE MEASURED TRAP, pinned here rather than left to be rediscovered:
+    # severity() matches "ready" INSIDE "already", so `profile_exists`
+    # ("Profile already exists!") classifies as SEV_OK and would paint the
+    # GREEN SUCCESS dot on a refusal. That is why the bulk lane uses
+    # `bulk_create_exists` and why severity() itself is untouched.
+    assert severity("Profile already exists!") != SEV_IDLE
+    for key in ("bulk_create_exists",):
+        assert severity(f"x not created: {get_string(key)}") == SEV_IDLE, (
+            f"{key} carries a severity token and would mis-paint a refusal"
+        )
+
+
+# --- the dialog still builds ------------------------------------------------
+
+
+def test_the_bulk_dialog_still_builds_with_the_real_on_create(mgr):
+    """The message path is only reachable if the dialog builds at all."""
+    _on_create, _log, page = _harness(mgr)
+
+    assert page.shown is not None
+    assert isinstance(page.shown, ft.AlertDialog)
