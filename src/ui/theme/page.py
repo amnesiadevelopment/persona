@@ -6,6 +6,7 @@ import sys
 import flet as ft
 
 from .colors import COLORS
+from ...core.strings import CHROMIUM_ENGINE_NAME
 
 
 def _primary_work_rect() -> "tuple[int, int, int, int]":
@@ -149,7 +150,15 @@ def build_engine_dropdown(value: str = "chromium") -> ft.Dropdown:
         text_style=ft.TextStyle(font_family="monospace"),
         border_radius=3,
         options=[
-            _engine_option("chromium", 'Chrome ("fingerprint-chromium")'),
+            # The visible text is OURS; the stored KEY is untouched. The option
+            # still persists "chromium" (models/profile.py:137), so an existing
+            # installation's saved profiles resolve exactly as before — this is
+            # a display rename, not a data migration. See CHROMIUM_ENGINE_NAME
+            # in core/strings.py for why the name is operator-only.
+            #
+            # The Firefox sibling names a DIFFERENT third-party project and is
+            # deliberately left alone: PS-224 renames our Chromium engine only.
+            _engine_option("chromium", f'Chrome ("{CHROMIUM_ENGINE_NAME}")'),
             _engine_option("firefox", 'Firefox ("invisible_playwright")'),
         ],
     )

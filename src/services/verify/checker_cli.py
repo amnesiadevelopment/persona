@@ -257,6 +257,35 @@ def _chromium_label() -> str:
     stock chromium exists on most machines and is NOT the product, so a label
     that could not distinguish them would let a stock reading masquerade as a
     persona one. This names persona's own installed build or says unknown.
+
+    ⚠️ DELIBERATELY NOT RENAMED TO ``Personium`` (PS-224). This is a RECORDED
+    MEASUREMENT IDENTIFIER, not a display name, and the ticket asked for the
+    decision to be made rather than let drift out of a UI rename. It stays for
+    three reasons, in order of how expensive changing it would be:
+
+    1. IT WOULD SILENTLY BREAK EXISTING COMPARISONS. 38 committed reading sets
+       under ``readings/`` carry ``"engine": "fingerprint-chromium/<version>"``
+       in their headers. ``compare`` and the matrix tooling hold a new record
+       against an old one; a changed header makes old and new readings
+       incomparable, and NOTHING would report that — the exact silent-drift
+       failure the ticket names.
+    2. IT WOULD BREAK A LIVE LOOKUP, TODAY. ``pool_depth.engine_report`` finds
+       an arm by case-insensitive SUBSTRING of the engine header:
+       ``"chromium" in "fingerprint-chromium/148...".lower()`` is True, and
+       ``"chromium" in "personium/148...".lower()`` is False. Renaming this
+       would raise ``KeyError: no engine arm matching 'chromium'`` on every
+       chromium pool-depth lookup.
+    3. NO OPERATOR READS IT AS OUR ENGINE'S NAME. It appears in a reading
+       record's JSON header, produced by a developer-facing CLI. It names the
+       UPSTREAM BUILD a measurement was taken against, which is exactly what
+       it should say while the binary we launch IS that upstream build.
+
+    WHEN IT SHOULD CHANGE: when we ship a binary we built ourselves, the thing
+    being measured genuinely stops being ``fingerprint-chromium`` and the label
+    becomes factually wrong. At that point the change is a MEASUREMENT-BASELINE
+    decision — old readings describe a different engine and must not be
+    compared against new ones as though they were the same — and it belongs
+    with the self-build work, not with a UI rename.
     """
     try:
         from ..engine.updater import current_version
