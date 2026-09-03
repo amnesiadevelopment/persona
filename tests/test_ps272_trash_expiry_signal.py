@@ -28,6 +28,7 @@ the falsification pass that proves the check can go red.
 import json
 import os
 import pathlib
+import time
 
 import flet as ft
 import pytest
@@ -434,3 +435,263 @@ def test_widening_severity_reclassified_nothing_else():
     assert severity("Engine update available") == SEV_INFO
     assert severity("LAUNCH_FAILED: engine firefox-142 missing") == SEV_FAIL
     assert severity("persona session started 3.0.2") == SEV_OK
+
+
+# ---------------------------------------------------------------------------
+# 7. THE SET INVARIANT: every path that mutates the trash rebuilds the rail
+#
+# The badge is a cached count painted into a control tree. It is correct at the
+# instant it is built and stale the instant anything changes what is counting
+# down — so the invariant is not "the four handlers we happened to think of",
+# it is EVERY handler that mutates the trash. That is a SET, and it is asserted
+# here as a set: `_TRASH_MUTATING_HANDLERS` names all four, and the test that
+# walks it will fail the day a fifth is added without a rebuild, instead of
+# silently covering three of five.
+#
+# The panic wipe is the one this section exists for. It is the most destructive
+# member — `wipe_all_profiles()` -> `_purge_trash_for_wipe()` -> `trash.clear()`
+# empties the trash IN FULL and destroys every entry's material — and it was
+# the one that did not rebuild. That ships the INVERSE of the ticket's headline
+# defect: a rail that speaks when it should be silent, asserting that key
+# material is still recoverable moments after the operator typed DELETE to
+# destroy all of it. `_status_needs_reveal`'s rule refuses exactly that — an
+# affordance on a line that is already whole invites a click that does nothing.
+#
+# These drive a REAL App on a REAL Container against a real temp PERSONA_HOME,
+# through the real dialogs, and read the badge off the REAL sidebar tree that
+# `_refresh_sidebar` swaps into `_sidebar_host`. A test that asserted
+# "_refresh_sidebar was called" would pass against a rebuild that painted the
+# wrong thing; this one reads the pixel-bearing tree.
+# ---------------------------------------------------------------------------
+
+#: Every App handler that changes what is counting down. Each must leave the
+#: rail agreeing with the trash by the time it returns.
+_TRASH_MUTATING_HANDLERS = ("restore", "delete_permanently", "empty", "panic_wipe")
+
+
+class _WipePage:
+    """Stands in for ft.Page for the dialog-driven handlers.
+
+    `run_task` really runs the coroutine. `_refresh_sidebar` marshals through
+    `App._ui`, which hands the callback to `page.run_task` when it is off the
+    session loop — a FakePage whose `run_task` returns None SWALLOWS the
+    rebuild, and then this whole section passes vacuously with and without the
+    fix. The harness has to run it or it is measuring itself.
+    """
+
+    def __init__(self) -> None:
+        self.dlg = None
+        self.updates = 0
+
+    def show_dialog(self, dlg) -> None:
+        self.dlg = dlg
+
+    def pop_dialog(self) -> None:
+        self.dlg = None
+
+    def update(self) -> None:
+        self.updates += 1
+
+    def run_task(self, handler, *args, **kwargs):
+        import asyncio
+
+        return asyncio.run(handler(*args, **kwargs))
+
+
+def _real_refs():
+    from src.ui.refs import UIRefs
+
+    return UIRefs(
+        stats_text=ft.Text(),
+        running_text=ft.Text(),
+        content_subtitle=ft.Text(),
+        profile_list_area=ft.Column(),
+        prev_btn=ft.IconButton(),
+        next_btn=ft.IconButton(),
+        page_label=ft.Text(),
+        bulk_bar=ft.Row(),
+        file_picker=ft.FilePicker(),
+    )
+
+
+@pytest.fixture
+def live_app(tmp_path, monkeypatch):
+    """A real App on a real Container, pointed at a tmp PERSONA_HOME, with the
+    sidebar host wired exactly as `_build_ui` wires it."""
+    import src.core.config as cfg
+    import src.services.profile.manager as mod
+    import src.ui.state as ui_state
+    from src.core.container import Container
+    from src.core.logging import setup_logging
+    from src.ui.app import App
+
+    monkeypatch.setenv("PERSONA_HOME", str(tmp_path))
+    monkeypatch.setenv("PERSONA_TRASH_FILE", str(tmp_path / "trash.json"))
+    log_dir = tmp_path / "logs"
+    monkeypatch.setattr(cfg, "LOG_DIR", str(log_dir), raising=False)
+    monkeypatch.setattr(ui_state, "LOG_DIR", str(log_dir), raising=False)
+    setup_logging(str(log_dir))
+    for m in (cfg, mod):
+        monkeypatch.setattr(
+            m, "PROFILES_FILE", str(tmp_path / "profiles.json"), raising=False
+        )
+        monkeypatch.setattr(m, "DATA_DIR", str(tmp_path / "data"), raising=False)
+
+    app = App(container=Container())
+    app.page = _WipePage()
+    app.refs = _real_refs()
+    # _on_session_ready sets this in the running app; without it `_ui` parks
+    # the rebuild in the backlog and the tree is never swapped.
+    app._ui_ready.set()
+    app._page_host = ft.Container(expand=True)
+    app._sidebar_host = ft.Container(content=app._build_sidebar())
+    return app
+
+
+def _light_the_badge(app, name="old-jar") -> str:
+    """Put one entry in the trash and age it INTO the near-expiry window.
+
+    Ages `deleted_at` directly rather than moving a clock, because the App's
+    store is the container's and is built on the real `time.time`. Returns the
+    entry id.
+    """
+    app.pm.add_profile(name, "", "windows")
+    app.pm.delete_profile(name)
+    matches = [e for e in app.trash_service.list() if e.name == name]
+    assert len(matches) == 1, app.trash_service.list()
+    entry = matches[0]
+    # One day inside the 30-day floor: unambiguously within the 7-day warning
+    # window and unambiguously not yet expired.
+    entry.deleted_at = time.time() - (RETENTION_DAYS - 1) * DAY
+    app._refresh_sidebar()
+    return entry.id
+
+
+def _rail_badges(app):
+    """The badges on the tree `_refresh_sidebar` actually swapped in — not on a
+    freshly built one, which would paint correctly even if nothing rebuilt."""
+    return [
+        c
+        for c in _walk(app._sidebar_host)
+        if isinstance(c, ft.Container) and c.tooltip == EXPIRY_BADGE_TIP
+    ]
+
+
+def _confirm_the_open_dialog(app) -> None:
+    """Click the non-cancel action of whatever confirm dialog is open."""
+    dlg = app.page.dlg
+    assert dlg is not None, "no dialog opened"
+    for action in dlg.actions:
+        label = getattr(action, "content", None)
+        if isinstance(label, str) and "cancel" not in label.lower():
+            action.on_click(None)
+            return
+    raise AssertionError("no confirm button in the dialog")
+
+
+def _wipe_through_the_real_dialog(app) -> None:
+    """The operator's actual panic-wipe gesture: open it, type DELETE, click.
+    This runs the shipped `_do_wipe`, not a test-local copy of it."""
+    app._on_wipe_all()
+    dlg = app.page.dlg
+    assert dlg is not None, "the wipe confirmation dialog never opened"
+    field = dlg.content.controls[1]
+    confirm_btn = dlg.actions[1]
+    field.value = "DELETE"
+    field.on_change(None)
+    assert not confirm_btn.disabled, "typing DELETE should arm the wipe button"
+    confirm_btn.on_click(None)
+
+
+def _drive(app, handler: str) -> None:
+    """Run one member of `_TRASH_MUTATING_HANDLERS` through its real gesture."""
+    entry_id = app.trash_service.list()[0].id
+    if handler == "restore":
+        app._restore_from_trash(entry_id)
+    elif handler == "delete_permanently":
+        app._delete_from_trash_permanently(entry_id)
+        _confirm_the_open_dialog(app)
+    elif handler == "empty":
+        app._empty_trash()
+        _confirm_the_open_dialog(app)
+    elif handler == "panic_wipe":
+        # The wipe needs a live profile: `_on_wipe_all` returns early on an
+        # empty roster, and the trashed one is no longer in it.
+        app.pm.add_profile("still-here", "", "windows")
+        _wipe_through_the_real_dialog(app)
+    else:  # pragma: no cover - guarded by the parametrization
+        raise AssertionError(f"unknown handler {handler!r}")
+
+
+def test_the_harness_really_paints_the_badge(live_app):
+    """Premise, so nothing below can pass vacuously. If the badge never lights,
+    every 'it went away' assertion is trivially true."""
+    _light_the_badge(live_app)
+    assert len(_rail_badges(live_app)) == 1
+
+
+def test_the_harness_marshals_the_rebuild_rather_than_swallowing_it(live_app):
+    """Guard on the guard. `_refresh_sidebar` goes through `App._ui`, which
+    hands off to `page.run_task`; a page whose run_task returns None drops the
+    rebuild on the floor and makes this whole section pass against ANY code.
+    Assert the swap really happens before trusting a single result below."""
+    _light_the_badge(live_app)
+    before = live_app._sidebar_host.content
+    live_app.trash_service.empty()
+    live_app._refresh_sidebar()
+    assert live_app._sidebar_host.content is not before, (
+        "the harness never swapped the sidebar tree — every assertion in this "
+        "section would be measuring the harness rather than the app"
+    )
+    assert _rail_badges(live_app) == []
+
+
+@pytest.mark.parametrize("handler", _TRASH_MUTATING_HANDLERS)
+def test_every_trash_mutating_handler_leaves_the_rail_honest(live_app, handler):
+    """THE set invariant, and the panic wipe is why this is parametrized.
+
+    Three of the four already rebuilt; `_on_wipe_all._do_wipe` did not, so the
+    rail kept asserting "1 item is about to be destroyed" over a trash that had
+    just been destroyed in full — until the operator's next navigation happened
+    to rebuild it. Written as a set so the fifth handler cannot be missed.
+    """
+    _light_the_badge(live_app)
+    assert _rail_badges(live_app), "premise: the badge is lit before the gesture"
+
+    _drive(live_app, handler)
+
+    assert live_app._trash_expiring_count() == 0, (
+        "premise: the gesture really did clear what was counting down"
+    )
+    assert _rail_badges(live_app) == [], (
+        f"{handler} left a near-expiry badge on the rail over a trash that no "
+        "longer holds anything counting down"
+    )
+
+
+def test_the_panic_wipe_destroys_the_trash_it_stopped_advertising(live_app):
+    """The rebuild must not have quietly replaced the destruction: the wipe's
+    own contract — nothing survives it in a recoverable form — still holds."""
+    _light_the_badge(live_app)
+    _drive(live_app, "panic_wipe")
+
+    assert live_app.trash_service.list() == []
+    assert live_app.pm.list_profiles() == []
+
+
+def test_the_rail_still_speaks_when_something_is_actually_counting_down(live_app):
+    """The negative control for the whole section. A rebuild that always
+    cleared the badge would pass every test above, so pin that a gesture which
+    leaves a near-expiry entry behind leaves the badge lit."""
+    _light_the_badge(live_app, "first-jar")
+    _light_the_badge(live_app, "second-jar")
+    assert len(live_app.trash_service.list()) == 2
+    assert live_app._trash_expiring_count() == 2
+
+    live_app._restore_from_trash(live_app.trash_service.list()[0].id)
+
+    assert live_app._trash_expiring_count() == 1
+    badges = _rail_badges(live_app)
+    assert len(badges) == 1
+    text = next(c for c in _walk(badges[0]) if isinstance(c, ft.Text))
+    assert text.value == "1", "the rail must count down, not merely go dark"
