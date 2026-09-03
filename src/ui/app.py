@@ -38,6 +38,7 @@ from .dialogs.bookmark import open_bookmark_dialog
 from .dialogs.pool import open_pool_dialog
 from .dialogs.confirm import open_confirm_dialog
 from .handlers import AppHandlers
+from .log_severity import SEV_FAIL, declare
 from .refs import UIRefs
 from .state import ITEMS_PER_PAGE, AppState
 from .theme import ACCENT_STYLE, COLORS, configure_page
@@ -777,7 +778,14 @@ class App:
             # away silently — that strands the operator held with no way out
             # and nothing on screen saying why. Same lesson as the Chromium
             # row, which logs its read failure rather than only degrading.
-            self._log("Update: couldn't read the update-hold state")
+            # DECLARED. The comment above calls this the "same lesson as the
+            # Chromium row" — and the two classified DIFFERENTLY: this line
+            # carries "update", so prose-matching made it `info` while its
+            # named sibling was `fail`. Two lines the code itself calls
+            # siblings, told apart by a word rather than by what happened.
+            self._log(
+                declare("Update: couldn't read the update-hold state", SEV_FAIL)
+            )
             held = ""
         if held:
             # THE HELD VERSION LEAVES THE LABEL AND STAYS IN THE TOOLTIP —
@@ -1964,7 +1972,15 @@ class App:
             # corrupt settings file therefore takes the RESUME gesture away
             # silently — leaving an operator pinned with no way back out of the
             # pin, and nothing on screen saying why the control vanished.
-            self._log(f"Chromium engine: couldn't read the rollback state ({e})")
+            # DECLARED, same interpolated-exception flip as the build-record
+            # row below. Converted with it because the two are the same event
+            # class and an operator must not see them classified differently.
+            self._log(
+                declare(
+                    f"Chromium engine: couldn't read the rollback state ({e})",
+                    SEV_FAIL,
+                )
+            )
             return ft.Container(height=0)
 
         # THE BUILD IDENTIFIER LIVES IN THE TOOLTIP, NOT THE LABEL — the same
@@ -2055,7 +2071,19 @@ class App:
         except Exception as e:
             # Same fail-quiet direction as above: an unreadable record must
             # not promise a specific number of updates. Log and say nothing.
-            self._log(f"Chromium engine: couldn't read the build record ({e})")
+            # DECLARED — the sharpest case the declaration mechanism exists
+            # for. This is ONE authored line whose severity was decided by
+            # whichever exception class got interpolated into it: OSError
+            # contains "error" → fail, KeyboardInterrupt contains none of the
+            # twenty tokens → idle. Same code path, same operator situation,
+            # two different dots and two different answers to the `failures`
+            # filter, chosen by a word the author never wrote.
+            self._log(
+                declare(
+                    f"Chromium engine: couldn't read the build record ({e})",
+                    SEV_FAIL,
+                )
+            )
             return ft.Container(height=0)
         return self._engine_rollback_pending_row(recorded)
 
@@ -4963,10 +4991,17 @@ class App:
         every ~0.15s while profiles launch, into a container that was then
         hidden unconditionally: pure dead work on the one hot path this ticket
         exists to make cheaper.
+        THE TAIL IS TAKEN AS LINES, NOT AS TEXT. A line whose call site
+        DECLARED its severity carries that declaration as an attribute on the
+        line object itself (``log_severity.DeclaredMessage``), and
+        ``"\n".join(...).split("\n")`` returns plain ``str`` — which would drop
+        every declaration precisely on the path to the console that renders it.
+        ``flush_log_lines()`` hands over the line objects; the joined form is
+        still available and still consumes the same single flush.
         """
-        text = self.state.flush_log()
-        if text is not None and self.refs:
-            lines = [ln for ln in text.split("\n") if ln]
+        lines = self.state.flush_log_lines()
+        if lines is not None and self.refs:
+            lines = [ln for ln in lines if ln]
             dock = getattr(self, "_dock", None)
             if dock is not None:
                 with contextlib.suppress(Exception):

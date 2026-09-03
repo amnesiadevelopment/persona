@@ -4,6 +4,7 @@ from collections.abc import Callable
 from ...core.strings import get_string
 from ...services.engine import updater as engine
 from ...interfaces.protocols import IBrowserLauncher, IProfileManager
+from ..log_severity import SEV_FAIL, declare
 from ..state import AppState
 
 
@@ -92,10 +93,31 @@ def launch_or_stop(
         from ...services.browser.invisible_launch import is_invisible_installed
 
         if not is_invisible_installed():
-            log("Firefox engine not ready yet — wait for the download to finish.")
+            # DECLARED, and this is the site the declaration mechanism was
+            # built for. severity() substring-matches "ready", which is inside
+            # "not ready yet" — so this REFUSAL to launch painted the green
+            # SUCCESS dot, telling an operator on the ordinary
+            # clicked-before-the-download-finished path that the launch worked.
+            # The wording is not the problem and is deliberately unchanged;
+            # what was missing is the ability to say what the event MEANS.
+            log(
+                declare(
+                    "Firefox engine not ready yet — wait for the download to finish.",
+                    SEV_FAIL,
+                )
+            )
             return
     elif not engine.is_installed():
-        log("Browser engine not ready yet — wait for the download to finish.")
+        # Same defect, same declaration — the chromium half of the identical
+        # refusal. Both are converted together because an operator who saw one
+        # painted correctly and the other green would be worse off than one who
+        # distrusted both.
+        log(
+            declare(
+                "Browser engine not ready yet — wait for the download to finish.",
+                SEV_FAIL,
+            )
+        )
         return
 
     state.set_loading(name, True)

@@ -6,6 +6,7 @@ import flet as ft
 from ...core.strings import get_string
 from ...interfaces.protocols import IBrowserLauncher, IProfileManager
 from ..dialogs import open_confirm_dialog
+from ..log_severity import SEV_FAIL, declare
 from ..state import AppState
 from .browser import launch_or_stop
 
@@ -37,7 +38,19 @@ def bulk_delete_profiles(
                 ok = pm.delete_profile(name)
                 key = "deleted_profile" if ok else "delete_profile_failed"
                 # log/refresh must land on the UI thread when we're off it.
-                _post(lambda n=name, k=key: log(get_string(k, name=n)))
+                # The FAILURE half declares itself, for the same reason the
+                # single-profile path does (actions/profile.py): the line
+                # matches none of severity()'s tokens, so a failed destructive
+                # operation was dropped by the log's `failures` filter. A bulk
+                # delete is where that matters most — the operator is looking
+                # for the ones that did NOT happen among the ones that did.
+                _post(
+                    lambda n=name, k=key, o=ok: log(
+                        get_string(k, name=n)
+                        if o
+                        else declare(get_string(k, name=n), SEV_FAIL)
+                    )
+                )
                 _post(refresh)
             _post(on_done)
             _post(refresh)
