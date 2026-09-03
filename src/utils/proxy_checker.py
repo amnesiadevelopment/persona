@@ -220,7 +220,7 @@ def _coords_from_loc(loc: object) -> tuple[object, object]:
 
 def _geo_fields_from_payload(
     data: dict,
-) -> tuple[object, str, object, str, object, object]:
+) -> tuple[str, str, str, str, object, object]:
     """One shape out of the providers' several. UNVALIDATED by design — every
     field here still goes through _validate_geo at the call site.
 
@@ -240,19 +240,37 @@ def _geo_fields_from_payload(
         timezone      timezone: {"id": ...}       timezone: "Europe/Warsaw"
         coords        latitude / longitude        loc: "52.23,21.01"
 
-    `country_code` present is what marks the ipwho dialect, and there `country`
-    is the human NAME. Absent, `country` IS the code and the provider has no
-    name field — so an ipinfo answer legitimately yields an empty
-    `country_name` beside a populated code. That is accepted rather than mapped
-    (store.py:257 stores it; ui/components/network_page.py:111-113 already
-    guards on it being empty), because a code->name table is a second source of
-    truth for something no shipped behaviour depends on.
+    A CODE-SHAPED `country` is what marks the ipinfo dialect, not merely the
+    ABSENCE of `country_code`. Where `country_code` is present, `country` is
+    the human NAME; where it is absent AND `country` is two characters,
+    `country` IS the code and the provider has no name field — so an ipinfo
+    answer legitimately yields an empty `country_name` beside a populated code.
+    That is accepted rather than mapped (store.py:257 stores it;
+    ui/components/network_page.py:111-113 already guards on it being empty),
+    because a code->name table is a second source of truth for something no
+    shipped behaviour depends on. A body carrying a NAME and no code — the
+    degraded shape a rate-limited provider emits — is deliberately read as
+    NO COUNTRY rather than as a code, so the caller advances to the next
+    provider instead of stopping on a "POLAND" that validation then discards.
     """
-    code = data.get("country_code") or ""
-    name = data.get("country", "")
+    code = str(data.get("country_code") or "").strip()
+    name = str(data.get("country") or "").strip()
     if not code:
-        code, name = name, ""
-    code = (code or "").upper()
+        # No `country_code` key: the ipinfo dialect, where `country` IS the
+        # code and there is no name field at all. The swap is gated on the
+        # VALUE being code-SHAPED rather than on the key merely being absent,
+        # because those two are not the same question. A degraded ipwho body —
+        # `{"country": "Poland"}` with the code missing, which is exactly the
+        # shape a rate-limited provider tends to emit — would otherwise take
+        # the swap and yield code == "POLAND": truthy, so the loop STOPS on it
+        # and never asks the second provider, and _validate_geo then drops it
+        # to "". That is the `exit_guard.py:618-623` trap reached from the
+        # other direction, and `len == 2` is what tells the two apart. A name
+        # with no code therefore leaves the code EMPTY, which is the
+        # no-country shape the loop already knows how to advance on.
+        if len(name) == 2:
+            code, name = name, ""
+    code = code.upper()
 
     tzobj = data.get("timezone")
     tz = (tzobj.get("id", "") if isinstance(tzobj, dict) else tzobj) or ""
@@ -262,12 +280,12 @@ def _geo_fields_from_payload(
     if lat is None and lon is None:
         lat, lon = _coords_from_loc(data.get("loc"))
 
-    return data.get("ip", "unknown"), code, name, tz, lat, lon
+    return str(data.get("ip", "unknown")), code, name, str(tz), lat, lon
 
 
 async def _resolve_geo(
     providers: tuple[str, ...], fetch
-) -> tuple[tuple[object, str, object, str, object, object] | None, str]:
+) -> tuple[tuple[str, str, str, str, object, object] | None, str]:
     """Ask the providers IN ORDER; the first to ANSWER WITH A COUNTRY wins.
 
     Returns ``(fields, "")`` on an answer, or ``(None, message)`` with the
@@ -1332,12 +1350,21 @@ async def check_proxy(
     # bogus country/timezone that then feeds the persisted fingerprint.
     #
     # `timeout` is PER PROVIDER, not a shared budget — so a check whose first
-    # provider hangs can take up to 2x it before answering. Deliberate, and the
-    # same shape the verify lane's loop uses: a shared budget would let a slow
-    # first provider starve the second of the time it needs, which is precisely
-    # the case this fallback exists to survive. The aiohttp branch already
-    # behaved this way (ClientTimeout is per-request), so the two branches stay
-    # symmetric.
+    # provider hangs can take up to 2x it before answering (20s at the default
+    # PROXY_CHECK_TIMEOUT of 10). Deliberate, and the same shape the verify
+    # lane's loop uses: a shared budget would let a slow first provider starve
+    # the second of the time it needs, which is precisely the case this
+    # fallback exists to survive. The aiohttp branch already behaved this way
+    # (ClientTimeout is per-request), so the two branches stay symmetric.
+    #
+    # NOTHING UPSTREAM HAS A SHORTER WATCHDOG, checked rather than assumed:
+    # both operator call sites — ui/app.py::_check_proxy / _rotate_proxy and
+    # ui/dialogs/proxy.py::do_check — run this on a daemon thread with no
+    # join deadline and no timer, re-enabling their button from the callback,
+    # so a longer worst case shows up as a longer "checking" state and never
+    # as a truncated or double-fired check. There is no "check all" loop that
+    # would multiply the doubling across a list; checks are per-proxy and
+    # operator-initiated, guarded by `_checking_proxies` against re-entry.
     providers = ("https://ipwho.is/", _GEO_FALLBACK_PROVIDER)
 
     try:
