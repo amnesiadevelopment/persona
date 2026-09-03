@@ -10,7 +10,7 @@ from ...models.proxy import Proxy
 from ...utils.atomic import atomic_write_json
 from ...utils.proxy_parser import parse_proxy_server
 from ...utils.store_guard import StoreGuardMixin
-from ...utils.trashable import TrashableMixin
+from ...utils.trashable import TrashableMixin, restore_kwargs
 
 logger = get_logger("proxy.store")
 
@@ -319,18 +319,13 @@ class ProxyStore(StoreGuardMixin, TrashableMixin):
                     "it, then restore again."
                 )
             d = entry.payload.get("proxy") or {}
+            # Built by reflection over Proxy's own fields: a field added to the
+            # dataclass is written into the payload for free by asdict() and
+            # now comes back out for free too. `url` has no dataclass default,
+            # so it keeps the enumerated form's "" fallback rather than
+            # raising on a payload that never carried it.
             self.proxies[name] = Proxy(
-                name=d.get("name", name),
-                url=d.get("url", ""),
-                rotate_url=d.get("rotate_url", ""),
-                country_code=d.get("country_code", ""),
-                country_name=d.get("country_name", ""),
-                last_ip=d.get("last_ip", ""),
-                timezone=d.get("timezone", ""),
-                lat=d.get("lat"),
-                lon=d.get("lon"),
-                checked_at=d.get("checked_at", 0.0),
-                last_check_ok=d.get("last_check_ok"),
+                **restore_kwargs(Proxy, d, name, defaults={"url": ""})
             )
             self._save()
         pm = self._profile_manager

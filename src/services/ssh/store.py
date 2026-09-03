@@ -18,7 +18,7 @@ from ...core.config import PERSONA_HOME
 from ...core.logging import get_logger
 from ...utils.atomic import atomic_write_json
 from ...utils.store_guard import StoreGuardMixin
-from ...utils.trashable import TrashableMixin
+from ...utils.trashable import TrashableMixin, restore_kwargs
 
 logger = get_logger("ssh.store")
 
@@ -165,16 +165,15 @@ class SSHHostStore(StoreGuardMixin, TrashableMixin):
                     "delete it, then restore again."
                 )
             d = entry.payload.get("host") or {}
-            self.hosts[name] = SSHHost(
-                name=d.get("name", name),
-                host=d.get("host", ""),
-                port=int(d.get("port", 22)),
-                username=d.get("username", ""),
-                key_path=d.get("key_path", ""),
-                key_passphrase=d.get("key_passphrase", ""),
-                password=d.get("password", ""),
-                profile=d.get("profile", ""),
-            )
+            kwargs = restore_kwargs(SSHHost, d, name, defaults={"host": ""})
+            # CARVE-OUT: port is COERCED, not copied. JSON round-trips it
+            # faithfully today, but a payload written by hand (or by an older
+            # build) can carry "2222", and a str port silently breaks every
+            # consumer that does arithmetic or formatting on it. The
+            # enumerated form did int(d.get("port", 22)); a pure intersection
+            # would pass the raw value straight through.
+            kwargs["port"] = int(d.get("port", 22))
+            self.hosts[name] = SSHHost(**kwargs)
             self._save()
         logger.info("Restored ssh host from trash: %s", name)
         return True, ""

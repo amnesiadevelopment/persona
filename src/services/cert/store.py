@@ -20,7 +20,7 @@ from dataclasses import asdict, dataclass
 from ...core.logging import get_logger
 from ...utils.atomic import atomic_write_json
 from ...utils.store_guard import StoreGuardMixin
-from ...utils.trashable import TrashableMixin
+from ...utils.trashable import TrashableMixin, restore_kwargs
 
 logger = get_logger("cert.store")
 
@@ -203,10 +203,20 @@ class CertStore(StoreGuardMixin, TrashableMixin):
                     )
                 p12_path = restored
             self.certs[name] = Certificate(
-                name=d.get("name", name),
-                p12_path=p12_path,
-                password=d.get("password", ""),
-                url=d.get("url", ""),
+                **{
+                    **restore_kwargs(Certificate, d, name),
+                    # CARVE-OUT: p12_path does NOT come from the payload. The
+                    # payload records where the bundle lived when the record
+                    # was live; remove() then MOVED that bundle into the trash
+                    # area. Restoring the payload's value verbatim would point
+                    # the certificate at the parked location (or, once the
+                    # unpark has moved the file, at nothing at all), so the
+                    # unparked path computed above wins — and the early return
+                    # above it still fires first when the bundle cannot be
+                    # moved back, leaving the certificate in the trash rather
+                    # than restoring a record with no key material.
+                    "p12_path": p12_path,
+                }
             )
             self._save()
         logger.info("Restored certificate from trash: %s", name)
