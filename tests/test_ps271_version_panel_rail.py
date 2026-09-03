@@ -47,12 +47,14 @@ WHAT THIS GUARD DELIBERATELY DOES NOT MODEL, stated rather than left implied
      NOT INTERPOLATION. ``_status_strings_assigned_in_the_source`` reads
      ``ast.Constant`` and ``ast.IfExp``; an f-string is an ``ast.JoinedStr``
      and is modelled as its literal skeleton with a HOSTILE placeholder
-     substituted for each interpolation (see ``_literals``), which measures
+     substituted for each interpolation (see ``_literals_of``), which measures
      the shape but NOT the true runtime length — the real value is whatever
      the interpolated expression produces, and this file cannot know it. So an
      f-string status is caught as a *bounded* line but its *budget* is only
-     probed, not proven. Today every one of the seven statuses is a literal,
-     and because the status line is a single call site through
+     probed, not proven. Today every status the walk discovers is a literal —
+     SIX distinct strings, from the non-empty assignment SITES (the ternary at
+     ``:985`` contributes two of them, and the empty clears assign no string at
+     all) — and because the status line is a single call site through
      ``sidebar_status_text`` (pinned by
      ``test_the_panel_status_line_builds_no_bare_text``) an interpolated status
      added later would still be bounded in practice. Stated here so the guard's
