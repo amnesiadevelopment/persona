@@ -1386,7 +1386,12 @@ class App:
             )
         elif self._active_page == "trash":
             self._page_host.content = build_trash_page(
-                self.trash_service.list(),
+                # Nearest destruction FIRST. The rail's badge counts entries
+                # inside the warning window and sends the operator here; with a
+                # constant retention window, list()'s recency order is
+                # time-remaining DESC, so the entry the badge is about would be
+                # at the BOTTOM of the page it points at.
+                self.trash_service.by_urgency(),
                 on_restore=self._restore_from_trash,
                 on_delete_permanently=self._delete_from_trash_permanently,
                 on_empty=self._empty_trash,
