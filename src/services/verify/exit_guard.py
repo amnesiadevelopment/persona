@@ -622,7 +622,28 @@ def _normalise_observation(payload: dict) -> dict:
     actively misleading rather than merely unhelpful. Hence normalising here,
     once, rather than letting each provider's dialect reach the comparison.
     """
-    country = str(payload.get("country_code") or payload.get("country") or "")
+    code = str(payload.get("country_code") or "")
+    name = str(payload.get("country") or "")
+    if not code and len(name) == 2:
+        # No `country_code`: the ipinfo dialect, where `country` IS the code.
+        # Gated on the VALUE being code-SHAPED rather than on the key merely
+        # being absent, because those are not the same question. A degraded
+        # ipwho body — a NAME with the code missing, the shape a rate-limited
+        # provider tends to emit — would otherwise be taken as the code and
+        # yield "POLAND": truthy, so the caller's non-answer guard below does
+        # NOT fire, the second provider is never asked, and the comparison
+        # refuses a healthy exit while naming the wrong country. That is the
+        # exact trap this docstring warns about, reached from the other
+        # direction. A name with no code is therefore NO COUNTRY, which is the
+        # shape the loop already knows how to advance on.
+        #
+        # Mirrors `proxy_checker.py::_geo_fields_from_payload` (:262-272),
+        # whose docstring asserts this normaliser is shape-keyed. It is the
+        # same gate, minus the name half: an observation carries a single
+        # `country` field, so there is nowhere to put a name and nothing here
+        # consumes one.
+        code = name
+    country = code
     org = payload.get("org")
     timezone = payload.get("timezone")
     # ipwho.is nests these; ipinfo has them flat. A dict here is the nested
