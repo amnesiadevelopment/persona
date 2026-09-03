@@ -3,35 +3,49 @@ from ...utils.validation import validate_profile_name
 from .coherence import IncoherentProfile
 
 
+def paste_tokens(text: str) -> list[str]:
+    """Every non-blank row of a paste, stripped, in the order pasted.
+
+    THE ONE TOKENISATION, deliberately shared. ``parse_names`` and
+    ``duplicate_names`` answer two halves of the same question — which names
+    the batch will use, and which rows it silently dropped — so they have to
+    agree about what a "row" IS. They used to re-implement the same
+    split/strip/skip-blank loop side by side, which meant nothing held them
+    together: a later edit to one (say, accepting semicolons as a separator)
+    would have made ``duplicate_names`` report repeats against a different
+    tokenisation than the one the batch actually ran, and the operator would
+    have been told about a repeat that never happened. Both now derive from
+    this, so they cannot drift.
+    """
+    return [part.strip() for part in text.replace(",", "\n").split("\n") if part.strip()]
+
+
 def parse_names(text: str) -> list[str]:
-    raw = text.replace(",", "\n").split("\n")
-    seen: set[str] = set()
-    names: list[str] = []
-    for part in raw:
-        name = part.strip()
-        if not name or name in seen:
-            continue
-        seen.add(name)
-        names.append(name)
-    return names
+    """The names the batch will attempt, de-duplicated, in first-seen order."""
+    # dict.fromkeys is order-preserving de-duplication — the same result the
+    # hand-rolled seen-set loop produced, now over the shared tokenisation.
+    return list(dict.fromkeys(paste_tokens(text)))
 
 
 def duplicate_names(text: str) -> list[str]:
-    """The names a paste REPEATS, in first-repeat order.
+    """The names a paste REPEATS, once each, in first-repeat order.
 
     ``parse_names`` drops a repeat silently — it is the right thing for the
     batch (creating "alpha" twice is one profile either way) but it means
     ``created + skipped`` can be fewer than the rows the operator pasted, with
-    nothing said. This makes the difference nameable so the dialog can account
-    for it. Blank rows are deliberately NOT reported: a blank line is not a
-    name the operator asked for, so counting it back at them is noise.
+    nothing said. This makes the difference nameable so the dialog and the
+    Activity Log can account for it. Blank rows are deliberately NOT reported:
+    a blank line is not a name the operator asked for, so counting it back at
+    them is noise.
+
+    NOTE the unit: this returns each repeated NAME once, not one entry per
+    dropped row — "a, a, a" reports ``["a"]``, not ``["a", "a"]``. The count
+    the operator needs is "which names did I list twice", not "how many
+    keystrokes were wasted".
     """
     seen: set[str] = set()
     dupes: list[str] = []
-    for part in text.replace(",", "\n").split("\n"):
-        name = part.strip()
-        if not name:
-            continue
+    for name in paste_tokens(text):
         if name in seen and name not in dupes:
             dupes.append(name)
         seen.add(name)

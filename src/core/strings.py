@@ -84,11 +84,38 @@ STRINGS = {
     "bulk_create_none": "No profiles created. {skipped} name{skipped_plural} refused:",
     "bulk_create_refusal_line": "  - {name}: {reason}",
     "bulk_create_more": "  ... and {count} more refusal{plural} - see the Activity Log",
+    # The fallback reason, for a skipped name that arrived without one.
+    #
+    # Deliberately NOT `get_string("error")` ("Error"): this text is
+    # interpolated into a line that reaches the Activity Log, and
+    # `log_console.severity()` matches "error", so the bare word would paint
+    # the RED FAILURE dot — a louder outcome than every other line this lane
+    # writes, on the one case where the lane knows LESS than usual rather than
+    # more. `bulk_create` writes `skipped` and `reasons` together through
+    # `_refuse`, so this is unreachable today and pinned by
+    # test_bulk_create_every_skipped_name_is_explained; it exists so a future
+    # caller that skips a name without a reason still gets a line, and that
+    # line reads as the idle record the rest of the batch does.
+    "bulk_create_no_reason": "no reason was recorded",
     # Repeats inside the paste are dropped BEFORE the loop, so they appear in
     # neither list and `created + skipped` is fewer than the rows pasted. Said
     # out loud rather than left as an unexplained arithmetic gap.
+    #
+    # The DURABLE half, one line per repeated name, on the same model as the
+    # refusal lines above and the bulk-DELETE lane: it is written whether or
+    # not anything was refused, because a clean paste that silently made two
+    # profiles out of three rows is exactly the unexplained arithmetic — and
+    # it is what lets the inline line below be capped without losing anything.
+    # No severity token: this is an ordinary batch record, not a failure.
+    "bulk_create_repeat_logged": "{name} was listed more than once - created once",
+    # The INLINE half, capped like the refusal list for the same reason: this
+    # renders into a 460px dialog above the controls the operator needs to
+    # correct the paste with.
     "bulk_create_repeats": (
         "  ({count} repeated name{plural} in the paste {was} entered once: {names})"
+    ),
+    "bulk_create_repeats_more": (
+        "  ... and {count} more repeated name{plural} - see the Activity Log"
     ),
     "updated_profile": "Updated: {old} -> {new}",
     "launching_profile": "Launching {name}...",

@@ -37,12 +37,21 @@ WHAT IT DRIVES
    dialog staying open on a partial success is a new way to create
    duplicates-by-anxiety if the operator is not told the 45 that worked are
    done.
-6. A SECOND round in the same dialog: the whole-batch ``IncoherentProfile``
-   refusal, driven by picking a non-canonical os_type is NOT reachable from the
+6. A SECOND round in the same dialog: a paste that REPEATS 40 names. The
+   painted height of the error region is measured, and the controls that sit
+   BELOW it in the layout are required to still be on screen — this is the
+   defect PR #209's first round shipped (the refusal list was capped and the
+   repeats list was not, so the repeats line pushed the os_type and tags
+   controls out of the viewport).
+7. A THIRD round: a CLEAN paste whose only oddity is a repeated name. The
+   dialog must CLOSE (a repeat is not a refusal) and the repeat must still be
+   accounted for in the Activity Log — the case the inline report structurally
+   cannot cover.
+8. The whole-batch ``IncoherentProfile`` refusal is NOT reachable from the
    dropdown (it is narrowed), so that arm is recorded as NOT COVERED below
    rather than faked.
-7. The dialog is dismissed and the Activity Log is read for the durable
-   per-name record (AC3).
+9. The dialog is dismissed and the Activity Log is read for the durable
+   per-name record (AC3), for refusals AND for repeats.
 
 THE TRAP THIS SCRIPT AVOIDS, STATED UP FRONT
 --------------------------------------------
@@ -111,6 +120,24 @@ App._main = _patched_main
 #: an Enter keypress whose handling is not what this script is measuring.
 PASTE = "alpha, beta, bad/name"
 
+#: ROUND 2 — the repeats paste, the defect PR #209's first round shipped. The
+#: refusal list was capped and the repeats list was not, so a paste that
+#: repeats many names rendered one enormous comma-joined line that pushed the
+#: "Operating system" and "Tags" controls — which sit BELOW error_text in
+#: dialogs/bulk.py's layout — out of the dialog's scroll viewport. Uncapped,
+#: 40 repeats is a 452-char line; this drives that exact shape and measures the
+#: PAINTED HEIGHT of the error region, which is the thing that does the pushing.
+REPEAT_NAMES = [f"r{i:02d}" for i in range(40)]
+REPEAT_PASTE = ", ".join(REPEAT_NAMES + REPEAT_NAMES + ["bad/name"])
+
+#: The height the error region must stay under. The dialog body is ~700px of
+#: viewport at 1280x900; the uncapped build measured h=153px at 40 repeats and
+#: h=310px at 150, against a capped-refusal contribution of two lines. A
+#: capped build renders the head, one refusal, one repeats line and one
+#: overflow line — comfortably under this. Chosen as a CEILING that the
+#: uncapped 40-repeat build already fails, so the check is falsifiable.
+MAX_ERROR_HEIGHT = 130
+
 #: The two reason sentences that must reach the operator's eyes, verbatim.
 REASON_EXISTS = "a profile with that name exists"
 REASON_INVALID = "Name contains invalid characters: /"
@@ -143,9 +170,8 @@ def _dialog_box(drv: FletDriver):
     best = None
     for n in drv.nodes():
         _x, _y, w, h = n.box
-        if 300 < w < 700 and h > 200:
-            if best is None or h > best.box[3]:
-                best = n
+        if 300 < w < 700 and h > 200 and (best is None or h > best.box[3]):
+            best = n
     return best
 
 
@@ -172,6 +198,49 @@ def _text_in_dialog(drv: FletDriver) -> str:
             if words.strip():
                 out.append(words)
     return "\n".join(out)
+
+
+def _error_node(drv: FletDriver):
+    """The rendered error region inside the dialog, by its own content.
+
+    Found by matching the one phrase only the refusal report emits, then taking
+    the SMALLEST node carrying it — every ancestor's text contains its
+    descendants', so the smallest carrier is the text node itself rather than
+    the dialog around it. Its box is what the height check measures, because
+    height is what pushes the controls below it off screen.
+    """
+    best = None
+    for n in drv.nodes():
+        words = (n.text or "") or (n.label or "")
+        if "not created" not in words and "repeated name" not in words:
+            continue
+        _x, _y, w, h = n.box
+        if h <= 0 or w <= 0:
+            continue
+        if best is None or h < best.box[3]:
+            best = n
+    return best
+
+
+def _retype(drv: FletDriver, index: int, value: str) -> str:
+    """Replace a FILLED field's contents, addressing it by index.
+
+    ``type_into`` addresses a field by its hint text, and a Flutter field drops
+    its hint once it holds a value — so the paste field cannot be found by
+    label for the second and third rounds. Indexing is the harness's own
+    documented answer to that, and the clear is a real select-all + Delete
+    through the keyboard rather than a state poke.
+    """
+    fields = drv.page.locator("input, textarea")
+    field = fields.nth(index)
+    field.click()
+    drv.page.wait_for_timeout(300)
+    drv.page.keyboard.press("Control+A")
+    drv.page.keyboard.press("Delete")
+    drv.page.wait_for_timeout(300)
+    drv.page.keyboard.type(value)
+    drv.page.wait_for_timeout(2000)
+    return field.input_value()
 
 
 def _open_bulk(drv: FletDriver) -> bool:
@@ -313,7 +382,13 @@ def main() -> int:
                 )
             )
 
-            # --- AC3: dismiss, then read the durable record ---------------
+            # --- AC3 (round 1): dismiss, then read the durable record ------
+            #
+            # Read HERE, before the later rounds, deliberately: the Activity
+            # Log is a bounded scrolling region, and round 2 writes 40 repeat
+            # lines. Reading round 1's refusal record after that would be
+            # reading a region those lines have scrolled it out of — which
+            # would fail for a reason that has nothing to do with durability.
             drv.press("[ cancel ]", settle_ms=3000)
             results.append(
                 _report(
@@ -352,6 +427,158 @@ def main() -> int:
                     "the refusal report must not have cost the successes",
                 )
             )
+
+            # --- ROUND 2: the repeats paste --------------------------------
+            #
+            # This is the defect PR #209's first round shipped: the refusal
+            # list was capped and the repeats list was not, so a paste that
+            # repeats many names rendered one enormous line and pushed the
+            # controls BELOW error_text out of the dialog's viewport. Driven
+            # rather than reasoned, because "the message is shorter" is a
+            # statement about a string and the failure is about PAINTED
+            # HEIGHT.
+            print("\n  --- round 2: a paste that repeats 40 names ---")
+            reopened = _open_bulk(drv)
+            results.append(
+                _report(
+                    "the dialog re-opens for the repeats round",
+                    reopened,
+                    "[ + NEW PROFILE ] -> [ bulk ] again",
+                )
+            )
+            if not reopened:
+                print(drv.describe())
+                return 1
+            typed2 = _retype(drv, 0, REPEAT_PASTE)
+            results.append(
+                _report(
+                    "the repeats paste reaches the real field",
+                    "r39" in typed2 and "bad/name" in typed2,
+                    f"field holds {len(typed2)} chars",
+                )
+            )
+            drv.press("[ create ]", settle_ms=4000)
+
+            results.append(
+                _report(
+                    "the dialog is still open after the repeats batch",
+                    drv.has_button("[ create ]") and drv.has_button("[ cancel ]"),
+                    "bad/name is refused, so the report holds it open",
+                )
+            )
+
+            rep_shown = _text_in_dialog(drv)
+            drv.screenshot("/tmp/ps273-repeats-capped.png")
+            print("  screenshot: /tmp/ps273-repeats-capped.png")
+
+            err = _error_node(drv)
+            err_h = err.box[3] if err is not None else -1
+            results.append(
+                _report(
+                    "the error region stays BOUNDED with 40 repeats in the "
+                    "paste",
+                    err is not None and 0 < err_h <= MAX_ERROR_HEIGHT,
+                    f"error region painted height = {err_h}px "
+                    f"(ceiling {MAX_ERROR_HEIGHT}px; the uncapped build "
+                    f"measured 153px at this paste and 310px at 150 repeats)",
+                )
+            )
+            results.append(
+                _report(
+                    "the TRUE repeat count is still reported, though the "
+                    "names are not all listed",
+                    "40 repeated names" in rep_shown,
+                    "capping the list must not misreport the size of the "
+                    "problem",
+                )
+            )
+            results.append(
+                _report(
+                    "the overflow is POINTED AT, not dropped",
+                    "more repeated names" in rep_shown
+                    and "Activity Log" in rep_shown,
+                    "the cap is only safe because the durable record exists "
+                    "to defer to",
+                )
+            )
+            # THE THING THE HEIGHT ACTUALLY COSTS: the controls below
+            # error_text in the layout must still be reachable. This is what
+            # "you can fix it in place" means and what the uncapped build took
+            # away.
+            results.append(
+                _report(
+                    "the controls BELOW the error region are still on screen",
+                    "Operating system" in rep_shown and "Tags" in rep_shown,
+                    "these sit after error_text in dialogs/bulk.py's column; "
+                    "the uncapped repeats line pushed them out of the scroll "
+                    "viewport",
+                )
+            )
+
+            drv.press("[ cancel ]", settle_ms=3000)
+            log_blob2 = _log_lines(drv)
+            results.append(
+                _report(
+                    "AC3 — the Activity Log carries the durable REPEAT record "
+                    "too, which is what makes capping the inline list safe",
+                    "listed more than once" in log_blob2,
+                    "every repeat is logged per name before the cap is "
+                    "applied — the same contract the refusal cap relies on",
+                )
+            )
+
+            # --- ROUND 3: a CLEAN paste whose only oddity is a repeat ------
+            #
+            # The case the inline report cannot cover BY DESIGN: a repeat is
+            # not a refusal, so the dialog correctly closes and there is no
+            # message. Three rows in, two profiles out — before this round the
+            # third row was accounted for NOWHERE. The durable record is the
+            # only surface that can carry it, which is why it is written
+            # unconditionally rather than inside the "something was refused"
+            # branch.
+            print("\n  --- round 3: a clean paste with a repeat ---")
+            if not _open_bulk(drv):
+                results.append(
+                    _report("the dialog re-opens for round 3", False, "could not re-open")
+                )
+            else:
+                drv.type_into(
+                    "one per line or comma-separated",
+                    "gamma, gamma, delta",
+                    settle_ms=1500,
+                )
+                drv.press("[ create ]", settle_ms=4000)
+                closed = not drv.has_button("[ create ]")
+                results.append(
+                    _report(
+                        "a repeat alone does NOT hold the dialog open",
+                        closed,
+                        "nothing was refused; a repeat must not be dressed up "
+                        "as a failure",
+                    )
+                )
+                if not closed:
+                    drv.press("[ cancel ]", settle_ms=2000)
+                clean_log = _log_lines(drv)
+                drv.screenshot("/tmp/ps273-clean-repeat-log.png")
+                print("  screenshot: /tmp/ps273-clean-repeat-log.png")
+                results.append(
+                    _report(
+                        "...and the repeat is STILL accounted for, in the log",
+                        "listed more than once" in clean_log
+                        or "created once" in clean_log,
+                        "3 rows pasted, 2 profiles created — the third row is "
+                        "recorded rather than silently absorbed. This is the "
+                        "case the inline report structurally cannot cover.",
+                    )
+                )
+                results.append(
+                    _report(
+                        "the clean batch really did create both names",
+                        "delta" in clean_log and "gamma" in clean_log,
+                        "the repeat cost neither creation",
+                    )
+                )
 
     print("\nNOT COVERED BY DRIVING — the IncoherentProfile arm.")
     print("  The bulk dialog's os_type control is a NARROWED")
