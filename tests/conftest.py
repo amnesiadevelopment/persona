@@ -1,4 +1,10 @@
-"""Suite-wide isolation for the app settings store.
+"""Suite-wide isolation for the real files under ``~/.persona``.
+
+Two of them, one fixture each: the app SETTINGS store (PS-208, below) and the
+durable SESSION REGISTRY (PS-278). They are the same defect on two files — a
+test drives a real write path into a real path under the operator's home — and
+the second one was added when a new write path was wired through a helper that
+had never needed isolation before. Each fixture carries its own account.
 
 WHY THIS EXISTS (PS-208). `src/core/settings.py` resolves to a REAL file —
 `~/.persona/settings.json` — whenever `PERSONA_SETTINGS_FILE` is unset. Any test
@@ -35,6 +41,56 @@ derivation cases) still sees the variable absent.
 """
 
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def _isolate_sessions_file(tmp_path, monkeypatch):
+    """Point the DURABLE SESSION REGISTRY at this test's own tmp_path (PS-278).
+
+    THE SAME LEAK AS THE SETTINGS ONE ABOVE, ON A SECOND REAL FILE.
+    ``BrowserLauncher(registry=None)`` — which is how nine test files construct
+    one — falls back to ``default_registry()``, resolving ``config.SESSIONS_FILE``
+    to the operator's REAL ``~/.persona/running_sessions.json``. Any test that
+    drives a code path which WRITES that registry therefore writes the
+    developer's (or CI's) actual file.
+
+    Two such paths are reached today, and they are not the same finding:
+
+      * ``_registry.record`` on a SUCCESSFUL launch — reached by
+        ``test_refusal_on_profile.py::test_a_new_attempt_supersedes_the_previous_verdict``,
+        which drives a real ``start_thread`` to a spawn that succeeds. This one
+        PREDATES PS-278: measured at merge-base ``14c9b24`` it already emptied a
+        seeded record, so it is exposed here rather than introduced.
+      * ``_registry.forget`` via ``forget_identity`` — introduced by PS-278's own
+        change, when the identity hook stopped being the purely in-memory
+        ``forget_refusal``. That one is ALSO fixed at its own site (an explicit
+        registry in ``test_refusal_on_profile.py``'s ``_manager``), because the
+        door tests there must stay isolated on their own terms rather than by a
+        fixture a later edit could quietly move.
+
+    WHAT IT DESTROYS IS THE PS-223 GUARD ITSELF. A developer or CI runner with
+    persona open runs the suite, and the record of a browser that is still ALIVE
+    is silently forgotten — the double-launch lockout inversion PS-223 exists to
+    prevent, produced by the test suite. It cannot be reproduced by discipline
+    about ordering: it fires on any run of the file.
+
+    AND IT IS INVISIBLE WHERE IT IS MEASURED. The file is ``{"sessions": []}`` on
+    a clean container and in CI, so every run there is green and says nothing
+    about it. It only bites a host that actually uses persona.
+
+    Set on ``config.SESSIONS_FILE`` rather than via ``PERSONA_SESSIONS_FILE``
+    because that constant is bound at IMPORT time (``_under_home`` runs once at
+    module load), so an env var set after the first import of ``src.core.config``
+    would be read by nothing. ``default_registry()`` deliberately reads the
+    attribute at CALL time — its own docstring says so, precisely so a test that
+    moves the home gets the registry that goes with it — which is the seam this
+    patches. A test wanting a specific path still wins: an explicit
+    ``SessionRegistry(...)`` bypasses the default entirely.
+    """
+    monkeypatch.setattr(
+        "src.core.config.SESSIONS_FILE", str(tmp_path / "running_sessions.json")
+    )
+    yield
 
 
 @pytest.fixture(autouse=True)

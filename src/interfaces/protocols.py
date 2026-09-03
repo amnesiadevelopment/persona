@@ -184,6 +184,14 @@ class IBrowserLauncher(Protocol):
 
     def forget_refusal(self, profile_name: str) -> None: ...
 
+    # The IDENTITY-DESTRUCTION event (delete / wipe / rename-away / overwriting
+    # import). Declared here because it is what ui/app.py installs on
+    # ProfileManager.set_forget_identity_hook through its protocol-typed
+    # `self.bl: IBrowserLauncher` — so by this file's own stated test (is it
+    # reached through the protocol?) it belongs on it. It is the single door
+    # every name-keyed store joins: today forget_refusal + forget_survivor.
+    def forget_identity(self, profile_name: str) -> None: ...
+
     # The SURVIVOR surface (PS-223): browsers a PREVIOUS persona launched and
     # did not get to tear down. Declared here because every one of these is
     # reached through a protocol-typed reference — ui/app.py holds

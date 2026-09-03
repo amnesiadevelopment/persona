@@ -941,6 +941,52 @@ class BrowserLauncher:
         with self._lock:
             self._last_refusal.pop(profile_name, None)
 
+    def forget_identity(self, profile_name: str) -> None:
+        """Drop EVERYTHING this launcher remembers under ``profile_name`` because
+        the identity behind that name is gone — deleted, wiped, renamed away, or
+        overwritten by an import.
+
+        THE ONE CONSUMER OF ``ProfileManager``'s identity event, and it exists so
+        there is exactly one obvious place for a name-keyed fact to join. The
+        hook in ``src/ui/app.py`` used to be ``forget_refusal`` itself, a single
+        bare method, which meant the second name-keyed store — the DURABLE
+        survivor registry — was never told. That omission was strictly worse than
+        the refusal-chip orphan it sat beside:
+
+        * ``_last_refusal`` dies with the process, bounding a stale verdict to
+          one persona run. A survivor record is on disk and is re-adopted by
+          ``scan_survivors()`` at every subsequent startup, so it outlives
+          restarts indefinitely.
+        * A stale verdict renders a wrong chip. A stale survivor record REFUSES
+          THE LAUNCH: a profile created seconds ago and never opened is reported
+          "already open".
+        * The operator's only escape from that block is the card's ``[ close ]``
+          button, which reaps the recorded process GROUP — a gesture aimed at a
+          pid belonging to a profile that no longer exists, or after pid reuse at
+          something unrelated. ``resolve_group``/``signallable_group`` bound the
+          blast radius; they cannot make the gesture correct.
+
+        The registry's own fail-open design does not cover this. Every read there
+        is grounded in a liveness probe, which is exactly right for a record whose
+        PROCESS died — but here the process is genuinely alive and ``liveness_of``
+        correctly answers ALIVE. What changed is not the process but the SUBJECT
+        of the name, and that is the axis no probe measures.
+
+        DELIBERATELY NOT FOLDED INTO ``_forget_session_facts``. That helper tears
+        down facts about a LIVE SESSION, and both of the facts dropped here must
+        SURVIVE a teardown: a refusal outlives the session it describes (see
+        ``forget_refusal``), and a survivor record must outlive persona's own exit
+        or the PS-223 lockout comes straight back — ``shutdown_all`` cannot reap a
+        survivor, so forgetting one on a teardown erases the guard for a browser
+        that is still on screen.
+
+        Idempotent, and safe for a name that has neither a verdict nor a record —
+        every caller is a lifecycle path that cannot know whether either was ever
+        written. Takes no lock of its own; both callees do their own locking.
+        """
+        self.forget_refusal(profile_name)
+        self.forget_survivor(profile_name)
+
     def _forget_session_facts(self, profile_name: str) -> None:
         """Drop every per-session fact recorded for ``profile_name``.
 

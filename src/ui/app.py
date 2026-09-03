@@ -339,7 +339,13 @@ class App:
         # whatever takes the name next. Separate from the stop hook above on
         # purpose: that one is about a live session (whose facts a refusal is
         # built to OUTLIVE), this one is about the identity going away.
-        self.pm.set_forget_identity_hook(self.bl.forget_refusal)
+        #
+        # One NAMED launcher method rather than a bare per-store method (or a
+        # lambda here), because the launcher holds MORE THAN ONE name-keyed
+        # store — the in-memory refusal AND the durable survivor registry — and a
+        # composition root is the wrong place to remember that. forget_identity
+        # is the single place a future one joins.
+        self.pm.set_forget_identity_hook(self.bl.forget_identity)
         # Engine pruning deletes whole build trees (~320-600MB each) and keeps
         # only the HIGHEST build — so a profile still running on the PREVIOUS
         # build when a new one lands would have the tree it is executing from
