@@ -21,6 +21,41 @@ _NAV_ITEMS = [
     ("trash", ft.Icons.DELETE_OUTLINE, "trash"),
 ]
 
+#: What the expiry badge says on hover. A TOOLTIP, which costs the rail ZERO
+#: width — it paints in an overlay, never in the 200px column — so it does not
+#: spend the text budget PS-229/PS-271 are defending. It exists because a bare
+#: number answers "how many" and not "how many WHAT", and because a control
+#: with no semantics label cannot be addressed by the driven harness at all
+#: (PS-229's grip was a bare GestureDetector for exactly that reason).
+EXPIRY_BADGE_TIP = "trash items expiring soon"
+
+
+def _expiry_badge(count: int) -> ft.Control:
+    """The count of trash entries about to be destroyed.
+
+    A NUMBER, not a phrase. The rail is a hard 200px and its text budget is
+    contested (PS-229's 22-char bound, carried across the version panel by
+    PS-271), so this spends one or two glyphs and no more. The colour is
+    ``warning``: material is about to be destroyed permanently, but nothing has
+    failed yet.
+    """
+    return ft.Container(
+        tooltip=EXPIRY_BADGE_TIP,
+        border_radius=8,
+        bgcolor=COLORS["warning"],
+        padding=ft.Padding.symmetric(horizontal=6, vertical=1),
+        alignment=ft.Alignment.CENTER,
+        content=ft.Text(
+            str(count),
+            size=11,
+            weight=ft.FontWeight.BOLD,
+            color=COLORS["bg"],
+            font_family=MONO,
+            no_wrap=True,
+            max_lines=1,
+        ),
+    )
+
 
 def _nav_button(
     key: str,
@@ -28,6 +63,7 @@ def _nav_button(
     label: str,
     active: bool,
     on_navigate: Callable[[str], None],
+    badge: int = 0,
 ) -> ft.Container:
     color = COLORS["accent"] if active else COLORS["text_sub"]
     return ft.Container(
@@ -46,6 +82,11 @@ def _nav_button(
             controls=[
                 ft.Icon(icon, size=18, color=color),
                 ft.Text(label, size=14, color=color, font_family=MONO),
+                # NOTHING AT ALL when there is nothing to say. Not a zero, not
+                # a dimmed dot — the same rule `_status_needs_reveal` states:
+                # a marker on a line that is already whole is noise, and a
+                # badge that is always lit stops meaning "act now".
+                *([_expiry_badge(badge)] if badge > 0 else []),
             ],
         ),
     )
@@ -58,6 +99,7 @@ def build_sidebar(
     engine_panel: ft.Control | None = None,
     version_panel: ft.Control | None = None,
     on_logo_click: Callable[[], None] | None = None,
+    trash_expiring: int = 0,
 ) -> ft.Container:
     # THE NAV IS THE PART THAT GIVES, and it gives by SCROLLING rather than by
     # crushing. The rail is a hard 200px and nothing in it used to scroll, so a
@@ -72,12 +114,25 @@ def build_sidebar(
     # Expanded, the nav takes exactly the room the fixed bottom cluster leaves
     # it and scrolls inside that, so a short window costs a scroll gesture
     # instead of costing the operator two controls.
+    # `trash_expiring` DEFAULTS TO 0, so the rail is silent for every caller
+    # that knows nothing about the trash — including the existing tests, which
+    # pass four kwargs and must keep working unchanged. The count is a state
+    # the caller reads and passes in; nothing here polls, and the sidebar is
+    # already rebuilt on navigation and on refresh, so it stays current on the
+    # paths that already exist.
     nav = ft.Column(
         spacing=6,
         scroll=ft.ScrollMode.AUTO,
         expand=True,
         controls=[
-            _nav_button(key, icon, label, active_page == key, on_navigate)
+            _nav_button(
+                key,
+                icon,
+                label,
+                active_page == key,
+                on_navigate,
+                badge=trash_expiring if key == "trash" else 0,
+            )
             for key, icon, label in _NAV_ITEMS
         ],
     )
