@@ -438,6 +438,25 @@ class ProxyStore(StoreGuardMixin, TrashableMixin):
                     "timezone is declared FOR a country — press [ check ] "
                     "first, then declare the zone."
                 )
+            # ⚠️ A DISPROVEN EXIT IS NOT A COUNTRY ON FILE EITHER. A failed
+            # check leaves `country_code` populated from the last successful
+            # one while setting `last_check_ok = False`, so the country term
+            # above passes and the declaration would be stored — against a
+            # country nobody can currently confirm the proxy exits from. It is
+            # inert rather than dangerous (the launch path's disproven-geo
+            # guard fires before any timezone branch is reached, so no wrong
+            # clock ships), and that is exactly the problem: the operator gets
+            # a success and a closed dialog for a value that changes nothing,
+            # which is the same silent-no-op shape the two warnings above were
+            # written about. Refused with a sentence naming the state instead.
+            if proxy.last_check_ok is False:
+                return False, (
+                    f"This proxy's last check FAILED, so its exit country "
+                    f"({country}) is the previous one and cannot be confirmed "
+                    "— and a timezone is declared FOR the country the exit is "
+                    "actually in. Fix the proxy and check it again, then "
+                    "declare the zone."
+                )
             proxy.manual_timezone = zone
             proxy.manual_timezone_country = country
             self._save()

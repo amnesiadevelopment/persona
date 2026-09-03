@@ -138,6 +138,11 @@ MOVED_NAME = "moved-exit"
 #: Never checked. Declaring a zone on it must be REFUSED with a sentence, not
 #: accepted into a record that can never activate.
 FRESH_NAME = "unchecked-exit"
+#: NOT seeded — ADDED by the driver, through [ + add proxy ], because the ADD
+#: path is one of the two configurations where the declaration gate's own
+#: remedy could not clear it. A seeded proxy cannot exercise it: the defect is
+#: precisely that no record exists yet when [ check ] runs.
+ADD_NAME = "added-exit"
 ZONE = "Europe/Bucharest"
 
 #: The sentence the row must carry. Imported from the product rather than
@@ -170,6 +175,23 @@ _seed_store.set_manual_timezone({MOVED_NAME!r}, {ZONE!r})
 _seed_store.mark_checked({MOVED_NAME!r}, "CZ", "Czechia", "3.3.3.3", "", None, None)
 # Added but never checked — the ordinary "fill in the whole form first" case.
 _seed_store.add({FRESH_NAME!r}, "socks5://u:pw@4.4.4.4:1080")
+
+# THE NETWORK IS STUBBED, AND NOTHING ELSE IS. There is no reachable Romanian
+# SOCKS5 exit in this container, so the one thing a driven [ check ] cannot
+# have is a real one — the checker's transport is replaced with a fixed RO
+# verdict, at the seam the product itself treats as the boundary
+# (`ProxyService.check_proxy_detailed_sync` delegates to this module-level
+# name). Everything downstream of it is the shipped code: the dialog's own
+# button, its worker thread, `on_check_result`, `mark_checked`, the store, the
+# render. What is asserted is the ORDER of the operator's gestures, which is
+# where the defect lived; the truthfulness of a real provider's answer is not
+# under test here and never was.
+import src.services.proxy.service as _svc
+
+def _stub_detailed(proxy_str, timeout=None):
+    return (True, "Proxy working", "RO", "Romania", "5.6.7.8", "", None, None)
+
+_svc._check_detailed = _stub_detailed
 '''
 
 
@@ -369,6 +391,25 @@ def _stored(app, proxy_name: str) -> dict:
             return json.load(fh).get(proxy_name, {})
     except OSError:
         return {}
+
+
+def _dialog_flag_nodes(drv: FletDriver) -> int:
+    """How many FLAG images the open dialog is painting.
+
+    A HARNESS FACT WORTH RECORDING, because the obvious approach returns a
+    confident zero: flet web paints to CANVAS, so there is no ``<img>`` element
+    to read a ``src`` off and ``page.eval_on_selector_all("img", ...)`` finds
+    nothing however many flags are on screen. What IS exposed is Flutter's
+    semantics tree, where the flag surfaces as a node of role ``img`` — so the
+    observation is a COUNT of those, taken before and after the check, rather
+    than a URL match.
+
+    Counted rather than asserted absolutely for the same reason: an empty
+    country renders a bare spacer `Container` and no image node at all, so the
+    flag APPEARING is the transition 0 -> 1. That transition is what the
+    operator sees, and it is the thing the refused save used to contradict.
+    """
+    return sum(1 for n in drv.nodes() if (n.role or "") == "img")
 
 
 def main() -> int:
@@ -687,6 +728,125 @@ def main() -> int:
                     drv.press("[ cancel ]")
                     drv.page.wait_for_timeout(1500)
 
+            # ---- THE REMEDY SEAM: [ check ] then declare, on an ADD -----
+            # The refusal just driven above names a gesture — "press
+            # [ check ] first" — and a refusal that names a gesture is a CLAIM
+            # THAT THE GESTURE WORKS. It did not: `on_check_result` persists
+            # only when the checked URL equals a STORED proxy's url, so on an
+            # add (no record yet) the flag turned Romanian and the gate went on
+            # reading an empty country. The operator was told to do the thing
+            # they had just done — this ticket's own looping remedy, one layer
+            # up.
+            #
+            # This is the sequence no test in the suite performed, at any
+            # layer: every dialog test drove [ save ] ALONE, and so did this
+            # harness's own unchecked-proxy check above — it inherited the unit
+            # test's blind spot rather than compensating for it. What separates
+            # two instruments is the GESTURE SEQUENCE, not the layer.
+            if drv.has_button("[ + add proxy ]"):
+                drv.press("[ + add proxy ]")
+                drv.page.wait_for_timeout(2500)
+                if _dialog_open(drv):
+                    drv.type_into("e.g. home-socks", ADD_NAME)
+                    drv.type_into("proxy.example.com", "7.7.7.7")
+                    drv.type_into("1080", "1080")
+                    drv.page.wait_for_timeout(800)
+
+                    # 0 before, 1 after: an empty country paints no image node
+                    # at all, so the flag APPEARING is the transition.
+                    flags_before = _dialog_flag_nodes(drv)
+                    drv.press("[ check ]")
+                    drv.page.wait_for_timeout(4000)
+                    flags_after = _dialog_flag_nodes(drv)
+                    results.append(
+                        _report(
+                            "the in-dialog [ check ] renders the exit's flag on "
+                            "an ADD (what the operator is looking at)",
+                            flags_after > flags_before,
+                            f"flag image nodes {flags_before} -> {flags_after}",
+                        )
+                    )
+                    drv.screenshot("/tmp/ps274-add-checked.png")
+                    print("  screenshot: /tmp/ps274-add-checked.png")
+
+                    typed = drv.type_into(TZ_HINT, ZONE)
+                    # The ADD dialog's confirm button reads [ add ], not
+                    # [ save ] — `open_proxy_dialog` labels it from `is_edit`.
+                    drv.press("[ add ]")
+                    drv.page.wait_for_timeout(3000)
+                    closed = not _dialog_open(drv)
+                    results.append(
+                        _report(
+                            "THE DEFECT: [ check ] then declare then [ save ] on "
+                            "an ADD is ACCEPTED — the remedy the refusal names "
+                            "actually clears the refusal",
+                            closed,
+                            f"dialog closed={closed} typed={typed!r}",
+                        )
+                    )
+                    stored = _stored(app, ADD_NAME)
+                    results.append(
+                        _report(
+                            "and the check run in the dialog reached the record "
+                            "once the save created it",
+                            stored.get("country_code") == "RO",
+                            f"proxies.json country_code="
+                            f"{stored.get('country_code')!r}",
+                        )
+                    )
+                    results.append(
+                        _report(
+                            "and the declaration is on disk, bound to the country "
+                            "that check measured",
+                            (
+                                stored.get("manual_timezone"),
+                                stored.get("manual_timezone_country"),
+                            ) == (ZONE, "RO"),
+                            f"manual_timezone={stored.get('manual_timezone')!r} "
+                            f"for={stored.get('manual_timezone_country')!r}",
+                        )
+                    )
+                    if _dialog_open(drv):
+                        drv.press("[ cancel ]")
+                        drv.page.wait_for_timeout(1500)
+                    drv.page.wait_for_timeout(1500)
+                    results.append(
+                        _report(
+                            "and the new row is NOT marked unlaunchable — the "
+                            "operator's whole journey ends launchable",
+                            _row_says_unlaunchable(drv, ADD_NAME) is False,
+                            f"{ADD_NAME} meta line: {_row_text(drv, ADD_NAME)!r}",
+                        )
+                    )
+                    drv.screenshot("/tmp/ps274-add-declared.png")
+                    print("  screenshot: /tmp/ps274-add-declared.png")
+
+            # ---- and the same sequence on the never-checked proxy -------
+            # The EDIT-with-an-unchanged-URL path was the ONE configuration
+            # that already worked, so it is driven as the control: the fix must
+            # not have moved it.
+            if _open_edit_for(drv, FRESH_NAME):
+                drv.press("[ check ]")
+                drv.page.wait_for_timeout(4000)
+                _replace_tz(drv, ZONE)
+                drv.press("[ save ]")
+                drv.page.wait_for_timeout(3000)
+                closed = not _dialog_open(drv)
+                stored = _stored(app, FRESH_NAME)
+                results.append(
+                    _report(
+                        "the control path (EDIT, URL unchanged) still accepts "
+                        "[ check ] then declare",
+                        closed and stored.get("manual_timezone") == ZONE,
+                        f"closed={closed} manual_timezone="
+                        f"{stored.get('manual_timezone')!r} "
+                        f"for={stored.get('manual_timezone_country')!r}",
+                    )
+                )
+                if _dialog_open(drv):
+                    drv.press("[ cancel ]")
+                    drv.page.wait_for_timeout(1500)
+
     print("\nNOT COVERED BY DRIVING — recorded rather than smoothed over.")
     print("  1. AC2, the LAUNCH itself. Launching a profile spawns a real")
     print("     chromium/firefox engine, which this container has no binary or")
@@ -710,6 +870,14 @@ def main() -> int:
     print("     is the exact bytes a fresh ProxyStore reads. The restart itself")
     print("     is asserted in the unit suite through a second ProxyStore over")
     print("     the same file.")
+    print("  4. A REAL PROVIDER'S ANSWER. The [ check ] runs driven above are")
+    print("     the shipped button, worker thread, on_check_result, mark_checked")
+    print("     and store — everything except the transport, which is stubbed to")
+    print("     a fixed RO verdict because this container has no reachable")
+    print("     Romanian SOCKS5 exit. What is under test is the ORDER of the")
+    print("     operator's gestures (check THEN save), which is where the defect")
+    print("     lived; whether a provider tells the truth is a different")
+    print("     question and is not claimed here.")
 
     ok = all(results)
     print(

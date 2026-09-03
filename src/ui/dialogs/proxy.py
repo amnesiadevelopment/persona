@@ -117,6 +117,24 @@ def open_proxy_dialog(
 
     flag_holder = ft.Container(content=_initial_status_control(proxy))
 
+    # WHAT A [ check ] RUN *INSIDE THIS DIALOG* LEARNED, keyed by the URL it was
+    # run against. `on_check_result` can only PERSIST a result when the stored
+    # record already carries that URL (audit6 #6, and that gate is correct) — so
+    # on an ADD, where no record exists yet, and on an EDIT whose URL was
+    # changed, the operator watches the flag turn and the store learns nothing.
+    #
+    # That is what made the declaration gate's own remedy unable to clear the
+    # gate it names: the gate reads `proxy.country_code` off a snapshot, the
+    # sentence says "press [ check ] first", and pressing it wrote nowhere the
+    # gate could see. Holding the result here lets the SAVE persist it the
+    # moment the record exists at the checked URL — the same condition
+    # `on_check_result` requires, just satisfied one gesture later.
+    #
+    # Values are `(success, code, country, ip, tz, lat, lon)`; a FAILED check is
+    # recorded too, so the rule is one rule ("the check you ran on the URL you
+    # saved is what gets recorded") rather than a success-only special case.
+    checked_geo: dict[str, tuple] = {}
+
     def on_paste(_: ft.ControlEvent) -> None:
         raw = (paste_field.value or "").strip()
         # A multi-line paste (several provider lines at once) used to be parsed as
@@ -211,6 +229,12 @@ def open_proxy_dialog(
         # icon still reflects the live check either way; only the DB write is
         # gated.
         persist = proxy is not None and checked_url == proxy.url
+        # Remember it either way. This is NOT a second persist path — nothing is
+        # written here — it is the dialog remembering what it just measured so a
+        # SAVE of that same URL can record it once a record exists to record it
+        # onto. See the `checked_geo` block above.
+        if checked_url:
+            checked_geo[checked_url] = (success, code, country, ip, tz, lat, lon)
         if success:
             flag_holder.content = _flag_control(code)
             if persist and on_checked is not None:
@@ -284,17 +308,54 @@ def open_proxy_dialog(
         # ever re-bound: `mark_checked` writes the six measured fields and is
         # untouched by this feature).
         #
-        # A URL CHANGE COUNTS AS HAVING NO COUNTRY, because it is about to: the
-        # save invalidates all six geo fields plus the declaration (`update()`'s
-        # `keep_geo` term), since the exit moved. Declaring a zone in the same
-        # gesture that moves the exit is declaring it for a country nobody has
-        # measured yet, so it is refused here with the same sentence rather
-        # than saved-then-rejected by the store one line later.
+        # A URL CHANGE RETIRES THE *STORED* COUNTRY, because the save is about
+        # to invalidate all six geo fields plus the declaration (`update()`'s
+        # `keep_geo` term) — the exit moved, so nothing measured about the old
+        # one describes the new one.
+        #
+        # ⚠️ BUT THE STORED COUNTRY IS NOT THE ONLY COUNTRY THE DIALOG HAS, and
+        # reading only it is what made this gate's own remedy unable to clear
+        # it. The sentence below says "press [ check ] first"; the dialog HAS a
+        # [ check ] button; and on an ADD (no record yet) or a URL-changed EDIT
+        # (`checked_url != proxy.url`) `on_check_result` deliberately does not
+        # persist, so pressing it turned the flag Romanian and left the gate
+        # reading an empty snapshot. The operator was told to do the thing they
+        # had just done — the same looping remedy this whole ticket exists to
+        # remove (`launch_policy.py:340-347`), reintroduced one layer up. So the
+        # gate consults what a [ check ] run IN THIS DIALOG measured for the URL
+        # actually being saved, and the save persists it below before declaring.
         moved = proxy is not None and url != proxy.url
-        has_country = proxy is not None and bool(proxy.country_code) and not moved
-        if declaring and zone and not has_country:
+        # A FAILED last check does not count as a country on file either: the
+        # code is the PREVIOUS exit's and nothing currently confirms the proxy
+        # exits there. The store refuses it too (it owns the field), but catching
+        # it here keeps the refusal from arriving AFTER `on_save` has already
+        # landed a rename.
+        stored_country = (
+            proxy.country_code
+            if proxy is not None and not moved and proxy.last_check_ok is not False
+            else ""
+        )
+        pending_check = checked_geo.get(url)
+        checked_country = (
+            pending_check[1] if pending_check and pending_check[0] else ""
+        )
+        if declaring and zone and not (stored_country or checked_country):
+            # WHICH sentence depends on which state the operator is actually
+            # in, because the remedy differs: "press [ check ]" is useless
+            # advice to someone whose check just failed, and it is exactly the
+            # loop this gate was found to create. A check that RAN and failed —
+            # in this dialog just now, or on the stored record — gets the
+            # fix-the-proxy sentence; only a genuinely unchecked proxy is told
+            # to check.
+            check_failed = (pending_check is not None and not pending_check[0]) or (
+                proxy is not None and not moved and proxy.last_check_ok is False
+            )
             tz_error.value = (
-                "Press [ check ] first — a timezone is declared for this "
+                "The check failed for this proxy, so its exit country is not "
+                "known — a timezone is declared for that country. Fix the "
+                "proxy and check it again, then declare the zone."
+                if check_failed
+                else "Press [ check ] first — a timezone is declared for this "
                 "proxy's exit country, and there isn't one on file yet."
             )
             tz_error.visible = True
@@ -307,6 +368,24 @@ def open_proxy_dialog(
             name_error.visible = True
             page.update()
             return
+        # RECORD THE IN-DIALOG CHECK, now that a record exists at this URL.
+        # `on_check_result` could not: on an add there was nothing to write
+        # onto, and on a URL-changed edit writing then would have stamped the
+        # unsaved URL's geography onto the stored record, which cancel would not
+        # undo (audit6 #6). Both objections are about the record, and `on_save`
+        # has just settled it — the SAME condition, satisfied one gesture later.
+        # Only for the URLs that check could not persist itself, so an unchanged
+        # edit is not re-stamped with a fresh `checked_at` for a check that was
+        # already recorded.
+        if pending_check is not None and (proxy is None or moved):
+            ok, code, country, ip, tz, lat, lon = pending_check
+            if ok and on_checked is not None:
+                on_checked(name, code, country, ip, tz, lat, lon)
+            elif not ok and on_check_failed is not None:
+                # A failed check is recorded too. Dropping it would leave a
+                # brand-new proxy looking never-checked when it was checked and
+                # found broken — the network page's own ✕ state.
+                on_check_failed(name)
         # AFTER the save, and keyed on the SAVED name: on an add there is no
         # record to hang a declaration off until on_save creates it, and on a
         # rename the record now lives under the new name. Both paths therefore

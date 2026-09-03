@@ -534,23 +534,47 @@ def test_restore_proxy_brings_the_declaration_back_from_the_trash(tmp_path):
     assert _proxy_timezone(proxy) == RO_ZONE
 
 
-def test_every_hand_enumerated_proxy_constructor_carries_the_new_fields(
+def test_the_field_by_field_proxy_constructors_carry_the_new_fields(
     tmp_path,
 ):
-    """A structural backstop for the three tests above, and for the NEXT field
-    somebody adds. `_load`, `update` and `restore_proxy` each spell out every
-    Proxy field by hand; this asserts none of them has fallen behind the
-    dataclass, so a fourth writer added later fails here rather than silently
-    dropping data in production.
+    """A structural backstop for the tests above, and for the NEXT field
+    somebody adds. `_load` and `update` each spell out every Proxy field by
+    hand; this asserts neither has fallen behind the dataclass, so a writer
+    added later fails here rather than silently dropping data in production.
+
+    `restore_proxy` is asserted SEPARATELY below, because PS-275 (#211)
+    deliberately replaced its hand-enumerated constructor with reflection —
+    a field-by-field check there would now demand the regression.
     """
     import dataclasses
     import inspect
 
     fields = {f.name for f in dataclasses.fields(Proxy)} - {"name"}
-    for method in (ProxyStore._load, ProxyStore.update, ProxyStore.restore_proxy):
+    for method in (ProxyStore._load, ProxyStore.update):
         src = inspect.getsource(method)
         missing = sorted(f for f in fields if f"{f}=" not in src)
         assert not missing, f"{method.__qualname__} drops {missing}"
+
+
+def test_restore_proxy_still_builds_by_reflection_not_by_a_key_list():
+    """The same guarantee for the third writer, expressed as the mechanism that
+    provides it.
+
+    AC6 exists because a hand-enumerated constructor can silently drop one
+    field. `restore_proxy` now avoids that by construction rather than by
+    diligence — `restore_kwargs` derives the keys from `dataclasses.fields`, so
+    `manual_timezone` / `manual_timezone_country` ride for free and so does the
+    next field. Unwinding it back to a written-out key list is the regression
+    this catches; the behavioural half is
+    `test_restore_proxy_brings_the_declaration_back_from_the_trash`.
+    """
+    import inspect
+
+    src = inspect.getsource(ProxyStore.restore_proxy)
+    assert "restore_kwargs(Proxy" in src, (
+        "restore_proxy no longer builds by reflection — a hand-written key "
+        "list drops any field somebody forgets to add to it"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -960,12 +984,23 @@ def test_the_dialog_refuses_a_bad_zone_and_does_not_close(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def _drive_dialog(store, proxy_name, *, zone=None, name=None, host=None, port=None):
+def _drive_dialog(
+    store, proxy_name, *, zone=None, name=None, host=None, port=None,
+    press_check=False, service=None, submit=True,
+):
     """Open the shipped proxy dialog on a stored proxy, optionally edit fields,
-    and press [ save ] — the wiring `app.py` performs, with the real store.
+    optionally press [ check ], and press [ save ] — the wiring `app.py`
+    performs, with the real store.
 
     Returns the `_FakePage`, so a caller can assert whether the dialog CLOSED
     (accepted) or stayed open (refused).
+
+    ``press_check`` runs the dialog's OWN [ check ] control before the save, in
+    the gesture ORDER an operator uses: fill the address, check it, then
+    declare. That ordering is the axis no test varied before — every dialog
+    test in the suite drove [ save ] alone — and it is where the second seam
+    lived: the declaration gate's own remedy could not clear the gate.
+    ``submit=False`` walks away instead (the cancel path).
     """
     from src.ui.dialogs.proxy import open_proxy_dialog
 
@@ -977,25 +1012,79 @@ def _drive_dialog(store, proxy_name, *, zone=None, name=None, host=None, port=No
             return None if store.add(new_name, new_url, new_rotate) else "exists"
         return None if store.update(proxy.name, new_name, new_url, new_rotate) else "exists"
 
+    def on_checked(pname, code, country, ip, tz, lat=None, lon=None):
+        store.mark_checked(pname, code, country, ip, tz, lat, lon)
+
+    def on_check_failed(pname):
+        store.mark_check_failed(pname)
+
     def on_declare(target, z):
         ok, err = store.set_manual_timezone(target, z)
         return None if ok else err
 
     open_proxy_dialog(
-        page, _FakeCheckService(), on_save=on_save, proxy=proxy,
+        page, service or _FakeCheckService(), on_save=on_save, proxy=proxy,
+        on_checked=on_checked, on_check_failed=on_check_failed,
         on_declare_timezone=on_declare,
     )
     dlg = page.shown
-    if zone is not None:
-        _dialog_field(dlg, TZ_LABEL).value = zone
     if name is not None:
         _dialog_field(dlg, "Name").value = name
     if host is not None:
         _dialog_field(dlg, "Host").value = host
     if port is not None:
         _dialog_field(dlg, "Port").value = port
-    dlg.actions[1].on_click(None)
+    if press_check:
+        _press_check(dlg)
+    if zone is not None:
+        _dialog_field(dlg, TZ_LABEL).value = zone
+    if submit:
+        dlg.actions[1].on_click(None)
     return page
+
+
+def _press_check(dlg) -> None:
+    """Click the dialog's [ check ] button and wait for the worker thread.
+
+    The check runs on a daemon thread (`_do_check`), so the button's own
+    `disabled` flag is the completion signal — the same one
+    `tests/test_proxy_dialog.py` uses.
+    """
+    import flet as ft
+
+    stack, seen, btn = [dlg], set(), None
+    while stack:
+        node = stack.pop()
+        if id(node) in seen:
+            continue
+        seen.add(id(node))
+        if isinstance(node, ft.OutlinedButton) and node.content == "[ check ]":
+            btn = node
+            break
+        for attr in ("content", "controls", "actions", "title"):
+            child = getattr(node, attr, None)
+            if child is None:
+                continue
+            for c in (child if isinstance(child, list) else [child]):
+                if c is not None and hasattr(c, "__dict__"):
+                    stack.append(c)
+    assert btn is not None, "the dialog has no [ check ] control"
+    btn.on_click(None)
+    deadline = time.time() + 10
+    while btn.disabled:
+        assert time.time() < deadline, "the in-dialog check never completed"
+        time.sleep(0.01)
+    time.sleep(0.05)
+
+
+class _FailingCheckService:
+    def check_proxy_detailed_sync(self, proxy_str, timeout=None):
+        return (False, "Proxy failed", "", "", "", "", None, None)
+
+
+class _GermanCheckService:
+    def check_proxy_detailed_sync(self, proxy_str, timeout=None):
+        return (True, "Proxy working", "DE", "Germany", "9.9.9.9", "", None, None)
 
 
 def test_a_bare_save_after_the_exit_moved_does_not_re_arm_the_declaration(
@@ -1204,3 +1293,171 @@ def test_the_network_row_and_the_dialog_agree_after_a_url_edit(tmp_path):
     assert _dialog_field(page.shown, TZ_LABEL).value == "", (
         "the row says the zone is missing; the dialog must not show one"
     )
+
+
+# ---------------------------------------------------------------------------
+# THE REMEDY SEAM — a refusal that names a gesture is a claim that the gesture
+# WORKS, and this one did not.
+#
+# The gate above reads the country off the `proxy` SNAPSHOT the dialog was
+# opened with, and refuses a declaration without one, saying "press [ check ]
+# first". The dialog HAS a [ check ] button. But `on_check_result` persists a
+# result only when `proxy is not None and checked_url == proxy.url` (audit6 #6,
+# and that gate is correct) — so on an ADD, where no record exists yet, and on
+# an EDIT whose URL was changed, pressing [ check ] turned the flag Romanian
+# on screen and wrote nowhere the gate could see. The operator was told to do
+# the thing they had just done: the same looping remedy this ticket exists to
+# remove (`launch_policy.py:340-347`), reintroduced one layer up.
+#
+# Nothing in the suite could have caught it, because every dialog test drove
+# [ save ] ALONE. The axis these tests vary is therefore the operator's GESTURE
+# SEQUENCE — check THEN save — not the data.
+# ---------------------------------------------------------------------------
+
+
+def test_checking_inside_the_dialog_then_declaring_works_on_an_ADD(tmp_path):
+    """THE DEFECT, on the flow the product's own sentence prescribes.
+
+    Adding a proxy, pressing [ check ] (the flag turns Romanian), typing a zone
+    and saving must WORK. Before the fix it was refused with "press [ check ]
+    first" — with a Romanian flag on screen, from a check just run in that very
+    dialog.
+    """
+    s = _store(tmp_path)
+    page = _drive_dialog(
+        s, "does-not-exist", press_check=True,
+        zone=RO_ZONE, name="brand-new", host="1.2.3.4", port="1080",
+    )
+    assert page.popped is True, (
+        "the remedy the refusal names did not clear the refusal"
+    )
+    proxy = _store(tmp_path).get("brand-new")
+    assert proxy is not None, "the proxy must actually be created"
+    assert proxy.country_code == RO, (
+        "the check run in the dialog must reach the record once it exists"
+    )
+    assert (proxy.manual_timezone, proxy.manual_timezone_country) == (RO_ZONE, RO)
+    assert _proxy_timezone(proxy) == RO_ZONE
+
+
+def test_checking_inside_the_dialog_then_declaring_works_on_a_URL_CHANGE(
+    tmp_path,
+):
+    """The second half of the trigger boundary.
+
+    An EDIT whose URL was changed is the other configuration `on_check_result`
+    deliberately does not persist for — and it is the one an operator reaches by
+    repointing a proxy at a new endpoint and checking it before saving. The geo
+    that lands must be the NEW url's, measured in this dialog.
+    """
+    s, name = _ro_proxy(tmp_path)
+    page = _drive_dialog(
+        s, name, host="9.9.9.9", press_check=True, zone="Europe/Berlin",
+        service=_GermanCheckService(),
+    )
+    assert page.popped is True
+
+    proxy = _store(tmp_path).get(name)
+    assert "9.9.9.9" in proxy.url, "the URL edit must land"
+    assert (proxy.country_code, proxy.last_ip) == ("DE", "9.9.9.9"), (
+        "the record must carry the geo of the URL that was saved"
+    )
+    assert (proxy.manual_timezone, proxy.manual_timezone_country) == (
+        "Europe/Berlin", "DE",
+    )
+    assert _proxy_timezone(proxy) == "Europe/Berlin"
+
+
+def test_an_unsaved_check_still_does_not_reach_the_record_when_cancelled(
+    tmp_path,
+):
+    """audit6 #6 IS NOT WEAKENED, and this is the test that says so.
+
+    The reason `on_check_result` gates its write is that a checked-but-unsaved
+    URL's geography must not land on the stored record, because [ cancel ] would
+    not undo it. Holding the result in the dialog and persisting it at the SAVE
+    keeps that promise exactly: walk away and the stored record is untouched.
+    """
+    s, name = _ro_proxy(tmp_path)
+    before = _store(tmp_path).get(name)
+
+    _drive_dialog(
+        s, name, host="9.9.9.9", press_check=True, submit=False,
+        service=_GermanCheckService(),
+    )
+
+    after = _store(tmp_path).get(name)
+    assert (after.url, after.country_code, after.last_ip) == (
+        before.url, before.country_code, before.last_ip,
+    ), "a check of an unsaved URL reached the stored record after all"
+
+
+def test_a_check_that_FAILED_in_the_dialog_does_not_satisfy_the_gate(tmp_path):
+    """Fail-closed on the same seam. A check that RAN and failed learned no
+    country, so it must not let a declaration through — and the sentence must
+    stop saying "press [ check ] first", which is the loop again for someone
+    whose check just failed.
+    """
+    s = _store(tmp_path)
+    page = _drive_dialog(
+        s, "does-not-exist", press_check=True, service=_FailingCheckService(),
+        zone=RO_ZONE, name="bad-one", host="1.2.3.4", port="1080",
+    )
+    assert page.popped is False, "the dialog must not close on a refusal"
+    assert s.get("bad-one") is None, "nothing may be half-created"
+    told = _all_text(page.shown)
+    assert any("check failed" in t.lower() for t in told), told
+    assert not any(
+        "press [ check ] first" in t.lower() for t in told
+    ), "telling someone whose check just failed to check is the loop again"
+
+
+def test_declaring_on_a_proxy_whose_last_check_FAILED_is_refused(tmp_path):
+    """The store half of the same rule, and the non-blocking finding it closes.
+
+    `mark_check_failed` leaves `country_code` populated from the LAST
+    successful check while setting `last_check_ok = False` — so the plain
+    "is there a country?" term passes and the declaration was accepted. It is
+    inert (the disproven-geo guard refuses the launch before any timezone
+    branch), and that is the problem: a success and a closed dialog for a value
+    that changes nothing is the silent-no-op shape the whole round is about.
+    """
+    s, name = _ro_proxy(tmp_path)
+    s.mark_check_failed(name)
+
+    ok, err = s.set_manual_timezone(name, RO_ZONE)
+    assert ok is False
+    assert "failed" in err.lower(), err
+    stored = _store(tmp_path).get(name)
+    assert stored.manual_timezone == "", "an inert declaration was stored"
+
+    page = _drive_dialog(s, name, zone=RO_ZONE)
+    assert page.popped is False
+    assert any("check failed" in t.lower() for t in _all_text(page.shown))
+
+
+def test_a_check_of_the_UNCHANGED_url_is_not_re_recorded_at_the_save(tmp_path):
+    """The narrow scope of the new persist.
+
+    `on_check_result` already writes through for a check of the STORED url, so
+    the save must not write it a second time — that would stamp a fresh
+    `checked_at` for a check that was already recorded, and would fire
+    `mark_checked` twice for one gesture.
+    """
+    s, name = _ro_proxy(tmp_path)
+    marks = []
+    original = ProxyStore.mark_checked
+
+    def counting(self, *a, **k):
+        marks.append(a[:1])
+        return original(self, *a, **k)
+
+    ProxyStore.mark_checked = counting
+    try:
+        page = _drive_dialog(s, name, press_check=True, zone=RO_ZONE)
+    finally:
+        ProxyStore.mark_checked = original
+
+    assert page.popped is True
+    assert len(marks) == 1, f"the check was recorded {len(marks)} times"
+    assert _proxy_timezone(_store(tmp_path).get(name)) == RO_ZONE
