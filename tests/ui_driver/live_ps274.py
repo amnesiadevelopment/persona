@@ -30,6 +30,33 @@ user reads:
 5. The network page's unlaunchable indication is GONE.
 6. And the file on disk carries the declaration, so a restart would see it.
 
+AND THE WRITE-SIDE SEAM, which the first round of this ticket shipped broken
+--------------------------------------------------------------------------
+The country gate that retires a declaration when the exit moves is a READ-side
+guard, and the dialog prefills its field from the RAW stored zone. Re-submitting
+that prefilled value unconditionally re-stamped the gate's KEY to the CURRENT
+country, so a bare ``[ save ]`` — changing nothing — handed a CZ exit a Romanian
+clock. Every unit test was green throughout: each drove ONE layer (the gate as a
+pure predicate, the dialog once on a proxy that never moved, the store lifecycle
+with no dialog), and the defect lived in the ORDER rather than in any of them.
+
+It is driven here because the gesture that triggers it is exactly the one the
+new network note sends the operator to perform. A proxy is seeded ALREADY IN
+THE MOVED STATE (declared for RO, exit now CZ — the move itself is not an
+operator gesture and cannot be driven), then:
+
+7. Its row still says unlaunchable, and the dialog PREFILLS the retired zone —
+   so the input the defect re-submitted is observed, not assumed.
+8. ``[ save ]`` is pressed with NOTHING touched: the dialog closes (an untouched
+   field must not block an unrelated save), the country the zone was declared
+   FOR is still RO on disk, and the row still says unlaunchable.
+9. The retired zone is REPLACED with the one the new exit needs, which IS
+   accepted — not re-arming must not become a second deadlock.
+10. And on a NEVER-CHECKED proxy, declaring a zone is refused at the dialog
+    with a sentence, because a declaration is made FOR a country and there is
+    none on file. It used to be accepted, close the dialog, and store a zone
+    bound to an empty country that nothing ever re-bound.
+
 THE TRAP THIS SCRIPT AVOIDS, STATED UP FRONT
 --------------------------------------------
 Every ancestor node's ``innerText`` in Flutter's semantics tree contains every
@@ -69,6 +96,14 @@ product. ``drv.fields()`` is therefore a reliable census of WHICH fields exist
 and an unreliable one of what they hold; ``type_into`` never hit it because it
 clicks before it types. The re-open check clicks the field and then reads it.
 
+A FOURTH, found while adding the write-side seam checks below: ``type_into``
+clicks and then types, so on a field that ALREADY HOLDS A VALUE it APPENDS. It
+produced ``'Europe/BucharestEurope/Prague'``, which the product correctly
+refused as not a zone name — a green-looking product defect that was entirely
+a harness artifact. Every sibling script types into empty fields, which is why
+nothing upstream had met it; a prefilled field is the norm in this script and
+not the exception. ``_replace_tz`` selects-all first.
+
 RUN IT
 ------
     python3 -m tests.ui_driver.live_ps274
@@ -94,6 +129,15 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 #: with no ``_COUNTRY_TZ`` row.
 RO_NAME = "ro-exit"
 DE_NAME = "de-exit"
+#: Seeded ALREADY IN THE MOVED STATE — a zone declared while the exit was in
+#: Romania, and a later check that found the exit in Czechia. The move itself
+#: cannot be driven (there is no operator gesture that changes a provider's
+#: exit country) but the GESTURE THAT BROKE ON IT can be: pressing [ save ] on
+#: this proxy's dialog without touching anything.
+MOVED_NAME = "moved-exit"
+#: Never checked. Declaring a zone on it must be REFUSED with a sentence, not
+#: accepted into a record that can never activate.
+FRESH_NAME = "unchecked-exit"
 ZONE = "Europe/Bucharest"
 
 #: The sentence the row must carry. Imported from the product rather than
@@ -117,6 +161,15 @@ _seed_store.add({RO_NAME!r}, "socks5://u:pw@1.2.3.4:1080")
 _seed_store.mark_checked({RO_NAME!r}, "RO", "Romania", "5.6.7.8", "", None, None)
 _seed_store.add({DE_NAME!r}, "socks5://u:pw@5.6.7.8:1080")
 _seed_store.mark_checked({DE_NAME!r}, "DE", "Germany", "9.9.9.9", "", None, None)
+# A backconnect proxy declared for RO whose exit has since MOVED to CZ. The
+# country gate has retired the declaration and the launch refuses; the record
+# still carries the zone, which is what the dialog prefills its field from.
+_seed_store.add({MOVED_NAME!r}, "socks5://u:pw@2.2.2.2:1080")
+_seed_store.mark_checked({MOVED_NAME!r}, "RO", "Romania", "2.2.2.2", "", None, None)
+_seed_store.set_manual_timezone({MOVED_NAME!r}, {ZONE!r})
+_seed_store.mark_checked({MOVED_NAME!r}, "CZ", "Czechia", "3.3.3.3", "", None, None)
+# Added but never checked — the ordinary "fill in the whole form first" case.
+_seed_store.add({FRESH_NAME!r}, "socks5://u:pw@4.4.4.4:1080")
 '''
 
 
@@ -231,6 +284,29 @@ def _dialog_open(drv: FletDriver) -> bool:
     return drv.has_button("[ save ]") or drv.has_button("[ cancel ]")
 
 
+def _tz_index(drv: FletDriver) -> int | None:
+    """The POSITION of the exit-timezone field among the dialog's inputs.
+
+    Addressed by position rather than by hint because Flutter exposes a field's
+    HINT as its ``aria-label`` and DROPS it once the field holds a value
+    (``driver.py``'s ``_field_index`` records this) — and a FILLED field is
+    exactly the state the seam checks operate in. The position is resolved
+    relative to the rotate-url field, whose own hint is stable and which the
+    dialog paints immediately above it, rather than from a magic index.
+    """
+    fields = drv.fields()
+    for i, f in enumerate(fields):
+        if f.label == TZ_HINT:
+            return i
+    rotate = [
+        i for i, f in enumerate(fields)
+        if f.label == "provider endpoint that forces a new exit IP"
+    ]
+    if not rotate or rotate[0] + 1 >= len(fields):
+        return None
+    return rotate[0] + 1
+
+
 def _tz_field_value(drv: FletDriver) -> str | None:
     """What the exit-timezone field currently HOLDS, read off the live DOM.
 
@@ -238,13 +314,7 @@ def _tz_field_value(drv: FletDriver) -> str | None:
     empty — the second one made the first run of this script FAIL on a build
     that persists correctly.
 
-    1. ADDRESS IT BY POSITION, NOT BY HINT. Flutter exposes a field's HINT as
-       its ``aria-label``, and the hint is DROPPED once the field holds a value
-       (``driver.py``'s ``_field_index`` records this). So the hint addresses
-       an EMPTY field and a filled one not at all — which is exactly the field
-       state this function is called in. The position is resolved relative to
-       the rotate-url field, whose own hint is stable and which the dialog
-       paints immediately above it, rather than from a magic index.
+    1. ADDRESS IT BY POSITION, NOT BY HINT — see ``_tz_index``.
 
     2. FOCUS IT FIRST. Flutter web does not mirror a field's text into the
        backing ``<input>`` until that input is FOCUSED — an unfocused field
@@ -253,23 +323,36 @@ def _tz_field_value(drv: FletDriver) -> str | None:
        proves this is a harness fact and not a product one). ``type_into``
        never hit this because it clicks before it types. So: click, then read.
     """
-    fields = drv.fields()
-    index: int | None = None
-    for i, f in enumerate(fields):
-        if f.label == TZ_HINT:
-            index = i
-            break
+    index = _tz_index(drv)
     if index is None:
-        rotate = [
-            i for i, f in enumerate(fields)
-            if f.label == "provider endpoint that forces a new exit IP"
-        ]
-        if not rotate or rotate[0] + 1 >= len(fields):
-            return None
-        index = rotate[0] + 1
+        return None
     loc = drv.page.locator("input, textarea").nth(index)
     loc.click()
     drv.page.wait_for_timeout(600)
+    return loc.input_value()
+
+
+def _replace_tz(drv: FletDriver, value: str) -> str | None:
+    """REPLACE the exit-timezone field's contents and return what it holds.
+
+    ``drv.type_into`` clicks and then types, which APPENDS: on a field already
+    holding a declaration it produced 'Europe/BucharestEurope/Prague', which
+    the product correctly refused as not a zone name. That is a HARNESS fact,
+    not a product one, and it is recorded here because it can only show up on
+    a PREFILLED field — every check in the harness's siblings types into an
+    empty one, so nothing upstream had met it.
+
+    Select-all then type, so the keystrokes land as a replacement.
+    """
+    index = _tz_index(drv)
+    if index is None:
+        return None
+    loc = drv.page.locator("input, textarea").nth(index)
+    loc.click()
+    drv.page.wait_for_timeout(300)
+    loc.press("Control+a")
+    drv.page.keyboard.type(value)
+    drv.page.wait_for_timeout(1200)
     return loc.input_value()
 
 
@@ -442,6 +525,167 @@ def main() -> int:
                 )
                 if _dialog_open(drv):
                     drv.press("[ cancel ]")
+                    drv.page.wait_for_timeout(1500)
+
+            # ---- THE WRITE-SIDE SEAM ---------------------------------
+            # The country gate is a READ-side guard, and the first round of
+            # this ticket shipped a dialog that re-derived the gate's KEY from
+            # a prefilled form field. A bare [ save ] — changing nothing —
+            # re-stamped the declaration onto the CURRENT country, so a proxy
+            # whose exit had moved RO->CZ launched with a Romanian clock. Every
+            # unit test was green: each drove ONE layer, and the defect was in
+            # the ORDER. It is driven here because the gesture that triggers it
+            # is exactly the one the new network note sends the operator to
+            # perform ("set the exit timezone in [ edit ]").
+            before = _stored(app, MOVED_NAME)
+            results.append(
+                _report(
+                    "the moved-exit proxy is seeded retired: zone on file, "
+                    "declared for RO, exit now CZ",
+                    before.get("manual_timezone") == ZONE
+                    and before.get("manual_timezone_country") == "RO"
+                    and before.get("country_code") == "CZ",
+                    f"proxies.json: {before.get('manual_timezone')!r} declared_for="
+                    f"{before.get('manual_timezone_country')!r} country="
+                    f"{before.get('country_code')!r}",
+                )
+            )
+            results.append(
+                _report(
+                    "AC8 — a retired declaration does NOT hide the row's "
+                    "unlaunchable indication (the gate is what the render reads)",
+                    _row_says_unlaunchable(drv, MOVED_NAME) is True,
+                    f"{MOVED_NAME} meta line: {_row_text(drv, MOVED_NAME)!r}",
+                )
+            )
+
+            if _open_edit_for(drv, MOVED_NAME):
+                prefilled = _tz_field_value(drv)
+                results.append(
+                    _report(
+                        "the dialog PREFILLS the retired zone (this is the "
+                        "input the defect re-submitted — driven, not assumed)",
+                        prefilled == ZONE,
+                        f"the field holds {prefilled!r}",
+                    )
+                )
+                drv.screenshot("/tmp/ps274-moved-prefilled.png")
+                print("  screenshot: /tmp/ps274-moved-prefilled.png")
+                # Press [ save ] having touched NOTHING.
+                drv.press("[ save ]")
+                drv.page.wait_for_timeout(2500)
+                results.append(
+                    _report(
+                        "a bare [ save ] still CLOSES the dialog (an untouched "
+                        "field must not be able to block an unrelated save)",
+                        not _dialog_open(drv),
+                        f"dialog still open={_dialog_open(drv)}",
+                    )
+                )
+                after = _stored(app, MOVED_NAME)
+                results.append(
+                    _report(
+                        "THE DEFECT: a bare [ save ] must not re-arm the "
+                        "declaration onto the NEW country",
+                        after.get("manual_timezone_country") == "RO",
+                        f"declared_for={after.get('manual_timezone_country')!r} "
+                        f"(was RO; 'CZ' here is the CZ-exit-with-a-Romanian-clock "
+                        f"state) zone={after.get('manual_timezone')!r}",
+                    )
+                )
+                results.append(
+                    _report(
+                        "and the row STILL says unlaunchable afterwards — the "
+                        "refusal was not laundered by opening the dialog",
+                        _row_says_unlaunchable(drv, MOVED_NAME) is True,
+                        f"{MOVED_NAME} meta line: {_row_text(drv, MOVED_NAME)!r}",
+                    )
+                )
+                drv.screenshot("/tmp/ps274-moved-after-save.png")
+                print("  screenshot: /tmp/ps274-moved-after-save.png")
+
+            # ---- and the operator can still ANSWER for the moved exit -
+            if _open_edit_for(drv, MOVED_NAME):
+                typed = _replace_tz(drv, "Europe/Prague")
+                results.append(
+                    _report(
+                        "the retired zone can be REPLACED with the one the new "
+                        "exit needs",
+                        typed == "Europe/Prague",
+                        f"the field holds {typed!r}",
+                    )
+                )
+                drv.press("[ save ]")
+                drv.page.wait_for_timeout(2500)
+                moved = _stored(app, MOVED_NAME)
+                results.append(
+                    _report(
+                        "the RECOVERY path: declaring the CZ zone for the moved "
+                        "exit is accepted (not re-arming must not become a second "
+                        "deadlock)",
+                        moved.get("manual_timezone") == "Europe/Prague"
+                        and moved.get("manual_timezone_country") == "CZ",
+                        f"proxies.json: {moved.get('manual_timezone')!r} "
+                        f"declared_for={moved.get('manual_timezone_country')!r}",
+                    )
+                )
+                results.append(
+                    _report(
+                        "AC8 — and the row's indication clears for it",
+                        _row_says_unlaunchable(drv, MOVED_NAME) is False,
+                        f"{MOVED_NAME} meta line now: {_row_text(drv, MOVED_NAME)!r}",
+                    )
+                )
+                drv.screenshot("/tmp/ps274-moved-recovered.png")
+                print("  screenshot: /tmp/ps274-moved-recovered.png")
+                if _dialog_open(drv):
+                    drv.press("[ cancel ]")
+                    drv.page.wait_for_timeout(1500)
+
+            # ---- a declaration needs a CHECKED exit country ------------
+            # Adding a proxy and filling in the whole form before pressing
+            # [ check ] is an ordinary sequence. It used to be accepted, closed
+            # the dialog, and stored a zone bound to an empty country that
+            # nothing ever re-bound — a silent, permanent no-op.
+            if _open_edit_for(drv, FRESH_NAME):
+                drv.type_into(TZ_HINT, ZONE)
+                drv.press("[ save ]")
+                drv.page.wait_for_timeout(2500)
+                still_open = _dialog_open(drv)
+                results.append(
+                    _report(
+                        "declaring a zone on a NEVER-CHECKED proxy is refused at "
+                        "the dialog, which stays open",
+                        still_open,
+                        f"dialog still open={still_open}",
+                    )
+                )
+                told = [
+                    (n.text or "") for n in drv.nodes()
+                    if "check" in (n.text or "").lower()
+                    and "timezone" in (n.text or "").lower()
+                ]
+                results.append(
+                    _report(
+                        "and the operator is TOLD to check it first (a sentence, "
+                        "not a silent success)",
+                        bool(told),
+                        f"on screen: {told[:1]}",
+                    )
+                )
+                drv.screenshot("/tmp/ps274-unchecked-refused.png")
+                print("  screenshot: /tmp/ps274-unchecked-refused.png")
+                results.append(
+                    _report(
+                        "and nothing was written for it",
+                        _stored(app, FRESH_NAME).get("manual_timezone", "") == "",
+                        f"proxies.json manual_timezone="
+                        f"{_stored(app, FRESH_NAME).get('manual_timezone')!r}",
+                    )
+                )
+                if _dialog_open(drv):
+                    drv.press("[ cancel ]")
+                    drv.page.wait_for_timeout(1500)
 
     print("\nNOT COVERED BY DRIVING — recorded rather than smoothed over.")
     print("  1. AC2, the LAUNCH itself. Launching a profile spawns a real")
@@ -453,11 +697,14 @@ def main() -> int:
     print("     Popen faked at the process boundary, in")
     print("     tests/test_ps274_declared_exit_timezone.py::")
     print("     test_a_declared_zone_reaches_the_real_chromium_argv.")
-    print("  2. AC4's country-MOVE rows. A move is a new check result from a")
-    print("     provider whose exit changed country; there is no operator")
-    print("     gesture that produces one, so it cannot be driven through the")
-    print("     UI at all. Asserted as the five-row lifecycle table against the")
-    print("     real store and the real _proxy_timezone.")
+    print("  2. AC4's country-MOVE rows, AS A TRANSITION. A move is a new check")
+    print("     result from a provider whose exit changed country; there is no")
+    print("     operator gesture that produces one, so the move itself cannot be")
+    print("     driven. Asserted as the five-row lifecycle table against the real")
+    print("     store and the real _proxy_timezone. What IS driven is everything")
+    print("     the operator does AFTER a move: a proxy is seeded in the moved")
+    print("     state and the dialog is driven on it, which is where the first")
+    print("     round's defect lived.")
     print("  3. AN APPLICATION RESTART. The served app is not restarted here;")
     print("     what is driven is that the declaration is in proxies.json, which")
     print("     is the exact bytes a fresh ProxyStore reads. The restart itself")

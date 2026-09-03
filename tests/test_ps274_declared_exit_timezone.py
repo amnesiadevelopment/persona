@@ -55,6 +55,28 @@ from src.services.proxy.tz_names import (
 RO = "RO"
 RO_ZONE = "Europe/Bucharest"
 
+try:
+    import cryptography  # noqa: F401
+
+    _HAS_CRYPTO = True
+except ImportError:                                    # pragma: no cover
+    _HAS_CRYPTO = False
+
+#: ONE test here spawns through the product's own ``spawn_browser``, and
+#: ``src.services.browser.process`` imports ``src.services.cert.terminator``,
+#: which imports ``cryptography`` at module scope. A container without that
+#: wheel therefore gets a collection-time ``ModuleNotFoundError`` from a test
+#: about TIMEZONES — reported as a NEW failure in an AC12 failure-set diff,
+#: which is how it was found. Skipped LOUDLY and NARROWLY: the marker names the
+#: missing dependency, and it guards only the argv assertion. AC2's other half
+#: (``_proxy_timezone``'s own return value) has no such import and runs
+#: everywhere, so the acceptance criterion is never skipped WHOLE.
+_needs_crypto = pytest.mark.skipif(
+    not _HAS_CRYPTO,
+    reason="spawn_browser imports services.cert.terminator, which imports "
+           "cryptography at module scope",
+)
+
 
 def _store(tmp_path, name="proxies.json") -> ProxyStore:
     return ProxyStore(path=str(tmp_path / name))
@@ -185,6 +207,7 @@ def test_a_declared_zone_makes_the_launch_path_answer_it(tmp_path, monkeypatch):
     assert _proxy_timezone(_store(tmp_path).get(name)) == RO_ZONE
 
 
+@_needs_crypto
 def test_a_declared_zone_reaches_the_real_chromium_argv(tmp_path, monkeypatch):
     """AC2 past the policy function: the value a REAL launch puts on the
     command line.
@@ -328,16 +351,55 @@ def test_the_country_gate_is_what_disarms_a_moved_exit(tmp_path):
 def test_a_declaration_cannot_manufacture_geography_that_was_never_measured(
     tmp_path,
 ):
-    """An UNCHECKED proxy has no country on file, so nothing matches and the
-    no-geography refusal still fires. A declaration answers a question the
-    check could not; it does not replace the check."""
+    """An UNCHECKED proxy has no country on file, so the declaration is REFUSED
+    and the no-geography refusal still fires. A declaration answers a question
+    the check could not; it does not replace the check.
+
+    ⚠️ REFUSED WITH A SENTENCE, not accepted-and-ignored. Storing the zone with
+    an empty country was fail-closed and also SILENT AND PERMANENT: nothing
+    ever re-binds it, because ``mark_checked`` writes the six measured fields
+    and is untouched by this feature — so a later check finding RO would leave
+    the declaration inert forever while the operator, who typed a valid zone
+    and got a closed dialog, reads a network row telling them to go and do the
+    thing they already did. The next test asserts exactly that sequence.
+    """
     s = _store(tmp_path)
     s.add("fresh", "socks5://u:pw@1.2.3.4:1080")
-    assert s.set_manual_timezone("fresh", RO_ZONE) == (True, "")
+    ok, err = s.set_manual_timezone("fresh", RO_ZONE)
+    assert ok is False
+    assert "check" in err.lower(), err
+    assert _store(tmp_path).get("fresh").manual_timezone == ""
     from src.services.proxy.errors import GeographyUnknownError
 
     with pytest.raises(GeographyUnknownError):
         _proxy_timezone(s.get("fresh"))
+
+
+def test_a_declaration_refused_before_a_check_does_not_become_a_dead_record(
+    tmp_path,
+):
+    """The FULL sequence the silent-accept behaviour produced, asserted end to
+    end: declare before checking, then check, then launch.
+
+    Under the old behaviour every step "succeeded" and the launch still refused
+    — the declaration was bound to an empty country that no later write ever
+    filled in. Here the declaration is refused up front, the operator checks,
+    declares again, and the profile launches. The point of the test is that
+    there is no state in which a stored zone exists and can never activate.
+    """
+    s = _store(tmp_path)
+    s.add("fresh", "socks5://u:pw@1.2.3.4:1080")
+    assert s.set_manual_timezone("fresh", RO_ZONE)[0] is False
+    s.mark_checked("fresh", RO, "Romania", "1.2.3.4", "", None, None)
+    # Nothing was carried over from the refused attempt.
+    p = _store(tmp_path).get("fresh")
+    assert (p.manual_timezone, p.manual_timezone_country) == ("", "")
+    with pytest.raises(TimezoneUnderivableError):
+        _proxy_timezone(p)
+    # And now that there IS a country, the same declaration is accepted and
+    # the launch answers it.
+    assert s.set_manual_timezone("fresh", RO_ZONE) == (True, "")
+    assert _proxy_timezone(_store(tmp_path).get("fresh")) == RO_ZONE
 
 
 def test_a_failed_check_still_refuses_even_with_a_declaration(tmp_path):
@@ -879,3 +941,266 @@ def test_the_dialog_refuses_a_bad_zone_and_does_not_close(tmp_path):
     assert page.popped is False
     errors = [t for t in _all_text(dlg) if "Not/AZone" in t]
     assert errors, "the operator must be told which value was refused"
+
+
+# ---------------------------------------------------------------------------
+# THE WRITE-SIDE SEAM — the composition the first round shipped broken.
+#
+# The country gate is a READ-side guard. Every test above drives ONE layer:
+# the gate as a pure predicate with no store and no dialog; the dialog once, on
+# a proxy whose country never moved; the lifecycle table through the store with
+# no dialog. All three were green while the feature was broken, because the
+# defect lived in NONE of them — it lived in the ORDER: the dialog prefills its
+# field from the RAW stored zone and re-submitted it unconditionally, so a save
+# re-stamped `manual_timezone_country` to the CURRENT country and re-armed a
+# declaration the gate had deliberately retired.
+#
+# These tests therefore all drive the dialog AFTER a state change, which is the
+# axis the first round's fixtures never varied.
+# ---------------------------------------------------------------------------
+
+
+def _drive_dialog(store, proxy_name, *, zone=None, name=None, host=None, port=None):
+    """Open the shipped proxy dialog on a stored proxy, optionally edit fields,
+    and press [ save ] — the wiring `app.py` performs, with the real store.
+
+    Returns the `_FakePage`, so a caller can assert whether the dialog CLOSED
+    (accepted) or stayed open (refused).
+    """
+    from src.ui.dialogs.proxy import open_proxy_dialog
+
+    proxy = store.get(proxy_name)
+    page = _FakePage()
+
+    def on_save(new_name, new_url, new_rotate):
+        if proxy is None:
+            return None if store.add(new_name, new_url, new_rotate) else "exists"
+        return None if store.update(proxy.name, new_name, new_url, new_rotate) else "exists"
+
+    def on_declare(target, z):
+        ok, err = store.set_manual_timezone(target, z)
+        return None if ok else err
+
+    open_proxy_dialog(
+        page, _FakeCheckService(), on_save=on_save, proxy=proxy,
+        on_declare_timezone=on_declare,
+    )
+    dlg = page.shown
+    if zone is not None:
+        _dialog_field(dlg, TZ_LABEL).value = zone
+    if name is not None:
+        _dialog_field(dlg, "Name").value = name
+    if host is not None:
+        _dialog_field(dlg, "Host").value = host
+    if port is not None:
+        _dialog_field(dlg, "Port").value = port
+    dlg.actions[1].on_click(None)
+    return page
+
+
+def test_a_bare_save_after_the_exit_moved_does_not_re_arm_the_declaration(
+    tmp_path,
+):
+    """THE DEFECT THIS SECTION EXISTS FOR, as the reviewer's transcript.
+
+    The exit moves RO -> CZ, the gate correctly retires the declaration and the
+    launch refuses. The operator then opens [ edit ] to find out WHY — which is
+    exactly where the new network-page note sends them — and presses [ save ]
+    without touching anything. Before the fix, the CZ exit launched declaring
+    `Europe/Bucharest`: the country/clock contradiction route (a) was rejected
+    for, reintroduced through the UI.
+    """
+    s, name = _ro_proxy(tmp_path)
+    s.set_manual_timezone(name, RO_ZONE)
+    assert _proxy_timezone(_store(tmp_path).get(name)) == RO_ZONE
+
+    s.mark_checked(name, "CZ", "Czechia", "9.9.9.9", "", None, None)
+    with pytest.raises(TimezoneUnderivableError):
+        _proxy_timezone(_store(tmp_path).get(name))
+
+    page = _drive_dialog(s, name)          # nothing typed, nothing changed
+    assert page.popped is True             # an untouched field must not block a save
+
+    proxy = _store(tmp_path).get(name)
+    assert proxy.manual_timezone_country == RO, (
+        "the country the zone was declared FOR was re-stamped to the new exit"
+    )
+    with pytest.raises(TimezoneUnderivableError):
+        _proxy_timezone(proxy)
+
+
+def test_a_rename_after_the_exit_moved_does_not_re_arm_it_either(tmp_path):
+    """Same seam, reached by a gesture that has nothing to do with timezones.
+
+    A rename is the ordinary reason to open this dialog, and it goes through
+    `update()` — a DIFFERENT store writer from the bare save above, which
+    rebuilds the record through a hand-enumerated constructor.
+    """
+    s, name = _ro_proxy(tmp_path)
+    s.set_manual_timezone(name, RO_ZONE)
+    s.mark_checked(name, "CZ", "Czechia", "9.9.9.9", "", None, None)
+
+    page = _drive_dialog(s, name, name="renamed-exit")
+    assert page.popped is True
+
+    proxy = _store(tmp_path).get("renamed-exit")
+    assert proxy is not None, "the rename itself must still work"
+    assert proxy.manual_timezone_country == RO
+    with pytest.raises(TimezoneUnderivableError):
+        _proxy_timezone(proxy)
+
+
+def test_a_url_edit_through_the_dialog_leaves_no_half_record(tmp_path):
+    """`update()` invalidates the declaration with the six geo fields when the
+    URL moves — and the dialog must not put it back one line later.
+
+    The resulting record was inert (fail-closed, so no wrong clock) but it was
+    a `manual_timezone` with an EMPTY `manual_timezone_country`, the exact
+    half-record `set_manual_timezone`'s docstring says cannot exist. It landed
+    the operator in a fresh disagreement of the kind AC8 was written to end:
+    the network row says "set the exit timezone in [ edit ]" and [ edit ] shows
+    the timezone field already filled in.
+    """
+    s, name = _ro_proxy(tmp_path)
+    s.set_manual_timezone(name, RO_ZONE)
+
+    page = _drive_dialog(s, name, host="5.5.5.5")
+    assert page.popped is True
+
+    proxy = _store(tmp_path).get(name)
+    assert proxy.url != "socks5://u:pw@1.2.3.4:1080", "the URL edit must land"
+    assert (proxy.manual_timezone, proxy.manual_timezone_country) == ("", ""), (
+        "a declaration survived the rotation that invalidated the geography"
+    )
+
+
+def test_a_rename_that_does_not_move_the_exit_KEEPS_the_declaration(tmp_path):
+    """The other direction, so the fix is not "the dialog never declares".
+
+    A rename leaves the exit exactly where it was, so the declaration still
+    describes it and the profile must go on launching. A guard that also killed
+    this would be a regression dressed as a fix.
+    """
+    s, name = _ro_proxy(tmp_path)
+    s.set_manual_timezone(name, RO_ZONE)
+
+    page = _drive_dialog(s, name, name="renamed-ro")
+    assert page.popped is True
+
+    proxy = _store(tmp_path).get("renamed-ro")
+    assert proxy.manual_timezone_country == RO
+    assert _proxy_timezone(proxy) == RO_ZONE
+
+
+def test_the_operator_can_still_answer_for_a_moved_exit_through_the_dialog(
+    tmp_path,
+):
+    """The recovery path. Not re-arming a retired declaration must not mean the
+    operator cannot declare a NEW one for the country the exit moved to —
+    otherwise the fix for BLOCKING 1 would create a second deadlock."""
+    s, name = _ro_proxy(tmp_path)
+    s.set_manual_timezone(name, RO_ZONE)
+    s.mark_checked(name, "CZ", "Czechia", "9.9.9.9", "", None, None)
+
+    page = _drive_dialog(s, name, zone="Europe/Prague")
+    assert page.popped is True
+
+    proxy = _store(tmp_path).get(name)
+    assert (proxy.manual_timezone, proxy.manual_timezone_country) == (
+        "Europe/Prague", "CZ",
+    )
+    assert _proxy_timezone(proxy) == "Europe/Prague"
+
+
+def test_re_declaring_a_retired_zone_verbatim_is_refused_with_a_sentence(
+    tmp_path,
+):
+    """The narrow residue of the no-re-stamp rule, at the STORE.
+
+    Wanting the SAME zone string for a different country is legitimate but
+    rare (a `Europe/Bucharest` exit in Moldova, say). It cannot be expressed in
+    one gesture, because that gesture is indistinguishable from the prefilled
+    re-submit that caused the defect. So it is refused with a sentence naming
+    what is on file and how to re-declare it — never a silent success that
+    changes nothing.
+    """
+    s, name = _ro_proxy(tmp_path)
+    s.set_manual_timezone(name, RO_ZONE)
+    s.mark_checked(name, "CZ", "Czechia", "9.9.9.9", "", None, None)
+
+    ok, err = s.set_manual_timezone(name, RO_ZONE)
+    assert ok is False
+    assert RO in err and "CZ" in err, err
+    assert _store(tmp_path).get(name).manual_timezone_country == RO
+
+    # And the two-gesture path the sentence describes works.
+    assert s.set_manual_timezone(name, "") == (True, "")
+    assert s.set_manual_timezone(name, RO_ZONE) == (True, "")
+    assert _proxy_timezone(_store(tmp_path).get(name)) == RO_ZONE
+
+
+def test_re_declaring_a_LIVE_zone_verbatim_is_an_accepted_no_op(tmp_path):
+    """Same country: the declaration on file already says this, so re-declaring
+    it succeeds and writes nothing. This is the case a bare [ save ] hits on a
+    proxy that never moved, and it must not surface an error."""
+    s, name = _ro_proxy(tmp_path)
+    s.set_manual_timezone(name, RO_ZONE)
+    assert s.set_manual_timezone(name, RO_ZONE) == (True, "")
+    proxy = _store(tmp_path).get(name)
+    assert (proxy.manual_timezone, proxy.manual_timezone_country) == (RO_ZONE, RO)
+
+
+def test_declaring_a_zone_on_an_unchecked_proxy_is_refused_at_the_dialog(
+    tmp_path,
+):
+    """BLOCKING 3 at the layer the operator meets it.
+
+    Adding a proxy and filling the whole form before pressing [ check ] is an
+    ordinary sequence. The dialog must say so and stay OPEN, rather than
+    accepting the value, closing, and leaving a declaration that can never
+    activate. Asserted before `on_save` too: the proxy must not be created and
+    then rejected for a different field.
+    """
+    s = _store(tmp_path)
+    page = _drive_dialog(
+        s, "does-not-exist",
+        zone=RO_ZONE, name="brand-new", host="1.2.3.4", port="1080",
+    )
+    assert page.popped is False, "the dialog must not close on a refusal"
+    assert s.get("brand-new") is None, "nothing may be half-created"
+    told = [t for t in _all_text(page.shown) if "check" in t.lower()]
+    assert told, "the operator must be told to check the proxy first"
+
+
+def test_the_network_row_and_the_dialog_agree_after_a_url_edit(tmp_path):
+    """AC8's disagreement, closed on the flow that used to manufacture it.
+
+    The half-record left by a URL edit made the network row say "cannot launch:
+    set the exit timezone in [ edit ]" while [ edit ] showed the field already
+    filled in. Both surfaces are read here, off the same stored record.
+    """
+    from src.ui.components.network_page import UNLAUNCHABLE_NOTE, build_network_page
+    from src.ui.dialogs.proxy import open_proxy_dialog
+
+    s, name = _ro_proxy(tmp_path)
+    s.set_manual_timezone(name, RO_ZONE)
+    _drive_dialog(s, name, host="5.5.5.5")
+    # A later check finds the new exit is in Romania too — which is what
+    # re-populates the country and brings the note back.
+    s.mark_checked(name, RO, "Romania", "5.5.5.5", "", None, None)
+
+    proxy = _store(tmp_path).get(name)
+    rendered = build_network_page(
+        [proxy],
+        on_add=lambda _: None, on_edit=lambda n: None, on_delete=lambda n: None,
+        on_check=lambda n: None, on_rotate=lambda n: None,
+    )
+    assert any(UNLAUNCHABLE_NOTE in t for t in _all_text(rendered))
+
+    page = _FakePage()
+    open_proxy_dialog(
+        page, _FakeCheckService(), on_save=lambda *a: None, proxy=proxy,
+    )
+    assert _dialog_field(page.shown, TZ_LABEL).value == "", (
+        "the row says the zone is missing; the dialog must not show one"
+    )
