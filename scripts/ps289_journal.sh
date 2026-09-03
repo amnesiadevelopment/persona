@@ -94,6 +94,24 @@ JOURNAL_RETENTION_DAYS="${PS289_JOURNAL_RETENTION_DAYS:-30}"
 
 now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
+# ── how a BEGIN / END line is RECOGNISED ─────────────────────────────────────
+# `_append` writes `<timestamp>  BEGIN  <tree>/<label>` with a fixed number of
+# padding spaces. Two separate readers count those lines (`_previous_run_finished`
+# and the orphan sweep in `salvage`), and both used to hard-code the exact
+# padding — `'  BEGIN  '`, `'  END    '`. That is a silent coupling between the
+# writer's cosmetics and the reader's meaning, and it fails DESTRUCTIVELY: change
+# the spacing and every journal reads as zero BEGINs and zero ENDs, i.e. every
+# dead run reads as FINISHED and its record is deleted unread.
+#
+# So the patterns live here, once, and are anchored to the line's STRUCTURE
+# rather than its whitespace: the keyword is the first token after the
+# timestamp. Anchoring matters as much as looseness — an ALIVE heartbeat carries
+# the build's `last="…"` output verbatim, so a bare `[[:space:]]END[[:space:]]`
+# would be satisfied by a compiler printing the word END and would count a
+# phase as ended that never was.
+JOURNAL_BEGIN_MATCH='^[^[:space:]]+[[:space:]]+BEGIN[[:space:]]'
+JOURNAL_END_MATCH='^[^[:space:]]+[[:space:]]+END[[:space:]]'
+
 # ── the one primitive that matters ───────────────────────────────────────────
 # Append, then push to disk. `sync FILE` is the whole point of this function: a
 # line sitting in the page cache of a VM that is about to be powered off is a
@@ -192,13 +210,32 @@ _salvage_file() {
 # `unknown` rather than guessed — a dispatch that died BEFORE prepare has no
 # stamp at all, and that is exactly the case this must not silently mislabel.
 _owning_run_of_record() {
-  local found="" prov id
+  local prov id found="" other=0
   for prov in "${RECORD_DIR}"/*.provenance; do
     [ -f "$prov" ] || continue
     id="$(sed -n 's/^github_run_id=//p' "$prov" 2>/dev/null | head -1)"
-    [ -n "$id" ] && found="$id" && break
+    [ -n "$id" ] || continue
+    if [ -z "$found" ]; then
+      found="$id"
+    elif [ "$id" != "$found" ]; then
+      other=1
+    fi
   done
-  [ -n "$found" ] && echo "$found" || echo "unknown"
+  # ⚠️ READ EVERY STAMP, NOT THE FIRST. Stopping at the first stamp the glob
+  # yielded made the label a coin-flip in exactly the situation salvage exists
+  # to meet: leftovers from more than one dispatch. `mixed` is reported rather
+  # than one of the ids picked arbitrarily, because a directory named
+  # `record-from-run-555` that also contains run 554's bytes is a worse answer
+  # than one that says it does not know. It is also the SAFE answer for the
+  # gate: `mixed` matches no journal directory, so `_previous_run_finished`
+  # says "not finished" and the material is kept.
+  if [ -z "$found" ]; then
+    echo "unknown"
+  elif [ "$other" -eq 1 ]; then
+    echo "mixed"
+  else
+    echo "$found"
+  fi
 }
 
 # Did the run that owns the leftover `record/` FINISH its phases?
@@ -215,19 +252,30 @@ _owning_run_of_record() {
 # unfinished and IS salvaged — that is the pre-PS-289 dispatch, and the run that
 # died before it could write anything, which are exactly the cases where losing
 # the record costs the most. The default is deliberately toward keeping.
+# ⚠️ THE LOOP MUST SEE EVERY ATTEMPT, AND AN EARLIER VERSION DID NOT. A run id
+# has attempts (`555-1`, `555-2`), the provenance stamp carries the run id ONLY,
+# and an unconditional `return 0` at the bottom of the loop body meant only the
+# FIRST directory the glob yielded was ever examined. Glob order is lexical, so
+# on the single most likely shape here — a long build re-dispatched, attempt 1
+# finished, attempt 2 died — attempt 1 was read, the run was declared finished,
+# and the DEAD attempt's record was deleted unread by the `rm -rf` below while
+# the log announced "finished its phases and uploaded its own record". The gate
+# failed in the destructive direction and said the opposite. Hence: no early
+# return, and a `saw` flag so "no journal at all" still answers "not finished"
+# (recover) rather than falling out of an empty loop as "finished".
 _previous_run_finished() {
-  local run="$1" d j begins ends
+  local run="$1" d j begins ends saw=0
   [ -n "$run" ] && [ "$run" != "unknown" ] || return 1
   for d in "${JOURNAL_ROOT}/${run}-"*/; do
     j="${d}journal.txt"
     [ -f "$j" ] || continue
-    begins="$(grep -c '  BEGIN  ' "$j" 2>/dev/null || true)"; begins="${begins:-0}"
-    ends="$(grep -c '  END    ' "$j" 2>/dev/null || true)";   ends="${ends:-0}"
-    # Any unfinished phase in any attempt means the run did not finish cleanly.
+    saw=1
+    begins="$(grep -Ec "$JOURNAL_BEGIN_MATCH" "$j" 2>/dev/null || true)"; begins="${begins:-0}"
+    ends="$(grep -Ec "$JOURNAL_END_MATCH" "$j" 2>/dev/null || true)";     ends="${ends:-0}"
+    # Any unfinished phase in ANY attempt means the run did not finish cleanly.
     [ "$begins" -gt "$ends" ] && return 1
-    return 0
   done
-  return 1
+  [ "$saw" -eq 1 ]
 }
 
 CMD="${1:-}"
@@ -309,6 +357,12 @@ case "$CMD" in
     if [ -n "$stage" ] && [ -n "$(ls -A "$stage" 2>/dev/null || true)" ]; then
       dest="${RECORD_DIR}/salvaged/record-from-run-${prev_run}"
       mkdir -p "$dest"
+      # ⚠️ THE LOOP BODY RUNS IN A SUBSHELL. `find … | while read` puts the
+      # while on the right of a pipe, so anything the body ASSIGNS is lost when
+      # the pipe closes. It is harmless today only because `_salvage_file`
+      # writes to disk and sets nothing the caller reads. Do NOT add a counter
+      # here expecting to print it afterwards — it will read zero, which is why
+      # the `orphans` counter below is deliberately NOT inside a pipe.
       find "$stage" -type f 2>/dev/null | while IFS= read -r f; do
         rel="${f#"$stage"/}"
         _salvage_file "$f" "${dest}/${rel}"
@@ -332,8 +386,8 @@ case "$CMD" in
         # `|| echo 0` idiom would emit TWO lines ("0\n0") and break the
         # comparison below. `|| true` keeps the single number grep already
         # printed.
-        begins="$(grep -c '  BEGIN  ' "$j" 2>/dev/null || true)"
-        ends="$(grep -c '  END    ' "$j" 2>/dev/null || true)"
+        begins="$(grep -Ec "$JOURNAL_BEGIN_MATCH" "$j" 2>/dev/null || true)"
+        ends="$(grep -Ec "$JOURNAL_END_MATCH" "$j" 2>/dev/null || true)"
         begins="${begins:-0}"; ends="${ends:-0}"
         [ "$begins" -le "$ends" ] && continue
         mkdir -p "${RECORD_DIR}/salvaged/journals"

@@ -75,7 +75,7 @@ def run_journal(*args, cwd, journal_root, run_id="2000", **env_extra):
     )
     return subprocess.run(
         [shell, str(JOURNAL_SH), *args],
-        cwd=str(cwd), env=env, capture_output=True, text=True, timeout=120,
+        cwd=str(cwd), env=env, capture_output=True, text=True, encoding="utf-8", timeout=120,
     )
 
 
@@ -204,7 +204,7 @@ def test_a_phase_that_finishes_records_its_exit_code(tmp_path):
     )
     result = subprocess.run(
         [shell, str(BUILD_SH), "prepare", "patched"],
-        cwd=str(ws), env=env, capture_output=True, text=True, timeout=180,
+        cwd=str(ws), env=env, capture_output=True, text=True, encoding="utf-8", timeout=180,
     )
     assert result.returncode == 3, (
         "ps218_build.sh must still propagate the phase's exit code; journaling "
@@ -249,7 +249,7 @@ def test_journaling_never_fails_the_build_it_only_describes(tmp_path):
     )
     result = subprocess.run(
         [shell, str(BUILD_SH), "prepare", "patched"],
-        cwd=str(ws), env=env, capture_output=True, text=True, timeout=180,
+        cwd=str(ws), env=env, capture_output=True, text=True, encoding="utf-8", timeout=180,
     )
     assert result.returncode == 0, (
         "an unwritable journal root failed the build. Recording progress must "
@@ -282,7 +282,7 @@ def test_the_journal_is_written_outside_the_workspace(tmp_path):
     env = shell_env(HOME=str(tmp_path / "home"), GITHUB_RUN_ID="1")
     default_root = subprocess.run(
         [shell, str(JOURNAL_SH), "root"],
-        cwd=str(ws), env=env, capture_output=True, text=True, timeout=60,
+        cwd=str(ws), env=env, capture_output=True, text=True, encoding="utf-8", timeout=60,
     ).stdout.strip()
     assert str(ws) not in default_root, (
         f"the DEFAULT journal root {default_root} resolves inside the workspace"
@@ -625,6 +625,163 @@ def test_a_previous_run_that_FINISHED_is_not_filed_as_a_dead_one(tmp_path):
     assert (ws_dead / "record" / "salvaged" / "record-from-run-7003" /
             "prepare-patched.log").is_file(), (
         "an UNFINISHED predecessor was not recovered — that is the whole feature"
+    )
+
+
+@requires_posix_shell
+def test_the_finished_gate_reads_every_attempt_not_just_the_first(tmp_path):
+    """A run has ATTEMPTS. Reading one of them and stopping loses the dead one.
+
+    The provenance stamp carries `github_run_id` ONLY — no attempt number — so
+    the gate globs every `<run>-*` journal directory. An earlier version ended
+    its loop body with an unconditional `return 0`, which meant only the FIRST
+    directory the glob yielded was ever examined. Glob order is lexical, so on
+    a re-run where attempt 1 finished and attempt 2 DIED, attempt 1 was read,
+    the run was declared finished, and the dead attempt's record was deleted
+    unread by the salvage's own `rm -rf` — while the log printed "finished its
+    phases and uploaded its own record". The gate failed destructively and
+    announced the opposite.
+
+    A re-dispatched long build is the single most likely shape here, so this is
+    not an exotic case. Both orderings are asserted, because a gate that is
+    correct only when the dead attempt sorts first is correct by accident:
+
+      555-1 finished, 555-2 DIED   → recover  (the case that regressed)
+      556-1 DIED,     556-2 finished → recover (any unfinished attempt counts)
+
+    and the assertion is on the dead attempt's BYTES arriving under `salvaged/`,
+    not on a message, because the orphan-journal sweep would still recover the
+    journal and make a message-level assertion pass while the record was gone.
+    """
+    journal_root = tmp_path / "journal"
+
+    FINISHED = (
+        "# header\n"
+        "2026-09-01T00:00:00Z  BEGIN  patched/prepare\n"
+        "2026-09-01T00:05:00Z  END    patched/prepare  rc=0\n"
+    )
+    DIED = (
+        "# header\n"
+        "2026-09-01T01:00:00Z  BEGIN  patched/compile\n"
+        "2026-09-01T04:59:00Z  ALIVE  patched/compile  elapsed=14340s\n"
+    )
+
+    for run_id, attempts in (("555", (FINISHED, DIED)), ("556", (DIED, FINISHED))):
+        ws = tmp_path / f"ws_{run_id}"
+        ws.mkdir()
+        seed_dead_record(ws, run_id=run_id)
+        # The bytes that matter: four hours of compile output from the attempt
+        # that died, which is exactly what the destructive gate deleted unread.
+        (ws / "record" / "compile-patched.log").write_text(
+            "[49999/50000] LINK ./chrome\n", encoding="utf-8"
+        )
+        for n, body in enumerate(attempts, start=1):
+            (journal_root / f"{run_id}-{n}").mkdir(parents=True)
+            (journal_root / f"{run_id}-{n}" / "journal.txt").write_text(body, encoding="utf-8")
+
+        result = run_journal(
+            "salvage", cwd=ws, journal_root=journal_root, run_id=f"{run_id}9"
+        )
+        assert result.returncode == 0, result.stderr
+
+        recovered = ws / "record" / "salvaged" / f"record-from-run-{run_id}" / "compile-patched.log"
+        assert recovered.is_file(), (
+            f"run {run_id}: one attempt finished and another DIED, and the dead "
+            "attempt's compile log was not recovered — the gate stopped at the "
+            "first attempt it read. Salvage said:\n"
+            f"{result.stdout}"
+        )
+        assert "[49999/50000] LINK ./chrome" in recovered.read_text(encoding="utf-8")
+        assert "nothing to salvage" not in result.stdout, (
+            f"run {run_id}: salvage reported the run as finished and uploaded "
+            "while a dead attempt's evidence was sitting in record/ — the "
+            "message a reader gets is the opposite of the truth"
+        )
+
+
+@requires_posix_shell
+def test_leftovers_from_several_dispatches_are_not_labelled_as_one_of_them(tmp_path):
+    """`record-from-run-554` must not be a directory that also holds 555's bytes.
+
+    `_owning_run_of_record` reads the provenance stamps to name the salvage
+    directory. Reading the FIRST stamp the glob yields makes that name a
+    coin-flip in exactly the mixed-leftover situation salvage exists to meet,
+    and the name is a provenance CLAIM — a reader trusts it. `mixed` is the
+    honest answer, and it is also the safe one for the gate: it matches no
+    journal directory, so the material is kept rather than discarded.
+    """
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    seed_dead_record(ws, run_id="8101")
+    (ws / "record" / "compile-patched.provenance").write_text(
+        "phase=compile\ntree=patched\ngithub_run_id=8102\ngithub_run_attempt=1\n",
+        encoding="utf-8",
+    )
+
+    result = run_journal("salvage", cwd=ws, journal_root=tmp_path / "journal", run_id="8199")
+    assert result.returncode == 0, result.stderr
+
+    salvaged = ws / "record" / "salvaged"
+    named = sorted(p.name for p in salvaged.iterdir() if p.is_dir() and p.name != "journals")
+    assert named == ["record-from-run-mixed"], (
+        "leftovers stamped by TWO different dispatches were filed under one "
+        f"run's name, which is a false provenance claim. Got: {named}"
+    )
+    assert (salvaged / "record-from-run-mixed" / "prepare-patched.log").is_file()
+
+
+@requires_posix_shell
+def test_a_reformatted_journal_line_does_not_read_as_a_finished_run(tmp_path):
+    """The BEGIN/END readers must key off STRUCTURE, not the writer's padding.
+
+    Two readers count these lines, and both used to hard-code `_append`'s exact
+    two-space padding. That coupling fails in the destructive direction: change
+    the spacing and every journal reads as zero BEGINs and zero ENDs, so every
+    dead run reads as "finished" and its record is deleted unread. A single
+    space must therefore still parse.
+
+    The other half is that the match stays ANCHORED. An ALIVE heartbeat carries
+    the build's last output line verbatim, so a compiler printing the word END
+    must not count as a phase that ended.
+    """
+    journal_root = tmp_path / "journal"
+
+    ws = tmp_path / "ws_spaced"
+    ws.mkdir()
+    seed_dead_record(ws, run_id="8201")
+    (journal_root / "8201-1").mkdir(parents=True)
+    (journal_root / "8201-1" / "journal.txt").write_text(
+        "# header\n"
+        "2026-09-01T00:00:00Z BEGIN patched/compile\n"
+        "2026-09-01T00:09:00Z ALIVE patched/compile elapsed=540s\n",
+        encoding="utf-8",
+    )
+    result = run_journal("salvage", cwd=ws, journal_root=journal_root, run_id="8299")
+    assert result.returncode == 0, result.stderr
+    assert (ws / "record" / "salvaged" / "record-from-run-8201" /
+            "prepare-patched.log").is_file(), (
+        "a DEAD run written with different padding was read as FINISHED and its "
+        "record was deleted unread — the reader is coupled to the writer's "
+        "cosmetics, and it fails in the direction that destroys evidence. "
+        f"Salvage said:\n{result.stdout}"
+    )
+
+    ws2 = tmp_path / "ws_echoed"
+    ws2.mkdir()
+    seed_dead_record(ws2, run_id="8202")
+    (journal_root / "8202-1").mkdir(parents=True)
+    (journal_root / "8202-1" / "journal.txt").write_text(
+        "# header\n"
+        "2026-09-01T00:00:00Z  BEGIN  patched/compile\n"
+        '2026-09-01T00:09:00Z  ALIVE  patched/compile  elapsed=540s  last="[9/50] END OF FILE"\n',
+        encoding="utf-8",
+    )
+    result = run_journal("salvage", cwd=ws2, journal_root=journal_root, run_id="8298")
+    assert result.returncode == 0, result.stderr
+    assert (ws2 / "record" / "salvaged" / "record-from-run-8202" /
+            "prepare-patched.log").is_file(), (
+        "a build that PRINTED the word END inside a heartbeat was counted as a "
+        "phase that ended, so a dead run was read as finished"
     )
 
 
