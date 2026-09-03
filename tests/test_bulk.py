@@ -1,7 +1,12 @@
 import pytest
 
 from src.core.strings import get_string
-from src.services.profile.bulk import bulk_create, duplicate_names, parse_names
+from src.services.profile.bulk import (
+    bulk_create,
+    duplicate_names,
+    parse_names,
+    paste_tokens,
+)
 from src.services.profile.manager import ProfileManager
 
 
@@ -214,3 +219,47 @@ def test_duplicate_names_reports_repeats_in_the_paste(mgr):
     # A blank row is not a repeat and is not reported — it is not a name the
     # operator asked for.
     assert duplicate_names("a\n\n\n,,\nb") == []
+
+
+def test_parse_names_and_duplicate_names_account_for_every_pasted_row(mgr):
+    """The two halves must agree about what a ROW is, or the dialog reports a
+    repeat the batch never dropped.
+
+    They used to re-implement the same split/strip loop side by side with
+    nothing holding them together — a later edit to one (accepting semicolons,
+    say) would have made ``duplicate_names`` measure against a tokenisation the
+    batch does not use. Both now derive from ``paste_tokens``, and this is the
+    identity that pins it: every non-blank row is either a name the batch
+    attempts or a row dropped as a repeat, with nothing left over.
+    """
+    for text in (
+        "a\nb\na\nc\nb\nb",
+        "a\nb\nc",
+        "a\n\n\n,,\nb",
+        " a \n a ",
+        "alpha, beta, alpha",
+        "one, one, one",
+        "",
+    ):
+        rows = paste_tokens(text)
+        names = parse_names(text)
+        dropped = len(rows) - len(names)
+        assert dropped >= 0, f"more names than rows for {text!r}"
+        # Every non-blank row is either a name the batch attempts or a row
+        # dropped as a repeat, with nothing left over — and every dropped row
+        # is one of the repeats that is REPORTED, so the operator is never
+        # told about a repeat that did not happen and never left with an
+        # unexplained row.
+        assert bool(dropped) == bool(duplicate_names(text)), (
+            f"rows went missing without a repeat to explain them, or a repeat "
+            f"was reported with no row dropped, for {text!r}: {len(rows)} "
+            f"rows, {len(names)} names, repeats={duplicate_names(text)}"
+        )
+        # And every reported repeat is a name the batch really did attempt —
+        # a repeat of a row that never became a name would be a lie on screen.
+        for dupe in duplicate_names(text):
+            assert dupe in names, f"{dupe!r} reported as a repeat but never attempted"
+    # The unit of `duplicate_names` is the NAME, once each — not one entry per
+    # dropped row. Three "a" rows are one repeated name and two dropped rows.
+    assert duplicate_names("a\na\na") == ["a"]
+    assert len(paste_tokens("a\na\na")) - len(parse_names("a\na\na")) == 2

@@ -179,6 +179,25 @@ def add_profile(
 #: cannot". Every refusal is logged per name regardless, so nothing is lost.
 _INLINE_REFUSAL_LIMIT = 12
 
+#: The SAME cap, for the second unbounded list in the same message.
+#:
+#: MEASURED (PR #209 review): the refusal block was capped and the repeats line
+#: was not, so a paste that repeats 150 names rendered a 1553-char single line
+#: — 2× the painted height of the whole error region — and pushed the
+#: "Operating system" and "Tags" controls, which sit BELOW error_text in
+#: dialogs/bulk.py's layout, out of the scroll viewport. That is the exact
+#: failure _INLINE_REFUSAL_LIMIT exists to prevent, reached through the other
+#: door, and "paste a list and let the tool dedupe it" is a normal bulk-import
+#: workflow — the large case is the one this feature is FOR, not an exotic one.
+#:
+#: Lower than the refusal cap deliberately: repeats render as one comma-joined
+#: line rather than one line per name, so N repeats cost N names' worth of
+#: WIDTH on a wrapped line, and a repeat is also less urgent than a refusal
+#: (nothing was lost — the name was created once). Like the refusal cap it can
+#: defer to the Activity Log only because every repeat is logged per name
+#: first, unconditionally.
+_INLINE_REPEAT_LIMIT = 8
+
 
 def bulk_create_profiles(
     page: ft.Page,
@@ -195,6 +214,7 @@ def bulk_create_profiles(
         _: list[str],
     ) -> str | None:
         names = parse_names(names_text)
+        repeats = duplicate_names(names_text)
         tags = [t.strip() for t in tags_text.split(",") if t.strip()]
         result = bulk_create(
             pm, names, os_type=os_type, tags=tags or None
@@ -217,10 +237,25 @@ def bulk_create_profiles(
                     name=name,
                     # A skipped name always has a reason (bulk_create writes
                     # both together), but the lane must not go silent if a
-                    # future caller does not.
-                    reason=reasons.get(name, get_string("error")),
+                    # future caller does not. Not get_string("error") — see
+                    # core/strings.py: the bare word "Error" carries a
+                    # severity token and would paint the RED dot.
+                    reason=reasons.get(name, get_string("bulk_create_no_reason")),
                 )
             )
+        # Repeats get the SAME durable, per-name record, and it is written
+        # UNCONDITIONALLY — not inside the "something was refused" branch
+        # below.
+        #
+        # Two reasons, both load-bearing. (1) A repeat is not a refusal, so it
+        # must not hold the dialog open; but "must not hold the dialog open"
+        # and "must not be recorded" are different claims, and a CLEAN paste
+        # is where the arithmetic is most unexplained — three rows in, two
+        # profiles out, nothing anywhere accounting for the third. (2) The
+        # inline repeats line can only be capped because this record exists to
+        # defer to, exactly as the refusal cap defers to the lines above.
+        for name in repeats:
+            log(get_string("bulk_create_repeat_logged", name=name))
         refresh()
 
         if not skipped:
@@ -250,7 +285,7 @@ def bulk_create_profiles(
             get_string(
                 "bulk_create_refusal_line",
                 name=name,
-                reason=reasons.get(name, get_string("error")),
+                reason=reasons.get(name, get_string("bulk_create_no_reason")),
             )
             for name in skipped[:_INLINE_REFUSAL_LIMIT]
         ]
@@ -266,18 +301,32 @@ def bulk_create_profiles(
                 )
             )
         # Account for the rows that reached neither list, so the arithmetic the
-        # operator can do on screen adds up.
-        repeats = duplicate_names(names_text)
+        # operator can do on screen adds up — and CAPPED, for the same reason
+        # and by the same rule as the refusal list above it. This line is one
+        # comma-joined string, so an uncapped 150-repeat paste renders as a
+        # 1500-char wall that pushes the os_type and tags controls out of the
+        # dialog's viewport. Every repeat is in the Activity Log (logged above,
+        # unconditionally), so the overflow is pointed at rather than dropped.
         if repeats:
+            n_repeats = len(repeats)
+            shown = repeats[:_INLINE_REPEAT_LIMIT]
             lines.append(
                 get_string(
                     "bulk_create_repeats",
-                    count=len(repeats),
-                    plural="" if len(repeats) == 1 else "s",
-                    was="was" if len(repeats) == 1 else "were",
-                    names=", ".join(repeats),
+                    count=n_repeats,
+                    plural="" if n_repeats == 1 else "s",
+                    was="was" if n_repeats == 1 else "were",
+                    names=", ".join(shown),
                 )
             )
+            if n_repeats > _INLINE_REPEAT_LIMIT:
+                lines.append(
+                    get_string(
+                        "bulk_create_repeats_more",
+                        count=n_repeats - _INLINE_REPEAT_LIMIT,
+                        plural="" if n_repeats - _INLINE_REPEAT_LIMIT == 1 else "s",
+                    )
+                )
         return "\n".join(lines)
 
     open_bulk_dialog(page, on_create)

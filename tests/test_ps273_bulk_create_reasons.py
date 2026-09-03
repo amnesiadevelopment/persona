@@ -105,7 +105,7 @@ def _harness(mgr):
 
 
 def test_a_clean_batch_returns_none_so_the_dialog_closes(mgr):
-    on_create, log, _page = _harness(mgr)
+    on_create, _log, _page = _harness(mgr)
 
     assert on_create("alpha\nbeta", "windows", "", []) is None, (
         "nothing was refused, so there is nothing to keep the dialog open for"
@@ -217,6 +217,105 @@ def test_repeats_alone_do_not_open_the_dialog_report(mgr):
     assert set(mgr.profiles) == {"alpha", "beta"}
 
 
+def test_a_repeat_is_recorded_even_when_nothing_was_refused(mgr):
+    """The clean-paste case, and the one the arithmetic gap is WORST in.
+
+    "Must not hold the dialog open" and "must not be recorded at all" are
+    different claims. A paste of three rows that yields two profiles, with a
+    dialog that closes and a log reading "created 2, skipped 0", accounts for
+    the third row NOWHERE — which is exactly the unexplained arithmetic this
+    ticket's third decision is about. The dialog still closes (a repeat is not
+    a refusal); the durable record is what carries it.
+    """
+    on_create, log, _page = _harness(mgr)
+
+    assert on_create("alpha\nalpha\nbeta", "windows", "", []) is None, (
+        "a repeat must not hold the dialog open — nothing was refused"
+    )
+    blob = "\n".join(log)
+    assert "alpha was listed more than once" in blob, (
+        f"the operator pasted 3 rows and got 2 profiles; the third must be "
+        f"accounted for somewhere. got {log!r}"
+    )
+    assert "created once" in blob, (
+        f"the record must say what HAPPENED to the repeat (it was created, "
+        f"once) — not merely that one existed; got {log!r}"
+    )
+    # The record is per name, on the bulk-delete model: two distinct repeated
+    # names are two lines, not one aggregate.
+    on_create2, log2, _p2 = _harness(mgr)
+    on_create2("x\nx\ny\ny\nz", "windows", "", [])
+    blob2 = "\n".join(log2)
+    for name in ("x", "y"):
+        assert f"{name} was listed more than once" in blob2, f"got {log2!r}"
+
+
+def test_the_repeat_log_line_carries_no_severity_token(mgr):
+    """A repeat is an ordinary batch record, not a failure — it must not paint
+    the red dot in the Activity Log."""
+    from src.ui.log_console import SEV_IDLE, severity
+
+    assert severity(get_string("bulk_create_repeat_logged", name="alpha")) == SEV_IDLE
+
+
+def test_a_long_repeat_list_is_capped_like_the_refusal_list(mgr):
+    """MEASURED (PR #209 review): the refusal block was capped and the repeats
+    line was not, so a paste repeating 150 names rendered a ~1550-char single
+    line — 2x the painted height of the whole error region — pushing the
+    "Operating system" and "Tags" controls, which sit BELOW error_text in the
+    layout, out of the dialog's scroll viewport. That is the exact failure
+    _INLINE_REFUSAL_LIMIT exists to prevent, reached through the other door.
+    """
+    from src.ui.actions.profile import _INLINE_REPEAT_LIMIT
+
+    names = [f"n{i}" for i in range(150)]
+    paste = "\n".join(names + names + ["bad/name"])
+    on_create, log, _page = _harness(mgr)
+
+    msg = on_create(paste, "windows", "", [])
+
+    assert msg is not None
+    repeat_line = next(
+        (line for line in msg.split("\n") if "repeated name" in line and "..." not in line),
+        None,
+    )
+    assert repeat_line is not None, f"got {msg!r}"
+    assert len(repeat_line) < 200, (
+        f"the repeats line is unbounded again: {len(repeat_line)} chars. It "
+        f"renders above the controls the operator corrects the paste with."
+    )
+    # The TRUE count is still stated even though the names are not all listed —
+    # the cap must not misreport the size of the problem.
+    assert "150 repeated names" in repeat_line, f"got {repeat_line!r}"
+    assert "more repeated names" in msg and "Activity Log" in msg, (
+        f"the overflow must be pointed at, not dropped; got {msg!r}"
+    )
+    # NOTHING is lost: the durable record carries every one of them, which is
+    # what makes the cap safe (the same contract the refusal cap relies on).
+    blob = "\n".join(log)
+    for n in names:
+        assert f"{n} was listed more than once" in blob, f"{n!r} missing from the log"
+    # And the whole message stays small enough to leave the dialog usable.
+    assert len(msg) < 1200, f"message is {len(msg)} chars: {msg[:200]!r}..."
+    assert _INLINE_REPEAT_LIMIT <= 12
+
+
+def test_a_worst_case_paste_bounds_the_whole_message(mgr):
+    """Both lists long at once — the message must stay bounded on BOTH axes,
+    not on whichever one happens to be capped."""
+    bad = [f"bad{i}/x" for i in range(60)]
+    rep = [f"r{i}" for i in range(120)]
+    on_create, _log, _page = _harness(mgr)
+
+    msg = on_create("\n".join(bad + rep + rep), "windows", "", [])
+
+    assert msg.count("\n") < 20, f"{msg.count(chr(10))} lines: {msg!r}"
+    assert len(msg) < 1500, f"{len(msg)} chars"
+    assert "60" in msg and "120 repeated names" in msg, (
+        f"both true counts must survive the capping; got {msg!r}"
+    )
+
+
 def test_a_long_refusal_list_defers_to_the_log_instead_of_flooding(mgr):
     names = [f"bad{i}/x" for i in range(30)]
     on_create, log, _page = _harness(mgr)
@@ -323,7 +422,28 @@ def test_no_severity_token_was_added_for_the_new_lines(mgr):
     # GREEN SUCCESS dot on a refusal. That is why the bulk lane uses
     # `bulk_create_exists` and why severity() itself is untouched.
     assert severity("Profile already exists!") != SEV_IDLE
-    for key in ("bulk_create_exists",):
+    # THE SECOND TRAP, from the same family: the DEFENSIVE fallback used for a
+    # skipped name that arrived without a reason. It used to be
+    # get_string("error") — the bare word "Error" — which severity() matches,
+    # so the one line the lane writes while knowing LESS than usual would have
+    # been the LOUDEST line it writes. Unreachable today (bulk_create writes
+    # `skipped` and `reasons` together through _refuse), so it is pinned here
+    # rather than left to be rediscovered when a future caller reaches it.
+    assert severity(get_string("error")) != SEV_IDLE, (
+        "if this ever stops matching, the fallback below is over-cautious "
+        "rather than wrong — but check before reverting it"
+    )
+    assert (
+        severity(
+            get_string(
+                "bulk_create_not_created",
+                name="x",
+                reason=get_string("bulk_create_no_reason"),
+            )
+        )
+        == SEV_IDLE
+    ), "the no-reason fallback must classify like every other line this lane writes"
+    for key in ("bulk_create_exists", "bulk_create_no_reason"):
         assert severity(f"x not created: {get_string(key)}") == SEV_IDLE, (
             f"{key} carries a severity token and would mis-paint a refusal"
         )
