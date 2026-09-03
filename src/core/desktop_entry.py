@@ -85,7 +85,7 @@ def install_desktop_entry() -> str | None:
         # non-UTF-8 entry in the shared ~/.local/share/applications (localized
         # `Name[xx]`/`Comment[xx]` keys are historically latin-1) aborted the
         # app before the window opened. Named and narrow, mirroring
-        # `verify/exit_guard.py:406`: NOT bare `Exception`, and NOT
+        # `_from_file` in `verify/exit_guard.py`: NOT bare `Exception`, and NOT
         # `errors="replace"` — a file persona cannot decode is not one persona
         # wrote, so declining it (leaving its bytes intact) is the right
         # semantic, not clobbering it.

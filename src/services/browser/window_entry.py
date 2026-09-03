@@ -114,7 +114,8 @@ def _unlink_legacy_entry(entry_dir: pathlib.Path, profile_name: str) -> None:
         # correct outcome on its own terms: ownership is proven from
         # `StartupWMClass`, and a body we cannot decode cannot prove it — so
         # returning here leaves the file, exactly as the un-owned arm below
-        # does. Mirrors `verify/exit_guard.py:406`; NOT bare `Exception`.
+        # does. Mirrors `_from_file` in `verify/exit_guard.py`; NOT bare
+        # `Exception`.
         logger.warning(
             "Could not read legacy desktop entry for %s: %s", profile_name, e
         )

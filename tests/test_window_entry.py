@@ -459,7 +459,13 @@ _NON_UTF8_LEGACY_BODY = (
 
 
 def test_write_survives_non_utf8_legacy_entry(tmp_path, monkeypatch):
+    # expanduser reads USERPROFILE on Windows and HOME on POSIX; set both so
+    # the test isolates the filesystem on either OS (matching
+    # tests/test_desktop_entry.py's `fake_home`). With HOME alone, Windows'
+    # ntpath.expanduser never reaches the HOME branch: the SUT would write into
+    # the runner's REAL profile directory while the fixture sits in tmp_path.
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
     d = pathlib.Path(tmp_path) / ".local/share/applications"
     d.mkdir(parents=True, exist_ok=True)
     legacy = d / "persona-acct1.desktop"
@@ -481,7 +487,13 @@ def test_write_survives_non_utf8_legacy_entry(tmp_path, monkeypatch):
 
 
 def test_remove_survives_non_utf8_legacy_entry(tmp_path, monkeypatch):
+    # Both vars, for the reason spelled out on the sibling test above. Without
+    # USERPROFILE this test passes VACUOUSLY on Windows: write/remove would
+    # both act on the runner's real home, so `not current.exists()` holds
+    # without the planted legacy file ever being read — it would stay green
+    # with the fix reverted.
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
     d = pathlib.Path(tmp_path) / ".local/share/applications"
     d.mkdir(parents=True, exist_ok=True)
     current = pathlib.Path(write_window_entry("acct1"))
