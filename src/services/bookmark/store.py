@@ -6,7 +6,7 @@ from ...core.logging import get_logger
 from ...models.bookmark import Bookmark, Pool
 from ...utils.atomic import atomic_write_json
 from ...utils.store_guard import StoreGuardMixin
-from ...utils.trashable import TrashableMixin
+from ...utils.trashable import TrashableMixin, restore_kwargs
 
 logger = get_logger("bookmark.store")
 
@@ -339,8 +339,10 @@ class BookmarkStore(StoreGuardMixin, TrashableMixin):
                 "then restore again."
             )
         data = entry.payload.get("bookmark") or {}
+        # Reflection over Bookmark's own fields; `url` has no dataclass default
+        # so it keeps the enumerated form's "" fallback.
         self.bookmarks[name] = Bookmark(
-            name=data.get("name", name), url=data.get("url", "")
+            **restore_kwargs(Bookmark, data, name, defaults={"url": ""})
         )
         # Resolve each membership against the trash as well as the live store: a
         # pool that has not been restored YET must not silently lose this member.
@@ -445,7 +447,17 @@ class BookmarkStore(StoreGuardMixin, TrashableMixin):
         # same way, so a restored pool can't hold a name nothing resolves.
         snapshot = data.get("bookmark_names") or []
         members = [n for n in snapshot if n in self.bookmarks]
-        self.pools[name] = Pool(name=data.get("name", name), bookmark_names=members)
+        # CARVE-OUT: bookmark_names is FILTERED, not copied. Reflection gives
+        # every other field for free, but a pure splat of the payload would put
+        # the WHOLE snapshot back — the defect the comment block below records.
+        # The filtered list is layered on top; `snapshot` itself stays intact
+        # because the ordering machinery below consumes it whole.
+        self.pools[name] = Pool(
+            **{
+                **restore_kwargs(Pool, data, name),
+                "bookmark_names": members,
+            }
+        )
         self._save()
         # A member that is merely STILL IN THE TRASH is not gone — filtering it
         # away here is what silently lost the membership when the pool was
