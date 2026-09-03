@@ -95,15 +95,32 @@ def _clear_stale_staged(keep: str) -> None:
     be picked up or resumed onto. Keeps only `keep` (the current version's file)."""
     import glob
 
+    # glob.escape ONLY the directory half. glob interprets metacharacters across
+    # the WHOLE pattern, the directory portion included, and BOTH directories
+    # here are operator-controlled: tempfile.gettempdir() honours TMPDIR/TEMP/TMP,
+    # and the Linux arm's dir is os.path.dirname(installed_appimage_path()) —
+    # wherever the user put the AppImage, which for a portable layout is exactly
+    # a hand-named directory. A directory containing `[` (legal on POSIX and
+    # Windows alike) would make the pattern name a path that does not exist:
+    # glob.glob returns [], the loop body never runs, and this sweep is a SILENT
+    # no-op — no exception, no empty-result branch — so stale installers
+    # accumulate without limit on a path the operator cannot observe.
+    # The "persona-update*" half must keep its metacharacters.
     if _platform.IS_WINDOWS:
-        pattern = os.path.join(tempfile.gettempdir(), "persona-update-setup*.exe")
+        pattern = os.path.join(
+            glob.escape(tempfile.gettempdir()), "persona-update-setup*.exe"
+        )
     elif _platform.IS_MACOS:
-        pattern = os.path.join(tempfile.gettempdir(), "persona-update*.dmg")
+        pattern = os.path.join(
+            glob.escape(tempfile.gettempdir()), "persona-update*.dmg"
+        )
     else:
         target = installed_appimage_path()
         if target is None:
             return
-        pattern = os.path.join(os.path.dirname(target), ".persona-update*.AppImage.part")
+        pattern = os.path.join(
+            glob.escape(os.path.dirname(target)), ".persona-update*.AppImage.part"
+        )
     for p in glob.glob(pattern):
         if os.path.abspath(p) != os.path.abspath(keep):
             try:
