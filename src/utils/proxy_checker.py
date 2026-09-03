@@ -166,6 +166,224 @@ def _ssl_context() -> ssl.SSLContext:
     return ssl.create_default_context()
 
 
+# The SECOND geo provider, asked only when the first does not answer.
+#
+# A single oracle made a THIRD PARTY's availability the operator's proxy's
+# availability. `ipwho.is` answering 429 — and the rate limit attaches to the
+# EXIT's address, which on a mobile/shared exit other tenants also burn, so it
+# is not the operator's to clear — returned ok=False; app.py then calls
+# ProxyStore.mark_check_failed, freshness.proxy_indicator_state reads "failed"
+# at any age, and launch_policy raises GeographyDisprovenError. A healthy proxy
+# becomes UNLAUNCHABLE, the message blames the proxy, and it does not self-heal.
+#
+# This project already fixed exactly this, twice, in the adjacent verify lane:
+# services/verify/exit_guard.py::EXIT_OBSERVATION_URLS and
+# services/verify/checkers.py::ENGINE_EXIT_URLS. The rule is carried over from
+# exit_guard.py:108-134 UNCHANGED, and it is REACHABILITY ONLY — the providers
+# do NOT vote:
+#
+#   * a provider that ANSWERS WITH A COUNTRY is authoritative and the loop
+#     stops there, INCLUDING when the country is wrong. Asking a second
+#     provider after an answer is shopping for a friendlier oracle, which is
+#     how a fallback becomes a laundering route.
+#   * only "no verdict" advances, and there are TWO shapes of it: nothing came
+#     back (the 429/5xx), and a 200 carrying no country. The second is the easy
+#     one to miss — the reader coerces a missing country to "", which would
+#     then refuse a HEALTHY exit while reporting "(unknown)".
+#
+# HTTPS, like the first provider: over cleartext a MITM on the exit could
+# inject a bogus country/timezone into the persisted fingerprint.
+#
+# NOT an address-only endpoint (api.ipify.org): exit_guard.py:126-134 records
+# that such a provider can never answer the geography question, so it would
+# occupy a slot in the order while being incapable of proving anything.
+_GEO_FALLBACK_PROVIDER = "https://ipinfo.io/json"
+
+
+def _coords_from_loc(loc: object) -> tuple[object, object]:
+    """ipinfo's `loc: "52.23,21.01"` -> the pair ipwho.is gives as two floats.
+
+    Returned UNPARSED (as the split strings) on purpose: _validate_geo is the
+    one place that floats and range-checks these, and routing a second dialect
+    around it would be a second, unreviewed sanitiser.
+
+    Not cosmetic — services/browser/process.py:587-593 pins
+    navigator.geolocation when both are present and builds the extension in
+    DENY mode when they are not. Deny mode is safe (it does NOT fall through to
+    the real host coords), so a `loc` this cannot read degrades gracefully.
+    """
+    if not isinstance(loc, str) or "," not in loc:
+        return None, None
+    lat, _, lon = loc.partition(",")
+    return lat.strip(), lon.strip()
+
+
+def _geo_fields_from_payload(
+    data: dict,
+) -> tuple[str, str, str, str, object, object]:
+    """One shape out of the providers' several. UNVALIDATED by design — every
+    field here still goes through _validate_geo at the call site.
+
+    Returns ``(ip, country_code, country_name, timezone, lat, lon)``.
+
+    The providers do not agree on how to give a two-letter code, and reading
+    one with the other's key layout is a WORSE failure than the 429 this exists
+    to survive (exit_guard.py:618-623 records it: ipwho.is read with ipinfo's
+    layout yields ``country == "POLAND"``, refusing a good exit *while naming
+    the wrong country*). Keyed on the SHAPE rather than on the URL, exactly as
+    exit_guard.py::_normalise_observation is, so a provider is not silently
+    misread if the order is ever changed:
+
+        field         ipwho.is                    ipinfo.io
+        code          country_code: "PL"          country: "PL"
+        country NAME  country: "Poland"           (none at all)
+        timezone      timezone: {"id": ...}       timezone: "Europe/Warsaw"
+        coords        latitude / longitude        loc: "52.23,21.01"
+
+    A CODE-SHAPED `country` is what marks the ipinfo dialect, not merely the
+    ABSENCE of `country_code`. Where `country_code` is present, `country` is
+    the human NAME; where it is absent AND `country` is two characters,
+    `country` IS the code and the provider has no name field — so an ipinfo
+    answer legitimately yields an empty `country_name` beside a populated code.
+    That is accepted rather than mapped (store.py:257 stores it;
+    ui/components/network_page.py:111-113 already guards on it being empty),
+    because a code->name table is a second source of truth for something no
+    shipped behaviour depends on. A body carrying a NAME and no code — the
+    degraded shape a rate-limited provider emits — is deliberately read as
+    NO COUNTRY rather than as a code, so the caller advances to the next
+    provider instead of stopping on a "POLAND" that validation then discards.
+    """
+    code = str(data.get("country_code") or "").strip()
+    name = str(data.get("country") or "").strip()
+    if not code:
+        # No `country_code` key: the ipinfo dialect, where `country` IS the
+        # code and there is no name field at all. The swap is gated on the
+        # VALUE being code-SHAPED rather than on the key merely being absent,
+        # because those two are not the same question. A degraded ipwho body —
+        # `{"country": "Poland"}` with the code missing, which is exactly the
+        # shape a rate-limited provider tends to emit — would otherwise take
+        # the swap and yield code == "POLAND": truthy, so the loop STOPS on it
+        # and never asks the second provider, and _validate_geo then drops it
+        # to "". That is the `exit_guard.py:618-623` trap reached from the
+        # other direction, and `len == 2` is what tells the two apart. A name
+        # with no code therefore leaves the code EMPTY, which is the
+        # no-country shape the loop already knows how to advance on.
+        if len(name) == 2:
+            code, name = name, ""
+    code = code.upper()
+
+    tzobj = data.get("timezone")
+    tz = (tzobj.get("id", "") if isinstance(tzobj, dict) else tzobj) or ""
+
+    lat = data.get("latitude")
+    lon = data.get("longitude")
+    if lat is None and lon is None:
+        lat, lon = _coords_from_loc(data.get("loc"))
+
+    return str(data.get("ip", "unknown")), code, name, str(tz), lat, lon
+
+
+async def _resolve_geo(
+    providers: tuple[str, ...], fetch
+) -> tuple[tuple[str, str, str, str, object, object] | None, str]:
+    """Ask the providers IN ORDER; the first to ANSWER WITH A COUNTRY wins.
+
+    Returns ``(fields, "")`` on an answer, or ``(None, message)`` with the
+    operator-facing failure string. That string is a FIXED one either way — no
+    arm here may echo the proxy host:port, which reaches the disk-backed daily
+    log and the Activity Log (pinned by tests/test_proxy_log_privacy.py and by
+    the host/port assertions in the socks tests).
+
+    `fetch` is the transport seam, and it is why BOTH branches get this fix
+    from one implementation rather than from two loops that can drift: the
+    SOCKS lane passes _geo_via_socks, the aiohttp lane passes a session GET.
+
+    THE COUNTRY IS TESTED ON THE RAW PAYLOAD, BEFORE _validate_geo, and that
+    ordering is load-bearing. A provider that answers with a BOGUS code
+    ("XYZ") has still ANSWERED: it must end the check with ok=True and an
+    empty, sanitised code — the shipped behaviour
+    tests/test_proxy_checker_socks.py::test_socks5_geo_is_dropped_when_the_endpoint_lies
+    pins. Testing after validation would turn every lie into a reason to go and
+    ask the next provider, i.e. the laundering route the rule above forbids.
+
+    A TRANSPORT EXCEPTION DOES NOT ADVANCE — it propagates to check_proxy's
+    except arms exactly as before. Every provider is reached through the SAME
+    tunnel, so a connect/handshake failure here is a fact about the PROXY, not
+    about the provider: retrying a second provider through a dead proxy cannot
+    succeed and would only spend a second full timeout before saying so. The
+    two shapes this project's rule actually names — the 429 and the
+    no-country 200 — are both answers FROM the provider, and both are handled
+    below.
+
+    THE ONE PLACE THIS PORT DELIBERATELY DIVERGES FROM ITS PRECEDENT is what
+    happens when the loop RUNS OUT. exit_guard's loop simply refuses, because
+    it is a MEASUREMENT gate: refusing costs a measurement run and nothing
+    else. This is the OPERATOR lane, where the same refusal walks the ticket's
+    own chain — app.py -> mark_check_failed -> freshness reads "failed" at any
+    age -> launch_policy raises GeographyDisprovenError — and makes a HEALTHY
+    proxy unlaunchable, which is the exact defect this function exists to stop.
+    So the best PARTIAL answer seen along the way is remembered and used only
+    once nobody has answered with a country. A body carrying a usable TIMEZONE
+    is enough for the launch path, which reads `proxy.timezone` FIRST and
+    derives from `country_code` only when there is no zone
+    (launch_policy.py:420-423) — so throwing that zone away and then condemning
+    the proxy for having no geography discards the very field the consumer
+    wanted. It is also what the single-provider version did before this change:
+    a partial body used to come back ok=True with its zone.
+
+    A PARTIAL IS STILL NOT AN ANSWER, and that is what keeps the rule above
+    intact: remembering one never ends the loop early, so every remaining
+    provider is still asked, and it can never pre-empt a real country. It only
+    changes the value of the exhausted case, never the ORDER or the STOPPING.
+    """
+    status = 0
+    partial: tuple[str, str, str, str, object, object] | None = None
+    for url in providers:
+        status, data = await fetch(url)
+        if status != 200:
+            # Nothing came back: the 429/5xx this exists to survive. Advance.
+            continue
+        if data is None:
+            # A 200 whose body is valid JSON but not an object. Reported
+            # accurately rather than tripping an AttributeError into the
+            # generic "Proxy check failed" arm — and NOT advanced on: a
+            # malformed answer from the provider we asked first is the
+            # documented specific failure, not a reachability problem.
+            return None, "Proxy geo lookup failed"
+        if not data.get("success", True):
+            # The provider itself says it did not answer (ipwho.is reports its
+            # own rate limiting this way, with a 200). A non-answer -> advance.
+            continue
+        fields = _geo_fields_from_payload(data)
+        if not fields[1]:
+            # Answered, carried no country: a rate-limit body, an error page,
+            # or a dialect this reader cannot read. Advancing here is what
+            # stops a HEALTHY exit being refused and reported as "(unknown)".
+            #
+            # REMEMBERED, not discarded. If NOBODY ends up answering with a
+            # country, a body that did carry a usable TIMEZONE still beats
+            # condemning the proxy — see the divergence note in the docstring.
+            # FIRST such body wins, matching the ordering rule the answers
+            # themselves follow, and a zoneless partial is not remembered at
+            # all because it would be indistinguishable from the refusal.
+            if partial is None and fields[3]:
+                partial = fields
+            continue
+        return fields, ""
+
+    # Nobody answered WITH A COUNTRY. Before refusing outright — which on this
+    # lane means an unlaunchable proxy — fall back to the best partial.
+    if partial is not None:
+        return partial, ""
+
+    # Nothing usable at all. The message reports the LAST provider's outcome,
+    # which is the final word on the check: a 200 that carried nothing usable
+    # is a geo-lookup failure, anything else is the status it returned.
+    if status == 200:
+        return None, "Proxy geo lookup failed"
+    return None, f"Proxy returned status {status}"
+
+
 def _is_blocked_proxy_host(server: str) -> bool:
     """True if the proxy endpoint resolves to loopback / private / link-local /
     cloud-metadata space. check_proxy() connects to whatever host:port the user
@@ -1150,46 +1368,78 @@ async def check_proxy(
         password = proxy_config.get("password", "")
         proxy_url = f"{url_scheme}://{proxy_config['username']}:{password}@{rest}"
 
+    # ORDERED providers, first-to-answer-with-a-country wins. See
+    # _GEO_FALLBACK_PROVIDER for why one oracle was a defect and for the rule
+    # (reachability only, never a vote) this carries over from the verify lane.
+    #
+    # ipwho.is is FIRST here, the INVERSE of exit_guard's order, deliberately:
+    # this call site's reader was written for ipwho's dialect, so a green first
+    # provider is byte-identical to the behaviour before this change. The
+    # HTTPS literal is spelled out in this function rather than hoisted whole
+    # into a module constant because tests/test_proxy_checker_geo.py:11-16
+    # asserts on `inspect.getsource(check_proxy)` — it is the shipped guard
+    # against reintroducing the old CLEARTEXT geo endpoint, and a pure hoist
+    # would take it RED with no behaviour change. (That guard matches on the
+    # source TEXT, so the endpoint it forbids must not be named here either.)
+    #
+    # HTTPS on BOTH entries: over cleartext a MITM on the exit could inject a
+    # bogus country/timezone that then feeds the persisted fingerprint.
+    #
+    # `timeout` is PER PROVIDER, not a shared budget — so a check whose first
+    # provider hangs can take up to 2x it before answering (20s at the default
+    # PROXY_CHECK_TIMEOUT of 10). Deliberate, and the same shape the verify
+    # lane's loop uses: a shared budget would let a slow first provider starve
+    # the second of the time it needs, which is precisely the case this
+    # fallback exists to survive. The aiohttp branch already behaved this way
+    # (ClientTimeout is per-request), so the two branches stay symmetric.
+    #
+    # NOTHING UPSTREAM HAS A SHORTER WATCHDOG, checked rather than assumed:
+    # both operator call sites — ui/app.py::_check_proxy / _rotate_proxy and
+    # ui/dialogs/proxy.py::do_check — run this on a daemon thread with no
+    # join deadline and no timer, re-enabling their button from the callback,
+    # so a longer worst case shows up as a longer "checking" state and never
+    # as a truncated or double-fired check. There is no "check all" loop that
+    # would multiply the doubling across a list; checks are per-proxy and
+    # operator-initiated, guarded by `_checking_proxies` against re-entry.
+    providers = ("https://ipwho.is/", _GEO_FALLBACK_PROVIDER)
+
     try:
         if is_socks:
-            status, data = await asyncio.wait_for(
-                _geo_via_socks(proxy_config, scheme, "https://ipwho.is/"),
-                timeout,
-            )
+
+            async def fetch(url: str) -> tuple[int, dict | None]:
+                return await asyncio.wait_for(
+                    _geo_via_socks(proxy_config, scheme, url), timeout
+                )
+
+            fields, failure = await _resolve_geo(providers, fetch)
         else:
             timeout_obj = aiohttp.ClientTimeout(total=timeout)
             async with aiohttp.ClientSession(timeout=timeout_obj) as session:
-                # HTTPS geo endpoint: over cleartext HTTP a MITM on the exit could
-                # inject a bogus country/timezone that then feeds the persisted
-                # fingerprint. ipwho.is serves the same fields over TLS for free.
-                async with session.get(
-                    "https://ipwho.is/",
-                    proxy=proxy_url,
-                ) as response:
-                    status = response.status
-                    data = await response.json() if status == 200 else None
-        if status == 200:
-            if data is None:
-                # A 200 whose body is valid JSON but not an object. Fails closed
-                # either way; this reports it accurately instead of tripping an
-                # AttributeError into the generic "Proxy check failed" arm.
-                return False, "Proxy geo lookup failed", "", "", "", "", None, None
-            if not data.get("success", True):
-                return False, "Proxy geo lookup failed", "", "", "", "", None, None
-            ip = data.get("ip", "unknown")
-            country = data.get("country", "")
-            code = (data.get("country_code") or "").upper()
-            tzobj = data.get("timezone")
-            tz = (tzobj.get("id", "") if isinstance(tzobj, dict) else tzobj) or ""
-            lat = data.get("latitude")
-            lon = data.get("longitude")
-            code, tz, lat, lon = _validate_geo(code, tz, lat, lon)
-            return (
-                True,
-                proxy_ok_message(code, country),
-                code, country, ip, tz, lat, lon,
-            )
-        return False, f"Proxy returned status {status}", "", "", "", "", None, None
+
+                async def fetch(url: str) -> tuple[int, dict | None]:
+                    async with session.get(url, proxy=proxy_url) as response:
+                        status = response.status
+                        if status != 200:
+                            return status, None
+                        data = await response.json()
+                        # Narrowed to `dict | None` for the same reason
+                        # _geo_via_socks narrows: check_proxy's specific
+                        # "Proxy geo lookup failed" arm is reached only via
+                        # None, so a top-level array must not sail past it into
+                        # the generic catch-all.
+                        return status, (data if isinstance(data, dict) else None)
+
+                fields, failure = await _resolve_geo(providers, fetch)
+
+        if fields is None:
+            return False, failure, "", "", "", "", None, None
+        ip, code, country, tz, lat, lon = fields
+        code, tz, lat, lon = _validate_geo(code, tz, lat, lon)
+        return (
+            True,
+            proxy_ok_message(code, country),
+            code, country, ip, tz, lat, lon,
+        )
     except asyncio.TimeoutError:
         return False, "Proxy connection timed out", "", "", "", "", None, None
     except _PROXY_CONNECT_ERRORS:
