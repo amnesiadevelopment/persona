@@ -8,7 +8,10 @@ import threading
 import time
 
 from ..core import config
+from ..core.logging import get_logger
 from ..utils.atomic import atomic_write_json
+
+logger = get_logger("core.settings")
 
 # set() is a read-modify-write of the whole file, called from the UI thread and
 # the API/server background thread; serialize it so two concurrent sets can't
@@ -86,13 +89,52 @@ def _path() -> str:
     return config._under_home("settings.json", "PERSONA_SETTINGS_FILE")
 
 
+# Set when the quarantine below could NOT move an unreadable settings.json
+# aside. While it is set, _save() refuses to write: the file still on disk is
+# the operator's only copy of their preferences, and overwriting it with the
+# empty dict _read() fell back to would destroy them for good.
+#
+# This is the second half of the guard src/utils/store_guard.StoreGuardMixin
+# gives the six class-based JSON stores (quarantine, then _save_blocked when
+# the quarantine failed). Settings is module-level functions rather than a
+# class, so the semantics are mirrored here instead of inherited — see
+# PS-277 for why adopting the mixin was not the shipped route.
+#
+# NOTE it is process-global where the mixin's flag is per-instance: a test that
+# trips it must reset it, or it leaks into every later test in the process.
+_save_blocked = False
+
+
 def _quarantine(path: str) -> None:
     # An unreadable settings file may still hold real preferences; move it
     # aside so the next _save() can't silently overwrite it.
+    global _save_blocked
+    backup = f"{path}.corrupt-{int(time.time())}"
     try:
-        os.replace(path, f"{path}.corrupt-{int(time.time())}")
+        os.replace(path, backup)
     except OSError:
-        pass
+        # The move failed, so the unreadable-but-real file is STILL THERE and
+        # is still the only copy. Block saving rather than let the overwrite
+        # this function exists to prevent proceed anyway: leaving the corrupt
+        # file in place is recoverable, writing over it is not.
+        _save_blocked = True
+        logger.exception(
+            "Could not back up %s; settings saving disabled to avoid "
+            "overwriting it",
+            path,
+        )
+    else:
+        logger.warning("Moved unreadable settings file to %s", backup)
+
+
+def _save_is_blocked() -> bool:
+    """True when a save must be refused because the quarantine failed."""
+    if not _save_blocked:
+        return False
+    logger.error(
+        "Not saving: settings file failed to load and could not be backed up"
+    )
+    return True
 
 
 class _UnreadableSettings(Exception):
@@ -141,6 +183,11 @@ def _load() -> dict:
 
 
 def _save(data: dict) -> None:
+    # Refuse the write outright when an unreadable settings.json could not be
+    # quarantined — that file is the only copy of the real preferences and this
+    # `data` is built on the empty dict _read() fell back to.
+    if _save_is_blocked():
+        return
     # atomic_write_json gives a unique temp per call + fsync, so concurrent
     # writers can't interleave into a corrupt settings.json.
     atomic_write_json(_path(), data)
