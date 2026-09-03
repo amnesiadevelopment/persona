@@ -63,6 +63,16 @@ class TrashService:
     def get(self, entry_id: str) -> TrashEntry | None:
         return self.trash.get(entry_id)
 
+    def by_urgency(self, kind: str | None = None) -> list[TrashEntry]:
+        """Trashed records, nearest destruction first — READ ONLY.
+
+        Surfaced here the way :meth:`expiring_within` is, so the UI never
+        reaches past the service into the store. :meth:`list`'s recency order
+        is untouched: the REST lane and ``_empty_trash``'s count still get
+        exactly what they got before.
+        """
+        return self.trash.by_urgency(kind)
+
     def expiring_within(self, days: int = EXPIRY_WARNING_DAYS) -> list[TrashEntry]:
         """Entries about to be destroyed, most urgent first — READ ONLY.
 

@@ -13,6 +13,14 @@ direction's "no claim outlives the code it describes":
   letting the operator assume otherwise.
 * Every row shows when it was deleted and when it expires, because retention is
   a floor beneath a mis-click, not an archive — the operator can see the clock.
+
+The page renders ``entries`` IN THE ORDER IT IS GIVEN, and the caller
+(``App._render_active_page``) passes ``trash_service.by_urgency()`` — nearest
+destruction first. That is load-bearing rather than incidental: the nav rail
+carries a badge counting entries inside the 7-day warning window, and with a
+constant retention window the store's recency order is time-remaining DESC, so
+recency order would put exactly the entries the badge is about at the BOTTOM of
+the page the badge sends the operator to.
 """
 
 import time
@@ -110,6 +118,47 @@ def build_trash_page(
     )
 
 
+#: What a row says about an entry the retention window has already passed.
+#:
+#: The true statement, not a rounded one: nothing destroys a trashed record
+#: until ``purge_expired()`` runs, and that runs on every app start
+#: (``src/main.py``). So the entry is still here, still restorable right now,
+#: and gone the next time persona opens. "expires in 0d" said none of that —
+#: it was the same six characters an entry with most of a day left got.
+PAST_WINDOW_PHRASE = "destroyed when persona next opens — restore it now"
+
+
+def expiry_phrase(entry, now: float) -> str:
+    """How long this entry has left, said honestly.
+
+    Three states the operator has to be able to tell apart, because the action
+    each one calls for is different:
+
+    * **a day or more left** — ``expires in 12d``. Unchanged; days are the
+      right unit while there are days.
+    * **hours, not days** — ``expires in 5h`` (or ``expires in under 1h``).
+      Floor-dividing by 86400 rendered every one of these as ``expires in 0d``,
+      which reads as "already gone" for an entry that is most of a day from it.
+    * **already past the window** — :data:`PAST_WINDOW_PHRASE`. The old
+      ``max(0, ...)`` clamp existed so this case never printed a negative
+      number, and that restraint is kept — what changes is that the row now
+      says what is actually true about the state instead of borrowing the
+      string that belongs to "0 days left".
+
+    Pure arithmetic on ``expires_at()`` and the injected ``now``; nothing here
+    reads or writes anything.
+    """
+    left = entry.expires_at() - now
+    if left <= 0:
+        return PAST_WINDOW_PHRASE
+    if left >= 86400:
+        return f"expires in {int(left // 86400)}d"
+    hours = int(left // 3600)
+    if hours < 1:
+        return "expires in under 1h"
+    return f"expires in {hours}h"
+
+
 def _entry_row(
     entry,
     on_restore: Callable[[str], None],
@@ -117,8 +166,7 @@ def _entry_row(
     now: float,
 ) -> ft.Control:
     deleted = humanize_since(entry.deleted_at, now)
-    days_left = max(0, int((entry.expires_at() - now) // 86400))
-    meta = f"{entry.label} · deleted {deleted} · expires in {days_left}d"
+    meta = f"{entry.label} · deleted {deleted} · {expiry_phrase(entry, now)}"
     lines: list[ft.Control] = [
         ft.Text(
             entry.name,
