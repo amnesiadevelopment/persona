@@ -341,6 +341,40 @@ def test_socks_a_200_carrying_no_country_advances(monkeypatch):
     assert [host for host, _ in seen["targets"]] == [_FIRST, _SECOND]
 
 
+def test_socks_a_name_without_a_code_advances_instead_of_stopping_on_POLAND(
+    monkeypatch,
+):
+    """The `exit_guard.py:618-623` trap, reached from the OTHER direction.
+
+    A degraded ipwho body — `country: "Poland"` with `country_code` MISSING,
+    which is the shape a rate-limited provider tends to emit — must not be read
+    as the ipinfo dialect. If the dialect swap were gated only on the key being
+    absent, `country` would become the CODE and yield `"POLAND"`: truthy, so
+    the loop STOPS on it and the second provider is never asked, and
+    `_validate_geo` then drops the 6-letter value to `""`. The operator gets
+    ok=True with no country from a provider that told us nothing.
+
+    A name with no code is NO COUNTRY, so it advances — and the second
+    provider's real answer is what comes back.
+    """
+    seen: dict = {}
+    ok, message, code, _country, _ip, tz, _lat, _lon = _check_via_socks(
+        monkeypatch,
+        {
+            _FIRST: _http(200, {"success": True, "ip": "203.0.113.7",
+                                "country": "Poland"}),
+            _SECOND: _http(200, _IPINFO_BODY),
+        },
+        seen,
+    )
+
+    assert ok is True, f"{message} / server: {seen.get('error')}"
+    assert code == "PL"                        # from the SECOND provider
+    assert code != "POLAND" and code != ""     # neither the trap nor its debris
+    assert tz == "Europe/Warsaw"
+    assert [host for host, _ in seen["targets"]] == [_FIRST, _SECOND]
+
+
 def test_socks_the_providers_own_success_false_advances(monkeypatch):
     """ipwho.is reports its OWN rate limiting with a 200 and `success: false`.
 
@@ -744,6 +778,28 @@ def test_normaliser_reads_both_dialects_without_confusing_them():
     assert name == ""            # ipinfo has no country-name field; not mapped
     assert tz == "Europe/Warsaw"
     assert (lat, lon) == ("52.23", "21.01")   # unparsed; _validate_geo floats it
+
+
+def test_a_country_NAME_with_no_code_is_read_as_no_country_not_as_a_code():
+    """The discriminator is the VALUE's shape, not the key's absence.
+
+    `{"country": "Poland"}` with no `country_code` is a DEGRADED ipwho body,
+    not an ipinfo one — and it is the shape a rate-limited provider emits. Read
+    as ipinfo it would yield `"POLAND"`, which is truthy enough to end the
+    provider loop and is then discarded by `_validate_geo`: the caller stops on
+    an answer that says nothing. `len == 2` tells the two dialects apart, and a
+    name with no code comes back as NO COUNTRY so the loop advances.
+    """
+    _ip, code, name, tz, _lat, _lon = proxy_checker._geo_fields_from_payload(
+        {"success": True, "ip": "203.0.113.7", "country": "Poland",
+         "timezone": {"id": "Europe/Warsaw"}}
+    )
+    assert code == ""                 # NOT "POLAND"
+    assert name == "Poland"           # the name is still reported, unchanged
+    assert tz == "Europe/Warsaw"      # and the rest of the body still reads
+
+    # And the two-letter case is unaffected: that IS ipinfo, and it answers.
+    assert proxy_checker._geo_fields_from_payload({"country": "pl"})[1] == "PL"
 
 
 @pytest.mark.parametrize("loc", [None, "", "52.23", 52.23, {"lat": 1}])
