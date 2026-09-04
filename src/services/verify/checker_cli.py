@@ -263,12 +263,18 @@ def _chromium_label() -> str:
     decision to be made rather than let drift out of a UI rename. It stays for
     three reasons, in order of how expensive changing it would be:
 
-    1. IT WOULD SILENTLY BREAK EXISTING COMPARISONS. 38 committed reading sets
+    1. IT WOULD SILENTLY BREAK EXISTING COMPARISONS. 26 committed reading sets
        under ``readings/`` carry ``"engine": "fingerprint-chromium/<version>"``
-       in their headers. ``compare`` and the matrix tooling hold a new record
-       against an old one; a changed header makes old and new readings
-       incomparable, and NOTHING would report that — the exact silent-drift
-       failure the ticket names.
+       as a header value, and 36 carry the identifier somewhere. Re-derive
+       either figure rather than trusting this one::
+
+           git ls-files readings/ | xargs grep -lE \
+               '"engine"[[:space:]]*:[[:space:]]*"fingerprint-chromium/' | wc -l
+           git ls-files readings/ | xargs grep -l 'fingerprint-chromium/' | wc -l
+
+       ``compare`` and the matrix tooling hold a new record against an old one;
+       a changed header makes old and new readings incomparable, and NOTHING
+       would report that — the exact silent-drift failure the ticket names.
     2. IT WOULD BREAK A LIVE LOOKUP, TODAY. ``pool_depth.engine_report`` finds
        an arm by case-insensitive SUBSTRING of the engine header:
        ``"chromium" in "fingerprint-chromium/148...".lower()`` is True, and

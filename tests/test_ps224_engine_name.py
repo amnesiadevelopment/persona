@@ -23,13 +23,15 @@ the ticket names explicitly:
   platform layer to find and launch the downloaded binary. Renaming it breaks
   the download and the launch.
 * ``fingerprint-chromium/<version>`` — the verification tooling's recorded
-  engine identifier. 38 committed reading sets carry it, and
+  engine identifier. 36 committed reading sets carry it (26 of them as an
+  ``"engine":`` header value), and
   ``pool_depth.engine_report`` finds an arm by substring-matching "chromium"
   against it.
 * the stored engine key ``"chromium"`` — a display rename must not become a
   data migration.
 """
 
+import json
 import os
 import tempfile
 
@@ -231,16 +233,59 @@ def test_the_launch_layer_cannot_even_import_the_module_that_defines_the_name(
 # ---------------------------------------------------------------------------
 
 
-def test_the_upstream_artifact_filename_is_unchanged():
+def test_our_name_never_reaches_the_resolved_upstream_artifact(monkeypatch):
+    """The property the ticket's trap is actually about, asserted on EVERY OS.
+
+    The boundary is "nothing on disk was renamed by accident", not "this one
+    Linux string is literally present" — so the assertion that has to hold
+    everywhere is that OUR name is absent from whatever this platform resolves.
+    Round 1 asserted the Linux VALUE unconditionally and therefore failed on
+    macOS and Windows, where the same function correctly answers something
+    else; the value test is below, and it drives all three branches explicitly
+    rather than assuming the branch this runner happens to take.
+
+    All three branches are exercised here too, because a rename that touched
+    only the Windows arm would otherwise be invisible to a Linux CI run.
+    """
+    from src.core import platform as _platform
+
+    for windows, macos in ((True, False), (False, True), (False, False)):
+        monkeypatch.setattr(_platform, "IS_WINDOWS", windows)
+        monkeypatch.setattr(_platform, "IS_MACOS", macos)
+        resolved = _platform.fingerprint_chromium_filename()
+        assert CHROMIUM_ENGINE_NAME.lower() not in resolved.lower(), (
+            f"{CHROMIUM_ENGINE_NAME!r} leaked into the artifact filename this "
+            f"platform layer resolves ({resolved!r}). The downloaded binary is "
+            "still someone else's build; renaming what the updater resolves by "
+            "name breaks the download and the launch."
+        )
+
+
+def test_the_upstream_artifact_filename_is_unchanged_on_every_platform(monkeypatch):
     """``fpchrome.AppImage`` is the UPSTREAM build's filename, not ours.
 
     The platform layer resolves it to find the downloaded binary; renaming it
     while we are still downloading someone else's build breaks the download and
     the launch. It becomes ours only once we ship a binary we built.
+
+    ⚠️ THE FUNCTION IS PER-OS BY DESIGN (``src/core/platform.py``): the Windows
+    package exposes ``chrome.exe`` and the macOS bundle
+    ``Chromium.app/Contents/MacOS/Chromium``. So the three expected values are
+    driven from the module's own OS flags instead of read off whichever runner
+    executes this — which pins all three arms on all three platforms, rather
+    than pinning one arm on one and failing on the other two.
     """
     from src.core import platform as _platform
 
-    assert _platform.fingerprint_chromium_filename() == "fpchrome.AppImage"
+    expected = {
+        (True, False): "chrome.exe",
+        (False, True): "Chromium.app/Contents/MacOS/Chromium",
+        (False, False): "fpchrome.AppImage",
+    }
+    for (windows, macos), name in expected.items():
+        monkeypatch.setattr(_platform, "IS_WINDOWS", windows)
+        monkeypatch.setattr(_platform, "IS_MACOS", macos)
+        assert _platform.fingerprint_chromium_filename() == name
 
 
 def test_the_stored_engine_key_is_unchanged():
@@ -267,10 +312,12 @@ def test_the_verification_engine_identifier_is_unchanged(monkeypatch):
     let drift (see ``checker_cli._chromium_label``'s docstring for the full
     reasoning).
 
-    Pinned as a test because the cost of it drifting is SILENT: 38 committed
-    reading sets carry this identifier in their headers, and a comparison
-    against a record with a different header does not announce that it is
-    comparing incomparable things.
+    Pinned as a test because the cost of it drifting is SILENT: 26 committed
+    reading sets carry this identifier as an ``"engine":`` header value (36
+    carry it somewhere) — re-derive with ``git ls-files readings/ | xargs grep
+    -lE '"engine"[[:space:]]*:[[:space:]]*"fingerprint-chromium/'`` — and a
+    comparison against a record with a different header does not announce that
+    it is comparing incomparable things.
 
     ⚠️ THE VERSION-BEARING PATH IS DRIVEN EXPLICITLY, and that is the whole
     point of the stub. In a container with no engine installed
@@ -381,29 +428,48 @@ def _all_tooltips(control) -> set:
 
 
 def _capture_launch_argv() -> list[str]:
-    """Run the REAL ``spawn_browser`` against a recording stand-in binary.
+    """Run the REAL ``spawn_browser`` and return the argv the engine was
+    actually launched with.
 
-    Returns the argv the engine would have been launched with. The profile is
-    a default one — no proxy, no certificate — because the assertion is about
-    values persona ALWAYS emits, not about a particular profile's extras.
+    Not a re-implementation of the argv and not a grep: the product launch path
+    runs in full, and the argv returned here is read back out of a real child
+    process that was really executed — ``sys.argv`` as the OS delivered it.
+
+    ⚠️ PORTABLE BY CONSTRUCTION, AND THAT IS THE POINT OF THE SEAM.
+    Round 1 recorded by patching ``FINGERPRINT_CHROMIUM`` to a ``#!/bin/sh``
+    script. Windows has no shebang handling, so ``CreateProcess`` refused it
+    with ``OSError: [WinError 193] %1 is not a valid Win32 application`` and
+    the two most load-bearing tests in this file — the ones that pin the
+    non-waivable constraint — died in the helper on one of the three platforms
+    we ship to. The recorder is now the current interpreter running a plain
+    ``.py`` file, which needs no shebang and no shell, so these tests run on
+    all three rather than being skipped where they matter.
+
+    THE INTERCEPT IS AT THE LAUNCH SEAM, NOT AT THE BINARY. The engine path is
+    left exactly as the product resolves it and ``popen_in_new_session`` — the
+    single call ``spawn_browser`` launches through — is wrapped so the recorder
+    is prepended to the real argv. Everything upstream of that line is the
+    untouched product path: the same extensions are built on disk, the same
+    flags assembled, in the same order.
+
+    BOTH READINGS ARE CROSS-CHECKED below: what persona HANDED to the launcher
+    and what the OS DELIVERED to the child must agree. A divergence would mean
+    the recorder was measuring something other than the launch.
     """
-    import json
-    import subprocess
+    import sys
 
     from src.models.profile import Profile
     from src.services.browser import process as _process
 
     tmp = tempfile.mkdtemp(prefix="ps224-")
-    recorder = os.path.join(tmp, "recorder.sh")
     out = os.path.join(tmp, "argv.json")
+    recorder = os.path.join(tmp, "recorder.py")
     with open(recorder, "w", encoding="utf-8") as fh:
         fh.write(
-            "#!/bin/sh\n"
-            f'printf "%s\\n" "$@" > {out}\n'
-            "sleep 30 &\n"
-            "exit 0\n"
+            "import json, sys\n"
+            "with open(sys.argv[1], 'w', encoding='utf-8') as fh:\n"
+            "    json.dump(sys.argv[2:], fh)\n"
         )
-    os.chmod(recorder, 0o755)
 
     class _Store:
         def get(self, *a, **k):
@@ -418,6 +484,13 @@ def _capture_launch_argv() -> list[str]:
 
     import unittest.mock as _mock
 
+    handed: list[list[str]] = []
+    _real_popen = _process.popen_in_new_session
+
+    def _recording_popen(args, **kwargs):
+        handed.append(list(args))
+        return _real_popen([sys.executable, recorder, out, *args], **kwargs)
+
     patches = [
         _mock.patch.object(_process, "DATA_DIR", os.path.join(tmp, "data")),
         _mock.patch.object(_process, "ProxyStore", _Store),
@@ -425,19 +498,24 @@ def _capture_launch_argv() -> list[str]:
         _mock.patch.object(_process, "write_window_entry", lambda name: None),
         _mock.patch.object(_process, "seed_bookmarks", lambda *a, **k: None),
         _mock.patch.object(_process, "seed_profile_prefs", lambda *a, **k: None),
-        _mock.patch.object(_process, "FINGERPRINT_CHROMIUM", recorder),
+        _mock.patch.object(_process, "popen_in_new_session", _recording_popen),
     ]
     for p in patches:
         p.start()
     try:
         proc = _process.spawn_browser(Profile(name="ps224-argv"))
-        proc.wait(timeout=30)
+        proc.wait(timeout=60)
     finally:
         for p in reversed(patches):
             p.stop()
 
     with open(out, encoding="utf-8") as fh:
-        argv = [ln for ln in fh.read().split("\n") if ln]
-    assert argv, "the launch recorded no arguments"
-    del json, subprocess
-    return argv
+        delivered = json.load(fh)
+
+    assert delivered, "the launch recorded no arguments"
+    assert handed and delivered == handed[0], (
+        "what persona handed to the launcher and what the OS delivered to the "
+        f"child disagree — the recorder is not measuring the launch.\n"
+        f"handed:    {handed[0] if handed else None}\ndelivered: {delivered}"
+    )
+    return delivered
