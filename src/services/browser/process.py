@@ -470,13 +470,42 @@ def spawn_browser(profile: Profile, *, in_process: bool = False) -> subprocess.P
         # Locale + timezone follow the proxy's geo so they match the exit IP.
         lang = _locale_for(proxy.country_code) if proxy else "en-US"
 
+        # Imported function-locally for the same reason effective_engine above
+        # does: services.profile imports browser.device_presets, and reaching it
+        # runs browser/__init__ → launcher → process, so a module-level import
+        # here closes a cycle that fails at import time.
+        from ..profile.coherence import coherent_device_type
+
+        # The device_type this profile actually LAUNCHES as, reconciled against
+        # os_type ONCE, here, before either consumer reads it — the Rule 3
+        # counterpart of effective_engine/coherent_engine above, and owned by the
+        # same module so the RULE has one author.
+        #
+        # An already-stored `windows` + `mobile` record is reachable (import,
+        # restore, legacy records, the unguarded REST lane — the authoring doors
+        # refuse the pair, the recovery doors accept and RECORD it, PS-188). Only
+        # TWO of the four vectors a launch computes read device_type — the device
+        # preset below and --fingerprint-platform; the GPU pool arm and the voice
+        # roster read os_type alone and cannot be moved by it. So unreconciled,
+        # that record launches an Android Pixel-class UA and screen over a WINDOWS
+        # Direct3D11 GPU pool and Microsoft SAPI voices, told
+        # --fingerprint-platform=linux: one machine, three answers, and any pair of
+        # them is a contradiction a checker reads directly. Reconciling here brings
+        # the two vectors that read the field into line with the two that do not.
+        #
+        # ⚠️ LOCAL VALUE ONLY — never assigned back to profile.device_type. The
+        # record is not rewritten (a pair rule has no safe repair at rest: nothing
+        # says WHICH of the two fields is the lie), so
+        # Profile.device_type_incoherence keeps reporting it after this launch,
+        # which is the whole point of the accept-and-record decision.
+        device_type = coherent_device_type(profile.os_type, profile.device_type)
         # Mobile profiles are assembled at this layer (the engine has no Android/iOS
         # mode): a real device preset drives the UA, window size, screen and the
         # touch/Client-Hints extension. A profile is mobile when its OS is a mobile
         # family (android/ios) OR device_type says so — the predicate is owned by
         # device_presets.is_mobile_profile and shared with engine_platform, so the
         # launch gate and the platform the engine is told cannot drift apart.
-        is_mobile = is_mobile_profile(profile.os_type, profile.device_type)
+        is_mobile = is_mobile_profile(profile.os_type, device_type)
         # The one string the engine is told, computed ONCE, here, BEFORE the
         # extensions are built — because build_gpu_extension takes it and
         # resolves WHO AUTHORS the WebGL identity pair from it. It used to be
@@ -485,7 +514,7 @@ def spawn_browser(profile: Profile, *, in_process: bool = False) -> subprocess.P
         # windows+mobile (engine told `linux`, our layer standing down for a
         # `windows` identity nobody wrote) and the host's SwiftShader reached
         # the page. One value, both consumers, no second computation to drift.
-        engine_platform = engine_platform_for(profile.os_type, profile.device_type)
+        engine_platform = engine_platform_for(profile.os_type, device_type)
         # the mobile OS family for preset selection (android unless explicitly ios)
         mobile_os = profile.os_type if is_mobile_os(profile.os_type) else "android"
         preset = (

@@ -496,3 +496,56 @@ def coherent_engine(os_type: str, engine: str | None) -> str:
     if not is_coherent(os_type, normalized):
         return DEFAULT_ENGINE
     return normalized
+
+
+def coherent_device_type(os_type: str, device_type: str | None) -> str:
+    """The ``device_type`` an already-stored profile actually launches as.
+
+    Rule 3's reconciliation, and the exact counterpart of ``coherent_engine``
+    for the other rule family: the doors REFUSE an incoherent value at write
+    time, and this resolves an incoherent one that is ALREADY STORED — reached
+    by import, restore, a legacy record, or the unguarded REST lane. It is the
+    residual PS-188 declined and handed on by name, and the direction it
+    applies is the one this module's docstring already settled: **``os_type``
+    WINS and ``device_type`` is reconciled to it**, in favour of the record
+    rather than in favour of the field.
+
+    WHY THIS IS ONE FUNCTION AND NOT A CONDITION AT EACH CALL SITE. A launched
+    profile answers "what OS am I?" on four vectors, and only two of them read
+    this field: the device preset (UA / screen / touch) and
+    ``--fingerprint-platform``. The GPU pool arm and the voice roster read
+    ``os_type`` alone and cannot be moved by it. So a stored ``windows`` +
+    ``mobile`` record launches an Android **Pixel-class UA and screen** over a
+    **Windows** Direct3D11 GPU pool and **Microsoft SAPI** voices, told
+    ``--fingerprint-platform=linux`` — one machine, three answers, and any pair
+    of them is a contradiction a checker reads directly. Reconciling the field
+    ONCE at the launch path brings the two vectors that read it into line with
+    the two that do not; spelling the condition out at each of those two call
+    sites would be the "two authors, each deciding from its own copy of the
+    question" shape ``engine_platform``'s module docstring was written about,
+    and that PS-161 spent two review rounds on. There is one owner, so there is
+    no second copy to drift.
+
+    ⚠️ ONE-DIRECTIONAL, and the asymmetry is Rule 3's own (see the module
+    docstring). It coerces the literal ``"mobile"`` to ``"desktop"`` when
+    ``os_type`` is NOT a mobile family, and is a no-op in every other case —
+    including ``android`` + ``desktop``, which is what EVERY android profile the
+    UI has ever created is stored as (``"desktop"`` is the model default and the
+    profile dialog carries no ``device_type`` control). Coercing that pair the
+    other way would rewrite the normal case. A value that is neither literal
+    makes no competing claim at launch and is passed through untouched.
+
+    ⚠️ THE STORED RECORD IS NOT REWRITTEN. This returns a value; it never
+    assigns to a profile. ``Profile.device_type_incoherence`` is a derived
+    property computed from the stored fields on every read, so it keeps
+    reporting the incoherence after a launch — which is the point of PS-188's
+    accept-and-record decision, and would be silenced by an in-place repair. A
+    *pair* rule has no safe repair at rest anyway: nothing in the record says
+    which of the two fields is the lie. This is the launch answering coherently,
+    not the record being corrected.
+    """
+    if device_type is None:
+        return DEFAULT_DEVICE_TYPE
+    if is_device_type_coherent(os_type, device_type):
+        return device_type
+    return DEFAULT_DEVICE_TYPE
