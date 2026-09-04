@@ -36,10 +36,18 @@ from src.ui.log_console import ROW_HEIGHT, event_row
 ROSTER = frozenset({"shop-de-03", "mail-us-011", "shop-us-01"})
 
 #: The real worst-case refusal, as it LANDS IN THE LOG — composed by
-#: ``src/services/browser/process.py:233-241`` and carried through
-#: ``launcher.py`` with the "Error starting process: " prefix. 460 characters.
+#: ``process._profile_timezone`` and carried through ``launcher.py`` with the
+#: "Error starting process: " prefix. 460 characters.
 #: Built here from the same string the product composes rather than pasted, so
 #: a reworded refusal changes this fixture instead of silently outdating it.
+#:
+#: ⚠️ NO LONGER THE LONGEST refusal the product composes — PS-240's
+#: LocaleUnderivableError is 475 (see ``_MESSAGE_EXPANDED_MAX_LINES``). It is
+#: still a REAL refusal that needs the reveal, which is what this file asserts,
+#: and both land on the same line count at every width in the budget, so the
+#: arithmetic here is unchanged. Kept rather than retargeted: swapping the
+#: fixture would change what these assertions have measured since PS-266
+#: without making any of them stronger.
 _REFUSAL = (
     "Error starting process: "
     "Profile 'shop-de-03' has proxy 'de-residential-01' assigned and its "

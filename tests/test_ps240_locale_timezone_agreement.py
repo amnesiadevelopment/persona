@@ -55,6 +55,7 @@ from src.services.browser.launch_policy import (
 )
 from src.services.browser.refusal import classify_refusal
 from src.services.proxy.errors import (
+    ExitCountryUnknownError,
     GeographyUnknownError,
     LocaleUnderivableError,
     TimezoneUnderivableError,
@@ -97,6 +98,31 @@ def _store_for(proxy):
             return proxy
 
     return _Store
+
+
+def _proxy(**geo) -> Proxy:
+    """A real ``Proxy`` record with the given geography. Not a duck-typed
+    stand-in: the field defaults and coercions are part of what is under test."""
+    return Proxy(name="p1", url="socks5://1.2.3.4:1080", **geo)
+
+
+def _refusal_for(raising: bool = False, **geo):
+    """The exception ``_profile_locale`` raises for a proxy with this geography,
+    RETURNED rather than raised so a caller can interrogate it.
+
+    Goes through the real ``_profile_locale`` — the composed, operator-facing
+    sentence is what the card and the 409 body carry, so asserting on
+    ``_locale_for``'s bare message would be asserting on text nobody reads.
+    ``raising=True`` re-raises instead, for a ``pytest.raises`` caller.
+    """
+    profile = Profile(name="probe", proxy="p1")
+    if raising:
+        return process._profile_locale(profile, _proxy(**geo))
+    try:
+        process._profile_locale(profile, _proxy(**geo))
+    except Exception as e:  # noqa: BLE001 — the object under test
+        return e
+    raise AssertionError(f"no refusal was raised for geo={geo!r}")
 
 
 @pytest.fixture
@@ -151,8 +177,7 @@ def launch(monkeypatch, tmp_path):
     class Env:
         @staticmethod
         def use(**geo):
-            proxy = Proxy(name="p1", url="socks5://1.2.3.4:1080", **geo)
-            monkeypatch.setattr(process, "ProxyStore", _store_for(proxy))
+            monkeypatch.setattr(process, "ProxyStore", _store_for(_proxy(**geo)))
 
         @staticmethod
         def no_proxy():
@@ -462,11 +487,237 @@ def test_every_refusal_kind_stays_distinct():
     two refusals collapsing onto one value silently narrows a caller's switch."""
     excs = [
         LocaleUnderivableError("a"),
-        TimezoneUnderivableError("b"),
-        GeographyUnknownError("c"),
+        ExitCountryUnknownError("b"),
+        TimezoneUnderivableError("c"),
+        GeographyUnknownError("d"),
     ]
     kinds = {classify_refusal(e, 1.0).kind for e in excs}
     assert len(kinds) == len(excs), f"refusals collapsed into {kinds}"
+
+
+# ---------------------------------------------------------------------------
+# THE OTHER INPUT THAT REACHES THIS PATH: a proxy IS present and its
+# country_code is EMPTY. Same shipped contradiction, reached from the side
+# `_locale_for` structurally cannot see.
+# ---------------------------------------------------------------------------
+#
+# `_locale_for("")` answers `en-US`, and that is CORRECT — it is a pure function
+# and cannot tell "no country was supplied" (the direct path, where en-US is
+# deliberate policy, #218) from "a proxy is present and we do not know its
+# country". Only the CALLER knows a proxy exists, so the gate is in
+# `_profile_locale`, not in `_locale_for`, and every assertion below therefore
+# drives a REAL LAUNCH rather than the helper.
+#
+# The shape is not hypothetical. `proxy_checker` produces it two ways ON
+# PURPOSE, and one of them is pinned by a shipped test as correct behaviour:
+#
+#   * `_resolve_geo` REMEMBERS a partial — a 200 carrying a usable timezone but
+#     no country is kept rather than discarded, on the stated reasoning that
+#     condemning a healthy exit is worse than a partial answer.
+#     `ProxyStore.mark_checked` then stores country_code="" beside a real zone
+#     and last_check_ok=True.
+#   * `_validate_geo` DROPS a code that is not two alphabetic characters while
+#     keeping any tz containing "/", so a lying endpoint yields the same record
+#     — `test_proxy_checker_socks::test_socks5_geo_is_dropped_when_the_endpoint_lies`
+#     pins code == "" as the right answer there.
+#
+# And the zone half ANSWERS for this record, from `_proxy_timezone`'s FIRST
+# branch, exactly as it does for the country-known case. So the two halves
+# genuinely disagree and the disagreement SHIPS — the ticket's headline
+# transcript line, reached by a different route.
+
+# The zone-carrying, country-less record both paths above produce.
+_COUNTRYLESS_RECORD = dict(
+    country_code="", timezone="Europe/Sofia", checked_at=9e9, last_check_ok=True
+)
+
+
+@pytest.mark.parametrize("engine", ["firefox", "chromium"])
+def test_a_proxy_with_no_country_but_a_real_zone_refuses_on_both_engines(
+    launch, engine
+):
+    """The gap this file's first version missed, asserted through a real launch
+    on EACH arm.
+
+    Before the gate in ``_profile_locale`` this shipped, byte for byte::
+
+        FIREFOX   lang='en-US'                       tz='Europe/Sofia'
+        CHROMIUM  lang='en-US' accept-lang='en-US,en' tz='Europe/Sofia'
+
+    Both engines are asserted separately for AC3's reason and not as ceremony:
+    the two arms compute the pair at different call sites, so a gate added to
+    one is a real one-engine fix.
+    """
+    launch.use(**_COUNTRYLESS_RECORD)
+    with pytest.raises(GeographyUnknownError) as raised:
+        if engine == "firefox":
+            launch.firefox()
+        else:
+            launch.chromium()
+
+    msg = str(raised.value)
+    assert "EXIT COUNTRY is not known" in msg, (
+        f"{engine}: the refusal does not say what is missing: {msg}"
+    )
+    assert "p1" in msg and "Refusing to launch" in msg, (
+        f"{engine}: the refusal must name the proxy and say it refused: {msg}"
+    )
+
+
+def test_the_no_country_proxy_refusal_prompts_a_RE_CHECK_not_a_table_row():
+    """The remedy runs the OPPOSITE way to its two neighbours, and saying the
+    wrong one sends the operator to do work that cannot help.
+
+    ``LocaleUnderivableError``/``TimezoneUnderivableError`` mean "we know the
+    country and have no row" — a code change, and re-checking is futile. This
+    means "we do not know the country" — a check that answers with one fixes
+    it, and there is no row to add for a country nobody can name.
+    """
+    exc = _refusal_for(**_COUNTRYLESS_RECORD)
+    assert isinstance(exc, ExitCountryUnknownError)
+    msg = str(exc)
+    assert "Re-check the proxy to resolve it" in msg, (
+        f"the message must point at the remedy that actually works: {msg}"
+    )
+    assert "Re-checking will NOT help" not in msg, (
+        "this is the row-missing sentence, and it is FALSE here — following it "
+        f"leaves the operator with an unlaunchable proxy and nothing to do: {msg}"
+    )
+    assert "_COUNTRY_LOCALE" not in msg, (
+        "asking for a table row for a country nobody can name is an "
+        f"instruction the operator cannot follow: {msg}"
+    )
+
+
+def test_the_no_country_proxy_refusal_is_not_labelled_never_checked():
+    """It gets its OWN kind and label rather than the parent's.
+
+    The parent's ``"proxy never checked"`` is doubly wrong here: the check most
+    likely PASSED (it simply answered without a country), so that label sends
+    the operator hunting a failure that did not happen. This is the same
+    distinction ``GeographyDisprovenError`` was split out for.
+    """
+    r = classify_refusal(_refusal_for(**_COUNTRYLESS_RECORD), 1.0)
+    assert r is not None, "a fail-closed guard fired but no Refusal was recorded"
+    assert r.kind == "exit_country_unknown", (
+        f"got kind={r.kind!r}: the parent's branch swallowed the subclass, and "
+        "the operator is told the proxy was never checked when it was checked "
+        "and passed"
+    )
+    assert r.label != "proxy never checked", (
+        "the short scanning label repeats the same falsehood as the kind"
+    )
+    assert "country" in r.label, f"the label must name what is missing: {r.label!r}"
+
+
+def test_the_no_country_proxy_refusal_is_caught_by_existing_fail_closed_handlers():
+    """A subclass of ``GeographyUnknownError``, so every ``except
+    GeographyUnknownError`` already written catches it untouched — the same
+    property PS-31's plumbing and the launcher's report path depend on."""
+    assert issubclass(ExitCountryUnknownError, GeographyUnknownError)
+    with pytest.raises(GeographyUnknownError):
+        _refusal_for(**_COUNTRYLESS_RECORD, raising=True)
+
+
+def test_a_reserved_non_country_code_on_a_proxy_takes_the_same_path():
+    """``ZZ`` is ISO 3166-1 user-assigned — it names no country — so a PROXY
+    carrying it is in the "we cannot name the exit" state, not the
+    "country known, row missing" one.
+
+    ⚠️ And ``_locale_for("ZZ")`` is UNCHANGED and still answers ``en-US``: this
+    is the caller distinguishing two inputs the pure function cannot, exactly
+    as it does for ``""``. AC4 is about the helper; this is about the launch.
+    """
+    assert _locale_for("ZZ") == "en-US", "AC4: the helper must not move"
+    exc = _refusal_for(
+        country_code="ZZ", timezone="Europe/Sofia", checked_at=9e9, last_check_ok=True
+    )
+    assert isinstance(exc, ExitCountryUnknownError), (
+        f"a proxy carrying a reserved code got {type(exc).__name__}"
+    )
+
+
+def test_the_two_halves_disagree_on_this_record_without_the_gate(launch):
+    """The property restated for THIS input, and the reason a helper-level
+    parametrisation could never have caught it.
+
+    ``test_the_two_halves_agree_about_whether_a_country_is_known`` cannot list
+    ``""`` — the helper-level property is deliberately FALSE there, because
+    ``_locale_for("")`` must keep answering for the direct path. The agreement
+    that matters for a PROXIED record is therefore only observable at the launch
+    surface, which is where this asserts it.
+    """
+    proxy = _proxy(**_COUNTRYLESS_RECORD)
+    # The zone half ANSWERS, from branch 1, without consulting any country.
+    assert launch_policy._proxy_timezone(proxy) == "Europe/Sofia"
+    # So the locale half must not invent one. Before the gate it returned
+    # "en-US" here and the pair shipped.
+    with pytest.raises(GeographyUnknownError):
+        process._profile_locale(Profile(name="x", proxy="p1"), proxy)
+
+
+def test_falsification_removing_only_the_no_country_gate_reships_the_pair(launch):
+    """Revert JUST the new gate, keep everything else — the contradiction comes
+    straight back on both engines.
+
+    Without this, the tests above prove only that *something* refuses; they do
+    not prove the gate is what stops the contradictory pair.
+    """
+
+    def _pre_gate_locale(profile, proxy):
+        # process.py's `_profile_locale` as it stood before the gate: the empty
+        # code falls through to `_locale_for`, which answers en-US.
+        if proxy is None:
+            return "en-US"
+        return _locale_for(getattr(proxy, "country_code", "") or "")
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(process, "_profile_locale", _pre_gate_locale)
+        launch.use(**_COUNTRYLESS_RECORD)
+        assert launch.firefox() == ("en-US", "Europe/Sofia"), (
+            "the pre-gate derivation did NOT reproduce the contradiction, so "
+            "the assertions above are not measuring what they claim to"
+        )
+        cr_lang, cr_accept, cr_tz, _ = launch.chromium()
+        assert (cr_lang, cr_accept, cr_tz) == ("en-US", "en-US,en", "Europe/Sofia")
+
+
+def test_every_refusal_this_change_adds_fits_the_expanded_log_budget():
+    """The refusals are RENDERED, and the reveal that shows them is BOUNDED.
+
+    ``_MESSAGE_EXPANDED_MAX_LINES`` is 5, sized against the app's MINIMUM window
+    (1024px -> ~105 chars/line). A refusal longer than 5 lines is CUT — and the
+    payload sits at the END of every one of these sentences (the country, the
+    table to edit, the remedy), so a cut destroys exactly the part an operator
+    needs. That is not hypothetical here: this ticket's first draft of the
+    no-country refusal composed 570 characters and would have wrapped to SIX.
+
+    Asserted on the string the product actually composes, through
+    ``_profile_locale``, not on a pasted copy — a reworded refusal must move
+    this test rather than silently outgrow the box that renders it.
+    """
+    import math
+
+    from src.ui.dialogs.log import _MESSAGE_EXPANDED_MAX_LINES
+
+    # The log's own arithmetic, at the app's minimum window (window.min_width).
+    budget = (1024 - 297) / 6.9
+    prefix = "Error starting process: "  # launcher.py adds this
+
+    for label, geo in [
+        ("locale row missing", dict(country_code="AQ", timezone="Antarctica/Casey")),
+        ("exit country unknown", dict(country_code="", timezone="Europe/Sofia")),
+    ]:
+        msg = prefix + str(_refusal_for(**geo, checked_at=9e9, last_check_ok=True))
+        lines = math.ceil(len(msg) / budget)
+        assert lines <= _MESSAGE_EXPANDED_MAX_LINES, (
+            f"the {label} refusal composes {len(msg)} chars -> {lines} wrapped "
+            f"lines at the app's minimum width, over the "
+            f"{_MESSAGE_EXPANDED_MAX_LINES}-line reveal bound. It will be CUT, and "
+            "the remedy is at the end of the sentence — the operator loses the one "
+            "part they can act on. Shorten the message or raise the bound "
+            "deliberately."
+        )
 
 
 @pytest.mark.parametrize("engine", ["firefox", "chromium"])

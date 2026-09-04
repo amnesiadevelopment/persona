@@ -122,9 +122,15 @@ GEO = "geo"
 FIREFOX_VECTORS = (LOCALE, WEBGL, AUDIO)
 
 # The default locale a harness run declares. ``en-US`` matches what
-# ``spawn_browser`` uses for a profile with no proxy country
-# (``process.py``: ``lang = _locale_for(proxy.country_code) if proxy else
-# "en-US"``), so the harness is not inventing a value the product would not use.
+# ``spawn_browser`` uses for a profile with NO PROXY (``process._profile_locale``
+# returns it directly for ``proxy is None``, which is deliberate policy: persona
+# forces en-US so it never leaks the host locale, #218). So the harness is not
+# inventing a value the product would not use.
+#
+# ⚠️ It is NOT what a PROXIED profile gets. Since PS-240 that path derives the
+# locale from the exit country and REFUSES rather than falling back here — a
+# proxied harness profile is a different case and must not reuse this constant
+# as if it were the product's answer.
 DEFAULT_LOCALE = "en-US"
 
 # The OS a harness profile declares when nothing else says. Matches

@@ -652,23 +652,43 @@ def _spawn_with_the_gate_back_at_the_arg_builder(profile):
     footprint measured on ``main``: 24 files, incl. both seeded files and the
     full extension build) rather than merely non-empty, so a harness that only
     half-reproduced the defect would not pass for one that did.
+
+    ⚠️ BOTH GEO GATES ARE NEUTRALISED, not just the timezone one, and that is
+    what keeps this harness faithful rather than what weakens it. PS-240 added
+    a SECOND fail-closed gate — the LOCALE half — hoisted to the same position
+    for this suite's own stated reason. Leaving it armed would refuse at the top
+    of ``spawn_browser`` and produce ZERO residue, so the harness would report a
+    perfectly reproduced defect as un-reproducible and this file's falsification
+    would fail for a reason that has nothing to do with the ordering it tests.
+    At the PRE-FIX commit neither gate stood there, so neutralising both IS the
+    pre-fix order; re-arming both at the spawn keeps the refusal itself real.
+    No assertion below is relaxed — the residue is still measured by size, and
+    a refusal is still required.
     """
     real_gate = process._profile_timezone
+    real_locale_gate = process._profile_locale
     real_popen = process.popen_in_new_session
 
     def _neutralised(prof, proxy):
         return "Europe/Berlin"
 
+    def _neutralised_locale(prof, proxy):
+        return "de-DE"
+
     def _gate_at_the_spawn(args, **kwargs):
-        real_gate(profile, process.ProxyStore().get(profile.proxy))
+        proxy = process.ProxyStore().get(profile.proxy)
+        real_gate(profile, proxy)
+        real_locale_gate(profile, proxy)
         return real_popen(args, **kwargs)
 
     process._profile_timezone = _neutralised
+    process._profile_locale = _neutralised_locale
     process.popen_in_new_session = _gate_at_the_spawn
     try:
         return process.spawn_browser(profile)
     finally:
         process._profile_timezone = real_gate
+        process._profile_locale = real_locale_gate
         process.popen_in_new_session = real_popen
 
 

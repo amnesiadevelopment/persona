@@ -13,6 +13,7 @@ from ..bookmark.store import BookmarkStore
 from ..cert.store import CertStore
 from ..proxy.bridge import ProxyBridge
 from ..proxy.errors import (
+    ExitCountryUnknownError,
     GeographyDisprovenError,
     GeographyUnknownError,
     LocaleUnderivableError,
@@ -62,6 +63,7 @@ from .window_entry import app_id_for, write_window_entry
 from .launch_policy import (  # noqa: F401
     _COUNTRY_LOCALE,
     _COUNTRY_TZ,
+    _NO_COUNTRY_CODES,
     _WINDOWS_TZ_TO_IANA,
     _host_display_scale,
     _host_timezone,
@@ -236,15 +238,46 @@ def _profile_locale(profile: Profile, proxy) -> str:
     the pair is coherent by construction. That path never consults the table and
     can never refuse.
 
-    A proxy: the locale of its EXIT country. Re-raised here rather than in
-    launch_policy so the operator gets the profile and proxy BY NAME, matching
-    what the zone half already does — a refusal an operator cannot diagnose is a
-    worse product than a wrong locale.
+    A proxy: the locale of its EXIT country, and this is where the caller does
+    work ``_locale_for`` structurally cannot.
+
+    ⚠️ AN EMPTY ``country_code`` MEANS DIFFERENT THINGS ON THE TWO PATHS, and
+    only THIS function can tell them apart. ``_locale_for`` is pure — handed
+    ``""`` it cannot see whether a proxy exists, so it answers ``en-US``, which
+    is RIGHT for the direct path and wrong here. With a proxy present, ``""`` is
+    not "no country", it is **"we do not know this proxy's country"** — and the
+    zone half still ANSWERS for that record, from ``_proxy_timezone``'s first
+    branch, so falling through to ``en-US`` reproduces the exact contradiction
+    this ticket exists to remove: ``en-US`` beside ``Europe/Sofia``, on both
+    engines. It is not a hypothetical shape; ``proxy_checker`` builds it two
+    ways on purpose (``_resolve_geo`` remembers a zone-carrying partial, and
+    ``_validate_geo`` drops a malformed code while keeping the zone). So the
+    gate is here, ahead of the lookup. See ``ExitCountryUnknownError`` for the
+    behavioural consequence, which is real and deliberate.
+
+    Both refusals are re-raised here rather than in launch_policy so the
+    operator gets the profile and proxy BY NAME, matching what the zone half
+    already does — a refusal an operator cannot diagnose is a worse product than
+    a wrong locale.
     """
     if proxy is None:
         return "en-US"
+    code = (getattr(proxy, "country_code", "") or "").strip()
+    if not code or code.upper() in _NO_COUNTRY_CODES:
+        # A proxy IS present and we cannot name its country. The REMEDY here is
+        # the opposite of the one below — a check that answers with a country
+        # fixes this, and no table row can — so it gets its own error class and
+        # its own sentence rather than being folded into either neighbour.
+        raise ExitCountryUnknownError(
+            f"Profile {profile.name!r} has proxy {profile.proxy!r} assigned, but that "
+            "proxy's EXIT COUNTRY is not known (its check answered without one). "
+            "Refusing to launch: the recorded timezone still declares a location, so "
+            "falling back to en-US would declare an American-English browser beside a "
+            "non-US clock — the 'spoofed location' tell this product exists to avoid. "
+            "Re-check the proxy to resolve it."
+        )
     try:
-        return _locale_for(getattr(proxy, "country_code", "") or "")
+        return _locale_for(code)
     except LocaleUnderivableError as e:
         # Names the COUNTRY, and says the remedy is a code change rather than a
         # re-check — the same two things the TimezoneUnderivableError arm below
@@ -257,7 +290,7 @@ def _profile_locale(profile: Profile, proxy) -> str:
         # either direction, so the message asks for the pair.
         raise LocaleUnderivableError(
             f"Profile {profile.name!r} has proxy {profile.proxy!r} assigned and its "
-            f"exit country is known ({(getattr(proxy, 'country_code', '') or '?').upper()}), "
+            f"exit country is known ({code.upper()}), "
             "but no locale is known for that country. Refusing to launch: falling "
             "back to en-US would declare an American-English browser beside the "
             "exit's own non-US clock — the 'spoofed location' tell this product "
