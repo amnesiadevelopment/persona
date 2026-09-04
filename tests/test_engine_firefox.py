@@ -1,6 +1,8 @@
 import json
 import logging
+import subprocess
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -1216,6 +1218,18 @@ def test_set_in_use_provider_is_visible_to_the_prune_path(monkeypatch, tmp_path)
 # ---------------------------------------------------------------------------
 
 
+class _PollingProc:
+    """A stand-in for a live ``Popen``: ``poll()`` is None while it runs.
+
+    Module-level so the survivor tests below can register a session on the REAL
+    launcher without spawning a second real process — the survivor's liveness
+    is what has to be real there, not ours.
+    """
+
+    def poll(self):
+        return None
+
+
 def _stamped(engine, build):
     """A minimal stand-in for a Profile carrying a launch stamp.
 
@@ -1560,45 +1574,220 @@ def test_prune_defers_for_a_launch_still_in_flight(monkeypatch, tmp_path):
 def test_prune_defers_when_a_running_name_is_unaccounted_for(
     monkeypatch, tmp_path
 ):
-    """UNKNOWN #5 — a running name reported with no build of any kind.
+    """UNKNOWN #5 — A SURVIVOR: a live browser this process never launched.
 
-    A SURVIVOR is the concrete population: a browser a PREVIOUS persona left
-    running is reported by the guard but was never registered by this process,
-    so nothing here knows which build it is executing from. There is no reading
-    at all, which is exactly "cannot say".
-    A SECOND running session is resolvable, deliberately. With only the
-    unresolved one, an implementation that silently SKIPPED it would return an
-    EMPTY set and be caught by the separate empty-set backstop — so the test
+    A survivor is a browser a PREVIOUS persona left running. It is a real,
+    probed-alive process executing out of a real build directory: ``is_running``
+    reports it running and the UI paints its card as running. But
+    ``scan_survivors`` populates ``_survivors`` ONLY with names that are in
+    neither ``_active_sessions`` nor ``_starting``, so a survivor can never be a
+    key in ``_running_names_locked()``.
+
+    THAT IS WHY THIS TEST DRIVES THE REAL PATH RATHER THAN HAND-WRITING THE MAP.
+    An earlier version of it supplied ``{"ghost-one": None, ...}`` directly and
+    asserted the prune deferred. It did defer — but a real survivor cannot
+    produce that map. It produced ``{}``: not an UNKNOWN, but NOTHING, so the
+    join returned a confident set over the sessions it could see and the
+    survivor's live build was deleted. The test was green over a fixture state
+    the production wiring could not reach, while the state it CAN reach was
+    unprotected. So this test now goes through ``SessionRegistry.record`` and
+    ``scan_survivors`` with a REAL live process, and asserts on directories on
+    disk.
+
+    A SECOND, RESOLVABLE session runs beside it, deliberately, and on a
+    DIFFERENT build — the ordinary shape after an engine bump, where the
+    survivor predates the update and our own session is on the new build. With
+    only the survivor, an implementation that silently SKIPPED it would return
+    an EMPTY set and be caught by the separate empty-set backstop, so the test
     would stay green over an inverted UNKNOWN rule and prove nothing about it.
     With a resolved session beside it, skipping yields a NON-empty set, the
     backstop does not fire, and the only thing between the prune and a live
-    build is the UNKNOWN rule itself. It is also the realistic shape: one
-    session accounted for, one that is not.
+    build is the UNKNOWN rule itself.
     """
+    psutil = pytest.importorskip("psutil")
+    from src.services.browser.launcher import BrowserLauncher
+    from src.services.browser.launch_provenance import firefox_builds_in_use
+    from src.services.browser.session_registry import (
+        SessionRecord,
+        SessionRegistry,
+    )
+
     _fake_cache(
         monkeypatch,
         tmp_path,
         [
-            ("firefox-13", True, True),
-            ("firefox-15", True, True),
-            ("firefox-16", True, True),
+            ("firefox-13", True, True),   # THE SURVIVOR'S BUILD → must survive
+            ("firefox-15", True, True),   # our own session's build
+            ("firefox-16", True, True),   # keep
         ],
-        binary_version="firefox-15",
+        binary_version="firefox-16",
     )
-    _wire_narrowing(
-        monkeypatch,
-        {
-            "ghost-one": None,
-            "resolved-one": _session("firefox", "firefox-15"),
-        },
-    )
-    logs = []
-    inv._prune_old_engine_builds(keep="firefox-16", log=logs.append)
 
-    assert (tmp_path / "firefox-13").exists(), (
-        "a running name nothing can account for is UNKNOWN"
+    # A REAL live process, probed by the REAL registry. A fabricated pid would
+    # probe GONE and be dropped, and the survivor would never be adopted — the
+    # test would then pass for the wrong reason.
+    proc = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(120)"]
     )
-    assert any("running" in m for m in logs), logs
+    try:
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            try:
+                create_time = psutil.Process(proc.pid).create_time()
+                break
+            except Exception:
+                time.sleep(0.05)
+        else:  # pragma: no cover - the probe target refused to appear
+            pytest.skip("could not probe the helper process")
+
+        registry = SessionRegistry(tmp_path / "sessions.json")
+        registry.record(
+            SessionRecord(
+                profile="ghost-one",
+                pid=proc.pid,
+                create_time=create_time,
+                pgid=None,
+                engine="firefox",
+                started_at=time.time(),
+                owner_pid=1,
+            )
+        )
+
+        bl = BrowserLauncher(registry=registry)
+        alive, _unknown = bl.scan_survivors()
+        assert [r.profile for r in alive] == ["ghost-one"], (
+            "precondition: the survivor must actually be adopted by the real "
+            "scan — a test over an un-adopted survivor asserts nothing"
+        )
+        assert bl.is_running("ghost-one"), (
+            "precondition: the launcher reports the survivor as RUNNING, which "
+            "is exactly why a guard that cannot see it is dangerous"
+        )
+
+        # Our own session, on the NEWER build: the ordinary post-bump shape.
+        bl._active_sessions["resolved-one"] = _PollingProc()
+        bl._session_build["resolved-one"] = ("firefox", "firefox-15")
+
+        assert "ghost-one" not in bl.running_profile_names(), (
+            "precondition: the survivor is structurally absent from the "
+            "running NAMES — the widening belongs to running_session_builds()"
+        )
+
+        monkeypatch.setattr(eng, "_in_use_provider", lambda: True)
+        monkeypatch.setattr(
+            eng,
+            "_in_use_builds_provider",
+            lambda: firefox_builds_in_use(bl.running_session_builds),
+        )
+        logs = []
+        inv._prune_old_engine_builds(keep="firefox-16", log=logs.append)
+
+        assert (tmp_path / "firefox-13").exists(), (
+            "THE SURVIVOR'S LIVE BUILD: a running browser the session map "
+            "cannot resolve is UNKNOWN, and UNKNOWN defers. A survivor that is "
+            "merely ABSENT from the map is not an unknown — it is a licence to "
+            "delete the build it is executing from"
+        )
+        assert (tmp_path / "firefox-15").exists(), (
+            "deferral is wholesale: nothing may be reclaimed while a running "
+            "session cannot be accounted for"
+        )
+        assert any("running" in m for m in logs), logs
+        bl._active_sessions.clear()
+    finally:
+        proc.kill()
+        proc.wait(timeout=5)
+
+
+def test_running_session_builds_reports_a_survivor_as_unknown(
+    monkeypatch, tmp_path
+):
+    """The launcher-level half of UNKNOWN #5, pinned at the seam itself.
+
+    The prune test above proves the OUTCOME (a live build survives). This pins
+    the MECHANISM, because the two can come apart: a future change that made
+    the prune defer for some other reason would keep that test green while the
+    survivor went back to being invisible. What is asserted here is the exact
+    property the join's precondition rests on — that the map's key set is
+    ``running_profile_names() | survivors``, and that a survivor's value is
+    None rather than an invented build.
+    """
+    from src.services.browser.launcher import BrowserLauncher
+    from src.services.browser.launch_provenance import firefox_builds_in_use
+    from src.services.browser.session_registry import SessionRecord
+
+    bl = BrowserLauncher()
+    bl._survivors = {
+        "ghost-one": SessionRecord(
+            profile="ghost-one",
+            pid=4242,
+            create_time=1.0,
+            pgid=None,
+            engine="firefox",
+            started_at=1.0,
+            owner_pid=1,
+        )
+    }
+    bl._active_sessions["resolved-one"] = _PollingProc()
+    bl._session_build["resolved-one"] = ("firefox", "firefox-15")
+
+    names = bl.running_profile_names()
+    builds = bl.running_session_builds()
+
+    assert "ghost-one" not in names, (
+        "running_profile_names() is deliberately NOT widened — its callers "
+        "(the running snapshot, the launch-refusal path) handle survivors "
+        "themselves and would double-count"
+    )
+    assert builds["ghost-one"] is None, (
+        "a survivor is UNKNOWN, and None is the honest value: SessionRecord "
+        "carries the engine and no build, so there is nothing to read. "
+        "Resolving one from active_build() would invent a confident wrong "
+        "answer about a process that predates our startup"
+    )
+    assert builds["resolved-one"] == ("firefox", "firefox-15"), (
+        "the widening must not disturb a session this run owns"
+    )
+    assert firefox_builds_in_use(lambda: builds) is None, (
+        "and the join must collapse to UNKNOWN on it, not return the resolved "
+        "session's build as an affirmative 'every other build is free'"
+    )
+    bl._active_sessions.clear()
+
+
+def test_a_survivor_never_overwrites_a_session_this_run_owns(monkeypatch):
+    """The widening is a `setdefault`, and that direction is load-bearing.
+
+    ``scan_survivors`` already excludes names it finds in ``_active_sessions``,
+    so the two sets should not overlap — but the scan is a point in time and
+    the exclusion is enforced there, not here. If a name ever appeared in both,
+    a survivor entry overwriting the session's resolved pair would turn a
+    perfectly known build into an UNKNOWN and defer the prune forever. The
+    resolved answer is strictly better information, so it wins.
+    """
+    from src.services.browser.launcher import BrowserLauncher
+    from src.services.browser.session_registry import SessionRecord
+
+    bl = BrowserLauncher()
+    bl._active_sessions["both"] = _PollingProc()
+    bl._session_build["both"] = ("firefox", "firefox-15")
+    bl._survivors = {
+        "both": SessionRecord(
+            profile="both",
+            pid=4242,
+            create_time=1.0,
+            pgid=None,
+            engine="firefox",
+            started_at=1.0,
+            owner_pid=1,
+        )
+    }
+
+    assert bl.running_session_builds()["both"] == ("firefox", "firefox-15"), (
+        "a session THIS run owns is the better answer; a survivor entry must "
+        "never downgrade it to UNKNOWN"
+    )
+    bl._active_sessions.clear()
 
 
 def test_prune_defers_when_the_session_source_raises(monkeypatch, tmp_path):

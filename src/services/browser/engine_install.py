@@ -60,14 +60,16 @@ _in_use_provider = None  # Callable[[], bool] | None
 #          "UNKNOWN", never "using no build", so pruning defers wholesale
 #          exactly as it did before this narrowing existed.
 #
-# Three real populations produce None, all of them ordinary rather than exotic:
+# Four real populations produce None, all of them ordinary rather than exotic:
 # a session whose build could not be read at launch (launch_provenance returns
 # None on ANY read failure, deliberately — a wrong build is worse than none), a
 # CHROMIUM session (its build string is not comparable to firefox-NN and must
-# not be read as "no firefox build"), and a launch still in flight, which has
-# no session record yet. Reading any of those as "not in use" would delete a
-# build out from under a live session — the precise harm the wholesale guard
-# above exists to prevent, and strictly worse than the disk it would reclaim.
+# not be read as "no firefox build"), a launch still in flight, which has no
+# session record yet, and a SURVIVOR — a browser a PREVIOUS persona left
+# running, which this process never launched and therefore has no record of at
+# all. Reading any of those as "not in use" would delete a build out from under
+# a live session — the precise harm the wholesale guard above exists to
+# prevent, and strictly worse than the disk it would reclaim.
 #
 # THE ANSWER IS A LIVE FACT, NOT A PERSISTED STAMP. Profile.last_launch_build
 # exists and looks like it should be the source here, but it is written AFTER
@@ -148,7 +150,8 @@ def _in_use_build_numbers(log=None) -> "set[int] | None":
       behaviour, so failing closed costs one prune cycle and risks nothing;
     * the provider itself returned None, i.e. at least one running session
       could not be resolved to a firefox build (a build unreadable at launch,
-      a chromium session, a launch still in flight);
+      a chromium session, a launch still in flight, a survivor from a previous
+      persona);
     * the provider returned an EMPTY set while the gate says something IS
       running. The two oracles then contradict each other, and an empty set is
       the most dangerous shape this function can return — it is an affirmative
@@ -768,8 +771,9 @@ def _prune_old_engine_builds(keep: str, log=None) -> None:
 
     UNKNOWN DEFERS, and that is the load-bearing half. A running session whose
     build cannot be established (unreadable at launch, a CHROMIUM session whose
-    build string is not comparable to firefox-NN, or a launch still in flight
-    and therefore not yet registered) collapses the answer to None and this
+    build string is not comparable to firefox-NN, a launch still in flight and
+    therefore not yet registered, or a SURVIVOR this process never launched and
+    has no record of) collapses the answer to None and this
     prune defers wholesale exactly as it did before. Absence of a reading is
     not a reading of absence: treating an unresolved running session as "using
     no build" would delete a build out from under a live session, which is
