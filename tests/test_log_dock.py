@@ -118,36 +118,40 @@ def test_ps298_a_roster_name_inside_the_reason_text_cannot_steal_the_row():
 
     ``Session ended: <name> (<why>)`` is the first line on this surface to
     carry prose, and the reason text contains ordinary words: ``persona``,
-    ``window``, ``closed``, ``browser``, ``engine``. ``window`` and ``engine``
-    are not exotic profile names for this product. The name-matching loop runs
-    longest-first and stops at the first name that matches ANY shape, so a
-    roster name occurring only in the SUFFIX used to be reached first and win
-    on the generic substring branch — attributing the row to a profile that had
-    nothing to do with the event, and cutting the matched word out of the
-    message on the way.
+    ``window``, ``closed``, ``inferred``. ``window`` is not an exotic profile
+    name for this product. The name-matching loop runs longest-first and stops
+    at the first name that matches ANY shape, so a roster name occurring only
+    in the SUFFIX used to be reached first and win on the generic substring
+    branch — attributing the row to a profile that had nothing to do with the
+    event, and cutting the matched word out of the message on the way.
 
     That lands on precisely the use this reason text exists to serve: an
     operator reading the Activity Log to find out WHICH profile died by itself
     was shown the wrong one. The fix is an ordering one — every specific shape
-    is tried for every name before any generic substring match — so this test
-    is about pass ordering, not about the regex.
+    is tried for every name before any generic substring match.
 
-    ``mail-us-011`` in the roster below is the profile the line is genuinely
-    about; the rest are the decoys, each longer than it so longest-first
-    reaches them first.
+    ⚠️ THE DECOYS MUST OUTRANK THE REAL NAME, WHICH IS WHY THE PROFILE HERE IS
+    THE SHORT ``fox``. The loop is longest-first, so a decoy SHORTER than the
+    profile is never reached before it and the case passes on the BROKEN code
+    too — a check that cannot fail is not coverage. This was caught by sabotage
+    rather than by review: an earlier draft used ``mail-us-011`` as the profile,
+    every decoy was shorter than it, and collapsing the two passes back into one
+    left the whole test green.
     """
-    line = (
-        "10:00:05  > Session ended: mail-us-011 (persona inferred the "
-        "window was closed)"
-    )
+    line = "10:00:05  > Session ended: fox (persona inferred the window was closed)"
+    want = "Session ended (persona inferred the window was closed)"
     for decoy in ("window", "persona", "closed", "inferred"):
-        roster = {"mail-us-011", decoy}
+        assert len(decoy) > len("fox"), (
+            f"{decoy!r} is not longer than the profile name, so longest-first "
+            "never reaches it and this case cannot fail"
+        )
+        roster = {"fox", decoy}
         _, profile, msg, _ = parse_event(line, roster)
-        assert profile == "mail-us-011", (
+        assert profile == "fox", (
             f"a roster name ({decoy!r}) appearing only in the reason text stole "
             f"the row from the profile the event is about; got {profile!r}"
         )
-        assert msg == "Session ended (persona inferred the window was closed)", (
+        assert msg == want, (
             f"the reason text was mangled by the {decoy!r} substitution: {msg!r}"
         )
 
