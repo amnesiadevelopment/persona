@@ -942,3 +942,203 @@ def test_a_decodable_but_garbage_version_file_is_returned_verbatim(
     monkeypatch.setattr(updater, "VERSION_FILE", str(version_file))
 
     assert updater.current_version() == "not-a-version"
+
+
+# --- PS-245: _promote_staging reports the rollback verdict it already computes -
+#
+# The function BUILT `fully_restored`, used it once to decide whether to drop the
+# backup, and threw it away. That is the exact fact download_engine needs to tell
+# a tree restored to the working build from one left part old and part new. AC3
+# is the criterion that keeps this from inverting into a leak: the arm where the
+# restore could NOT be completed must stay silent, so the sentinel is kept.
+
+
+def test_a_fully_restored_promotion_reports_restored(monkeypatch, tmp_path):
+    # The rollback completed: every entry is back and the backup was dropped as
+    # provably redundant. That is the ONLY state that may clear the sentinel.
+    import os
+
+    import pytest
+
+    _force_os(monkeypatch, win=True)
+    engine_dir = tmp_path / "engine"
+    engine_dir.mkdir()
+    _populate_engine(engine_dir)
+    monkeypatch.setattr(updater, "ENGINE_DIR", str(engine_dir))
+    monkeypatch.setattr(updater, "ENGINE_BINARY", str(engine_dir / "chrome.exe"))
+
+    staging = engine_dir / ".staging"
+    staging.mkdir()
+    (staging / "chrome.exe").write_bytes(b"NEW-EXE")
+    (staging / "some.dll").write_bytes(b"NEW-DLL")
+
+    # fail the promotion mid-loop; the rollback's renames are left working
+    real_move = updater.shutil.move
+    calls = {"n": 0}
+
+    def failing_move(src, dst):
+        calls["n"] += 1
+        if calls["n"] > 1:
+            raise OSError("No space left on device")
+        return real_move(src, dst)
+
+    monkeypatch.setattr(updater.shutil, "move", failing_move)
+    updater._reset_install_outcome()
+    with pytest.raises(OSError):
+        updater._promote_staging(str(staging))
+    monkeypatch.undo()
+
+    # the working build is genuinely back, byte-identical...
+    assert (engine_dir / "chrome.exe").read_bytes() == b"OLD-ENGINE-EXE"
+    assert not (engine_dir / updater.BACKUP_NAME).exists()
+    # ...and the verdict says so, instead of being discarded
+    assert updater._previous_build_restored() is True
+    assert os.path.isdir(str(engine_dir))
+
+
+def test_a_partially_restored_promotion_reports_nothing(monkeypatch, tmp_path):
+    """⭐ AC3 — the anti-regression criterion, and the one that matters most.
+
+    When the rollback itself could not be completed, the tree is part old and
+    part new with the only good copy sitting in the backup dir. Clearing the
+    sentinel there would launch precisely the mixed engine PS-24/PS-32 built the
+    mechanism to prevent. The verdict must stay UNKNOWN.
+    """
+    import os
+
+    import pytest
+
+    _force_os(monkeypatch, win=True)
+    engine_dir = tmp_path / "engine"
+    engine_dir.mkdir()
+    _populate_engine(engine_dir)
+    monkeypatch.setattr(updater, "ENGINE_DIR", str(engine_dir))
+    monkeypatch.setattr(updater, "ENGINE_BINARY", str(engine_dir / "chrome.exe"))
+
+    staging = engine_dir / ".staging"
+    staging.mkdir()
+    (staging / "chrome.exe").write_bytes(b"NEW-EXE")
+    (staging / "some.dll").write_bytes(b"NEW-DLL")
+
+    real_move = updater.shutil.move
+    calls = {"n": 0}
+
+    def failing_move(src, dst):
+        calls["n"] += 1
+        if calls["n"] > 1:
+            raise OSError("No space left on device")
+        return real_move(src, dst)
+
+    # ...and fail the ROLLBACK's rename too (the antivirus-on-Windows case)
+    backup_root = engine_dir / updater.BACKUP_NAME
+    real_replace = os.replace
+
+    def locked_replace(src, dst):
+        if str(src).startswith(str(backup_root)):
+            raise PermissionError(32, "The process cannot access the file")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(updater.shutil, "move", failing_move)
+    monkeypatch.setattr(os, "replace", locked_replace)
+    updater._reset_install_outcome()
+    with pytest.raises(OSError):
+        updater._promote_staging(str(staging))
+    monkeypatch.undo()
+
+    # the backup survived — it is the last copy of the working build (PS-38)
+    assert (backup_root / "chrome.exe").read_bytes() == b"OLD-ENGINE-EXE"
+    # ...and CRUCIALLY the verdict is unknown, so the sentinel is kept
+    assert updater._previous_build_restored() is False
+
+
+def test_a_partial_rollback_leaves_the_engine_unlaunchable_end_to_end(
+    monkeypatch, tmp_path
+):
+    """AC3 stated where it is actually consumed: over the REAL download_engine,
+    with the REAL _install_windows and _promote_staging, a promotion whose
+    rollback could not complete must keep the sentinel and read
+    is_installed() == False."""
+    import os
+
+    _force_os(monkeypatch, win=True)
+    engine_dir = tmp_path / "engine"
+    engine_dir.mkdir()
+    _populate_engine(engine_dir)
+    (engine_dir / ".engine-complete").touch()
+    (engine_dir / "version.txt").write_text("148.0.7778.215", encoding="utf-8")
+    monkeypatch.setattr(updater, "ENGINE_DIR", str(engine_dir))
+    monkeypatch.setattr(updater, "ENGINE_BINARY", str(engine_dir / "chrome.exe"))
+    monkeypatch.setattr(
+        updater, "MARKER_FILE", str(engine_dir / ".engine-complete")
+    )
+    monkeypatch.setattr(updater, "VERSION_FILE", str(engine_dir / "version.txt"))
+    assert updater.is_installed() is True  # precondition
+
+    zip_path = tmp_path / "engine.zip"
+    _new_build_zip(zip_path)
+    monkeypatch.setattr(updater, "_download_to", lambda *a, **k: True)
+
+    real_move = updater.shutil.move
+    calls = {"n": 0}
+
+    def failing_move(src, dst):
+        calls["n"] += 1
+        if calls["n"] > 1:
+            raise OSError("No space left on device")
+        return real_move(src, dst)
+
+    backup_root = engine_dir / updater.BACKUP_NAME
+    real_replace = os.replace
+
+    def locked_replace(src, dst):
+        if str(src).startswith(str(backup_root)):
+            raise PermissionError(32, "The process cannot access the file")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(updater.shutil, "move", failing_move)
+    monkeypatch.setattr(os, "replace", locked_replace)
+    monkeypatch.setattr(
+        updater, "_download_to",
+        lambda path, *a, **k: (shutil_copy(zip_path, path), True)[1],
+    )
+    assert updater.download_engine("http://x/engine.zip", digest="sha256:aa") is False
+    monkeypatch.undo()
+
+    assert (engine_dir / ".engine-installing").exists()
+    assert updater.is_installed() is False
+
+
+def shutil_copy(src, dst):
+    import shutil as _sh
+
+    return _sh.copyfile(str(src), str(dst))
+
+
+def test_a_bad_archive_leaves_the_previous_build_launchable(monkeypatch, tmp_path):
+    """The pre-promotion failure arm: a zip with no chrome.exe is refused before
+    anything outside .staging is written, so the installed tree is byte-for-byte
+    as the operator left it — and must stay launchable."""
+    _force_os(monkeypatch, win=True)
+    engine_dir = tmp_path / "engine"
+    engine_dir.mkdir()
+    _populate_engine(engine_dir)
+    (engine_dir / ".engine-complete").touch()
+    (engine_dir / "version.txt").write_text("148.0.7778.215", encoding="utf-8")
+    monkeypatch.setattr(updater, "ENGINE_DIR", str(engine_dir))
+    monkeypatch.setattr(updater, "ENGINE_BINARY", str(engine_dir / "chrome.exe"))
+    monkeypatch.setattr(
+        updater, "MARKER_FILE", str(engine_dir / ".engine-complete")
+    )
+    monkeypatch.setattr(updater, "VERSION_FILE", str(engine_dir / "version.txt"))
+
+    zip_path = tmp_path / "engine.zip"
+    _make_windows_zip(zip_path, {"chrome-win/readme.txt": b"no exe here"})
+    monkeypatch.setattr(
+        updater, "_download_to",
+        lambda path, *a, **k: (shutil_copy(zip_path, path), True)[1],
+    )
+
+    assert updater.download_engine("http://x/engine.zip", digest="sha256:aa") is False
+    assert (engine_dir / "chrome.exe").read_bytes() == b"OLD-ENGINE-EXE"
+    assert not (engine_dir / ".engine-installing").exists()
+    assert updater.is_installed() is True
