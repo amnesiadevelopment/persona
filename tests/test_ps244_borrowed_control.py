@@ -38,6 +38,9 @@ from pathlib import Path
 
 import pytest
 
+from tests import posix_shell as _posix_shell
+from tests.posix_shell import find_posix_shell, shell_env
+
 yaml = pytest.importorskip("yaml", reason="PyYAML is needed to parse the workflow")
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -51,25 +54,53 @@ TAG = "144.0.7559.132-1"
 CONTROL_RUN = "33151144134"
 THIS_RUN = "33999999999"
 
-# The three scripts under test are bash, and they run on a `[self-hosted,
-# persona-build]` Linux runner — POSIX is the only platform they are ever
-# executed on in production.
+# THE INTERPRETER IS RESOLVED, NOT ASSUMED — AND NOT SKIPPED.
+# ────────────────────────────────────────────────────────────
+# The three scripts under test are bash, and in production they run on a
+# `[self-hosted, persona-build]` Linux runner. But the merge gate also runs this
+# suite on `windows-latest`, and there `subprocess.run(["bash", ...],
+# env={"PATH": "/usr/bin:/bin"})` fails twice over: `bash` resolves to
+# `C:\Windows\System32\bash.exe` — the WSL *launcher*, which with no distro
+# installed exits non-zero without executing a line — and the hardcoded POSIX
+# `PATH` hides the Git Bash the runner actually ships.
 #
-# On a windows-latest runner `bash` resolves to the WSL launcher, which reports
-# "Windows Subsystem for Linux has no installed distributions" and exits
-# non-zero. That is a statement about the RUNNER, not about the scripts: it
-# would make every refusal test below "pass" its `rc != 0` assertion for
-# entirely the wrong reason, which is precisely the dead-probe shape this file
-# exists to guard against — a check that fires without ever having read the
-# thing it claims to check.
+# This file previously carried a `requires_posix_shell` skip marker on 25 tests
+# for exactly that reason, and the reasoning was sound as far as it went: with a
+# WSL launcher returning non-zero, every `rc != 0` refusal assertion below would
+# have passed VACUOUSLY — the dead-probe shape this file exists to guard
+# against. Skipping made that visible rather than hiding it.
 #
-# So these are skipped on Windows rather than left to fail or, worse, to pass
-# vacuously. `PATH` is pinned to "/usr/bin:/bin" in every runner below, which is
-# itself POSIX-only and says the same thing.
-requires_posix_shell = pytest.mark.skipif(
-    sys.platform == "win32",
-    reason="bash scripts; on windows-latest `bash` is the WSL launcher with no distro installed",
-)
+# But visible-and-not-running is still not running: those 25 assertions had
+# never executed on Windows. `tests/posix_shell` resolves the real interpreter
+# instead — it derives the Git-for-Windows root from `git` on `PATH`, refuses
+# the System32/SysNative WSL launcher, and pins `PATH` to that install's
+# `usr/bin` + `bin` + `mingw64/bin`. On POSIX it returns byte-identical
+# `/usr/bin:/bin`, so Linux and macOS are unaffected by construction.
+#
+# Hermeticity is preserved rather than traded away: `PATH` is still pinned to
+# one known-good toolchain directory set; it is simply the correct value for the
+# platform.
+#
+# ⚠️ Resolving is NOT the same as passing, and the difference is the point. If
+# an assertion below fails on Windows once it finally reaches the scripts, that
+# is a FINDING about the scripts or the runner — not a reason to re-add the
+# skip, and not a reason to weaken the assertion.
+
+
+def resolved_shell() -> str:
+    """The real POSIX shell for this host — never the WSL stub.
+
+    A None here is a statement about the RUNNER and must be treated as a
+    finding, not routed around with a skip: `windows-latest` ships Git Bash, so
+    on every OS the merge gate runs this should not happen.
+    """
+    shell = find_posix_shell()
+    assert shell is not None, (
+        "no POSIX shell could be resolved on this host. On Windows the runner "
+        "ships Git Bash and this should not happen — treat it as a finding "
+        "about the runner, not a reason to skip these tests."
+    )
+    return shell
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Fixtures: a borrowed control's recorded evidence, in the shape the real
@@ -148,16 +179,15 @@ def build_fixture(tmp_path, *, provenance=PROVENANCE, env=ENV_RECORD,
 def run_verify(tmp_path, *, tag=TAG, control_run=CONTROL_RUN, this_run=THIS_RUN):
     """Run the real verification script. Returns (returncode, stdout+stderr)."""
     proc = subprocess.run(
-        ["bash", str(VERIFY_SH)],
+        [resolved_shell(), str(VERIFY_SH)],
         cwd=tmp_path,
-        env={
-            "PATH": "/usr/bin:/bin",
-            "CONTROL_DIR": "control",
-            "CURRENT_ENV": "record/environment-patched.txt",
-            "UNGOOGLED_TAG": tag,
-            "CONTROL_RUN_ID": control_run,
-            "GITHUB_RUN_ID": this_run,
-        },
+        env=shell_env(
+            CONTROL_DIR="control",
+            CURRENT_ENV="record/environment-patched.txt",
+            UNGOOGLED_TAG=tag,
+            CONTROL_RUN_ID=control_run,
+            GITHUB_RUN_ID=this_run,
+        ),
         capture_output=True, text=True, encoding="utf-8", timeout=120,
     )
     return proc.returncode, proc.stdout + proc.stderr
@@ -189,7 +219,6 @@ def assert_refused(tmp_path, out, rc, *, check):
 # THE SUCCESS PATH
 # ─────────────────────────────────────────────────────────────────────────────
 
-@requires_posix_shell
 def test_a_comparable_control_is_verified_and_certified(tmp_path):
     """The feature must actually work: a genuinely comparable control passes."""
     build_fixture(tmp_path)
@@ -217,7 +246,6 @@ def test_a_comparable_control_is_verified_and_certified(tmp_path):
 # THE REFUSALS — one per criterion the ticket names
 # ─────────────────────────────────────────────────────────────────────────────
 
-@requires_posix_shell
 def test_a_control_from_a_different_tag_is_refused(tmp_path):
     """Different tag = a different experiment, not a control."""
     other = "151.0.7922.173-1"
@@ -231,7 +259,6 @@ def test_a_control_from_a_different_tag_is_refused(tmp_path):
     assert other in out and TAG in out, "the refusal must name BOTH tags so it can be acted on"
 
 
-@requires_posix_shell
 def test_a_tag_mismatch_in_either_witness_alone_is_refused(tmp_path):
     """The tag has TWO independent witnesses, and BOTH must agree.
 
@@ -249,7 +276,6 @@ def test_a_tag_mismatch_in_either_witness_alone_is_refused(tmp_path):
     assert "git describe" in out, "the refusal should name which witness disagreed"
 
 
-@requires_posix_shell
 def test_a_control_from_a_different_host_is_refused(tmp_path):
     """Wall-clock, memory ceiling and toolchain belong to the machine."""
     build_fixture(
@@ -261,7 +287,6 @@ def test_a_control_from_a_different_host_is_refused(tmp_path):
     assert "hostname" in out
 
 
-@requires_posix_shell
 def test_a_control_built_on_different_hardware_is_refused(tmp_path):
     """A same-named host with a different CPU/core count is still not this machine."""
     build_fixture(
@@ -272,7 +297,6 @@ def test_a_control_built_on_different_hardware_is_refused(tmp_path):
     assert_refused(tmp_path, out, rc, check="host")
 
 
-@requires_posix_shell
 def test_a_kernel_update_alone_does_not_refuse_the_borrow(tmp_path):
     """The guard must be strict without being useless.
 
@@ -292,7 +316,6 @@ def test_a_kernel_update_alone_does_not_refuse_the_borrow(tmp_path):
     assert "kernel release recorded but NOT compared" in out
 
 
-@requires_posix_shell
 def test_a_control_that_failed_to_compile_is_refused(tmp_path):
     """The artifact EXISTING is not evidence the control succeeded.
 
@@ -309,7 +332,6 @@ def test_a_control_that_failed_to_compile_is_refused(tmp_path):
     assert_refused(tmp_path, out, rc, check="success")
 
 
-@requires_posix_shell
 def test_a_control_whose_patches_never_applied_is_refused(tmp_path):
     """`NOT ATTEMPTED` is a third state, and it is not a pass."""
     build_fixture(
@@ -324,7 +346,6 @@ def test_a_control_whose_patches_never_applied_is_refused(tmp_path):
     assert_refused(tmp_path, out, rc, check="success")
 
 
-@requires_posix_shell
 def test_a_green_verdict_with_no_binary_is_refused(tmp_path):
     """PS-218's own manifest says to trust the binary over the exit code."""
     build_fixture(
@@ -337,7 +358,6 @@ def test_a_green_verdict_with_no_binary_is_refused(tmp_path):
     assert "trust the binary over the exit code" in out
 
 
-@requires_posix_shell
 def test_a_control_with_no_compile_log_is_refused(tmp_path):
     """A verified control with nothing to diff against would be a hollow pass."""
     build_fixture(tmp_path, log=None)
@@ -345,7 +365,6 @@ def test_a_control_with_no_compile_log_is_refused(tmp_path):
     assert_refused(tmp_path, out, rc, check="success")
 
 
-@requires_posix_shell
 def test_an_expired_artifact_gets_its_own_distinct_message(tmp_path):
     """Expiry is a different situation from a mismatch, and must read differently.
 
@@ -362,7 +381,6 @@ def test_an_expired_artifact_gets_its_own_distinct_message(tmp_path):
     assert "trees=both" in out, "the refusal must name the fallback the operator has"
 
 
-@requires_posix_shell
 def test_a_control_whose_stamp_names_another_run_is_refused(tmp_path):
     """The bytes on disk must be traceable to the run the operator NAMED.
 
@@ -378,7 +396,6 @@ def test_a_control_whose_stamp_names_another_run_is_refused(tmp_path):
     assert_refused(tmp_path, out, rc, check="provenance")
 
 
-@requires_posix_shell
 def test_a_patched_tree_log_cannot_pose_as_a_control(tmp_path):
     """A control is the UNMODIFIED tree. A patched log is not a control at all."""
     build_fixture(tmp_path, provenance=PROVENANCE.replace("tree=unmodified", "tree=patched"))
@@ -386,7 +403,6 @@ def test_a_patched_tree_log_cannot_pose_as_a_control(tmp_path):
     assert_refused(tmp_path, out, rc, check="provenance")
 
 
-@requires_posix_shell
 def test_an_unstamped_control_is_refused(tmp_path):
     """Presence is not provenance — the invariant PS-218 already relied on."""
     build_fixture(tmp_path, provenance=None)
@@ -398,7 +414,6 @@ def test_an_unstamped_control_is_refused(tmp_path):
 # THE COMPARATOR TRAP: two failed readings are not an agreement
 # ─────────────────────────────────────────────────────────────────────────────
 
-@requires_posix_shell
 def test_two_unreadable_values_are_refused_rather_than_matched(tmp_path):
     """`[ "$a" = "$b" ]` returns TRUE when both sides are empty.
 
@@ -424,7 +439,6 @@ def test_two_unreadable_values_are_refused_rather_than_matched(tmp_path):
     )
 
 
-@requires_posix_shell
 def test_a_literal_unknown_is_not_treated_as_a_value(tmp_path):
     """`git describe` writes the literal 'unknown' when it fails.
 
@@ -439,7 +453,6 @@ def test_a_literal_unknown_is_not_treated_as_a_value(tmp_path):
     assert_refused(tmp_path, out, rc, check="tag")
 
 
-@requires_posix_shell
 def test_a_dispatch_naming_no_control_run_is_refused(tmp_path):
     """`trees=patched` without a run id has nothing to borrow."""
     build_fixture(tmp_path)
@@ -474,16 +487,15 @@ def run_attribution(tmp_path, *, cert=None, control_run=CONTROL_RUN, this_run=TH
         (control / "BORROWED-CONTROL.verified").write_text(cert, encoding="utf-8")
 
     proc = subprocess.run(
-        ["bash", str(ATTRIBUTE_SH)],
+        [resolved_shell(), str(ATTRIBUTE_SH)],
         cwd=tmp_path,
-        env={
-            "PATH": "/usr/bin:/bin",
-            "UCPL_DIR": str(tmp_path),
-            "PATCH_DIR": str(PATCH_DIR),
-            "CONTROL_DIR": "control",
-            "UNGOOGLED_TAG": TAG,
-            "GITHUB_RUN_ID": this_run,
-        },
+        env=shell_env(
+            UCPL_DIR=str(tmp_path),
+            PATCH_DIR=str(PATCH_DIR),
+            CONTROL_DIR="control",
+            UNGOOGLED_TAG=TAG,
+            GITHUB_RUN_ID=this_run,
+        ),
         capture_output=True, text=True, encoding="utf-8", timeout=120,
     )
     assert proc.returncode == 0, f"attribution failed:\n{proc.stdout}\n{proc.stderr}"
@@ -499,7 +511,6 @@ verified_at=2026-08-28T03:00:00+00:00
 """
 
 
-@requires_posix_shell
 def test_a_certified_borrowed_control_is_accepted_and_labelled_borrowed(tmp_path):
     """The borrow works — and says so, in the document that makes the claim."""
     out = run_attribution(tmp_path, cert=VALID_CERT)
@@ -514,7 +525,6 @@ def test_a_certified_borrowed_control_is_accepted_and_labelled_borrowed(tmp_path
     )
 
 
-@requires_posix_shell
 def test_another_runs_control_without_a_certificate_is_still_refused(tmp_path):
     """The pre-existing invariant, intact. This is the regression that matters.
 
@@ -530,7 +540,6 @@ def test_another_runs_control_without_a_certificate_is_still_refused(tmp_path):
     assert "CONTROL UNKNOWN" in out, "a refused control must fall back to CONTROL UNKNOWN"
 
 
-@requires_posix_shell
 def test_a_certificate_from_an_earlier_dispatch_authorises_nothing(tmp_path):
     """`control/` survives between runs on a self-hosted runner — so must this guard.
 
@@ -546,7 +555,6 @@ def test_a_certificate_from_an_earlier_dispatch_authorises_nothing(tmp_path):
     assert "control origin:     BORROWED" not in out
 
 
-@requires_posix_shell
 def test_a_certificate_about_a_different_run_than_the_log_is_refused(tmp_path):
     """The certificate and the bytes must be about the SAME control run.
 
@@ -559,7 +567,6 @@ def test_a_certificate_about_a_different_run_than_the_log_is_refused(tmp_path):
     assert "control origin:     BORROWED" not in out
 
 
-@requires_posix_shell
 def test_a_borrowed_control_from_another_tag_is_refused_despite_a_certificate(tmp_path):
     """A certificate cannot excuse a different tree — the tag gate binds both paths."""
     out = run_attribution(
@@ -571,7 +578,6 @@ def test_a_borrowed_control_from_another_tag_is_refused_despite_a_certificate(tm
     assert "control origin:     BORROWED" not in out
 
 
-@requires_posix_shell
 def test_the_in_run_control_path_is_unchanged(tmp_path):
     """`both` must behave exactly as before: no certificate, still accepted."""
     out = run_attribution(tmp_path, cert=None, control_run=THIS_RUN)
@@ -588,23 +594,21 @@ def test_the_in_run_control_path_is_unchanged(tmp_path):
 def run_manifest(tmp_path, *, control_run=""):
     (tmp_path / "record").mkdir(exist_ok=True)
     proc = subprocess.run(
-        ["bash", str(MANIFEST_SH), "patched"],
+        [resolved_shell(), str(MANIFEST_SH), "patched"],
         cwd=tmp_path,
-        env={
-            "PATH": "/usr/bin:/bin",
-            "UCPL_DIR": str(tmp_path),
-            "UNGOOGLED_TAG": TAG,
-            "PREPARE_RESULT": "success",
-            "COMPILE_RESULT": "failure",
-            "CONTROL_RUN_ID": control_run,
-        },
+        env=shell_env(
+            UCPL_DIR=str(tmp_path),
+            UNGOOGLED_TAG=TAG,
+            PREPARE_RESULT="success",
+            COMPILE_RESULT="failure",
+            CONTROL_RUN_ID=control_run,
+        ),
         capture_output=True, text=True, encoding="utf-8", timeout=120,
     )
     assert proc.returncode == 0, f"manifest failed:\n{proc.stdout}\n{proc.stderr}"
     return (tmp_path / "record" / "MANIFEST-patched.md").read_text(encoding="utf-8")
 
 
-@requires_posix_shell
 def test_the_manifest_says_when_the_control_was_borrowed(tmp_path):
     """A reader must not have to open the workflow to learn this."""
     body = run_manifest(tmp_path, control_run=CONTROL_RUN)
@@ -627,7 +631,6 @@ def test_the_manifest_says_when_the_control_was_borrowed(tmp_path):
     assert "Pre-existing" in body
 
 
-@requires_posix_shell
 def test_the_manifest_says_in_run_on_the_default_path(tmp_path):
     """And the safe path must be positively identified, not merely silent."""
     body = run_manifest(tmp_path, control_run="")
@@ -856,3 +859,125 @@ def test_no_build_cache_was_introduced(workflow):
             "optimisation and mixing it in here makes the ~1h25m saving this "
             "ticket claims impossible to measure."
         )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# THE HARNESS ITSELF
+#
+# Everything above now depends on `resolved_shell()` + `shell_env()` picking a
+# real interpreter. On Linux and macOS that path is trivial and always taken, so
+# a green local run is ZERO evidence that the Windows branch works — the same
+# unfired-guard shape that let the WSL stub sit unnoticed. These force
+# `sys.platform = "win32"` inside the resolver so the Windows branch is
+# genuinely evaluated off-platform.
+# ─────────────────────────────────────────────────────────────────────────────
+
+@pytest.fixture
+def _forced_win32(monkeypatch):
+    """Evaluate the resolver's Windows branch on any host."""
+    monkeypatch.setattr(_posix_shell, "sys", type("S", (), {"platform": "win32"}))
+    monkeypatch.setenv("SYSTEMROOT", r"C:\Windows")
+    return monkeypatch
+
+
+def test_the_harness_refuses_the_wsl_stub_rather_than_running_the_scripts_under_it(
+    _forced_win32, monkeypatch, tmp_path
+):
+    """The stub is why these 25 tests were skipped; it must not be accepted now.
+
+    If `C:\\Windows\\System32\\bash.exe` were taken as the interpreter, every
+    script below would exit non-zero without executing a line — and every
+    `rc != 0` refusal assertion in this file would pass VACUOUSLY. That is the
+    precise blindness the old skip marker was protecting against, so removing
+    the marker is only safe while this holds.
+    """
+    for var in ("GIT_INSTALL_ROOT", "ProgramFiles", "ProgramFiles(x86)"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr(
+        _posix_shell.shutil, "which",
+        lambda name: r"C:\Windows\System32\bash.exe" if name == "bash" else None,
+    )
+
+    with pytest.raises(AssertionError) as excinfo:
+        resolved_shell()
+
+    assert "finding" in str(excinfo.value), (
+        "an unresolvable shell must be reported as a finding about the runner, "
+        "not silently routed around"
+    )
+
+
+def test_the_harness_pins_a_real_toolchain_path_on_windows(_forced_win32, tmp_path):
+    """The scripts need `awk`/`grep`/`sed`/`sort`/`tail`/`wc` to exist.
+
+    A resolved shell with an empty or POSIX-only `PATH` is the second way to
+    not-really-run these scripts: the shell starts, so the harness looks healthy,
+    and the script dies on its first utility as though it were defective.
+    """
+    root = tmp_path / "Git"
+    for sub in ("bin", "usr/bin", "mingw64/bin", "cmd"):
+        (root / sub).mkdir(parents=True)
+    (root / "cmd" / "git.exe").write_text("", encoding="utf-8")
+    for where in ("bin", "usr/bin"):
+        (root / where / "bash.exe").write_text("#!/bin/sh\n", encoding="utf-8")
+
+    _forced_win32.setattr(
+        _posix_shell.shutil, "which",
+        lambda name: str(root / "cmd" / "git.exe") if name == "git" else None,
+    )
+
+    env = shell_env(UCPL_DIR=str(tmp_path))
+    assert env["PATH"], "a subprocess must never be handed an empty PATH"
+    assert env["PATH"] != "/usr/bin:/bin", (
+        "the Windows branch must not hand the scripts the POSIX PATH — that is "
+        "the value that hid Git Bash in the first place"
+    )
+    assert str(root / "usr" / "bin") in env["PATH"]
+    assert env["UCPL_DIR"] == str(tmp_path), "caller-supplied vars must survive"
+
+
+def test_posix_hosts_get_byte_identically_what_they_had_before():
+    """The non-regression bar, asserted rather than assumed.
+
+    Every runner in this file used to hardcode `"PATH": "/usr/bin:/bin"`. On
+    Linux and macOS the resolver must return exactly that, so this conversion
+    cannot change a single thing about how these scripts run in production.
+    """
+    if sys.platform == "win32":
+        pytest.skip("this asserts the POSIX branch; the Windows branch is above")
+    assert shell_env()["PATH"] == "/usr/bin:/bin"
+
+
+def test_this_file_no_longer_skips_a_whole_platform():
+    """The deliverable, stated as an assertion so it cannot silently regress.
+
+    25 assertions in this file had never executed on Windows. A future edit that
+    re-adds a platform skip to buy a green run would restore exactly the
+    blindness this file exists to remove — so it fails here instead.
+
+    Read off the COLLECTED MARKERS rather than the file's text: a text scan
+    cannot see a marker applied via a `pytestmark` list or an alias, and it trips
+    over its own source. `pytestmark` is what pytest actually acts on, so it is
+    the honest instrument.
+
+    The one permitted exception is named explicitly: the executable-bit test
+    asserts a POSIX permission bit, which does not exist on Windows. That is a
+    guarantee that is genuinely platform-specific, not staging that is.
+    """
+    module = sys.modules[__name__]
+
+    assert not getattr(module, "pytestmark", []), (
+        "a module-level marker was added to this file; a module-wide skip would "
+        "take the whole platform out again"
+    )
+
+    skipped = sorted(
+        name for name, obj in vars(module).items()
+        if name.startswith("test_") and callable(obj)
+        and any(m.name == "skipif" for m in getattr(obj, "pytestmark", []))
+    )
+    assert skipped == ["test_the_verification_script_is_executable"], (
+        "a platform skip was added back to this file. The scripts run under a "
+        "resolved Git Bash on Windows now; if an assertion fails there, that is "
+        f"a finding to report, not a platform to skip. Found: {skipped}"
+    )
