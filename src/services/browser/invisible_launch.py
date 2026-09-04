@@ -1222,6 +1222,224 @@ _SESSION_RESTORE_PREFS = {
     "browser.sessionstore.interval": 1500,
 }
 
+# WebRTC/DNS anti-leak pins for a PROXIED profile. The engine's srflx override is
+# driven by an egress-IP lookup that _install_geo_shortcircuit nulls whenever
+# persona passes a concrete timezone (nearly always) — so for a NON-Tor SOCKS5
+# proxy FF would otherwise gather real host/srflx ICE candidates that don't
+# match the exit IP (an RTCPeerConnection tell). The Chromium path already
+# forbids non-proxied UDP; give FF the equivalent: force ICE to relay-only and
+# hide host candidates, and route TURN/STUN + DNS through the proxy.
+#
+# ⚠️ PROXY-GATED, AND THE GATE IS LOAD-BEARING. On a DIRECT profile WebRTC stays
+# normal — the real address IS the identity there, and there is nothing to fail
+# over from. Writing these unconditionally would be a regression, not a fix, so
+# this family is the one member of the startup-decided set that is CONDITIONAL:
+# see _startup_decided_prefs, which is the only thing allowed to apply the gate.
+_PROXY_ANTILEAK_PINS = {
+    "media.peerconnection.ice.relay_only": True,
+    "media.peerconnection.ice.no_host": True,
+    "media.peerconnection.ice.default_address_only": True,
+    "media.peerconnection.ice.proxy_only_if_behind_proxy": True,
+    "media.peerconnection.use_document_iceservers": False,
+    "network.proxy.socks_remote_dns": True,
+    # DNS-over-HTTPS (TRR) guard for a PROXIED profile, mirroring the Chromium
+    # path's --dns-over-https-mode=off. The argument is LOCATION, not
+    # compatibility: a TRR resolver speaks straight to a DoH endpoint and never
+    # asks SOCKS, so the DNS test would show a country unrelated to the exit IP.
+    # socks_remote_dns above does NOT cover this — it routes the SOCKS-resolved
+    # path and says nothing about a resolver that bypasses SOCKS entirely.
+    # Different mechanism, hence a second pref.
+    #
+    # Measured on the bundled build (Firefox 151.0, fresh profile, read over
+    # Marionette in chrome scope): mode defaults to 0 and
+    # Services.dns.currentTrrMode is 0, i.e. TRR is already off. So this is a
+    # PIN against an engine bump flipping that default, not a fix for a live
+    # leak — the daily 06:00 UTC engine autobump lands a new build on main with
+    # nobody looking, and this pref is what keeps that from silently enabling
+    # DoH. A BUILD BUMP IS ALSO EXACTLY WHAT DELETES prefs.js, which is why this
+    # family belongs to the startup-decided owner below (PS-295).
+    #
+    # 5 ("off by explicit choice") rather than 0 ("off by default"): 0 is a
+    # no-op that a bumped default would overwrite, which would defeat the entire
+    # point. The two are indistinguishable to a page — both emit zero DoH
+    # traffic, and content JS cannot read a pref (only privileged chrome code
+    # can), so the explicit value buys the pin without adding a masking tell.
+    #
+    # network.trr.uri is deliberately NOT set: measured with mode forced to 3
+    # and uri="", the resolver adopts network.trr.default_provider_uri
+    # (Cloudflare) anyway, so pinning the uri is decorative. mode is the pref
+    # that carries.
+    "network.trr.mode": 5,
+    # Speculative DNS-prefetch guard for a PROXIED profile, mirroring the
+    # Chromium path's --dns-prefetch-disable (process.py). Same LOCATION
+    # argument as the two prefs above: a speculative lookup that skips the
+    # tunnel resolves names the exit IP never asked for.
+    #
+    # This is a PIN, not a fix for a live leak — measured on the bundled build
+    # (Firefox 151.0, fresh profile, page carrying a <link rel="dns-prefetch">
+    # plus anchors, watching BOTH paths at once: an LD_PRELOAD getaddrinfo shim
+    # for the system resolver and a logging SOCKS5 server for the tunnel):
+    #
+    #   * direct profile, no guard -> prefetch FIRES, and all three probe
+    #     hostnames go to the SYSTEM RESOLVER, never through SOCKS. So when it
+    #     fires it does bypass the tunnel.
+    #   * direct profile, guard on -> 3 lookups become 0. The pref demonstrably
+    #     suppresses it; it is not decorative.
+    #   * proxied profile -> nothing on EITHER path, and that silence does NOT
+    #     depend on socks_remote_dns (measured with it both on and off). So
+    #     today the proxied case is already quiet, and socks_remote_dns is not
+    #     what covers this cell.
+    #
+    # WHY the proxied case is quiet is deliberately not claimed here: the
+    # behaviour was observed, the Gecko mechanism was not, and this tree states
+    # nowhere whether the speculative resolver takes the SOCKS path or its own.
+    # That undocumented default is exactly what the pin is for — the daily 06:00
+    # UTC engine autobump lands a new build on main with nobody looking, and the
+    # first measurement above is what such a flip would cost: lookups on the
+    # system resolver, outside the tunnel. Same reasoning as network.trr.mode.
+    #
+    # Both keys, because they cover different origins: the plain pref governs
+    # prefetch generally and the FromHTTPS one governs it from HTTPS documents,
+    # which is where a real session lives.
+    "network.dns.disablePrefetch": True,
+    "network.dns.disablePrefetchFromHTTPS": True,
+    # Never answer a dead or refusing proxy by going DIRECT (PS-217). With this
+    # TRUE, Firefox retries a failed SOCKS request on the operator's real
+    # address: the page then loads, nothing errors, and a profile whose entire
+    # purpose is that this cannot happen has just made a clearnet connection
+    # correlated with its identity. The user is never told.
+    #
+    # MEASURED on the bundled build rather than read from docs, and the
+    # measurement is why this is a PIN and not a fix: invisible_core 20.14.0's
+    # own `_BASELINE` (prefs.py:440) already sets it False, and driving
+    # `translate_profile_to_prefs` for a sampled profile returns False both with
+    # no overlay and with an unrelated one. So the SHIPPED DEFAULT IS ALREADY
+    # SAFE TODAY — there is no live leak here and this pref changes no current
+    # behaviour.
+    #
+    # What it removes is the ASYMMETRY. `verify/browser_tier._prefs` pins this
+    # value; the shipped launch did not, so the harness was running a
+    # configuration the product does not ship, and any conclusion it drew about
+    # failover described a browser we do not ship. Now both assert it.
+    #
+    # And the safe default is only somebody else's default: measured on the same
+    # build, `extra_prefs={...: True}` DOES win, because the caller overlay is
+    # applied LAST (`translate_profile_to_prefs` starts from `_BASELINE` and
+    # ends with `_apply_caller_overlay`). The daily 06:00 UTC engine autobump
+    # lands a new build on main with nobody looking, and a flipped upstream
+    # default would arrive silently. Exactly the argument network.trr.mode and
+    # the dns-prefetch pair above already make in their own comments — and the
+    # same shape as the engine's own note on socks5_remote_dns, where the safe
+    # behaviour being a default is precisely why it survived unasserted.
+    "network.proxy.failover_direct": False,
+}
+
+
+# ---------------------------------------------------------------------------
+# THE STARTUP-DECIDED PREFS — ONE DECLARED OWNER (PS-295)
+#
+# THE PREDICATE, authored here rather than inherited. A pref is STARTUP-DECIDED
+# when BOTH of these hold:
+#
+#   (a) Firefox reads it from prefs.js while it is STARTING, to decide something
+#       it will not re-decide later in the session — whether to restore the
+#       session, whether to poll Remote Settings, which theme to bake into the
+#       first chrome, how ICE gathers candidates for the first connection; AND
+#   (b) this profile's OTHER copy of it arrives too LATE to answer that
+#       question. persona's other owner is `_profile_prefs` -> the engine's
+#       `extra_prefs`, which travel over the juggler protocol and are applied
+#       AFTER startup (the engine writes NO user.js on the Juggler path —
+#       invisible_playwright/launcher.py documents writePreferences as BiDi-
+#       only). Firefox then PERSISTS that late copy, so prefs.js READS correct
+#       immediately after the launch that already lost the thing the pref was
+#       protecting. Never verify one of these by inspecting prefs.js after a
+#       launch.
+#
+# A startup-decided pref therefore needs TWO owners — the late one AND a copy
+# written straight into prefs.js BEFORE Firefox starts — and the second copy is
+# load-bearing precisely on the launch after an engine build change, because
+# `_reset_prefs_on_engine_build_change` DELETES prefs.js.
+#
+# WHY THIS FUNCTION EXISTS AT ALL. That delete is automatic; the re-seed used to
+# be a hand-written splat of named constants, so the two halves could disagree
+# and did — three times in thirteen days (cadf8a4 dark theme, 23894fc/PS-175
+# session restore, 7441136/PS-197 quiet startup), each fix closing the family it
+# chased and silently certifying its neighbours. The fourth (the proxy pins
+# above) was missing until PS-295 for the same reason: it was a bare inline dict
+# inside an `if`, so a constant-shaped enumeration could not see it. Both
+# `_profile_prefs` and `_migrate_profile_for_engine_build` now DERIVE from this
+# one function, so the re-seed is computed, not remembered, and a pref added
+# here cannot reach one owner without the other.
+#
+# THE EXCLUSIONS ARE DECLARED, NOT ASSUMED — see `_NOT_STARTUP_DECIDED` below.
+# `_profile_prefs` may legitimately carry prefs that fail the predicate (they
+# decide nothing at startup, so the late copy is in time), and one family MUST
+# NOT be re-seeded at all. Every such key is named there with its reason, and
+# the census guard in tests/test_invisible_launch.py fails on any key that is
+# in neither set — which is what makes "adding a startup-decided pref in one
+# place cannot leave the other behind" enforced rather than hoped for.
+# ---------------------------------------------------------------------------
+
+# Prefs `_profile_prefs` sets that are deliberately NOT startup-decided, each
+# with the reason it fails the predicate above. This is a RULING REGISTRY, not a
+# convenience list: a key lands here only when someone has decided the late copy
+# is in time (or that a re-seed would be actively wrong), and the census guard
+# forces that decision to be made rather than defaulted.
+_NOT_STARTUP_DECIDED = {
+    # ⚠️ THESE TWO MUST NOT BE RE-SEEDED. They are OWNED by
+    # _scrub_headless_cloak_prefs, which REMOVES them from prefs.js before a
+    # visible launch: the cloak gate acts on the value already in prefs.js when
+    # the window is created, and the headless places init persists the engine's
+    # cloak=true there. Writing them into the re-seed would fight that scrub.
+    # _profile_prefs still carries them as the late-copy override.
+    "zoom.stealth.cloak_windows": "owned by _scrub_headless_cloak_prefs (removed, not written)",
+    "widget.windows.window_occlusion_tracking.enabled": "owned by _scrub_headless_cloak_prefs (removed, not written)",
+    # Content-level rendering, re-read per document paint — a copy that lands
+    # right after startup is in time for every page the user actually sees.
+    "layout.css.prefers-color-scheme.content-override": "content render-time, not startup-time",
+    # Read when the user CLOSES a window/quits, minutes into the session at the
+    # earliest. The late copy is long since in force.
+    "browser.tabs.warnOnClose": "read at close time, not startup",
+    "browser.warnOnQuit": "read at close time, not startup",
+    "browser.sessionstore.warnOnQuit": "read at close time, not startup",
+    "toolkit.shutdown.fastShutdownStage": "read at shutdown, not startup",
+    # Consulted when text is shaped for a page, and when the user navigates
+    # home — both after the late copy has landed.
+    "font.name-list.emoji": "font selection at page render, not startup",
+    # Derived per launch from cfg's search_engine, and read when a navigation
+    # asks for the home page. Re-seeding it would also make the migration
+    # (which has no search_engine context) the wrong owner of a cfg-derived
+    # value.
+    "browser.startup.homepage": "cfg-derived and read at navigation, not startup",
+}
+
+
+def _startup_decided_prefs(cfg: dict) -> dict:
+    """THE prefs that must be in force in prefs.js BEFORE Firefox starts.
+
+    The single declaration both owners derive from — `_profile_prefs` (the
+    engine's late `extra_prefs`) and `_migrate_profile_for_engine_build` (the
+    re-seed straight into prefs.js after a build change deletes it). See the
+    predicate above the definition for what qualifies a pref, and
+    `_NOT_STARTUP_DECIDED` for the declared exclusions.
+
+    `cfg` is read for ONE thing: `proxy_url`. The anti-leak pins are gated on it
+    because a DIRECT profile must stay unpinned — the real address is the
+    identity there. The gate lives here, once, so neither owner can apply it
+    differently.
+
+    _NO_STARTUP_FETCH is splatted FIRST so the families after it keep precedence
+    by construction if a key is ever added to it. The key spaces are pairwise
+    disjoint today, so today the order is a no-op.
+    """
+    prefs = dict(_NO_STARTUP_FETCH)
+    prefs.update(_WARMUP_CHROME_PREFS)
+    prefs.update(_SESSION_RESTORE_PREFS)
+    if cfg.get("proxy_url"):
+        prefs.update(_PROXY_ANTILEAK_PINS)
+    return prefs
+
+
 # Far enough offscreen that the warmup window is invisible on any real display.
 _OFFSCREEN_XY = -32000
 
@@ -1860,9 +2078,17 @@ def _reset_prefs_on_engine_build_change(profile_dir: str, engine_dir: str) -> bo
         return False
 
 
-def _migrate_profile_for_engine_build(profile_dir: str, engine_dir: str) -> list:
+def _migrate_profile_for_engine_build(
+    profile_dir: str, engine_dir: str, cfg: dict
+) -> list:
     """Make `profile_dir` openable by the build at `engine_dir`, whichever
     DIRECTION the build moved. Returns the emit() lines describing what it did.
+
+    `cfg` is the launch config, and it is REQUIRED rather than defaulted: the
+    prefs re-seed below asks it for `proxy_url`, and a defaulted-empty cfg would
+    silently re-seed a proxied profile as if it were direct — leaving the
+    anti-leak pins off disk, which is the exact defect PS-295 closed. A caller
+    with genuinely no proxy context passes `{}` and says so.
 
     THE ORDER HERE IS LOAD-BEARING, which is the whole reason this is one
     function rather than two call sites. Both migrations key off the profile's
@@ -1890,51 +2116,42 @@ def _migrate_profile_for_engine_build(profile_dir: str, engine_dir: str) -> list
     # (2) A prefs.js written by a DIFFERENT build is not loadable by this one.
     if _reset_prefs_on_engine_build_change(profile_dir, engine_dir):
         out.append("ENGINE_BUILD_CHANGED: reset prefs for the new Firefox build")
-        # Resetting prefs.js drops the dark-theme + bookmarks-toolbar chrome prefs
-        # that a first-launch warmup would have baked in. On a profile that
-        # already has its bookmarks seeded the warmup is skipped, so the first
-        # visible launch after a reset opened LIGHT (live-proven on the boevaya
-        # Linux). Re-write the warmup chrome prefs and re-activate the dark theme
-        # (which also invalidates the addon startup cache) so the chrome comes
-        # back dark. (Firefox rebuilds its toolbar-theme startup cache lazily, so
-        # the tab strip goes dark immediately and the toolbar follows on the next
-        # launch — the same first-launch behaviour a brand-new profile has; #242.)
+        # THE RE-SEED IS DERIVED, NOT REMEMBERED (PS-295). The delete above is
+        # automatic; this half used to be a hand-written splat of named
+        # constants, and that asymmetry is what let the two drift — three times
+        # in thirteen days, each fix adding the one family it was chasing and
+        # silently certifying its neighbours (cadf8a4 dark theme, 23894fc/PS-175
+        # session restore, 7441136/PS-197 quiet startup), then a FOURTH family
+        # missing entirely because it was a bare inline dict inside an `if` and
+        # a constant-shaped enumeration could not see it.
         #
-        # AND the session-restore prefs, or the first launch after a bump opens
-        # with the user's tabs GONE (PS-175, live-reproduced: a tab open before
-        # the bump came back as about:blank). Firefox decides whether to restore
-        # AT STARTUP from prefs.js; the engine's copy of these prefs travels over
-        # the juggler protocol and is applied AFTER startup, so on the one launch
-        # where prefs.js was just deleted the decision is made with restore
-        # unset. It then persists the late copy, which is why prefs.js READS
-        # correct afterwards while the session is already lost — do not verify
-        # this by inspecting prefs.js.
+        # `_startup_decided_prefs` is now the single declaration both this and
+        # `_profile_prefs` derive from — read the predicate above its definition
+        # for what qualifies a pref, and `_NOT_STARTUP_DECIDED` for the declared
+        # exclusions (`_scrub_headless_cloak_prefs`'s two keys among them, which
+        # a re-seed must NOT write because that function REMOVES them). A pref
+        # added there reaches both owners; it cannot reach one alone.
         #
-        # AND the quiet-startup set, for EXACTLY the same timing reason (PS-197).
-        # Firefox decides at startup, from prefs.js, whether to poll Remote
-        # Settings, run Normandy, fetch the blocklist and safebrowsing lists, and
-        # probe the captive portal. _NO_STARTUP_FETCH travels the same late door
-        # as the session prefs — _profile_prefs opens with dict(_NO_STARTUP_FETCH)
-        # and the engine applies it over juggler AFTER startup — so on the one
-        # launch where prefs.js was just deleted those fetches all happen at
-        # Firefox's defaults before the late copy lands. Self-healing (Firefox
-        # persists the late copy, so launch two is quiet again) and NOT a leak:
-        # the proxy is a launch kwarg, not a pref, so the traffic still leaves
-        # through the tunnel. What is lost is the QUIET startup, not the tunnel.
-        # The warm-up's copy does not cover this — _init_places_db is gated
-        # behind an unseeded profile and a build change does not re-run it.
+        # WHY IT IS NEEDED AT ALL, in one sentence per family: Firefox decides
+        # AT STARTUP, from prefs.js, whether to restore the session (PS-175: a
+        # tab open before a bump came back as about:blank), whether to poll
+        # Remote Settings / run Normandy / fetch the blocklist / probe the
+        # captive portal (PS-197), which theme to bake into the first chrome
+        # (#242: a reset profile opened LIGHT), and — on a proxied profile — how
+        # ICE gathers candidates and whether DNS may leave the tunnel. persona's
+        # other copy of all of them travels the engine's juggler protocol and is
+        # applied AFTER startup, so on the one launch where prefs.js was just
+        # deleted the decision is already made. Firefox then PERSISTS that late
+        # copy, which is why prefs.js READS correct afterwards — never verify
+        # this by inspecting prefs.js after a launch, and never assert on
+        # "_upsert_prefs_js was called": that call is here for the other
+        # families too, so a call-assertion passes with or without the fix.
         #
-        # _NO_STARTUP_FETCH is splatted FIRST so the two families above keep
-        # precedence by construction if a key is ever added to it. The three key
-        # spaces are pairwise disjoint today, so today the order is a no-op.
-        _upsert_prefs_js(
-            profile_dir,
-            {
-                **_NO_STARTUP_FETCH,
-                **_WARMUP_CHROME_PREFS,
-                **_SESSION_RESTORE_PREFS,
-            },
-        )
+        # The proxy gate is applied inside `_startup_decided_prefs`, once, so
+        # this site cannot pin a DIRECT profile by accident: on a profile with
+        # no proxy_url the real address IS the identity, WebRTC stays normal,
+        # and there is nothing to fail over from.
+        _upsert_prefs_js(profile_dir, _startup_decided_prefs(cfg))
         _activate_dark_theme(profile_dir)
 
     # (3) GOING BACK ONLY. Firefox refuses to open a profile last used by a
@@ -2446,8 +2663,19 @@ def _profile_prefs(cfg: dict) -> dict:
     stealth profile: a dark UI, the chosen start page, restored tabs, a visible
     bookmarks toolbar — and disables every startup network fetch so a launch
     never blocks on Tor (the multi-profile launch hang).
+
+    THE STARTUP-DECIDED FAMILIES COME FROM ONE OWNER. Everything Firefox decides
+    while it is starting — quiet startup, the warmup chrome/theme, session
+    restore, and (on a proxied profile) the WebRTC/DNS anti-leak pins — is
+    supplied by `_startup_decided_prefs(cfg)`, the same call
+    `_migrate_profile_for_engine_build` makes when a build change has just
+    deleted prefs.js. That is what stops the two copies drifting: these prefs
+    arrive here over juggler AFTER startup, so the pre-startup copy is the one
+    that actually decides, and it must not be maintained by hand. Prefs added
+    BELOW this call are NOT startup-decided and must be declared in
+    `_NOT_STARTUP_DECIDED` with their reason — the census guard enforces it.
     """
-    prefs = dict(_NO_STARTUP_FETCH)
+    prefs = _startup_decided_prefs(cfg)
     prefs.update(
         {
             # The engine implements headless on Windows/macOS by making the
@@ -2460,43 +2688,32 @@ def _profile_prefs(cfg: dict) -> dict:
             # for the same reason (the headless run disables it).
             "zoom.stealth.cloak_windows": False,
             "widget.windows.window_occlusion_tracking.enabled": True,
-            # Force the dark UI regardless of the seed. invisible derives the
-            # theme from the fingerprint seed, so without this a profile's theme
-            # is random; persona's users expect dark. systemUsesDarkTheme alone
-            # only darkens page content and the in-content UI — the titlebar and
-            # tab strip stayed light (a light strip across the top, #152). The
-            # browser CHROME follows the active theme, so switch it to Firefox's
-            # built-in dark theme and pin both chrome surfaces to dark (0=dark).
-            "ui.systemUsesDarkTheme": 1,
-            "extensions.activeThemeID": "firefox-compact-dark@mozilla.org",
-            "browser.theme.content-theme": 0,
-            "browser.theme.toolbar-theme": 0,
-            "layout.css.prefers-color-scheme.content-override": 0,
-            # Restore the previous session's tabs/windows across launches. The
-            # persistent profile_dir holds sessionstore. The prefs themselves
-            # live in _SESSION_RESTORE_PREFS (one owner) because a build change
-            # must ALSO write them straight into prefs.js before Firefox starts
-            # — see that constant and _migrate_profile_for_engine_build (PS-175).
+            # The DARK-UI set (ui.systemUsesDarkTheme, extensions.activeThemeID,
+            # both browser.theme.* surfaces) and the bookmarks-toolbar pair
+            # (browser.toolbars.bookmarks.visibility,
+            # toolkit.legacyUserProfileCustomizations.stylesheets) are NOT
+            # written here: they are startup-decided and come from
+            # _WARMUP_CHROME_PREFS through _startup_decided_prefs above. Firefox
+            # bakes the chrome theme at startup, so a reset profile whose only
+            # copy arrived late opened LIGHT (#242/cadf8a4).
             #
-            # The comment that used to sit here said restore was "re-armed
-            # through user.js on every launch, so the 'once' never expires".
-            # That is FALSE and it is what hid PS-175: the engine writes NO
-            # user.js on the Juggler path (invisible_playwright/launcher.py
-            # documents this — writePreferences is BiDi-only), so these arrive
-            # over the protocol AFTER startup and are persisted into prefs.js by
-            # Firefox. They survive a normal restart because prefs.js survives
-            # it; they do NOT survive a prefs.js reset.
-            **_SESSION_RESTORE_PREFS,
-            # Always show the bookmarks toolbar so the shipped test bookmarks
-            # are visible (default only shows it on the new-tab page). This pref
-            # alone doesn't reveal it on a FRESH profile's first paint (the
-            # setToolbarVisibility guard early-returns against an absent collapsed
-            # attribute, #242) — _show_bookmarks_toolbar writes a userChrome.css
-            # rule for the first launch, which needs the next pref to load.
-            "browser.toolbars.bookmarks.visibility": "always",
-            # Load the profile's chrome/userChrome.css (off by default since
-            # FF69). Required for the bookmarks-toolbar first-paint rule above.
-            "toolkit.legacyUserProfileCustomizations.stylesheets": True,
+            # This one stays local: it is CONTENT render-time, re-read per
+            # document paint, so the late copy is in time. Declared in
+            # _NOT_STARTUP_DECIDED with that reason.
+            "layout.css.prefers-color-scheme.content-override": 0,
+            # Session restore (browser.startup.page,
+            # browser.sessionstore.resume_*/interval) is likewise startup-decided
+            # and arrives from _SESSION_RESTORE_PREFS through
+            # _startup_decided_prefs. The comment that used to sit here said
+            # restore was "re-armed through user.js on every launch, so the
+            # 'once' never expires". That is FALSE and it is what hid PS-175:
+            # the engine writes NO user.js on the Juggler path
+            # (invisible_playwright/launcher.py documents this — writePreferences
+            # is BiDi-only), so these arrive over the protocol AFTER startup and
+            # are persisted into prefs.js by Firefox. They survive a normal
+            # restart because prefs.js survives it; they do NOT survive a
+            # prefs.js reset.
+            #
             # Close the window immediately when the user hits the X — no
             # "close N tabs?" confirmation. The confirmation would leave the
             # window (and the profile's "running" state) up until dismissed.
@@ -2531,131 +2748,6 @@ def _profile_prefs(cfg: dict) -> dict:
             "font.name-list.emoji": "Segoe UI Emoji, Twemoji Mozilla",
         }
     )
-    # WebRTC IP-leak guard for a PROXIED profile. The engine's srflx override is
-    # driven by an egress-IP lookup that _install_geo_shortcircuit nulls whenever
-    # persona passes a concrete timezone (nearly always) — so for a NON-Tor SOCKS5
-    # proxy FF would otherwise gather real host/srflx ICE candidates that don't
-    # match the exit IP (an RTCPeerConnection tell). The Chromium path already
-    # forbids non-proxied UDP; give FF the equivalent: force ICE to relay-only and
-    # hide host candidates, and route TURN/STUN + DNS through the proxy. On a
-    # direct profile WebRTC stays normal (the real IP IS the identity there).
-    if cfg.get("proxy_url"):
-        prefs.update(
-            {
-                "media.peerconnection.ice.relay_only": True,
-                "media.peerconnection.ice.no_host": True,
-                "media.peerconnection.ice.default_address_only": True,
-                "media.peerconnection.ice.proxy_only_if_behind_proxy": True,
-                "media.peerconnection.use_document_iceservers": False,
-                "network.proxy.socks_remote_dns": True,
-                # DNS-over-HTTPS (TRR) guard for a PROXIED profile, mirroring
-                # the Chromium path's --dns-over-https-mode=off. The argument is
-                # LOCATION, not compatibility: a TRR resolver speaks straight to
-                # a DoH endpoint and never asks SOCKS, so the DNS test would
-                # show a country unrelated to the exit IP. socks_remote_dns
-                # above does NOT cover this — it routes the SOCKS-resolved path
-                # and says nothing about a resolver that bypasses SOCKS
-                # entirely. Different mechanism, hence a second pref.
-                #
-                # Measured on the bundled build (Firefox 151.0, fresh profile,
-                # read over Marionette in chrome scope): mode defaults to 0 and
-                # Services.dns.currentTrrMode is 0, i.e. TRR is already off. So
-                # this is a PIN against an engine bump flipping that default,
-                # not a fix for a live leak — the daily 06:00 UTC engine
-                # autobump lands a new build on main with nobody looking, and
-                # this pref is what keeps that from silently enabling DoH.
-                #
-                # 5 ("off by explicit choice") rather than 0 ("off by default"):
-                # 0 is a no-op that a bumped default would overwrite, which
-                # would defeat the entire point. The two are indistinguishable
-                # to a page — both emit zero DoH traffic, and content JS cannot
-                # read a pref (only privileged chrome code can), so the explicit
-                # value buys the pin without adding a masking tell.
-                #
-                # network.trr.uri is deliberately NOT set: measured with mode
-                # forced to 3 and uri="", the resolver adopts
-                # network.trr.default_provider_uri (Cloudflare) anyway, so
-                # pinning the uri is decorative. mode is the pref that carries.
-                "network.trr.mode": 5,
-                # Speculative DNS-prefetch guard for a PROXIED profile,
-                # mirroring the Chromium path's --dns-prefetch-disable
-                # (process.py). Same LOCATION argument as the two prefs above:
-                # a speculative lookup that skips the tunnel resolves names the
-                # exit IP never asked for.
-                #
-                # This is a PIN, not a fix for a live leak — measured on the
-                # bundled build (Firefox 151.0, fresh profile, page carrying a
-                # <link rel="dns-prefetch"> plus anchors, watching BOTH paths
-                # at once: an LD_PRELOAD getaddrinfo shim for the system
-                # resolver and a logging SOCKS5 server for the tunnel):
-                #
-                #   * direct profile, no guard -> prefetch FIRES, and all three
-                #     probe hostnames go to the SYSTEM RESOLVER, never through
-                #     SOCKS. So when it fires it does bypass the tunnel.
-                #   * direct profile, guard on -> 3 lookups become 0. The pref
-                #     demonstrably suppresses it; it is not decorative.
-                #   * proxied profile -> nothing on EITHER path, and that
-                #     silence does NOT depend on socks_remote_dns (measured
-                #     with it both on and off). So today the proxied case is
-                #     already quiet, and socks_remote_dns is not what covers
-                #     this cell.
-                #
-                # WHY the proxied case is quiet is deliberately not claimed
-                # here: the behaviour was observed, the Gecko mechanism was
-                # not, and this tree states nowhere whether the speculative
-                # resolver takes the SOCKS path or its own. That undocumented
-                # default is exactly what the pin is for — the daily 06:00 UTC
-                # engine autobump lands a new build on main with nobody
-                # looking, and the first measurement above is what such a flip
-                # would cost: lookups on the system resolver, outside the
-                # tunnel. Same reasoning as network.trr.mode above.
-                #
-                # Both keys, because they cover different origins: the plain
-                # pref governs prefetch generally and the FromHTTPS one governs
-                # it from HTTPS documents, which is where a real session lives.
-                "network.dns.disablePrefetch": True,
-                "network.dns.disablePrefetchFromHTTPS": True,
-                # Never answer a dead or refusing proxy by going DIRECT
-                # (PS-217). With this TRUE, Firefox retries a failed SOCKS
-                # request on the operator's real address: the page then loads,
-                # nothing errors, and a profile whose entire purpose is that
-                # this cannot happen has just made a clearnet connection
-                # correlated with its identity. The user is never told.
-                #
-                # MEASURED on the bundled build rather than read from docs, and
-                # the measurement is why this is a PIN and not a fix:
-                # invisible_core 20.14.0's own `_BASELINE` (prefs.py:440)
-                # already sets it False, and driving
-                # `translate_profile_to_prefs` for a sampled profile returns
-                # False both with no overlay and with an unrelated one. So the
-                # SHIPPED DEFAULT IS ALREADY SAFE TODAY — there is no live leak
-                # here and this pref changes no current behaviour.
-                #
-                # What it removes is the ASYMMETRY. `verify/browser_tier._prefs`
-                # pins this value; the shipped launch did not, so the harness
-                # was running a configuration the product does not ship, and any
-                # conclusion it drew about failover described a browser we do
-                # not ship. Now both assert it.
-                #
-                # And the safe default is only somebody else's default: measured
-                # on the same build, `extra_prefs={...: True}` DOES win, because
-                # the caller overlay is applied LAST
-                # (`translate_profile_to_prefs` starts from `_BASELINE` and ends
-                # with `_apply_caller_overlay`). The daily 06:00 UTC engine
-                # autobump lands a new build on main with nobody looking, and a
-                # flipped upstream default would arrive silently. Exactly the
-                # argument network.trr.mode and the dns-prefetch pair above
-                # already make in their own comments — and the same shape as the
-                # engine's own note on socks5_remote_dns, where the safe
-                # behaviour being a default is precisely why it survived
-                # unasserted.
-                #
-                # Proxy-gated like its neighbours: on a direct profile the real
-                # address IS the identity and there is nothing to fail over
-                # from.
-                "network.proxy.failover_direct": False,
-            }
-        )
     # The chosen search engine feeds the Home button and the start page a
     # first launch navigates to (see _child — with startup.page=0 Firefox
     # itself never loads the homepage at startup). (Firefox 150 has no
@@ -3182,8 +3274,12 @@ def _launch_and_watch(cfg, profile_dir, emit, _finish, stop_event, in_thread):
     # engine dir is the profile's LastPlatformDir — see the compatibility.ini check.
     # Resolution failure is FAIL-OPEN (returns "" and the migration no-ops) but
     # no longer SILENT — see _resolve_engine_dir_for_migration.
+    #
+    # cfg is passed because the migration's re-seed of the startup-decided prefs
+    # is proxy-GATED: a proxied profile's anti-leak pins must be back in prefs.js
+    # before Firefox starts, and a direct profile must stay unpinned (PS-295).
     _engine_dir = _resolve_engine_dir_for_migration(emit)
-    for _line in _migrate_profile_for_engine_build(profile_dir, _engine_dir):
+    for _line in _migrate_profile_for_engine_build(profile_dir, _engine_dir, cfg):
         emit(_line)
 
     # Deterministic per-profile seed so the same profile keeps a stable

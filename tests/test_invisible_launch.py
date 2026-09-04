@@ -5162,7 +5162,7 @@ def test_engine_build_change_leaves_session_restore_prefs_on_disk(tmp_path):
     _write_compat(prof, "/cache/firefox-18")
 
     lines = list(invisible_launch._migrate_profile_for_engine_build(
-        str(prof), "/cache/firefox-19"
+        str(prof), "/cache/firefox-19", {}
     ))
     assert lines == [
         "ENGINE_BUILD_CHANGED: reset prefs for the new Firefox build"
@@ -5185,7 +5185,7 @@ def test_engine_build_change_still_restores_the_chrome_prefs(tmp_path):
     _write_compat(prof, "/cache/firefox-18")
 
     invisible_launch._migrate_profile_for_engine_build(
-        str(prof), "/cache/firefox-19"
+        str(prof), "/cache/firefox-19", {}
     )
 
     on_disk = _prefs_js_pairs(prof)
@@ -5228,7 +5228,7 @@ def test_engine_build_change_leaves_quiet_startup_prefs_on_disk(tmp_path):
     _write_compat(prof, "/cache/firefox-18")
 
     lines = list(invisible_launch._migrate_profile_for_engine_build(
-        str(prof), "/cache/firefox-19"
+        str(prof), "/cache/firefox-19", {}
     ))
     assert lines == [
         "ENGINE_BUILD_CHANGED: reset prefs for the new Firefox build"
@@ -5262,6 +5262,165 @@ def test_session_restore_prefs_have_one_owner(tmp_path):
             f"{pref} in the engine's pref set does not match the shared "
             f"_SESSION_RESTORE_PREFS owner"
         )
+
+
+# ---------------------------------------------------------------------------
+# PS-295: ONE DECLARED OWNER for the startup-decided prefs.
+#
+# THE DEFECT THESE GUARD IS NOT "A FAMILY WAS REMOVED" — the three per-constant
+# tests above already catch that. It is "a family was never ADDED": the
+# build-change delete is automatic and the re-seed used to be a hand-written
+# splat, so every fix closed the family it was chasing and silently certified
+# its neighbours (cadf8a4, 23894fc/PS-175, 7441136/PS-197 — three in thirteen
+# days), and a FOURTH (the proxy anti-leak pins) was missing the whole time
+# because it was a bare inline dict inside an `if` and a constant-shaped
+# enumeration could not see it.
+#
+# MUTATION-MEASURED, which is the point: the three per-constant guards each
+# iterate ONE named constant, so adding a fourth startup-decided pref to
+# _profile_prefs alone leaves all of them GREEN. The census test below is the
+# guard that goes red for that mutation, because it enumerates _profile_prefs's
+# OWN key space and demands a RULING on every key — either it comes from the
+# startup-decided owner, or it is named in _NOT_STARTUP_DECIDED with a reason.
+# A key that is in neither is exactly a pref with one owner instead of two.
+#
+# Everything here asserts on the pref set / on what is on disk, never on
+# "_upsert_prefs_js was called" — that call is there for the other families
+# regardless, so a call-assertion passes with or without the fix.
+# ---------------------------------------------------------------------------
+
+
+def _proxied_cfg():
+    return {"proxy_url": "socks5://127.0.0.1:9050"}
+
+
+def test_every_profile_pref_is_ruled_startup_decided_or_declared_exempt():
+    # ⭐ THE DURABLE GUARD. Adding a startup-decided pref to _profile_prefs and
+    # nowhere else is the shape of all four historical defects; it must not be
+    # possible to do it quietly. Every key _profile_prefs produces must either
+    # come from _startup_decided_prefs (so the build-change re-seed writes it
+    # too, by construction) or be DECLARED in _NOT_STARTUP_DECIDED with the
+    # reason it fails the predicate.
+    #
+    # Run for BOTH profile shapes, because the proxy-gated family exists only in
+    # one of them and is precisely the family that stayed invisible.
+    for cfg in ({}, _proxied_cfg()):
+        produced = set(invisible_launch._profile_prefs(cfg))
+        owned = set(invisible_launch._startup_decided_prefs(cfg))
+        exempt = set(invisible_launch._NOT_STARTUP_DECIDED)
+
+        unruled = sorted(produced - owned - exempt)
+        assert not unruled, (
+            f"{len(unruled)} pref(s) in _profile_prefs(cfg={cfg!r}) have no "
+            f"ruling: {unruled}. Each one has ONE owner today — the engine's "
+            f"late extra_prefs — so a build change that deletes prefs.js will "
+            f"not restore it. Either add it to the startup-decided owner "
+            f"(_NO_STARTUP_FETCH / _WARMUP_CHROME_PREFS / _SESSION_RESTORE_PREFS "
+            f"/ _PROXY_ANTILEAK_PINS) or declare it in _NOT_STARTUP_DECIDED "
+            f"with the reason it is decided after startup."
+        )
+
+
+def test_not_startup_decided_registry_carries_a_reason_for_every_key():
+    # The exemption list is a RULING registry, not a mute-list: a key silences
+    # the census guard only when someone wrote down WHY. An empty reason would
+    # let the next drift through under cover of a ruling nobody made.
+    for pref, reason in invisible_launch._NOT_STARTUP_DECIDED.items():
+        assert isinstance(reason, str) and reason.strip(), (
+            f"{pref} is exempt from the startup-decided census with no stated "
+            f"reason"
+        )
+    # The two cloak prefs are the exclusion the ticket names explicitly: they
+    # are OWNED by _scrub_headless_cloak_prefs, which REMOVES them from prefs.js
+    # before a visible launch. Re-seeding them would fight that scrub.
+    for pref in ("zoom.stealth.cloak_windows",
+                 "widget.windows.window_occlusion_tracking.enabled"):
+        assert pref in invisible_launch._NOT_STARTUP_DECIDED, (
+            f"{pref} must stay declared-exempt: _scrub_headless_cloak_prefs "
+            f"removes it, so a re-seed would fight the scrub"
+        )
+        assert pref not in invisible_launch._startup_decided_prefs(_proxied_cfg()), (
+            f"{pref} must never be re-seeded — _scrub_headless_cloak_prefs "
+            f"deletes it from prefs.js before the visible launch"
+        )
+
+
+def test_startup_decided_owner_and_the_engine_pref_set_cannot_disagree():
+    # The two owners must carry the SAME VALUE, not merely the same keys — a
+    # value that drifts is a pref whose startup decision differs from its
+    # post-startup one, which reads as correct in prefs.js after the launch that
+    # already went wrong.
+    for cfg in ({}, _proxied_cfg()):
+        late = invisible_launch._profile_prefs(cfg)
+        early = invisible_launch._startup_decided_prefs(cfg)
+        for pref, value in early.items():
+            assert late.get(pref) == value, (
+                f"{pref} is {late.get(pref)!r} in the engine's late pref set "
+                f"but {value!r} in the pre-startup owner (cfg={cfg!r})"
+            )
+
+
+def test_engine_build_change_restores_the_proxy_pins_on_a_proxied_profile(tmp_path):
+    # AC3 / THE FOURTH FAMILY. After a build change on a PROXIED profile, all
+    # ten anti-leak pins must be on disk in prefs.js BEFORE Firefox starts.
+    # Firefox decides how ICE gathers candidates, and whether DNS may leave the
+    # tunnel, at startup from prefs.js; persona's other copy arrives over
+    # juggler afterwards and is then persisted — so prefs.js reads correct after
+    # the launch that ran unpinned. Asserted on disk for exactly that reason.
+    prof = tmp_path
+    (prof / "prefs.js").write_text('user_pref("stale.pref", 1);\n', encoding="utf-8")
+    _write_compat(prof, "/cache/firefox-18")
+
+    lines = list(invisible_launch._migrate_profile_for_engine_build(
+        str(prof), "/cache/firefox-19", _proxied_cfg()
+    ))
+    assert lines == [
+        "ENGINE_BUILD_CHANGED: reset prefs for the new Firefox build"
+    ], lines
+
+    on_disk = _prefs_js_pairs(prof)
+    missing = [
+        pref for pref in invisible_launch._PROXY_ANTILEAK_PINS
+        if pref not in on_disk
+    ]
+    assert not missing, (
+        f"the build-change re-seed left {len(missing)} proxy anti-leak pins off "
+        f"disk, so the first launch on the new build starts unpinned: {missing}"
+    )
+    # Present is not enough — each must carry its SHIPPED value. A trr.mode of 0
+    # ("off by default") is a no-op a bumped default overwrites; only 5 pins it.
+    for pref, value in invisible_launch._PROXY_ANTILEAK_PINS.items():
+        assert on_disk[pref] == _as_prefs_js_literal(value), (
+            f"{pref} is on disk as {on_disk[pref]!r}, not its shipped value"
+        )
+    assert "stale.pref" not in on_disk, "the stale pref must still be gone"
+
+
+def test_engine_build_change_leaves_a_direct_profile_unpinned(tmp_path):
+    # AC4 — A REQUIRED NEGATIVE. The pins are proxy-gated for a reason: on a
+    # DIRECT profile the real address IS the identity, WebRTC stays normal, and
+    # there is nothing to fail over from. Pinning them unconditionally would be
+    # a regression dressed as a fix, so the absence is asserted, not assumed.
+    prof = tmp_path
+    (prof / "prefs.js").write_text('user_pref("stale.pref", 1);\n', encoding="utf-8")
+    _write_compat(prof, "/cache/firefox-18")
+
+    invisible_launch._migrate_profile_for_engine_build(
+        str(prof), "/cache/firefox-19", {}
+    )
+
+    on_disk = _prefs_js_pairs(prof)
+    leaked = [
+        pref for pref in invisible_launch._PROXY_ANTILEAK_PINS if pref in on_disk
+    ]
+    assert not leaked, (
+        f"a DIRECT profile was pinned by the build-change re-seed: {leaked}. "
+        f"These belong to a proxied profile only."
+    )
+    # The unconditional families are still there — this must not become a test
+    # that passes because the re-seed stopped writing anything.
+    assert "browser.sessionstore.resume_session_once" in on_disk
+    assert "services.settings.server" in on_disk
 
 
 # ---------------------------------------------------------------------------
@@ -5880,7 +6039,7 @@ def test_unresolvable_engine_dir_neither_raises_nor_aborts_the_migration(
             emitted.append
         )
         lines = invisible_launch._migrate_profile_for_engine_build(
-            str(prof), engine_dir
+            str(prof), engine_dir, {}
         )
 
     assert engine_dir == ""
@@ -5899,7 +6058,7 @@ def test_resolvable_engine_dir_still_migrates_byte_identically(tmp_path):
     _write_compat(prof, "/cache/firefox-18")
 
     lines = list(invisible_launch._migrate_profile_for_engine_build(
-        str(prof), "/cache/firefox-19"
+        str(prof), "/cache/firefox-19", {}
     ))
 
     assert lines == [
