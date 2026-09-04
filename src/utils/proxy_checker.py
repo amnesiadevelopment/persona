@@ -13,6 +13,7 @@ try:
 except ImportError:
     AIOHTTP_AVAILABLE = False
 
+from .geo_label import country_label
 from .proxy_parser import parse_proxy
 from .validation import PROXY_SCHEMES
 
@@ -511,10 +512,20 @@ def proxy_ok_message(code: str, country: str) -> str:
     flag) but never the exact exit IP: this tool's own logs are disk-backed and
     UI-visible, and a timestamped IP history would de-anonymize the operator and
     link separate personas. The IP is returned separately for the store and the
-    file-only debug log, never for the activity log."""
+    file-only debug log, never for the activity log.
+
+    The country segment is `country_label`'s — the SAME rule the network page's
+    meta line uses, so the two surfaces cannot disagree about one record. The
+    expression it replaces gated the whole segment (the flag emoji included) on
+    the NAME, so an `ipinfo.io` answer — which has a code and no name at all —
+    logged a bare "Proxy working." for an exit this function had just been told
+    was Poland, while `flag_from_country_code("PL")` sat one line above
+    returning the flag."""
+    where = country_label(code, country)
+    if not where:
+        return "Proxy working."
     flag = flag_from_country_code(code)
-    where = f"{flag} [{code}] {country}".strip() if country else ""
-    return f"Proxy working. {where}".strip() if where else "Proxy working."
+    return f"Proxy working. {flag} {where}".strip() if flag else f"Proxy working. {where}"
 
 
 def flag_from_country_code(code: str) -> str:

@@ -8,6 +8,7 @@ from ...services.browser.launch_policy import (
     UNLAUNCHABLE_DECLARABLE,
     proxy_unlaunchable_remedy,
 )
+from ...utils.geo_label import country_label
 from ...utils.proxy_parser import split_proxy_url
 from ...utils.timefmt import humanize_since
 from ..flags import flag_path
@@ -172,9 +173,13 @@ UNSUPPORTED_COUNTRY_NOTE = "cannot launch: this exit country is not supported ye
 
 def _meta_line(proxy: Proxy, now: float, remedy: str | None) -> str:
     parts = [split_proxy_url(proxy.url)["scheme"]]
-    if proxy.country_name:
-        code = f"[{proxy.country_code}] " if proxy.country_code else ""
-        parts.append(f"{code}{proxy.country_name}")
+    # Gated on the LABEL, not on the name: the flag beside this line keys on
+    # the country CODE (_flag_widget -> flag_path), so a name-only gate paints
+    # a Polish flag next to a line naming no country whenever the geo answer
+    # came from the provider that has no name field. See utils/geo_label.py.
+    country = country_label(proxy.country_code, proxy.country_name)
+    if country:
+        parts.append(country)
     if proxy.last_ip:
         parts.append(proxy.last_ip)
     if proxy.last_check_ok is False and proxy.checked_at:
