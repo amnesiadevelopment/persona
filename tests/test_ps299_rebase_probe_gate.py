@@ -107,13 +107,13 @@ def build_case(tmp_path, patches, files):
     pdir = tmp_path / "patches"
     pdir.mkdir()
     for name, text in patches.items():
-        (pdir / name).write_text(text)
+        (pdir / name).write_text(text, encoding="utf-8")
     tree = tmp_path / "src"
     tree.mkdir()
     for rel, body in files.items():
         f = tree / rel
         f.parent.mkdir(parents=True, exist_ok=True)
-        f.write_text(body)
+        f.write_text(body, encoding="utf-8")
     return pdir, tree
 
 
@@ -211,7 +211,9 @@ def test_clean_apply_still_reports_zero(tmp_path):
 
     assert (total_h, total_r, total_fuzz) == (n, 0, 0)
     for i in range(n):
-        assert "INSERTED_BY_TEST" in (tree / ("f%d.txt" % i)).read_text()
+        assert "INSERTED_BY_TEST" in (tree / ("f%d.txt" % i)).read_text(
+            encoding="utf-8"
+        )
 
 
 def test_create_file_patch_against_absent_target_is_not_a_reject(tmp_path):
@@ -233,7 +235,9 @@ def test_create_file_patch_against_absent_target_is_not_a_reject(tmp_path):
         "because the file is absent — that would misclassify 6 of our 16 patches"
     )
     for i in range(n):
-        assert (tree / ("f%d.txt" % i)).read_text().startswith("created by a patch")
+        assert (tree / ("f%d.txt" % i)).read_text(encoding="utf-8").startswith(
+            "created by a patch"
+        )
 
 
 def test_wrong_patch_count_refuses_to_measure(tmp_path):
@@ -259,7 +263,7 @@ def test_fetch_failure_is_not_reported_as_absent_upstream():
     import urllib.error
 
     mod = load_probe()
-    src = PROBE.read_text()
+    src = PROBE.read_text(encoding="utf-8")
 
     assert "except urllib.error.HTTPError" in src, (
         "the fetch handler must distinguish a 404 from every other failure"
@@ -296,6 +300,9 @@ def test_real_patch_set_has_expected_count_and_parses():
 
 def test_probe_is_executable_and_compiles():
     r = subprocess.run(
-        [sys.executable, "-m", "py_compile", str(PROBE)], capture_output=True, text=True
+        [sys.executable, "-m", "py_compile", str(PROBE)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
     )
     assert r.returncode == 0, r.stderr
