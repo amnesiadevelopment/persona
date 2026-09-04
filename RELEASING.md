@@ -22,7 +22,7 @@ kind of release. Getting it wrong is not cosmetic — see
 | Linux asset    | `persona-x86_64.AppImage`        | `personium-<version>-linux-x86_64.AppImage` |
 | Windows asset  | `persona-windows-setup.exe`      | `personium-<version>-windows-x86_64.zip`  |
 | macOS asset    | `persona-macos.dmg`              | `personium-<version>-macos-x86_64.dmg`    |
-| Discovered by  | the `releases/latest` redirect   | the releases list, filtered by tag prefix |
+| Discovered by  | the `releases/latest` redirect   | `git/matching-refs/tags/personium-`, then that tag's release |
 | Consumed by    | `src/services/app_update/updater.py` | `src/services/engine/updater.py`      |
 
 ### Application releases
@@ -60,8 +60,47 @@ kind of release. Getting it wrong is not cosmetic — see
 * A release must **list its assets**. There is no predictable-URL fallback any
   more: an engine release whose asset list carries nothing for the running OS
   is refused, not guessed at (see [The removed fallback](#the-removed-fallback)).
+* **Push the tag, then publish the release.** Discovery reads tags first (see
+  below), so a `personium-` tag that exists with no release behind it is a tag
+  the updater will try and fail to resolve. It descends past it to the next
+  engine release rather than reporting nothing, but only up to five tags — so
+  do not leave a run of engine tags without releases.
 * macOS engine builds are deferred, but the macOS asset **rule** above is
   already in force, so a later macOS release needs no change to persona.
+
+### How the engine updater finds a release
+
+Not by walking `/releases`. It asks
+`api.github.com/repos/amnesiadevelopment/persona/git/matching-refs/tags/personium-`,
+which the **server** filters by that prefix, takes the highest version among
+the tags it returns, and then reads that one release through
+`/releases/tags/personium-<version>` — the same by-tag request the rollback path
+makes, so an install and a rollback cannot select different assets.
+
+The obvious alternative is wrong here, and it is worth recording why so nobody
+"simplifies" it back. The Firefox updater enumerates `/releases?per_page=30` and
+filters client-side, and that is fine on an upstream where every release is a
+candidate. On **this** repository the releases list is sorted
+newest-created-first across **both kinds** of release, and GitHub offers no
+server-side "prereleases only" filter — so an engine release competes for those
+30 slots against every application release. Measured 2026-09-04: 94 releases
+over 65 days (1.45/day), so an engine prerelease published today drops off page
+1 after a **median of 17 days**, after which every installed persona reports
+"could not reach GitHub releases" while GitHub is perfectly reachable. Raising
+`per_page` moves that wall (~65 days at 100) rather than removing it.
+
+The tag-ref endpoint has no such wall: it is a genuine server-side prefix match
+(`tags/v` on this repo returns exactly the 98 `v*` tags), it is **unpaginated**
+and ignores `per_page` (`rails/rails` answers 552 refs and `python/cpython` 649
+in one document, with no `Link` header), and an unmatched prefix answers
+`200 []`. It is also **cheaper**: a ref is ~411 bytes and only engine tags are
+counted, so the document is 5 bytes today and ~20 KB after fifty engine
+releases, plus one ~26 KB release document — against the 493 KB the releases
+list had reached. That matters because this check runs hourly and unattended
+over a connection persona is designed to route through Tor.
+
+Two unauthenticated calls per check, against a 60/hour per-IP allowance.
+**Do not add a token** to "solve" a rate limit — see PS-216.
 
 ---
 
@@ -101,9 +140,18 @@ release marked wrongly by hand still cannot cross the line:
   app updater still refuses it rather than offering it to operators as an
   application update.
 
+Discovery adds a fourth, **structural** layer on the engine side: because the
+tag-ref endpoint filters by `personium-` on the server, an application release
+is not merely outranked in the document the engine updater reads — it is not in
+it at all. That is a consequence of the discovery mechanism rather than a guard
+in its own right, which is why the three above are still each required to hold
+alone.
+
 `tests/test_release_channel_separation.py` presents both kinds of release
 together and asserts each updater selects its own and rejects the other's. It
-fails if either selection rule is loosened.
+fails if either selection rule is loosened, and
+`test_engine_is_found_behind_a_hundred_application_releases` fails if discovery
+goes back to reading a bounded page of the releases list.
 
 ---
 

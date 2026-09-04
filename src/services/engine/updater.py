@@ -11,7 +11,10 @@ the path platform.fingerprint_chromium_filename() resolves to.
 
 ⚠️ THE APPLICATION'S OWN RELEASES LIVE IN THAT SAME REPOSITORY, and this module
 must never select one. See is_engine_tag and _asset_matches — two independent
-guards, either of which excludes every application release on its own.
+guards, either of which excludes every application release on its own. A third
+guard is structural: discovery asks `git/matching-refs/tags/personium-`, which
+the SERVER filters, so an application release is not even in the document this
+module reads (see ENGINE_TAG_REFS_API).
 """
 
 import json
@@ -97,31 +100,90 @@ ENGINE_REPO = "amnesiadevelopment/persona"
 # engine releases sortable among themselves and unmistakable against the app's.
 ENGINE_TAG_PREFIX = "personium-"
 
-# THE RELEASES LIST, NOT `/releases/latest`, AND THAT IS LOAD-BEARING.
+# HOW AN ENGINE RELEASE IS DISCOVERED: BY TAG REF, NOT BY WALKING THE RELEASES
+# LIST. THIS IS THE LOAD-BEARING CHOICE IN THIS MODULE — read the whole note
+# before changing it.
 #
-# Engine releases are published as PRERELEASES, so that the app's one
-# `releases/latest` pointer stays on the application (verified 2026-09-04
-# against neovim/neovim, whose 11-day-newer `nightly` prerelease does not take
-# that pointer). `/releases/latest` would therefore never return an engine
-# release at all — it has to be found by enumerating and filtering by tag, the
-# same shape the Firefox updater already uses for the same reason (its upstream
-# also publishes releases this one must not pick).
+# `/releases/latest` cannot be used. Engine releases are published as
+# PRERELEASES so the app's one `releases/latest` pointer stays on the
+# application (verified 2026-09-04 against neovim/neovim, whose 11-day-newer
+# `nightly` prerelease does not take that pointer), and `/releases/latest`
+# excludes prereleases by design — it would never serve an engine release at
+# all.
 #
-# NO RATE-LIMIT REGRESSION AND NO TOKEN (PS-216). This is the same
-# api.github.com rate class the `/releases/latest` API call it replaces was in —
-# 60/hour unauthenticated per IP — so nothing got cheaper or more expensive.
-# The APP updater deliberately avoids the API entirely by reading the
-# rate-limit-free redirect, and that trick is unavailable here precisely because
-# the pointer it reads is the one engine releases must not take. Do NOT "solve"
-# a rate limit by adding a token: installs stay unauthenticated and proxied.
-RELEASES_API = (
-    f"https://api.github.com/repos/{ENGINE_REPO}/releases?per_page=30"
+# THE OBVIOUS ALTERNATIVE IS WRONG HERE, AND MEASURABLY SO. The Firefox updater
+# enumerates `/releases?per_page=30` and filters, and this module was first
+# written the same way. That shape is safe on Firefox's upstream, where every
+# release is a candidate. It is NOT safe on OUR repository, because the releases
+# list is sorted newest-created-first ACROSS BOTH KINDS of release and GitHub
+# offers no server-side "prereleases only" filter — so an engine release
+# competes for those 30 slots against every application release. Measured on
+# this repository: 94 releases over 65 days (1.45/day), so page 1 spans roughly
+# 30 days and an engine prerelease published today drops off it after a MEDIAN
+# OF 17 DAYS. After that the engine is invisible to every installed persona:
+# `fetch_latest()` answers ('',''), `_record_engine_check("")` returns early so
+# not even a log line is written, and a fresh install burns its attempts and
+# tells the operator "could not reach GitHub releases" — a lie about a state
+# this code created. Paging further only moves that wall (per_page=100 buys ~65
+# days of this repo's history) while quadrupling an already-large body.
+#
+# SO DISCOVERY ASKS THE ONE ENDPOINT THAT FILTERS SERVER-SIDE BY OUR PREFIX.
+# `git/matching-refs/tags/personium-` returns every tag ref beginning with that
+# prefix and NOTHING else, so application releases are not merely outranked —
+# they are structurally absent from the answer, and no number of them can ever
+# push an engine release out of view. Verified 2026-09-04 against the live API:
+#
+#   * the filter is a genuine server-side PREFIX match — `tags/v` on this repo
+#     returns exactly the 98 `v*` tags and none of the others;
+#   * it is UNPAGINATED and ignores `per_page` — rails/rails answers 552 refs
+#     and python/cpython 649, in one document, with no `Link` header. There is
+#     no page to fall off;
+#   * an unmatched prefix answers `200 []` (5 bytes), not 404.
+#
+# IT IS ALSO SMALLER, NOT LARGER. A ref is ~411 bytes and only ENGINE tags are
+# counted, so this document is 5 bytes today and would still be ~20 KB after
+# fifty engine releases — application releases never grow it. Discovery then
+# fetches ONE release document by tag (~26 KB), which is the same request the
+# rollback path already makes. Total ~26 KB against the 493 KB the releases-list
+# shape had reached: see _MAX_RELEASE_BODY in utils/proxy_checker.py, whose
+# comment records both measurements. That matters because this fetch runs
+# hourly, unattended, over a connection persona is designed to route through
+# Tor.
+#
+# NO RATE-LIMIT REGRESSION AND NO TOKEN (PS-216). Two unauthenticated
+# api.github.com calls per check against a 60/hour per-IP allowance, where there
+# was one. The APP updater avoids the API entirely by reading the rate-limit-free
+# redirect, and that trick is unavailable here precisely because the pointer it
+# reads is the one engine releases must not take. Do NOT "solve" a rate limit by
+# adding a token: installs stay unauthenticated and proxied.
+ENGINE_TAG_REFS_API = (
+    f"https://api.github.com/repos/{ENGINE_REPO}/git/matching-refs/"
+    f"tags/{ENGINE_TAG_PREFIX}"
 )
-# The by-tag sibling of RELEASES_API. Same document shape, so fetch_release_full
-# below is a variant of fetch_latest_full rather than a second mechanism.
+
+# The release document endpoint. ONE selection rule, BOTH paths: discovery
+# resolves the newest engine TAG and then reads that release through this same
+# URL the rollback path uses, so a rollback cannot pick a different asset than
+# an install did — the property is now structural rather than merely intended.
 RELEASE_BY_TAG_API = (
     f"https://api.github.com/repos/{ENGINE_REPO}/releases/tags/{{tag}}"
 )
+
+# How many engine tags discovery will probe, newest-version-first, before giving
+# up. It is normally ONE: the newest tag has a published release and that is the
+# answer. The descent exists for the states where it does not — a tag pushed
+# minutes before its release is cut, a release still in DRAFT (which the
+# unauthenticated by-tag endpoint answers 404 for), or a release deleted while
+# its tag stayed. Without it, any of those would hide the perfectly good release
+# behind it and reproduce the very invisibility this mechanism was chosen to
+# prevent; with it, the answer degrades to "the newest PUBLISHED engine release"
+# rather than to nothing.
+#
+# BOUNDED, because this runs hourly and unattended: it must never walk the tag
+# list. The bound is cheap to hold — the descent only runs at all when the refs
+# fetch SUCCEEDED, so an unreachable GitHub costs one failed request and no
+# probes, and the worst case on a reachable one is this many small 404s.
+_MAX_TAG_PROBES = 5
 
 # Serialises concurrent installs (the UI update thread and ensure_engine can
 # both reach download_engine) so two extracts don't race into ENGINE_DIR.
@@ -542,10 +604,18 @@ def _release_asset(data) -> tuple[str, str, str]:
     why the `personium-` prefix must not travel past this boundary.
 
     REFUSES RATHER THAN GUESSES. An application release answers ('','','')
-    because its tag is not an engine tag; an engine release that lists no asset
-    for this OS answers ('','','') too, because the predictable-URL fallback
-    that used to paper over that case is gone (see the note above it)."""
+    because its tag is not an engine tag; a DRAFT answers ('','','') because a
+    draft is not published work; an engine release that lists no asset for this
+    OS answers ('','','') too, because the predictable-URL fallback that used to
+    paper over that case is gone (see the note above it)."""
     if not isinstance(data, dict):
+        return "", "", ""
+    if data.get("draft"):
+        # Not published work, so never installable. This lives HERE rather than
+        # in the caller so it holds on BOTH paths — the same reason every other
+        # part of the selection rule does. The unauthenticated by-tag endpoint
+        # answers 404 for a draft anyway, so this is defence in depth against a
+        # document that reaches us some other way, not the primary guard.
         return "", "", ""
     tag = data.get("tag_name", "")
     if not is_engine_tag(tag):
@@ -569,23 +639,76 @@ def _release_asset(data) -> tuple[str, str, str]:
     return version, url, digest
 
 
+def engine_versions_newest_first(timeout: int = 20) -> list[str]:
+    """Every PUBLISHED-TAG engine version in the repository, highest first.
+
+    Discovery's first half. Asks `git/matching-refs/tags/personium-`, which the
+    server filters by that prefix, so application tags are structurally absent
+    from the answer rather than merely outranked — see ENGINE_TAG_REFS_API for
+    why that is the whole point, and for the measurements behind it.
+
+    Returns BARE versions (`version_from_tag`), highest by `parse_version`
+    first. The ORDER IS OURS, not the API's: matching-refs answers in
+    lexicographic ref order, under which `personium-99.…` sorts above
+    `personium-152.…`. Sorting numerically here is what makes "newest" mean the
+    newest BUILD rather than the newest string, and it is the same maximisation
+    the releases-list shape used to do inline.
+
+    `[]` on any failure, and on a repository with no engine tag yet — which is
+    the honest answer today and is why the caller must treat it as "nothing
+    published", never as "GitHub is unreachable". A ref whose name survives the
+    server filter but is not an engine tag is dropped anyway: is_engine_tag runs
+    on our side too, so discovery does not trust the endpoint's filter alone."""
+    try:
+        # Through persona's OWN egress policy, never a bare urlopen: this runs
+        # unattended at every startup, so it must leave the way the operator
+        # said the application's traffic should leave.
+        refs = egress.fetch_json(ENGINE_TAG_REFS_API, timeout=timeout)
+    except Exception:
+        return []
+    versions = []
+    for ref in refs if isinstance(refs, list) else []:
+        if not isinstance(ref, dict):
+            continue
+        name = ref.get("ref", "") or ""
+        prefix = "refs/tags/"
+        if not name.startswith(prefix):
+            continue
+        tag = name[len(prefix):]
+        if not is_engine_tag(tag):
+            continue
+        versions.append(version_from_tag(tag))
+    versions.sort(key=parse_version, reverse=True)
+    return versions
+
+
 def fetch_latest_full(timeout: int = 20) -> tuple[str, str, str]:
     """Return (version, asset_url, sha256_digest) of the newest ENGINE release
     for THIS OS, or ('','','') on failure. Picks the per-OS engine asset.
 
-    ENUMERATES AND FILTERS rather than asking `/releases/latest`, because our
-    repository publishes both kinds of release and engine releases are
-    prereleases (which `/releases/latest` excludes by design — that is what
-    keeps that pointer on the application). Same shape as the Firefox updater's
-    fetch, for the same reason.
+    RESOLVES BY TAG REF, not by walking the releases list — see
+    ENGINE_TAG_REFS_API for the measured reason, which is that on a repository
+    publishing both kinds of release an engine release drops off page 1 of the
+    releases list after a median of 17 days and becomes invisible. Two steps:
+    ask which engine tags exist (server-filtered by our prefix), then read the
+    newest one's release document THROUGH THE SAME by-tag path the rollback
+    uses. `/releases/latest` is not an option at all: engine releases are
+    prereleases, which it excludes by design — that is what keeps that pointer
+    on the application.
 
-    THE MAXIMISATION IS OVER ENGINE RELEASES ONLY. An application release is not
-    a candidate (is_engine_tag), an engine release with no asset for this OS is
-    not a candidate either (_release_asset refuses rather than guesses), and the
-    winner is the highest by `parse_version` — NOT simply the first the API
-    listed. GitHub returns releases newest-created-first, but an engine release
-    published out of order, or a re-published older build, must not be able to
-    read as "latest" and downgrade an operator's engine.
+    THE ORDER IS OVER ENGINE VERSIONS ONLY, highest by `parse_version` first.
+    An application release cannot appear (the refs endpoint filters it out, and
+    is_engine_tag drops it again), and an engine release with no asset for this
+    OS is not a candidate either — `_release_asset` refuses rather than guesses.
+    A re-published or out-of-order older build therefore still cannot read as
+    "latest" and downgrade an operator's engine.
+
+    DESCENDS PAST A TAG THAT DOES NOT RESOLVE, up to _MAX_TAG_PROBES. A tag can
+    exist without a readable release (pushed before the release was cut, the
+    release still a draft, the release deleted), and the newest such tag must
+    not hide a perfectly good release behind it — that would reproduce exactly
+    the invisibility this mechanism was chosen to prevent. Bounded because this
+    runs hourly and unattended.
 
     Returns the BARE version, never the `personium-` tag: see version_from_tag.
 
@@ -594,35 +717,24 @@ def fetch_latest_full(timeout: int = 20) -> tuple[str, str, str]:
     runs the same fetch through the known-bad list and the tested-major ceiling
     (see engine/policy.py) and blanks the URL when a build is refused.
     """
-    try:
-        # Through persona's OWN egress policy, never a bare urlopen: this runs
-        # unattended at every startup, so it must leave the way the operator
-        # said the application's traffic should leave. With no policy set that
-        # is a direct send — byte-identical to what this line used to do.
-        releases = egress.fetch_json(RELEASES_API, timeout=timeout)
-    except Exception:
-        return "", "", ""
-    best = ("", "", "")
-    for release in releases if isinstance(releases, list) else []:
-        if not isinstance(release, dict) or release.get("draft"):
-            continue
-        version, url, digest = _release_asset(release)
-        if not version or not url:
-            continue
-        if not best[0] or parse_version(version) > parse_version(best[0]):
-            best = (version, url, digest)
-    return best
+    for version in engine_versions_newest_first(timeout)[:_MAX_TAG_PROBES]:
+        found = fetch_release_full(version, timeout=timeout)
+        if found[0] and found[1]:
+            return found
+    return "", "", ""
 
 
 def fetch_release_full(tag: str, timeout: int = 20) -> tuple[str, str, str]:
     """Return (version, asset_url, sha256_digest) for ONE NAMED engine release,
     or ('','','') when it is not served or is not an engine release.
 
-    The by-tag sibling of fetch_latest_full: same egress authority, same
-    document shape, same per-OS asset selection (_release_asset). It exists
-    because a rollback needs the URL of a SPECIFIC older build, and the only
-    fetch this module had reported whatever is currently newest — which is
-    precisely the build being rolled back FROM.
+    THE SINGLE RELEASE-READING PATH. A rollback needs the URL of a SPECIFIC
+    older build, and since PS-305's discovery rework `fetch_latest_full` reaches
+    its answer through this same function — it resolves the newest engine TAG
+    and then reads that tag's release here. So "one selection rule, both paths"
+    is now structural: the install and the rollback do not merely share
+    `_release_asset`, they share the whole fetch, and there is no second place
+    an asset could be chosen differently.
 
     ACCEPTS A BARE VERSION and puts the `personium-` prefix back for the URL
     (engine_tag), because everything on disk — builds.json, version.txt — holds

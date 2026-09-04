@@ -99,6 +99,19 @@ _MAX_GEO_BODY = 256 * 1024
 #: until some future release quietly crossed it and turned the unattended update
 #: check into an intermittent failure. Still a BOUND, not an exemption: this body
 #: comes from a third party over a transport the operator may not control.
+#:
+#: RE-MEASURED 2026-09-04 (PS-305), because this is the only place the number is
+#: recorded and it had grown 4x. The Firefox-shaped `?per_page=30` fetch against
+#: `amnesiadevelopment/persona` is now **493 KB** (94 releases over 65 days,
+#: ~1.45/day, and every one of them enumerates its assets). The CHROMIUM updater
+#: no longer makes that request at all: since PS-305 it discovers by tag ref
+#: (`git/matching-refs/tags/personium-`, 5 bytes today, ~411 bytes per engine
+#: tag) and then reads ONE release document (~26 KB) — about 26 KB per hourly
+#: check against the 493 KB the list shape had reached, which matters on a
+#: connection persona is designed to route through Tor. The 493 KB figure stands
+#: for the FIREFOX call site, which still uses the list shape against an
+#: upstream where every release is a candidate; 4 MB remains comfortable headroom
+#: for it, but that is a measured comfort and not a permanent one.
 _MAX_RELEASE_BODY = 4 * 1024 * 1024
 
 #: User-Agent for requests that travel to a THIRD-PARTY endpoint on the

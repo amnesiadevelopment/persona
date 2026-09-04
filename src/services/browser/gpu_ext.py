@@ -1095,10 +1095,12 @@ __REALM_BOOTSTRAP__
 #     `python -m src.services.verify.engine_gpu_variance check`.
 #   * THE READING IS NOW GATED DAILY, by `.github/workflows/engine-gpu-variance.yml`
 #     (06:40 UTC). That job provisions the engine itself and measures the build
-#     UPSTREAM IS SERVING RIGHT NOW — deliberately UNPINNED, because the risk is
-#     `/releases/latest` and a pin is exactly what would hide it. A narrowed arm
-#     fails that job; an under-sampled run fails it too, so "we failed to look"
-#     cannot wear the colour of "we looked and it was fine".
+#     THE UPDATER IS SERVING RIGHT NOW — deliberately UNPINNED, because the risk
+#     is whatever `fetch_latest()` resolves as newest (since PS-305, the newest
+#     `personium-` tag in our own repository) and a pin is exactly what would
+#     hide it. A narrowed arm fails that job; an under-sampled run fails it too,
+#     so "we failed to look" cannot wear the colour of "we looked and it was
+#     fine".
 #     (NOT `engine-autoupdate.yml`: that job bumps FIREFOX and never touches
 #     fingerprint-chromium, so a chromium check there could never fire on the
 #     event it exists to catch.)
