@@ -239,6 +239,56 @@ class ProxyStore(StoreGuardMixin, TrashableMixin):
             self._save()
         return True
 
+    def invalidate_geo(self, name: str) -> bool:
+        """Drop everything recorded about the exit, unconditionally.
+
+        The UNCONDITIONAL counterpart to ``set_url``'s invalidation, for the
+        callers that move the exit WITHOUT moving the URL. It zeroes the same
+        eight fields ``set_url`` does (``store.py`` above) and ``update()`` does
+        via ``keep_geo`` — the six geo fields plus the two bookkeeping fields —
+        and it persists, so an interrupted operation leaves no stale
+        affirmative on disk.
+
+        WHY THIS EXISTS BESIDE ``set_url`` RATHER THAN INSIDE IT. ``set_url``
+        gates its invalidation on ``url != proxy.url``, and that gate is
+        correct FOR THAT METHOD: a URL write that changes nothing must change
+        nothing (pinned by ``test_set_url_without_a_url_change_keeps_everything``).
+        But the gate is the wrong SIGNAL for a rotation. A rotating/backconnect
+        proxy's URL is CONSTANT BY DESIGN — a new exit IP per connection at the
+        same endpoint — and two of ``ProxyService.rotate_proxy``'s three arms
+        (the provider's rotate endpoint, and the plain fresh connection) return
+        the URL unchanged for exactly that reason. So the invalidation the
+        rotate path needs is conditioned on the one signal guaranteed not to
+        move for the proxy type the rotate button exists to serve.
+
+        The rotate path therefore calls THIS, before it issues the rotation:
+        from the moment the exit is asked to move, nothing on file describes
+        it. The follow-up check refills the record via ``mark_checked``, so a
+        rotation that completes normally ends "verified" exactly as before;
+        one that is interrupted, or that is raced by a launch, now reads
+        "unverified" with no geography instead of asserting the PREVIOUS exit's
+        country, timezone and coordinates under a verdict of "verified".
+
+        ORDERING WARNING FOR CALLERS. ``get()`` hands back the LIVE ``Proxy``
+        object, not a copy, so a caller holding one sees these fields emptied
+        under it. Read anything you need from the record (``last_ip``, ``url``)
+        BEFORE calling this.
+        """
+        with self._lock:
+            proxy = self.proxies.get(name)
+            if proxy is None:
+                return False
+            proxy.country_code = ""
+            proxy.country_name = ""
+            proxy.last_ip = ""
+            proxy.timezone = ""
+            proxy.lat = None
+            proxy.lon = None
+            proxy.checked_at = 0.0
+            proxy.last_check_ok = None
+            self._save()
+        return True
+
     def mark_checked(
         self,
         name: str,
