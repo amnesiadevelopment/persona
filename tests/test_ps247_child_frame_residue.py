@@ -331,45 +331,99 @@ def test_the_all_realms_selectors_still_resolve_to_the_shared_probe():
 # --- AC8: falsification -------------------------------------------------------
 
 
-def test_without_the_new_records_the_child_realm_has_no_residue_reading():
+def _child_entries_for_inventory(inventory, monkeypatch) -> dict:
+    """The child realm's entry map that a real ``run_probes`` RETURNS for
+    ``inventory``, with a stub evaluator standing in for the browser.
+
+    ⚠️ THE SUBSTITUTION IS THE POINT. ``run_probes`` -> ``run_child_frame_realm``
+    -> ``probes_for_realm`` all read the module-level ``probes.PROBES``, so
+    swapping that binding is what makes a *reverted inventory* reach the real
+    code path instead of being inspected beside it. Reconstructing the pre-fix
+    id set as a comprehension and asserting on it would be an assertion that an
+    id appears in a LIST — one of the two forms this file's header rules out,
+    and it would stay green if every record in the inventory were unevaluated.
+
+    The evaluator is a stub rather than a browser so the falsification runs in
+    CI, where chromium is deliberately absent. It answers for exactly the
+    probes the realm asks it about, so the entry set comes from the inventory
+    walk under test and not from anything this helper decided.
+    """
+    monkeypatch.setattr(probes, "PROBES", inventory)
+
+    def stub(_expression):
+        return {p.id: {"v": {}} for p in probes.probes_for_realm(probes.CHILD_FRAME)}
+
+    return runner.run_probes(stub, (probes.CHILD_FRAME,))[probes.CHILD_FRAME]
+
+
+def test_without_the_new_records_the_child_realm_has_no_residue_reading(monkeypatch):
     """AC8. Revert only the two records and the AC1 assertions go RED.
 
     Reconstructs the pre-fix inventory — the two twins removed, nothing else
-    touched — and drives the same ``run_probes`` path AC1 uses against a
-    stub evaluator. The realm answers, and the two residue entries are simply
-    ABSENT from it: exactly the gap this slice closes, stated as an executable
+    touched — and drives the same ``run_probes`` path AC1 uses against a stub
+    evaluator. The realm ANSWERS, and the two residue entries are simply ABSENT
+    from the answer: exactly the gap this slice closes, stated as an executable
     fact rather than as a claim about the past.
+
+    ⚠️ THE ASSERTION IS ON AN ENTRY MAP ``run_probes`` RETURNED, and it has to
+    be, for the reason this file's header states and the reason the round-2
+    finding on ``_REALM_NATIVE_IDS`` memorialises one file over: *a guard's
+    proof must fail when the guard goes soft, which it can only do by reading
+    the guard itself.* The same holds here — a falsification proof must fail
+    when the RECORDS go away, which it can only do by driving the path those
+    records feed. An earlier version of this test read the pre-fix id set out
+    of a comprehension and asserted on that; it passed with ``run_probes``
+    sabotaged to raise on call, which means it was not falsifying anything and
+    its docstring said otherwise. Chromium is absent from CI by design, so this
+    test is the whole of AC8's automated weight and cannot be the one test in
+    the file that breaks the file's rule.
 
     Uses a stub rather than a browser deliberately, so the falsification runs
     in CI where no chromium exists. What it establishes is the INVENTORY-driven
     half — the realm's entry set is built from ``probes_for_realm`` — which is
     the half a reverted record actually changes.
     """
-    reverted = tuple(p for p in probes.PROBES if p.id not in (BOOT_CHILD, SEED_CHILD))
-    assert len(reverted) == len(probes.PROBES) - 2, "premise: exactly two removed"
+    live = probes.PROBES
+    reverted = tuple(p for p in live if p.id not in (BOOT_CHILD, SEED_CHILD))
+    assert len(reverted) == len(live) - 2, "premise: exactly two removed"
 
-    pre_fix_ids = {p.id for p in reverted if probes.CHILD_FRAME in p.realms}
-    assert pre_fix_ids == {"realm.frameIdentity", "webgl.readback.childFrame"}, (
-        "premise: before this slice the child realm carried exactly the two "
-        f"records PS-210/PS-232 gave it, got {sorted(pre_fix_ids)}"
+    # PRE-FIX: run_probes replies for the realm, and the reply does not carry
+    # the residue readings. An entry map, not an id list.
+    pre_fix = _child_entries_for_inventory(reverted, monkeypatch)
+    assert set(pre_fix) == {"realm.frameIdentity", "webgl.readback.childFrame"}, (
+        "premise: before this slice run_probes answered the child realm with "
+        "exactly the two records PS-210/PS-232 gave it, got "
+        f"{sorted(pre_fix)}"
     )
-    assert BOOT_CHILD not in pre_fix_ids
-    assert SEED_CHILD not in pre_fix_ids
+    assert BOOT_CHILD not in pre_fix, (
+        "the reverted inventory still produced a bootMarkers reading for the "
+        "child realm — this test is not reverting what it claims to"
+    )
+    assert SEED_CHILD not in pre_fix
 
-    # And the live inventory — the same expression, post-fix — does carry them.
-    live_ids = {p.id for p in probes.probes_for_realm(probes.CHILD_FRAME)}
-    assert {BOOT_CHILD, SEED_CHILD} <= live_ids
+    # POST-FIX: the same path, the LIVE inventory, and the readings are there.
+    #
+    # ⚠️ `live` is captured ABOVE, before the first patch. `monkeypatch` restores
+    # at TEARDOWN, not between calls, so reading `probes.PROBES` here would read
+    # the reverted tuple still installed by the call above and this assertion
+    # would fail against its own setup. (It did, on the first draft of this
+    # test — kept as a comment because the failure looked like a defect in the
+    # records rather than in the harness.)
+    post_fix = _child_entries_for_inventory(live, monkeypatch)
+    assert {BOOT_CHILD, SEED_CHILD} <= set(post_fix), (
+        "the live inventory did not produce the residue readings through the "
+        f"run_probes path AC1 uses, got {sorted(post_fix)}"
+    )
 
-    # The reach is unchanged in kind: the expression the realm is entered by
-    # still uses indexed access and still never touches the accessor, now with
-    # two more probes composed into it.
+    # ADDITIONAL, and deliberately not load-bearing for AC8: the reach is
+    # unchanged in kind. These are substring assertions on generated source and
+    # cannot falsify a missing RECORD — they are here because the reach is what
+    # makes the realm the right one to read, not because they prove the revert.
     expression = runner.child_frame_expression(
         probes.probes_for_realm(probes.CHILD_FRAME)
     )
     assert "self[idx]" in expression
     assert "contentWindow" not in expression
-    for probe_id in (BOOT_CHILD, SEED_CHILD):
-        assert probe_id in expression
 
 
 def test_an_unreachable_child_realm_errors_the_new_records_too():
