@@ -587,8 +587,8 @@ class FletDriver:
         ``value`` matches an option's visible text exactly, or — when that is
         unambiguous — as a case-insensitive substring. The fallback exists
         because an option's VISIBLE text is not always its stored key: the
-        engine dropdown shows ``Chrome ("fingerprint-chromium")`` for the key
-        ``chromium`` (``src/ui/theme/page.py:150``). Ambiguity raises rather
+        engine dropdown shows ``Chrome ("Personium")`` for the key
+        ``chromium`` (``src/ui/theme/page.py``). Ambiguity raises rather
         than guessing.
         """
         _node, opts = self._open(label)

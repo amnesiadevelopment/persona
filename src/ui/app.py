@@ -10,7 +10,7 @@ import flet as ft
 
 from ..core.container import Container
 from ..core.logging import get_logger
-from ..core.strings import get_string
+from ..core.strings import CHROMIUM_ENGINE_NAME, get_string
 from ..interfaces.protocols import IBrowserLauncher, IProfileManager, IProxyService
 from .components import (
     build_bookmarks_page,
@@ -268,7 +268,7 @@ def _short_engine_version(version: str) -> str:
     tooltip carries it verbatim. That is TRUE OF THE ROLLBACK ROW, whose
     tooltip really does interpolate the build identifier, and it is FALSE of
     the two engine status rows every caller of this function feeds: their
-    tooltips are the static gesture strings "Check / update fp-chromium" and
+    tooltips are the static gesture strings "Check / update Personium" and
     "Check / update the Firefox engine", with no version in either. It is not
     behind the reveal chevron either — see :meth:`_engine_row`, which works
     the arithmetic through: this function caps AT ``_VERSION_MAX_CHARS`` and
@@ -2877,7 +2877,7 @@ class App:
         next reader a round. Name, version, state — nothing else.
 
         WHERE THE FULL VERSION IS *NOT*: neither of these two rows' tooltips.
-        Both are static strings ("Check / update fp-chromium", "Check / update
+        Both are static strings ("Check / update Personium", "Check / update
         the Firefox engine") naming the GESTURE, with no version interpolated
         into either. The row that DOES carry a build identifier in its tooltip
         is the ROLLBACK row, which is a different control.
@@ -2924,10 +2924,14 @@ class App:
                 # NAME ABOVE, VERSION BELOW — measured, not preferred. Putting
                 # the two on ONE line looked like the tighter answer and is
                 # not: the rail is 200px, and once its padding, the 18px icon,
-                # "fp-chromium" and the state dot have taken their share the
+                # the engine name and the state dot have taken their share the
                 # version cell is left about 26px, which ellipsised even
                 # "checking..." down to "ch…". A cell too narrow to hold the
                 # value is not a shorter row, it is a row that says nothing.
+                # (Measured against "fp-chromium", 11 chars; the row now reads
+                # "Personium", 9 — SHORTER, so the measurement still bounds it.
+                # A LONGER engine name would need re-measuring, which is one
+                # reason the name lives in one place: core/strings.py.)
                 #
                 # So the stacked block stays and the WRAP is what goes. Both
                 # texts are single-line with an ellipsis (see where they are
@@ -3073,16 +3077,18 @@ class App:
         body: list[ft.Control] = []
         if self._engines_open:
             body = [ft.Divider(height=10, color=COLORS["border"])]
-            # fp-chromium row, with its own progress bar directly beneath it
+            # Personium row, with its own progress bar directly beneath it.
+            # The name is OURS and is OPERATOR-ONLY — see CHROMIUM_ENGINE_NAME
+            # in core/strings.py for why it must never reach a page.
             body.append(
                 ft.Container(
                     padding=ft.Padding.symmetric(horizontal=10),
                     on_click=lambda _: self._on_engine_click(),
                     ink=True,
-                    tooltip="Check / update fp-chromium",
+                    tooltip=f"Check / update {CHROMIUM_ENGINE_NAME}",
                     content=self._engine_row(
                         self._engine_logo("chromium"),
-                        "fp-chromium",
+                        CHROMIUM_ENGINE_NAME,
                         self._status_control(
                             self.engine_text, self._status_expanded("chromium")
                         ),
@@ -3199,7 +3205,7 @@ class App:
 
             threading.Thread(target=work, daemon=True).start()
 
-        # The Firefox engine updates on-demand like fp-chromium: binary-only
+        # The Firefox engine updates on-demand like the Chromium engine: binary-only
         # rebuilds are published as firefox-NN releases on the engine repo,
         # and the bundled package can download any build that still ships its
         # expected per-OS asset. Missing → download it; installed → check the
@@ -4589,7 +4595,7 @@ class App:
         """Both engines are required, not optional. If the Firefox engine binary
         isn't present (fresh install, or an update that added it to an install
         that only had chromium), fetch it in the background with a visible
-        status — the same first-run treatment fp-chromium gets."""
+        status — the same first-run treatment the Chromium engine gets."""
         from ..services.browser import invisible_launch as inv
 
         def work() -> None:
