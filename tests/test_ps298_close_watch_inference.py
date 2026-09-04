@@ -520,7 +520,8 @@ def test_the_engine_child_count_counts_only_firefox_binaries():
 
         monkeypatch.setattr(il, "_session_descendants", lambda roots: {5})
         assert il._firefox_engine_child_count(4242) == 0, (
-            "a confident zero must be reachable, or the signal can never agree"
+            "a confident zero must be reachable, or the count can never read "
+            "zero, and a number that cannot read zero measures nothing"
         )
     finally:
         monkeypatch.undo()
