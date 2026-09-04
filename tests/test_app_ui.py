@@ -1370,7 +1370,11 @@ def test_starting_a_download_retires_a_stale_restart_instruction(monkeypatch):
 
     # Positive control: the panel really was rendered mid-download, so the
     # absence asserted below is a retired message and not an unbuilt panel.
-    assert any("updating to new version" in t for t in found), found
+    # PS-297 relocated the target version out of this line and into the
+    # row's tooltip (the _ROLLBACK_LABEL trade), so the positive control
+    # reads the half that stayed on screen: the panel is genuinely
+    # mid-download, which is what this assertion is here to establish.
+    assert any(t.startswith("updating · ") for t in found), found
     # ...and the instruction to restart into the version being replaced is
     # not standing over it.
     assert "restart to run the previous version" not in found, found
@@ -1395,5 +1399,9 @@ def test_a_manual_update_retires_a_stale_restart_instruction_too(monkeypatch):
         app, monkeypatch, app._apply_update_now
     )
 
-    assert any("updating to new version" in t for t in found), found
+    # PS-297 relocated the target version out of this line and into the
+    # row's tooltip (the _ROLLBACK_LABEL trade), so the positive control
+    # reads the half that stayed on screen: the panel is genuinely
+    # mid-download, which is what this assertion is here to establish.
+    assert any(t.startswith("updating · ") for t in found), found
     assert "restart to run the previous version" not in found, found
