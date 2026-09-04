@@ -527,11 +527,21 @@ def _launch_outcome(profile) -> str:
 
     ONLY the engine spawn is replaced, by a sentinel. It sits BEYOND the last
     guard, so it cannot mask a refusal that should have happened — every gate
-    under test (proxy resolution, then the geography gate at process.py:249)
-    runs untouched and in its real order, ahead of any socket, any display and
-    any exit. A launch that is correctly REFUSED never reaches the sentinel at
-    all, which is what keeps ``needs_launch=False`` honest: no browser starts
-    on the refusal path, and none starts on the healthy path either.
+    under test (proxy resolution, then BOTH geography gates that ``spawn_browser``
+    asks before it does any launch work: the timezone half and, since PS-240,
+    the locale half) runs untouched and in its real order, ahead of any socket,
+    any display and any exit. A launch that is correctly REFUSED never reaches
+    the sentinel at all, which is what keeps ``needs_launch=False`` honest: no
+    browser starts on the refusal path, and none starts on the healthy path
+    either.
+
+    ⚠️ The private gate helpers are deliberately NOT named here.
+    ``test_the_module_does_not_reach_for_the_private_timezone_helper`` greps
+    this module's whole source for that symbol, docstrings included, and it is
+    right to: a check that reaches for the private helper instead of driving
+    ``spawn_browser`` goes green while the product launches on the operator's
+    real timezone. Writing the name in prose trips a guard that cannot tell
+    prose from a call — so the gates are described, not named.
     """
     from ..browser import invisible_launch
     from ..browser.process import spawn_browser

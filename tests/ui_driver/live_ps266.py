@@ -11,9 +11,9 @@ same surface, so it is driven.
 
 WHAT IT DRIVES
 --------------
-1. A REAL 460-character refusal — the string ``process.py:233-241`` composes,
-   with the ``Error starting process: `` prefix ``launcher.py`` adds — is seeded
-   into the log through the app's own ``_log()``.
+1. A REAL 460-character refusal — the string ``process._profile_timezone``
+   composes, with the ``Error starting process: `` prefix ``launcher.py`` adds —
+   is seeded into the log through the app's own ``_log()``.
 2. The fullscreen Activity Log is opened by clicking the node the operator
    clicks ("Open full Activity Log").
 3. The reveal control is found by its tooltip and CLICKED, and the row's own

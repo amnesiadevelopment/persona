@@ -132,6 +132,62 @@ class LocaleUnderivableError(GeographyUnknownError):
     """
 
 
+class ExitCountryUnknownError(GeographyUnknownError):
+    """A profile's proxy carries a TIMEZONE but no COUNTRY, so the locale half of
+    the derivation has nothing to derive FROM.
+
+    ⚠️ NOT the same state as ``LocaleUnderivableError``, and conflating the two
+    is what let this case ship. That one means *"we know the country and have no
+    row for it"* — the remedy is a code change. This one means **"we do not know
+    which country this exits in at all"** — the remedy is a re-check, and there
+    is no row to add. Telling an operator to add a ``_COUNTRY_LOCALE`` row for a
+    country nobody can name is an instruction they cannot follow.
+
+    ⚠️ NOR is it the parent, and the difference is the same one
+    ``GeographyDisprovenError`` was split out for. The parent says *"the proxy
+    has never been checked successfully"*. Here the check very likely PASSED —
+    it simply answered without a country — so the parent's sentence and its
+    ``"proxy never checked"`` label would both be false on the card, sending the
+    operator to look for a failure that did not happen.
+
+    Two shipped paths produce this record deliberately, which is why it needed a
+    name rather than a guard:
+
+    * ``proxy_checker._resolve_geo`` REMEMBERS a partial — a 200 that carried a
+      usable timezone but no country is kept rather than discarded, on the
+      stated reasoning that condemning a healthy exit is worse than a partial
+      answer. ``ProxyStore.mark_checked`` then stores ``country_code=""`` beside
+      a real zone and ``last_check_ok=True``.
+    * ``proxy_checker._validate_geo`` DROPS a country code that is not two
+      alphabetic characters, while keeping any timezone containing ``/``. A
+      lying or malformed endpoint therefore yields the same shape, and
+      ``test_proxy_checker_socks`` pins that dropping as correct.
+
+    Why it must refuse rather than fall back to ``en-US``. The zone half answers
+    for this record — ``_proxy_timezone``'s FIRST branch returns the recorded
+    zone without consulting any country — so a fallback ships an
+    American-English browser beside a Sofia clock, which is the exact
+    contradiction the locale refusal exists to stop. The country being unknown
+    makes the invented locale MORE wrong, not less: there is not even a country
+    row that could have justified it.
+
+    ⚠️ A REAL BEHAVIOURAL CONSEQUENCE, stated rather than discovered later: a
+    proxy on the partial path was launchable before this class existed and is
+    not now, until a check records a country. That is the correct answer under
+    the fail-closed rule every sibling here follows — a coherent refusal beats
+    an incoherent launch — and it is strictly narrower than what the zone half
+    already does to a proxy carrying no geography at all. It is a real cost on a
+    path another module built on purpose, so it is named here.
+
+    Also covers a code ISO 3166-1 reserves to mean "not a country" (``ZZ``): a
+    proxy carrying one is in this state, not in ``LocaleUnderivableError``'s.
+    ``_locale_for("ZZ")`` still answers ``en-US`` untouched — that function
+    cannot see whether a proxy exists, and for the DIRECT path ``en-US`` is the
+    deliberate policy answer (#218). Only the CALLER knows a proxy is present,
+    so only the caller can tell "no country supplied" from "no country known".
+    """
+
+
 class GeographyDisprovenError(GeographyUnknownError):
     """A profile's proxy carries geography, but the most recent check FAILED —
     so the product's own latest evidence says that geography is untrue.
