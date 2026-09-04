@@ -39,8 +39,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ..proxy.errors import (
+    ExitCountryUnknownError,
     GeographyDisprovenError,
     GeographyUnknownError,
+    LocaleUnderivableError,
     ProxyUnresolvedError,
     TimezoneUnderivableError,
 )
@@ -66,6 +68,24 @@ _UNKNOWN = "proxy never checked"
 # states: it describes the EVIDENCE ("no zone for this country") and stops
 # there, never hinting that launching without the proxy would be a way out.
 _UNDERIVABLE = "no timezone for exit country"
+# The locale half of the same shape, and it needs its OWN label for the same
+# reason the zone half did: the proxy may have checked successfully seconds ago,
+# so any re-check prompt is wrong. It is a SEPARATE label rather than a shared
+# "no data for exit country" because the two name DIFFERENT missing rows in
+# DIFFERENT tables, and an operator reading a scanning list has to know which
+# one to add. Same rule as the block above: it describes the evidence and stops
+# there, never hinting that launching without the proxy would be a way out.
+_LOCALE_UNDERIVABLE = "no locale for exit country"
+# The one label in this block that IS a re-check prompt, and it has to be: the
+# other three "underivable"-shaped states are missing a table ROW, while this
+# one is missing the COUNTRY itself. A check that answers with a country fixes
+# it, and no code change can. Named apart from _UNKNOWN for the reason that
+# label's own comment gives — the proxy here has very likely been checked
+# SUCCESSFULLY (a partial answer with a zone but no country), so "never checked"
+# would send the operator hunting a failure that did not happen. Still inside
+# the rule the block above states: it describes the evidence, never hints that
+# launching without the proxy would be a way out.
+_EXIT_COUNTRY_UNKNOWN = "exit country unknown"
 
 
 @dataclass(frozen=True)
@@ -74,7 +94,8 @@ class Refusal:
 
     ``kind``    stable identifier for tests and callers ("proxy_unresolved",
                 "geography_disproven", "geography_unknown",
-                "timezone_underivable"). Never rendered.
+                "timezone_underivable", "locale_underivable",
+                "exit_country_unknown"). Never rendered.
 
                 NOT internal: this goes out over the wire as the 409 body
                 (routes/browser.py) and out of the MCP tool (mcp_server.py),
@@ -138,6 +159,28 @@ def classify_refusal(exc: BaseException, now: float) -> Refusal | None:
     # precede the parent. There is a test pinning this ordering specifically.
     if isinstance(exc, TimezoneUnderivableError):
         return Refusal("timezone_underivable", _UNDERIVABLE, str(exc), now)
+    # A THIRD sibling, before the parent for the identical reason: it subclasses
+    # GeographyUnknownError too, so the parent's branch would swallow it and
+    # label it "proxy never checked" — sending the operator to re-run a check
+    # that may already have PASSED and will keep passing, because the missing
+    # thing is a _COUNTRY_LOCALE row rather than a check result. Like the two
+    # above it is a SIBLING, not a narrowing: none of the three is a subclass of
+    # another, so their relative order among themselves does not matter, but ALL
+    # THREE must precede the parent. There is a test pinning this ordering.
+    if isinstance(exc, LocaleUnderivableError):
+        return Refusal("locale_underivable", _LOCALE_UNDERIVABLE, str(exc), now)
+    # A FOURTH sibling, before the parent for the identical reason: it
+    # subclasses GeographyUnknownError too. Distinct from the three above in
+    # CAUSE and — uniquely — in REMEDY DIRECTION: the other two "underivable"
+    # arms must NOT prompt a re-check (a table row is missing), while this one
+    # must (the COUNTRY is missing, and only a check can supply it). Labelling
+    # it "proxy never checked" via the parent would be doubly wrong: the check
+    # most likely PASSED, it just answered without a country. Like the rest it
+    # is a SIBLING, not a narrowing — none of the four is a subclass of another,
+    # so their order among themselves does not matter, but ALL FOUR must precede
+    # the parent. There is a test pinning this ordering.
+    if isinstance(exc, ExitCountryUnknownError):
+        return Refusal("exit_country_unknown", _EXIT_COUNTRY_UNKNOWN, str(exc), now)
     if isinstance(exc, GeographyUnknownError):
         return Refusal("geography_unknown", _UNKNOWN, str(exc), now)
     if isinstance(exc, ProxyUnresolvedError):

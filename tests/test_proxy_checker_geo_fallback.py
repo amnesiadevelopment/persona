@@ -520,11 +520,18 @@ def test_the_baseline_the_test_above_is_measured_against(tmp_path, monkeypatch):
 # both, and a rate-limited provider's degraded body is exactly this
 # name-without-a-code / no-country-key shape.
 #
-# `launch_policy.py:420-423` reads `proxy.timezone` FIRST and derives from
+# `launch_policy._proxy_timezone` reads `proxy.timezone` FIRST and derives from
 # `country_code` only when there is no zone, so refusing here would throw away
 # the very field the consumer wanted and then condemn the proxy for having no
 # geography. The single-provider version returned these bodies as ok=True with
 # their zone; this keeps that.
+#
+# ⚠️ Since PS-240 the LOCALE half refuses such a record at launch
+# (`ExitCountryUnknownError` — there is no country to derive a locale from, and
+# inventing `en-US` beside the recorded zone is the contradiction that ticket
+# removed). What this file asserts is unchanged and still right: the CHECK must
+# keep the zone and must not condemn a healthy exit. The proxy stays trusted and
+# one re-check away from launching, rather than being reported as failed.
 # --------------------------------------------------------------------------
 
 #: The degraded shape a rate-limited ipwho.is emits: a country NAME, no code,
