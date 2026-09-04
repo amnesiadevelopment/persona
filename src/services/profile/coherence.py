@@ -163,13 +163,20 @@ the caller acts on the reason.
 launch path derives "is this a phone?" from BOTH fields
 (``services.browser.process``: ``is_mobile_os(os_type) or device_type ==
 "mobile"``) while every other half of the same launch reads ``os_type`` alone.
-So a stored ``windows`` + ``mobile`` profile launches one machine that answers
-"what OS am I?" four different ways: an **android** device preset drives the UA
-and screen (a Pixel 7 / SM-S911B, ``platform: "Android"``), while the GPU
-extension is built for **windows** and reports a Direct3D11 renderer, the voice
-roster is built for **windows** and carries Microsoft desktop voices, and the
-engine is launched with ``--fingerprint-platform=linux``. Any one of those pairs
-is a contradiction a checker reads directly.
+So a stored ``windows`` + ``mobile`` profile USED to launch one machine that
+answered "what OS am I?" on its four vectors with THREE different values: an
+**android** device preset drove the UA and screen (a Pixel 7 / SM-S911B,
+``platform: "Android"``), while the GPU extension was built for **windows** and
+reported a Direct3D11 renderer, the voice roster was built for **windows** and
+carried Microsoft desktop voices, and the engine was launched with
+``--fingerprint-platform=linux`` — and any one of those pairs is a contradiction
+a checker reads directly. **PS-236 closed that at the launch path**:
+``process.spawn_browser`` now reconciles the field ONCE through
+``coherent_device_type`` (below) before either consumer reads it, so such a
+record launches as the coherent ``windows`` + ``desktop`` machine its ``os_type``
+claims — one machine, ONE answer. The rule stated here is unchanged and still
+refuses the pair at the authoring doors; what changed is what an ALREADY-STORED
+one does at launch. See the chromium bullet above for the measured before/after.
 
 The rule is DELIBERATELY ONE-DIRECTIONAL: it refuses ``device_type == "mobile"``
 beside a desktop ``os_type``, and says nothing about ``device_type ==
@@ -187,9 +194,9 @@ beside a desktop ``os_type``, and says nothing about ``device_type ==
 Which way it reconciles: ``os_type`` WINS and ``device_type`` is reconciled to
 it — the same principle ``coherent_engine`` already applies for the pair ("in
 favour of the record rather than in favour of the engine"), and the one
-``process.py`` itself already claims is true two lines above the code that
-breaks it: *"the OS is the source of truth so the UI only needs the OS
-dropdown."*
+``process.py`` itself already claims is true two lines above the code that now
+HONOURS it (it calls ``coherent_device_type``, PS-236): *"the OS is the source
+of truth so the UI only needs the OS dropdown."*
 
 Note the SET this rule refuses is exactly the set that flips that launch
 derivation — the literal string ``"mobile"``, matched as ``process.py`` matches
@@ -525,17 +532,17 @@ def coherent_device_type(os_type: str, device_type: str | None) -> str:
     profile answers "what OS am I?" on four vectors, and only two of them read
     this field: the device preset (UA / screen / touch) and
     ``--fingerprint-platform``. The GPU pool arm and the voice roster read
-    ``os_type`` alone and cannot be moved by it. So a stored ``windows`` +
-    ``mobile`` record launches an Android **Pixel-class UA and screen** over a
-    **Windows** Direct3D11 GPU pool and **Microsoft SAPI** voices, told
-    ``--fingerprint-platform=linux`` — one machine, three answers, and any pair
-    of them is a contradiction a checker reads directly. Reconciling the field
-    ONCE at the launch path brings the two vectors that read it into line with
-    the two that do not; spelling the condition out at each of those two call
-    sites would be the "two authors, each deciding from its own copy of the
-    question" shape ``engine_platform``'s module docstring was written about,
-    and that PS-161 spent two review rounds on. There is one owner, so there is
-    no second copy to drift.
+    ``os_type`` alone and cannot be moved by it. So UNRECONCILED, a stored
+    ``windows`` + ``mobile`` record launches an Android **Pixel-class UA and
+    screen** over a **Windows** Direct3D11 GPU pool and **Microsoft SAPI**
+    voices, told ``--fingerprint-platform=linux`` — one machine, three answers,
+    and any pair of them is a contradiction a checker reads directly.
+    Reconciling the field ONCE at the launch path brings the two vectors that
+    read it into line with the two that do not; spelling the condition out at
+    each of those two call sites would be the "two authors, each deciding from
+    its own copy of the question" shape ``engine_platform``'s module docstring
+    was written about, and that PS-161 spent two review rounds on. There is one
+    owner, so there is no second copy to drift.
 
     ⚠️ ONE-DIRECTIONAL, and the asymmetry is Rule 3's own (see the module
     docstring). It coerces the literal ``"mobile"`` to ``"desktop"`` when

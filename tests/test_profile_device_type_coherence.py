@@ -20,7 +20,8 @@ an importer and any door added next year to re-answer the question from scratch.
 Which way it reconciles: ``os_type`` WINS. That is the principle
 ``coherent_engine`` already applies for the pair ("in favour of the record rather
 than in favour of the engine"), and the one ``process.py`` itself already claims
-two lines above the code that breaks it.
+two lines above the code that now honours it (PS-236 reconciles ``device_type``
+against ``os_type`` at the launch path).
 """
 import pytest
 from fastapi.testclient import TestClient
