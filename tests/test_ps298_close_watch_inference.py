@@ -66,9 +66,11 @@ def _watch(monkeypatch, *, content, children=0, pid=4242, alive=True):
     """Drive ``_fork_close_watch`` over a synthetic content-count sequence.
 
     ``content`` is the per-poll ``_firefox_content_proc_count`` reading (an int,
-    or None for "the scan could not run"). ``children`` is the corroborating
+    or None for "the scan could not run"). ``children`` is the RECORDED
     ``_firefox_engine_child_count`` reading — an int, None, or a callable for a
-    sequence. Returns ``(result, logs, leftover)``: ``leftover`` is what is left
+    sequence. It gates nothing (see
+    ``test_the_engine_child_reading_is_recorded_and_never_obeyed``); it is here
+    so a test can assert what reaches the close line. Returns ``(result, logs, leftover)``: ``leftover`` is what is left
     of the content sequence, so a test can assert the watch stopped on exactly
     the poll it should have — an empty leftover means the watch consumed the
     whole sequence without deciding a close.
@@ -470,9 +472,14 @@ def test_the_engine_child_count_treats_could_not_look_as_no_verdict():
     """The helper itself must never render a failed scan as "no processes".
 
     That rendering is precisely what PS-192's false clean was caused by, and
-    what PS-204 was written to stop. Here it would be worse than a wrong number:
-    it would silently CONFIRM every kill on a host where the process table is
-    unreadable, i.e. turn the new safety check into a rubber stamp.
+    what PS-204 was written to stop. Nothing consults this value — it gates no
+    decision (see `test_the_engine_child_reading_is_recorded_and_never_obeyed`)
+    — so the harm is not a wrong kill but a wrong RECORD, which on this change
+    is the whole deliverable: a host whose process table is unreadable would
+    put a confident `engine_children=0` on every close line, and the operator
+    logs this ticket exists to make answerable would then read as "the fleet
+    was down" on exactly the runs where we could not look at all. None must
+    stay None so a failed scan is visibly a failed scan.
     """
     import pytest
 
@@ -489,10 +496,13 @@ def test_the_engine_child_count_counts_only_firefox_binaries():
 
     The fork child also has non-browser descendants (the node driver, helper
     shells), and counting those would make the signal permanently non-zero —
-    a corroboration that can never agree is a corroboration that always defers,
-    which the bounded fallback would then paper over. Matched on the engine
-    binary path, which always carries "firefox" (.../firefox-NN/firefox), the
-    same needle ``_forked_firefox_alive`` uses.
+    a number that can never read zero is a number that measures nothing, and
+    the second assertion below pins that a confident zero is reachable at all.
+    That matters because the value is the RECORD a future gate would be built
+    on: an always-positive count would look like "the fleet always lingers" on
+    every host and would settle the open question the wrong way by construction.
+    Matched on the engine binary path, which always carries "firefox"
+    (.../firefox-NN/firefox), the same needle ``_forked_firefox_alive`` uses.
     """
     import pytest
 
@@ -516,16 +526,23 @@ def test_the_engine_child_count_counts_only_firefox_binaries():
         monkeypatch.undo()
 
 
-def test_the_engine_child_count_uses_the_one_snapshot_walk():
-    """Cost, and it is a correctness matter here rather than a nicety.
+def test_the_engine_child_count_is_anchored_on_the_tracked_pid():
+    """SCOPE, not speed — and the distinction is the whole safety argument.
 
-    This runs on EVERY poll of EVERY open profile. PS-204 measured the per-node
-    ``pgrep -P`` walk at 84ms and 13 subprocesses per scan against a modest
-    tabbed Firefox, and replaced it with one snapshot (a /proc read on Linux,
-    one ``ps`` on macOS) for exactly that reason. Adding a second per-second
-    scan on the old walk would have re-imported the cost that walk exists to
-    avoid — and a scan slow enough to fall behind is a scan whose answer is
-    stale, which is the wrong property for a signal that gates a kill.
+    ⚠️ This does NOT run every poll. It is called once per session, on the
+    single poll whose debounce has already decided to close (pinned by
+    `test_the_engine_child_reading_is_recorded_and_never_obeyed`, which drives a
+    six-poll session and asserts exactly one call), so PS-204's 84ms/13-
+    subprocess figure — a measurement of a per-second, per-profile walk — is not
+    what is being avoided here and must not be cited as if it were.
+
+    The reason for `_session_descendants` is PS-204/#150's anchoring: it walks
+    down from the pids WE tracked, so a concurrently relaunching Firefox of the
+    same profile can never enter the count, where a profile-dir rescan would
+    match it (the #150 race the teardown's ``rescan=False`` exists to avoid).
+    ``_descendant_pids`` is refused for the same reason it was removed
+    elsewhere, and `calls == [{4242}]` is the assertion that actually carries
+    the property: the scan starts at the tracked parent and nowhere else.
     """
     import pytest
 
@@ -541,8 +558,8 @@ def test_the_engine_child_count_uses_the_one_snapshot_walk():
 
         def _forbidden(root):
             raise AssertionError(
-                "_descendant_pids is the per-node pgrep walk PS-204 removed "
-                "from the poll path; it must not be reintroduced here"
+                "_descendant_pids rescans by pgrep from a root rather than "
+                "walking the tracked pid set; use _session_descendants"
             )
 
         monkeypatch.setattr(il, "_descendant_pids", _forbidden)

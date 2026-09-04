@@ -4198,10 +4198,15 @@ def _firefox_engine_child_count(parent: int):
     PS-192/PS-204 discipline. On the close line it renders as-is, so a failed
     scan is visibly a failed scan rather than a confident zero.
 
-    Uses the ONE-SNAPSHOT walk (`_session_descendants`: a single /proc read on
-    Linux, one `ps` on macOS) rather than `_descendant_pids`' per-node pgrep,
-    because this runs on the poll path of every open profile — the 84ms/13-
-    subprocess cost PS-204 measured is exactly what that walk exists to avoid.
+    Uses `_session_descendants` rather than `_descendant_pids` for SCOPE, not
+    for speed. Cost is not the argument here: this is called ONCE per session,
+    on the single poll that has already decided to close (a 204-poll session
+    calls it exactly once), so PS-204's 84ms/13-subprocess figure — which is
+    about a per-second, per-profile walk — does not apply to this site and must
+    not be cited as if it did. The reason is PS-204/#150's safety argument:
+    `_session_descendants` is anchored on the pids WE tracked, so a
+    concurrently relaunching Firefox of the same profile can never enter the
+    count, where a profile-dir rescan would match it.
     """
     if _platform.IS_WINDOWS:
         return None
