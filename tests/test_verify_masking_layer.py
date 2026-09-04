@@ -416,9 +416,20 @@ def test_no_extension_flag_when_the_layer_is_off():
 def test_the_record_header_carries_the_masking_layer():
     """The record must be able to say WHICH SUBJECT it describes.
 
-    Every record written before this ticket describes the packaged engines. A
+    Every record written before PS-103 describes the packaged engines. A
     consumer has to be able to tell that apart from a reading of the product
-    without knowing this ticket exists.
+    without knowing that ticket exists.
+
+    INVERTED BY PS-242, and the inversion is the point rather than a casualty.
+    This report names two of the three vectors persona's Firefox layer declares
+    — ``locale`` is neither installed nor failed, i.e. NEVER ATTEMPTED. It used
+    to read ``complete: true``, because ``complete`` was ``not failed`` and a
+    vector nobody tried could not lower it. The header now reads ``complete:
+    false`` and NAMES the missing vector, which is the whole deliverable: a
+    short vector list can no longer produce a clean-looking record.
+
+    The header's original claim — that it carries the layer at all — is asserted
+    unchanged beside it, and the complete case is pinned right below.
     """
     from src.services.verify import matrix
     from src.services.verify.exit_guard import Exit
@@ -433,8 +444,37 @@ def test_the_record_header_carries_the_masking_layer():
     )
 
     assert record["masking_layer"]["installed"] == ["audio", "webgl"]
-    assert record["masking_layer"]["complete"] is True
+    assert record["masking_layer"]["complete"] is False
+    assert record["masking_layer"]["missing"] == ["locale"], (
+        "the record must NAME what was never attempted, not merely go false"
+    )
     assert record["schema_version"] == matrix.SCHEMA_VERSION
+
+
+def test_a_header_whose_whole_declared_layer_LANDED_still_reads_complete():
+    """AC4: a complete build's verdict is byte-identical to before PS-242.
+
+    The tripwire above must not be bought by making every record incomplete —
+    that would be as useless as the blindness it replaces, and much noisier. A
+    report carrying the full declared set for its route reads exactly as it
+    always did.
+    """
+    from src.services.verify import matrix
+    from src.services.verify.exit_guard import Exit
+
+    report = LayerReport(
+        route="init_scripts", installed=masking_layer.FIREFOX_VECTORS
+    )
+    record = matrix.build_record(
+        [],
+        exit_=Exit(ip="1.2.3.4", country="PL"),
+        engine="invisible_playwright/firefox-20",
+        observed_at="2026-08-22T10:00:00Z",
+        masking_layer=report.as_record(),
+    )
+
+    assert record["masking_layer"]["complete"] is True
+    assert record["masking_layer"]["missing"] == []
 
 
 def test_a_run_that_did_not_ask_records_NULL_not_an_empty_layer():
@@ -456,12 +496,315 @@ def test_a_run_that_did_not_ask_records_NULL_not_an_empty_layer():
 
 
 def test_an_absent_layer_reports_incomplete_with_a_reason():
+    """The `:183` contract, unchanged by PS-242.
+
+    An arm that never ran declares NO expected set — its report already carries
+    the real cause in ``failed``, and manufacturing ten "missing" vectors for a
+    layer nobody attempted to install would bury that reason under noise about
+    a configuration this run never had. ``complete`` stays false for exactly the
+    reason it always was.
+    """
     report = absent_layer("the engine never started")
     as_record = report.as_record()
 
     assert as_record["complete"] is False
     assert as_record["installed"] == []
+    assert as_record["expected"] == [], (
+        "an arm that never ran declares nothing; the reason is in `failed`"
+    )
+    assert as_record["missing"] == []
     assert "never started" in json.dumps(as_record)
+
+
+# --- PS-242: a vector that was NEVER ATTEMPTED cannot read as complete -------
+
+
+def test_a_NEVER_ATTEMPTED_vector_makes_the_RECORD_incomplete_and_is_NAMED():
+    """AC1. Asserted on the record document, never on a helper call.
+
+    ``installed`` and ``failed`` between them can only speak about vectors that
+    were ATTEMPTED. A vector in neither is one the loop never reached — a short
+    builder list — and before PS-242 nothing in the record could say a word
+    about it: the header read ``complete: true`` over a layer with a hole in it.
+    That is the PS-103 / PS-150 drift class, caught by hand both times.
+    """
+    report = LayerReport(
+        route="extensions",
+        installed=tuple(
+            v for v in masking_layer.CHROMIUM_VECTORS if v != masking_layer.CANVAS_CTX
+        ),
+    )
+    record = report.as_record()
+
+    assert record["failed"] == {}, "the premise: nothing FAILED, one was skipped"
+    assert record["complete"] is False
+    assert record["missing"] == [masking_layer.CANVAS_CTX]
+    assert masking_layer.CANVAS_CTX in record["expected"]
+    assert masking_layer.CANVAS_CTX in json.dumps(record), (
+        "the record must NAME what is missing, not merely go false"
+    )
+
+
+def test_the_chromium_PRODUCTION_PATH_reports_a_dropped_builder_as_missing(
+    tmp_path, monkeypatch
+):
+    """AC3 — non-circularity, and this ticket's real test.
+
+    THE FAILURE MODE THIS FORECLOSES: if ``expected`` were computed from the
+    same ``builders`` list the loop iterates, then ``expected == installed |
+    failed`` BY CONSTRUCTION, ``complete`` could never go false for a missing
+    vector, and a builder dropped from the list would silently drop out of
+    ``expected`` with it — today's blindness behind a new field name. The test
+    above cannot catch that, because a hand-built ``LayerReport`` can be given
+    any ``expected`` the test likes while the shipped builder stays circular.
+
+    So this drives the PRODUCTION path. The hand-maintained builder list — the
+    thing that actually drifts — is shortened by one entry, and everything after
+    it is the shipped code: the real build loop, the real record construction,
+    the real ``expected`` declaration. The dropped vector then lands in NEITHER
+    ``installed`` NOR ``failed``, which is exactly what a list that has quietly
+    diverged from ``process.py`` looks like, and the record must say so.
+
+    A CIRCULAR IMPLEMENTATION FAILS THIS TEST, which is what earns it: an
+    ``expected`` computed from ``builders`` would shrink in lockstep with the
+    shortened list, ``missing`` would be empty, and ``complete`` would stay true.
+    """
+    real_builders = masking_layer._chromium_builders
+
+    def short_builders(*args, **kwargs):
+        # Not a raising builder — a builder that is NOT THERE. The distinction
+        # is the whole ticket: a raiser lands in `failed` and always lowered
+        # `complete`; one that was never enumerated landed nowhere at all.
+        return [
+            (vector, thunk)
+            for vector, thunk in real_builders(*args, **kwargs)
+            if vector != masking_layer.CANVAS_CTX
+        ]
+
+    # First: the real production call, unmodified, is COMPLETE — so the
+    # assertion below is about the dropped vector and not about a build that
+    # was broken to begin with.
+    _dirs, healthy = build_chromium_layer(
+        str(tmp_path / "healthy"), SEED, os_type="windows"
+    )
+    assert healthy.as_record()["complete"] is True, healthy.failed
+    assert healthy.as_record()["missing"] == []
+
+    monkeypatch.setattr(masking_layer, "_chromium_builders", short_builders)
+    _dirs2, dropped = build_chromium_layer(
+        str(tmp_path / "dropped"), SEED, os_type="windows"
+    )
+    record = dropped.as_record()
+
+    assert masking_layer.CANVAS_CTX not in record["installed"]
+    assert record["failed"] == {}, "a DROPPED builder is not a FAILED one"
+    assert record["complete"] is False
+    assert record["missing"] == [masking_layer.CANVAS_CTX]
+    assert masking_layer.CANVAS_CTX in record["expected"], (
+        "`expected` must NOT move with the builder list — that is the whole "
+        "non-circularity requirement"
+    )
+    # ...and the extension really was not built, so the shortened list is a
+    # genuine change to what the harness installs, not a bookkeeping trick.
+    assert not (tmp_path / "dropped" / ".persona-canvas-ctx-ext").exists()
+
+
+def test_the_chromium_expected_set_is_declared_INDEPENDENTLY_of_the_builders():
+    """The structural half of AC3, asserted on the source rather than a run.
+
+    ``CHROMIUM_VECTORS`` is a literal tuple of names. If someone later replaces
+    it with something derived from ``build_chromium_layer``'s builder list, the
+    tripwire silently becomes tautological while every behavioural test above
+    keeps passing — because a derived set is still correct for every build that
+    has NOT drifted. So the independence is pinned directly: the declared set
+    must contain a vector that a deliberately shortened build does not.
+    """
+    assert isinstance(masking_layer.CHROMIUM_VECTORS, tuple)
+    assert all(isinstance(v, str) for v in masking_layer.CHROMIUM_VECTORS)
+    assert len(masking_layer.CHROMIUM_VECTORS) == 10, (
+        "the ten base vectors; geo is configuration, see chromium_expected_vectors"
+    )
+    # The declared set is not a function of any report: an empty report must
+    # still be measured against all ten.
+    assert set(
+        masking_layer.LayerReport(route="extensions").missing
+    ) == set(masking_layer.CHROMIUM_VECTORS)
+
+
+def test_a_DEGENERATE_empty_layer_is_the_same_defect_at_its_limit(tmp_path):
+    """A layer that installed NOTHING and failed NOTHING used to read
+    ``complete: true``. That is the never-attempted defect taken to its limit —
+    every vector missing, and a header claiming the whole layer landed.
+
+    Pinned as its own test because it is the case a reader is most likely to
+    reach for as "surely that already works".
+    """
+    record = LayerReport(route="extensions").as_record()
+
+    assert record["installed"] == []
+    assert record["failed"] == {}
+    assert record["complete"] is False
+    assert record["missing"] == sorted(masking_layer.CHROMIUM_VECTORS)
+
+
+def test_an_ATTEMPTED_AND_FAILED_vector_STILL_reports_incomplete_with_its_reason(
+    tmp_path,
+):
+    """AC4. ``failed`` semantics are JOINED, never replaced.
+
+    The expected-set check must not become the only thing that can lower
+    ``complete``: a builder that RAISED is a different fact from a builder that
+    was never reached, and the record has to keep carrying its reason.
+    """
+    report = LayerReport(
+        route="extensions",
+        installed=tuple(
+            v for v in masking_layer.CHROMIUM_VECTORS if v != masking_layer.AUDIO
+        ),
+        failed={masking_layer.AUDIO: "RuntimeError: the builder raised"},
+    )
+    record = report.as_record()
+
+    assert record["complete"] is False
+    assert record["missing"] == [], "attempted-and-failed is not MISSING"
+    assert "the builder raised" in record["failed"][masking_layer.AUDIO]
+
+
+def test_a_default_chromium_run_does_NOT_expect_geo_and_stays_complete(tmp_path):
+    """AC7. ``--match-product-geo`` is off by default, so a default run
+    genuinely should not install ``geo`` — and must not start reading
+    ``complete: false`` for not having been asked. An existing reading cannot
+    move underneath a caller that did not ask for anything."""
+    _dirs, report = build_chromium_layer(str(tmp_path), SEED, os_type="windows")
+    record = report.as_record()
+
+    assert masking_layer.GEO not in record["expected"]
+    assert record["missing"] == []
+    assert record["complete"] is True, record["failed"]
+
+
+def test_a_match_product_geo_run_EXPECTS_geo_and_reports_it(tmp_path):
+    """AC7, the other arm: when the configuration asks for ``geo`` the expected
+    set names it, so a ``--match-product-geo`` run whose geo builder went
+    missing would be caught rather than shrugged off."""
+    _dirs, report = build_chromium_layer(
+        str(tmp_path), SEED, os_type="windows", include_geo=True
+    )
+    record = report.as_record()
+
+    assert masking_layer.GEO in record["expected"]
+    assert masking_layer.GEO in record["installed"]
+    assert record["complete"] is True, record["failed"]
+
+
+def test_the_documented_EXCLUSIONS_do_not_make_a_record_incomplete(tmp_path):
+    """AC6. ``search`` and ``mobile`` are deliberately not installed — a
+    settings override and a mobile profile, neither of which a desktop checker
+    run is. Their absence is a property of the CONFIGURATION, not a gap, so the
+    expected set must not name them and a clean build must stay complete.
+
+    Firefox's ``outer-size`` is the same argument on the other engine: the
+    product installs it only when a resolution was explicitly chosen, and a
+    harness profile chooses none.
+    """
+    _dirs, report = build_chromium_layer(str(tmp_path), SEED, os_type="windows")
+
+    assert "search" not in report.as_record()["expected"]
+    assert "mobile" not in report.as_record()["expected"]
+    assert "outer-size" not in list(masking_layer.FIREFOX_VECTORS)
+    assert report.as_record()["complete"] is True, report.failed
+
+
+def test_a_firefox_SUBTRACTION_ARM_narrows_expected_and_stays_complete():
+    """AC8, and the PS-119 arm this must not break.
+
+    ``vectors=`` deliberately narrows the installed set so "WHICH spoof did the
+    checker see?" can be answered by measurement. A subtraction arm is NOT an
+    incomplete layer — it is a complete layer of a deliberately smaller
+    configuration. If ``expected`` ignored the narrowing, every differential arm
+    would start reporting ``complete: false`` and the differential's own records
+    would become the thing that is wrong.
+    """
+    for narrowed in (
+        (masking_layer.WEBGL,),
+        (masking_layer.WEBGL, masking_layer.AUDIO),
+        (masking_layer.LOCALE,),
+    ):
+        ctx = FakeContext()
+        report = install_firefox_layer(
+            ctx, SEED, locale="en-US", vectors=narrowed
+        )
+        record = report.as_record()
+
+        assert record["expected"] == sorted(narrowed), narrowed
+        assert record["missing"] == [], narrowed
+        assert record["complete"] is True, (narrowed, record["failed"])
+
+
+def test_a_firefox_arm_that_DROPPED_a_declared_vector_reads_incomplete():
+    """The Firefox production path's half of AC1/AC3: a vector the declared set
+    names, which the install never attempted, is reported missing.
+
+    Driven through ``install_firefox_layer`` rather than hand-built, so a
+    circular ``expected`` (derived from the pairs it was handed) would fail
+    here: the pairs are short by one and the declared set is not.
+    """
+    ctx = FakeContext()
+    short_pairs = [
+        (v, js)
+        for v, js in masking_layer.firefox_layer_scripts(SEED, locale="en-US")
+        if v != masking_layer.AUDIO
+    ]
+    report = install_firefox_layer(ctx, SEED, locale="en-US", scripts=short_pairs)
+
+    # `scripts=` states its own pair list, so the report declares nothing —
+    # the caller is not asking about the declared configuration.
+    assert report.as_record()["expected"] == []
+
+    # The CONFIGURED path, by contrast, declares all three and catches the hole.
+    declared = masking_layer.firefox_expected_vectors(locale="en-US")
+    holed = LayerReport(
+        route="init_scripts",
+        installed=tuple(v for v, _ in short_pairs),
+        expected=declared,
+    )
+    assert holed.as_record()["complete"] is False
+    assert holed.as_record()["missing"] == [masking_layer.AUDIO]
+
+
+def test_an_EMPTY_LOCALE_run_narrows_expected_rather_than_reading_incomplete():
+    """THE DECISION POINT, DECIDED EXPLICITLY (and stated in the PR).
+
+    ``firefox_layer_scripts`` keeps ``locale`` out of the pairs when the locale
+    is empty, because ``_language_override_script("")`` is a documented no-op
+    and ``installed`` must never name a vector that delivered nothing. If
+    ``expected`` named ``locale`` unconditionally, such a call would newly read
+    ``complete: false``.
+
+    DECIDED: an empty locale is a CONFIGURATION CHOICE of the same class as
+    ``include_geo=False`` — the caller did not ask for a locale override — so
+    ``expected`` narrows with it and the run stays complete. Every in-tree
+    caller passes ``DEFAULT_LOCALE`` (``browser_tier.py:591``), so this is
+    reachable only by a caller passing ``""`` deliberately.
+
+    The narrowing keys off the ARGUMENT, not off the produced script, which is
+    what keeps it a tripwire: a builder that started returning empty for a
+    NON-empty locale would still be caught.
+    """
+    ctx = FakeContext()
+    report = install_firefox_layer(ctx, SEED, locale="")
+    record = report.as_record()
+
+    assert masking_layer.LOCALE not in record["installed"]
+    assert masking_layer.LOCALE not in record["expected"]
+    assert record["missing"] == []
+    assert record["complete"] is True
+
+    # ...and a NON-empty locale still expects it, so the narrowing above is a
+    # statement about the configuration and not a blanket exemption.
+    assert masking_layer.LOCALE in masking_layer.firefox_expected_vectors(
+        locale="en-US"
+    )
 
 
 # --- the differential's reporting -------------------------------------------
@@ -819,7 +1162,15 @@ def test_the_differential_and_the_real_run_share_ONE_firefox_launch():
 def test_the_layer_report_from_the_shared_launch_reaches_the_arm():
     """The differential's record must carry what the SHARED launch reported,
     not a report the differential composed for itself — otherwise the arm can
-    claim a layer the launch never installed."""
+    claim a layer the launch never installed.
+
+    The fake launch here reports a TWO-vector Firefox layer, so ``locale`` was
+    never attempted. Since PS-242 that arm reads ``complete: false`` and names
+    it, where it used to read ``complete: true``. Inverted deliberately: the
+    property under test is that the arm carries THE LAUNCH'S report verbatim,
+    and a report that under-states its layer must keep saying so all the way
+    into the differential record rather than being laundered clean on the way.
+    """
     import contextlib
 
     from src.services.verify import browser_tier, layer_differential
@@ -845,7 +1196,44 @@ def test_the_layer_report_from_the_shared_launch_reaches_the_arm():
         monkey.undo()
 
     assert arm.layer.installed == ("audio", "webgl")
+    assert arm.as_record()["layer"]["complete"] is False
+    assert arm.as_record()["layer"]["missing"] == ["locale"]
+
+
+def test_a_FULL_layer_from_the_shared_launch_reaches_the_arm_as_complete():
+    """The other half of the assertion above: an arm whose launch reported the
+    whole declared set still reads ``complete: true`` in the differential
+    record. Without this the test above could be satisfied by an arm that
+    reports incomplete unconditionally."""
+    import contextlib
+
+    from src.services.verify import browser_tier, layer_differential
+
+    @contextlib.contextmanager
+    def session(proxy_url, *, seed, install_layer=True, layer_sink=None):
+        if layer_sink is not None:
+            layer_sink(
+                LayerReport(
+                    route="init_scripts",
+                    installed=masking_layer.FIREFOX_VECTORS,
+                )
+            )
+        yield object()
+
+    monkey = pytest.MonkeyPatch()
+    try:
+        monkey.setattr(browser_tier, "firefox_session", session)
+        monkey.setattr(
+            layer_differential, "_load_and_read", lambda *a, **k: '{"webgl": "1"}'
+        )
+        arm = layer_differential.read_probe_once(
+            "http://127.0.0.1:1/", seed=SEED, engine="firefox"
+        )
+    finally:
+        monkey.undo()
+
     assert arm.as_record()["layer"]["complete"] is True
+    assert arm.as_record()["layer"]["missing"] == []
 
 
 def test_a_loopback_launch_carries_no_proxy_and_no_prefs():

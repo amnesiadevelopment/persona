@@ -64,8 +64,10 @@ This asymmetry is real, it is in the product, and flattening it would be a lie:
   mechanism).
 
 Both routes were missing from the harness. Both are installed here, and each arm
-reports WHICH VECTORS IT ACTUALLY GOT so the record can state its subject rather
-than implying it — see :class:`LayerReport`.
+reports WHICH VECTORS IT ACTUALLY GOT — measured against WHICH VECTORS THAT
+CONFIGURATION SHOULD HAVE GOT, declared separately — so the record can state its
+subject rather than implying it. See :class:`LayerReport`, and
+:data:`CHROMIUM_VECTORS` for why that second set has to be its own authority.
 
 What is deliberately NOT installed
 ----------------------------------
@@ -121,6 +123,42 @@ GEO = "geo"
 # so this is deliberately three names and not the full vector vocabulary above.
 FIREFOX_VECTORS = (LOCALE, WEBGL, AUDIO)
 
+# The vectors persona's CHROMIUM layer installs, in the order ``process.py``
+# appends them. **THIS IS AN INDEPENDENT DECLARATION AND THAT INDEPENDENCE IS
+# THE ENTIRE POINT.**
+#
+# It deliberately does NOT read the builder thunks in ``build_chromium_layer``,
+# and must never be computed from them. A set derived from the same list it
+# validates is tautological: ``expected == installed ∪ failed`` by construction,
+# a builder dropped from the list drops out of ``expected`` in the same edit,
+# and :attr:`LayerReport.complete` can never go false for a vector that was
+# never attempted — which reproduces exactly the blindness this constant exists
+# to close, behind a new field name.
+#
+# The drift class is not hypothetical: PS-103 and PS-150 were both a harness
+# vector set that had quietly diverged from the product's, and both were caught
+# by hand. Two authorities that must be edited SEPARATELY are what turns that
+# into a record that says so.
+#
+# ``geo`` is NOT here. It is not an omission: ``build_chromium_layer``'s
+# ``include_geo`` is off by default, so a default run genuinely should not
+# install it and must not start reporting ``complete: false`` for not having
+# been asked. See :func:`chromium_expected_vectors`, which adds it when — and
+# only when — the configuration asked for it.
+CHROMIUM_VECTORS = (
+    NATIVE,
+    LOCALE,
+    VOICE,
+    STEALTH,
+    MEASURETEXT,
+    AUDIO,
+    DEVICE,
+    WEBGL,
+    GPU,
+    CANVAS_CTX,
+)
+
+
 # The default locale a harness run declares. ``en-US`` matches what
 # ``spawn_browser`` uses for a profile with NO PROXY (``process._profile_locale``
 # returns it directly for ``proxy is None``, which is deliberate policy: persona
@@ -139,6 +177,73 @@ DEFAULT_LOCALE = "en-US"
 DEFAULT_OS_TYPE = "windows"
 
 
+def chromium_expected_vectors(*, include_geo: bool = False) -> "tuple[str, ...]":
+    """The vectors a Chromium layer of THIS CONFIGURATION should install.
+
+    Declared from :data:`CHROMIUM_VECTORS` — never from the builder list — and
+    parameterised by the one documented configuration switch, so it states "the
+    set this configuration should install" rather than "the set the loop
+    happened to enumerate".
+
+    ``search`` and ``mobile`` are absent because the product's own set for a
+    desktop checker run does not contain them (a settings override and a mobile
+    profile respectively — see the module docstring). Their absence is a
+    property of the configuration, not a gap, so they must never make a record
+    incomplete.
+    """
+    return CHROMIUM_VECTORS + ((GEO,) if include_geo else ())
+
+
+def firefox_expected_vectors(
+    *,
+    locale: str = DEFAULT_LOCALE,
+    vectors: "tuple[str, ...] | None" = None,
+) -> "tuple[str, ...]":
+    """The vectors a Firefox layer of THIS CONFIGURATION should install.
+
+    Declared from :data:`FIREFOX_VECTORS` — never from the script pairs
+    :func:`firefox_layer_scripts` produced — and narrowed by the same two
+    configuration inputs that narrow what is actually installed:
+
+    ``vectors``
+        A subtraction arm (PS-119) is **not an incomplete layer**; it is a
+        complete layer of a deliberately smaller configuration. If ``expected``
+        ignored the narrowing, every differential arm would start reporting
+        ``complete: false`` and the differential's own records would become the
+        thing that is wrong.
+    ``locale``
+        An EMPTY locale makes ``_language_override_script`` a documented no-op,
+        and ``firefox_layer_scripts`` keeps the vector out of the pairs so
+        ``installed`` never names a vector that delivered nothing. **DECIDED
+        HERE, EXPLICITLY:** an empty locale is a configuration choice of exactly
+        the same class as ``include_geo=False`` — the caller did not ask for a
+        locale override — so ``expected`` narrows with it and such a run stays
+        ``complete: true``.
+
+        This is narrowed on the ARGUMENT, not on the produced script, and that
+        distinction is what keeps it a tripwire rather than a rubber stamp: if
+        ``_language_override_script`` ever returned empty for a NON-empty
+        locale, ``expected`` would still name ``locale`` and the record would
+        correctly read incomplete.
+    """
+    declared = tuple(v for v in FIREFOX_VECTORS if v != LOCALE or locale)
+    if vectors is None:
+        return declared
+    keep = set(vectors)
+    return tuple(v for v in declared if v in keep)
+
+
+# The DECLARED set for each route, used when a report states no expectation of
+# its own. Keyed by ``route`` because the route is what says which engine's
+# layer the report is about, and each engine has its own declared set. A route
+# not named here (``"none"``, the absent-layer arm) declares nothing — that
+# report already carries its reason in ``failed``.
+_ROUTE_EXPECTATIONS: "dict[str, tuple[str, ...]]" = {
+    "extensions": CHROMIUM_VECTORS,
+    "init_scripts": FIREFOX_VECTORS,
+}
+
+
 @dataclass(frozen=True)
 class LayerReport:
     """What the masking layer ACTUALLY did on one engine, for the record header.
@@ -149,7 +254,7 @@ class LayerReport:
     where the WebGL spoof never landed would be exactly the class of wrong
     record this whole ticket is about.
 
-    So there are three fields and they are not redundant:
+    So there are four fields and they are not redundant:
 
     ``installed``
         Vectors that were built AND handed to the engine. A claim about
@@ -157,6 +262,19 @@ class LayerReport:
     ``failed``
         ``{vector: reason}`` for anything that was attempted and did not land.
         Present in the record so a partial layer is visible as a partial layer.
+    ``expected``
+        The vectors this configuration SHOULD have installed, declared
+        independently of the loop that installs them (see
+        :data:`CHROMIUM_VECTORS` / :data:`FIREFOX_VECTORS` and their two
+        configuration-aware helpers). ``installed`` and ``failed`` between them
+        can only speak about vectors that were ATTEMPTED, so before this field
+        existed a vector that was never attempted was in neither and could not
+        lower ``complete``: a short builder list produced a record that never
+        mentioned the missing vector and still read ``complete: true``. That is
+        the drift class PS-103 and PS-150 both were, caught by hand both times.
+        Empty means "this report makes no claim about a declared set" — the
+        pre-existing behaviour, kept so a hand-built report is not forced to
+        invent one.
     ``route``
         How the layer arrived — ``"extensions"`` (Chromium's MV3 unpacked
         extensions) or ``"init_scripts"`` (Firefox's ``add_init_script``
@@ -168,11 +286,43 @@ class LayerReport:
     route: str
     installed: "tuple[str, ...]" = ()
     failed: "dict[str, str]" = field(default_factory=dict)
+    expected: "tuple[str, ...] | None" = None
+
+    def __post_init__(self) -> None:
+        # An UNSTATED expectation defaults to the DECLARED set for this route —
+        # never to what this report happens to contain, which would be the
+        # circularity the whole field exists to avoid. This is what closes the
+        # degenerate case: ``LayerReport(route="extensions")`` with nothing
+        # installed and nothing failed used to read ``complete: true``, which is
+        # this defect at its limit. It now names ten missing vectors.
+        #
+        # An EXPLICIT ``expected=()`` is honoured and means "this report makes
+        # no claim about a declared set" — that is why the sentinel is ``None``
+        # rather than the empty tuple.
+        if self.expected is None:
+            object.__setattr__(
+                self, "expected", _ROUTE_EXPECTATIONS.get(self.route, ())
+            )
+
+    @property
+    def missing(self) -> "tuple[str, ...]":
+        """Vectors ``expected`` names that were NEVER ATTEMPTED.
+
+        Not in ``installed``, and not in ``failed`` either — so nothing in the
+        record before this property could say a word about them. Sorted, so two
+        records diff cleanly.
+        """
+        attempted = set(self.installed) | set(self.failed)
+        return tuple(sorted(v for v in self.expected if v not in attempted))
 
     @property
     def complete(self) -> bool:
-        """True when every attempted vector landed."""
-        return not self.failed
+        """True when every expected vector was attempted AND landed.
+
+        JOINS the ``failed`` check, never replaces it: an attempted-and-failed
+        vector still reports incomplete for exactly the reason it always did.
+        """
+        return not self.failed and not self.missing
 
     def as_record(self) -> dict:
         """The header form. Sorted so two records diff cleanly."""
@@ -180,6 +330,8 @@ class LayerReport:
             "route": self.route,
             "installed": sorted(self.installed),
             "failed": {k: self.failed[k] for k in sorted(self.failed)},
+            "expected": sorted(self.expected),
+            "missing": list(self.missing),
             "complete": self.complete,
         }
 
@@ -188,7 +340,9 @@ class LayerReport:
 # in the header rather than a None that every consumer has to special-case.
 def absent_layer(reason: str) -> LayerReport:
     """The layer was not installed, and the record says so with a reason."""
-    return LayerReport(route="none", installed=(), failed={"layer": reason})
+    return LayerReport(
+        route="none", installed=(), failed={"layer": reason}, expected=()
+    )
 
 
 # --- Firefox: the init-script route -----------------------------------------
@@ -395,6 +549,17 @@ def install_firefox_layer(
         route="init_scripts",
         installed=tuple(installed),
         failed=failed,
+        # Declared from FIREFOX_VECTORS, narrowed by the same two configuration
+        # inputs that narrowed what was installed — never derived from `pairs`,
+        # which is the list this is meant to catch drifting. A caller that
+        # supplied `scripts=` explicitly has stated its own pair list and is
+        # therefore not asking about the declared configuration at all, so it
+        # gets no expectation rather than a fabricated one.
+        expected=(
+            firefox_expected_vectors(locale=locale, vectors=vectors)
+            if scripts is None
+            else ()
+        ),
     )
 
 
@@ -445,6 +610,57 @@ def build_chromium_layer(
 
     A builder that raises is recorded against its vector and the rest still
     build, for the same reason the Firefox arm records per-spoof failures.
+    """
+    builders = _chromium_builders(
+        profile_dir,
+        seed,
+        os_type=os_type,
+        locale=locale,
+        generation=generation,
+        include_geo=include_geo,
+    )
+
+    dirs: "list[str]" = []
+    installed: "list[str]" = []
+    failed: "dict[str, str]" = {}
+    for vector, build in builders:
+        try:
+            dirs.append(build())
+        except Exception as exc:
+            failed[vector] = f"{type(exc).__name__}: {exc}"
+            continue
+        installed.append(vector)
+
+    return dirs, LayerReport(
+        route="extensions",
+        installed=tuple(installed),
+        failed=failed,
+        # THE INDEPENDENT DECLARATION. Read from CHROMIUM_VECTORS, not from
+        # `builders` — a set computed from the list above would equal
+        # `installed | failed` by construction and could never catch a builder
+        # that quietly went missing from it, which is the entire point.
+        expected=chromium_expected_vectors(include_geo=include_geo),
+    )
+
+
+def _chromium_builders(
+    profile_dir: str,
+    seed: int,
+    *,
+    os_type: str,
+    locale: str,
+    generation: int,
+    include_geo: bool,
+) -> "list[tuple[str, Callable[[], str]]]":
+    """The hand-maintained ``(vector, thunk)`` list, mirroring ``process.py``.
+
+    Split out of :func:`build_chromium_layer` so THIS list — the thing that
+    drifts — can be shortened in a test while the real build loop, the real
+    record construction and the real ``expected`` declaration all still run.
+    That is what makes the non-circularity test (PS-242 AC3) a test of the
+    PRODUCTION path rather than of a hand-built report: a circular ``expected``
+    computed from this list would shrink with it and the record would go on
+    reading ``complete: true``.
     """
     from ..browser.audio_ext import build_audio_extension
     from ..browser.canvas_ctx_ext import build_canvas_ctx_extension
@@ -509,30 +725,18 @@ def build_chromium_layer(
                 None, None, _dir(".persona-geo-ext")))
         )
 
-    dirs: "list[str]" = []
-    installed: "list[str]" = []
-    failed: "dict[str, str]" = {}
-    for vector, build in builders:
-        try:
-            dirs.append(build())
-        except Exception as exc:
-            failed[vector] = f"{type(exc).__name__}: {exc}"
-            continue
-        installed.append(vector)
-
-    return dirs, LayerReport(
-        route="extensions",
-        installed=tuple(installed),
-        failed=failed,
-    )
+    return builders
 
 
 __all__ = [
     "AUDIO",
     "CANVAS_CTX",
+    "CHROMIUM_VECTORS",
     "DEFAULT_LOCALE",
     "DEFAULT_OS_TYPE",
     "DEVICE",
+    "FIREFOX_VECTORS",
+    "GEO",
     "GPU",
     "LOCALE",
     "MEASURETEXT",
@@ -542,8 +746,10 @@ __all__ = [
     "WEBGL",
     "LayerReport",
     "absent_layer",
+    "chromium_expected_vectors",
     "context_for",
     "build_chromium_layer",
+    "firefox_expected_vectors",
     "firefox_layer_scripts",
     "install_firefox_layer",
 ]
