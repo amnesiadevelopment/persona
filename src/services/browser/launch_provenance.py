@@ -161,17 +161,36 @@ def firefox_builds_in_use(session_builds) -> "set[str] | None":
     not, the honest answer is None — "cannot say" — and the caller defers
     wholesale, exactly as it did before this join existed.
 
-    Four things produce None, and each is an ordinary state:
+    ⚠️ "EVERY RUNNING SESSION" IS WIDER THAN "EVERY SESSION THIS PROCESS
+    STARTED". The precondition above is a claim about what is RUNNING, so the
+    input's key set must be too — see case 3 below and
+    ``BrowserLauncher.running_session_builds`` for why the map is keyed on
+    ``running_profile_names() | _survivors`` rather than on the running names
+    alone. A live process this function cannot see does not make it cautious;
+    it makes it confidently wrong.
+
+    Five things produce None, and each is an ordinary state:
 
     1. Reading the launcher raised. Not evidence that nothing is running.
     2. A running name has no session entry: its spawn is in flight
        (``_starting``), so nothing has been registered for it yet. An in-flight
        launch is UNKNOWN BY CONSTRUCTION here — there is no stamp to be absent
        and no previous launch's value to mistake for this one's.
-    3. The session's build is None. ``engine_build_for`` returns None on ANY
+    3. A SURVIVOR — a browser a PREVIOUS persona left running, found at startup
+       by ``scan_survivors``. It is a real live process executing a real build,
+       but this process never launched it, so there is no session record of any
+       kind to read. ``SessionRecord`` carries the engine and no build, so None
+       is the honest answer rather than a gap; resolving one from
+       ``active_build()`` would invent a confident wrong answer about a process
+       that predates our startup. The launcher puts survivors in the map with a
+       None value precisely so they land in this case: a name that were MISSING
+       instead would not be an UNKNOWN at all — it would silently license the
+       deletion of the build it is executing from, which is the one shape this
+       whole guard exists to prevent.
+    4. The session's build is None. ``engine_build_for`` returns None on ANY
        read failure, deliberately — a build that says the wrong thing is worse
        than no build. That None must not be read as "on no build".
-    4. The session's engine is not firefox. A chromium build is a dotted
+    5. The session's engine is not firefox. A chromium build is a dotted
        version and is NOT comparable to ``firefox-NN`` (see this module's
        header) — it says nothing about which firefox build is free, so reading
        it as "no firefox build in use" would authorise exactly the deletion

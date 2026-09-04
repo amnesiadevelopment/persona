@@ -3333,6 +3333,15 @@ class App:
             # launch_provenance.firefox_builds_in_use. That is why this lambda
             # needs only one half now: the launcher answers "running" and "what
             # it is running" together, in one lock, with no window between them.
+            #
+            # running_session_builds() is keyed WIDER than
+            # running_profile_names() — it includes SURVIVORS (browsers a
+            # previous persona left running) with a None value, so they read as
+            # UNKNOWN rather than as absent. A survivor missing from the map
+            # entirely would not defer the prune; it would licence deleting the
+            # build it is executing from. The boolean gate above is deliberately
+            # NOT widened to match: its callers are the running snapshot and the
+            # launch-refusal path, which handle survivors on their own.
             from ..services.browser.launch_provenance import firefox_builds_in_use
 
             inv.set_in_use_builds_provider(

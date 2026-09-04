@@ -746,27 +746,63 @@ class BrowserLauncher:
         """Every RUNNING profile mapped to the (engine, build) it is executing
         from, or to None when that is not established (PS-221).
 
-        THE KEY SET IS EXACTLY ``running_profile_names()``, and the two are
-        taken in ONE lock acquisition on purpose. Asking for the names and then
-        asking for the builds would let a session start or stop between the two
-        reads, and a consumer that spares "the builds in use" would then be
-        acting on a name set that no longer matches — the skew is small and the
-        consequence (deleting a build a live session is on) is not.
+        THE KEY SET IS DELIBERATELY WIDER THAN ``running_profile_names()``
+        -----------------------------------------------------------------
+        It is ``running_profile_names() | self._survivors``, and the extra term
+        is load-bearing rather than tidy. A SURVIVOR is a browser a PREVIOUS
+        persona left running: a real, probed-alive process executing out of a
+        real build directory, which ``is_running()`` reports as running and the
+        UI paints as running. But ``scan_survivors`` populates ``_survivors``
+        only with names that are in NEITHER ``_active_sessions`` NOR
+        ``_starting`` (that exclusion is correct for its own purpose — never
+        shadow a session this run owns), so a survivor can never appear in
+        ``_running_names_locked()``.
+
+        The consumer of this map spares the builds it can see and RECLAIMS the
+        rest, so a name that is missing entirely does not produce an UNKNOWN —
+        it produces a confident claim that the survivor's build is free, and
+        the survivor's live build is deleted out from under it. Omitting the
+        survivors would therefore make this map answer a question about
+        "running" over a name set narrower than running.
+
+        ``running_profile_names()`` is NOT widened to match, and that asymmetry
+        is intentional: its callers are the UI's running snapshot and the
+        launch-refusal path, which have their own survivor handling
+        (``survivor_for``/``close_survivor``) and would double-count. The
+        widening belongs to THIS map, whose contract is "every live thing that
+        could be executing a build".
+
+        A survivor's value is ALWAYS None, and None is the honest answer rather
+        than a placeholder: ``SessionRecord`` carries the engine but no build,
+        so there is genuinely no record of which build it is on. Resolving one
+        from ``active_build()`` at scan time would invent a confident wrong
+        answer — a survivor predates our startup and may well be on an older
+        build than the one active now, which is exactly the case that deletes it.
+
+        The whole map is taken in ONE lock acquisition on purpose. Asking for
+        the names and then asking for the builds would let a session start or
+        stop between the two reads, and a consumer that spares "the builds in
+        use" would then be acting on a name set that no longer matches — the
+        skew is small and the consequence (deleting a build a live session is
+        on) is not.
 
         A value of None means UNKNOWN for that profile, and there are exactly
-        two ways to get one, both ordinary:
+        three ways to get one, all ordinary:
 
         * the profile is in ``_starting`` — its spawn is in flight, so nothing
           has been registered for it yet. This is why an in-flight launch is
           UNKNOWN BY CONSTRUCTION rather than by a stamp that happens to be
           missing;
+        * the profile is a SURVIVOR — this process never launched it, so there
+          is no session record of any kind to read (see above);
         * the build could not be read at launch (``engine_build_for`` returns
           None on any read failure, deliberately), so the pair is
           ``(engine, None)``.
 
-        Note the two are distinguishable and a caller may care: the first is
-        ``None`` for the whole entry, the second is a pair whose build is None.
-        Both must be treated as "cannot say", never as "on no build".
+        Note the last is distinguishable from the first two and a caller may
+        care: the first two are ``None`` for the whole entry, the last is a
+        pair whose build is None. All must be treated as "cannot say", never as
+        "on no build".
 
         This reads the LIVE session map, never ``Profile.last_launch_build``.
         That field is a persisted LAST-launch stamp written after registration
@@ -776,7 +812,16 @@ class BrowserLauncher:
         """
         with self._lock:
             names = self._running_names_locked()
-            return {n: self._session_build.get(n) for n in names}
+            out: "dict[str, tuple[str, str | None] | None]" = {
+                n: self._session_build.get(n) for n in names
+            }
+            # Survivors last and unconditionally None. `setdefault` rather than
+            # an update so a name that is somehow in both keeps its resolved
+            # session pair — a session THIS run owns is the better answer, and
+            # a survivor entry must never overwrite one with an UNKNOWN.
+            for n in self._survivors:
+                out.setdefault(n, None)
+            return out
 
     def running_count(self) -> int:
         return len(self.running_profile_names())
