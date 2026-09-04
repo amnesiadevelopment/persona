@@ -163,13 +163,16 @@ def firefox_builds_in_use(session_builds) -> "set[str] | None":
 
     ⚠️ "EVERY RUNNING SESSION" IS WIDER THAN "EVERY SESSION THIS PROCESS
     STARTED". The precondition above is a claim about what is RUNNING, so the
-    input's key set must be too — see case 3 below and
+    input's key set must be too — see cases 3 and 4 below and
     ``BrowserLauncher.running_session_builds`` for why the map is keyed on
-    ``running_profile_names() | _survivors`` rather than on the running names
-    alone. A live process this function cannot see does not make it cautious;
-    it makes it confidently wrong.
+    ``running_profile_names() | _survivors | _indeterminate`` rather than on
+    the running names alone. A live process this function cannot see does not
+    make it cautious; it makes it confidently wrong. Note that every producer
+    of None below is a property of a name that APPEARS in the map — none of
+    them can fire for a name that never appears at all, which is why the key
+    set, and not this function's branches, is where that class of defect lives.
 
-    Five things produce None, and each is an ordinary state:
+    Six things produce None, and each is an ordinary state:
 
     1. Reading the launcher raised. Not evidence that nothing is running.
     2. A running name has no session entry: its spawn is in flight
@@ -187,10 +190,29 @@ def firefox_builds_in_use(session_builds) -> "set[str] | None":
        instead would not be an UNKNOWN at all — it would silently license the
        deletion of the build it is executing from, which is the one shape this
        whole guard exists to prevent.
-    4. The session's build is None. ``engine_build_for`` returns None on ANY
+    4. An INDETERMINATE — the other half of the same scan: a recorded session
+       whose liveness could not be SETTLED (no psutil, permission denied, no
+       create time captured at registration). ``Liveness.UNKNOWN`` means the
+       question could not be answered, NOT "probably dead" — a record that
+       probes GONE is dropped by the registry as it reads and is in neither
+       bucket. So this is a real process that may well be running, and it is
+       here for exactly the reason case 3 is. The psutil-absent shape is worth
+       holding in mind because it fires for every record at once: with psutil
+       unavailable NOTHING probes ALIVE, ``_survivors`` is empty, and case 3
+       alone would protect nothing whatsoever.
+
+       This does NOT make an indeterminate refuse a launch — that path
+       deliberately fails OPEN, because refusing on no evidence costs the user
+       their session while deferring a prune on no evidence costs one prune
+       cycle. Nor does it wedge reclamation on a machine with no psutil: this
+       function is only ever consulted once ``_engine_in_use`` has already said
+       something IS running, and that gate reads the running NAMES, which an
+       indeterminate is not in. An indeterminate ALONE therefore leaves the
+       prune exactly as it was before this join existed.
+    5. The session's build is None. ``engine_build_for`` returns None on ANY
        read failure, deliberately — a build that says the wrong thing is worse
        than no build. That None must not be read as "on no build".
-    5. The session's engine is not firefox. A chromium build is a dotted
+    6. The session's engine is not firefox. A chromium build is a dotted
        version and is NOT comparable to ``firefox-NN`` (see this module's
        header) — it says nothing about which firefox build is free, so reading
        it as "no firefox build in use" would authorise exactly the deletion
@@ -213,7 +235,8 @@ def firefox_builds_in_use(session_builds) -> "set[str] | None":
     builds: set[str] = set()
     for _name, entry in (sessions or {}).items():
         if not entry:
-            # No session record for a running name — an in-flight spawn.
+            # No session record for a name in the map: an in-flight spawn, a
+            # survivor, or an indeterminate. UNKNOWN, never "free".
             return None
         engine, build = entry
         if engine != "firefox" or not build:

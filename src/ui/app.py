@@ -3336,12 +3336,17 @@ class App:
             #
             # running_session_builds() is keyed WIDER than
             # running_profile_names() — it includes SURVIVORS (browsers a
-            # previous persona left running) with a None value, so they read as
-            # UNKNOWN rather than as absent. A survivor missing from the map
-            # entirely would not defer the prune; it would licence deleting the
-            # build it is executing from. The boolean gate above is deliberately
-            # NOT widened to match: its callers are the running snapshot and the
-            # launch-refusal path, which handle survivors on their own.
+            # previous persona left running) and INDETERMINATES (recorded
+            # sessions whose liveness could not be settled: no psutil,
+            # permission denied, no create time) with a None value, so they
+            # read as UNKNOWN rather than as absent. Either one missing from
+            # the map entirely would not defer the prune; it would licence
+            # deleting the build it is executing from. The boolean gate above
+            # is deliberately NOT widened to match: its callers are the running
+            # snapshot and the launch-refusal path, which handle survivors on
+            # their own and must let an indeterminate through — refusing a
+            # launch on no evidence costs the user their session, whereas
+            # deferring a prune on no evidence costs one prune cycle.
             from ..services.browser.launch_provenance import firefox_builds_in_use
 
             inv.set_in_use_builds_provider(
