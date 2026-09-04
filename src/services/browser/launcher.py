@@ -196,6 +196,39 @@ class BrowserLauncher:
         # report a channel CLOSED while it is still listening — the falsely
         # reassuring direction. The launched fact is captured and kept.
         self._session_cdp_open: dict[str, bool] = {}
+        # The (engine, build) the LIVE session is executing from, captured at
+        # registration and dropped with the session (PS-221).
+        #
+        # WHY THIS IS NOT `Profile.last_launch_build` (which already exists).
+        # That field is a PERSISTED, LAST-launch stamp, and it cannot answer
+        # "which build is this session running from RIGHT NOW" for two reasons
+        # that are both structural rather than incidental:
+        #
+        #   * It is written by a hook that fires AFTER registration (see
+        #     start_thread), so between _register_session and that write the
+        #     profile is reported as running while the record still names the
+        #     PREVIOUS launch's build. Every launch passes through that window.
+        #   * The write is best-effort and its failure is swallowed, which
+        #     leaves the previous launch's build standing — an affirmative
+        #     claim about a build the session is NOT on.
+        #
+        # Both produce the same shape: a running profile whose persisted stamp
+        # names a DIFFERENT build than it is executing from. A prune that reads
+        # it as authoritative deletes the live build and spares a dead one —
+        # strictly worse than the disk it reclaims. Intersecting the stamp with
+        # running_profile_names() does NOT fix it: the intersection is with a
+        # value that is stale for a RUNNING profile, not only for a stopped one.
+        #
+        # So the live question is answered from the live object. This is
+        # written INSIDE the same locked block that registers the session, so
+        # "registered" and "build known" cannot come apart, and it dies with
+        # the session via _forget_session_facts. A name in _starting has no
+        # entry here at all, which is what makes an in-flight launch UNKNOWN by
+        # construction rather than by a stamp that happens to be absent.
+        #
+        # NOT a second source of truth about what is INSTALLED — it records
+        # what THIS process launched, and only for as long as it is running.
+        self._session_build: dict[str, tuple[str, str | None]] = {}
         # The LAST REFUSED launch per profile — the fail-closed guards firing,
         # kept so the answer reaches the profile that refused instead of only a
         # log line that scrolls away.
@@ -503,6 +536,20 @@ class BrowserLauncher:
             engine_name = "unknown"
             with contextlib.suppress(Exception):
                 engine_name = effective_engine(profile)
+            # WHICH BUILD this session is executing from, resolved here beside
+            # the engine and for the same reasons: off-lock (it reads the
+            # installed build), from the launch itself, once (PS-221).
+            #
+            # Best-effort in the SAME sense engine_name above is: a build that
+            # cannot be read yields None, never a guess. None is honest —
+            # "running, build not known" — and every consumer must treat it as
+            # UNKNOWN rather than as "on no build". A wrong build here is worse
+            # than no build, because it is an affirmative claim a prune acts on.
+            session_build: "str | None" = None
+            with contextlib.suppress(Exception):
+                from .launch_provenance import engine_build_for
+
+                session_build = engine_build_for(engine_name)
             with self._lock:
                 aborted = profile.name in self._aborting
                 if not aborted:
@@ -510,6 +557,15 @@ class BrowserLauncher:
                     self._stop_notifiers[profile.name] = stop_event
                     self._session_started_at[profile.name] = time.time()
                     self._session_cdp_open[profile.name] = cdp_open
+                    # IN THE SAME ACQUISITION THAT REGISTERS THE SESSION, which
+                    # is the entire point of this dict rather than a detail of
+                    # where the line landed: "is it running" and "what is it
+                    # running" become one atomic fact, so no reader can observe
+                    # a registered session whose build is still the previous
+                    # launch's. Recorded even when it is None — the KEY is what
+                    # says "this session was accounted for", and its absence is
+                    # what says an in-flight launch has not been.
+                    self._session_build[profile.name] = (engine_name, session_build)
                     self._starting.discard(profile.name)
                     self._lock.notify_all()
 
@@ -661,18 +717,66 @@ class BrowserLauncher:
         logger.info("Stopped browser for profile: %s", profile_name)
         return True
 
+    def _running_names_locked(self) -> set[str]:
+        """The running names, assuming ``self._lock`` is ALREADY held.
+
+        Factored out of ``running_profile_names`` so the names and the
+        per-session builds can be taken in ONE acquisition (see
+        ``running_session_builds``). ``self._lock`` is a Condition and is not
+        reentrant, so a public method cannot call another public method that
+        takes it — and duplicating the reaping logic in the second reader is
+        how the two answers would drift apart.
+        """
+        stale = [
+            n for n, p in self._active_sessions.items() if p.poll() is not None
+        ]
+        for n in stale:
+            self._active_sessions.pop(n, None)
+            self._stop_notifiers.pop(n, None)
+            self._forget_session_facts(n)
+        # A profile whose spawn is still in flight counts as running so the
+        # UI shows it busy and a second launch is refused.
+        return set(self._active_sessions.keys()) | set(self._starting)
+
     def running_profile_names(self) -> set[str]:
         with self._lock:
-            stale = [
-                n for n, p in self._active_sessions.items() if p.poll() is not None
-            ]
-            for n in stale:
-                self._active_sessions.pop(n, None)
-                self._stop_notifiers.pop(n, None)
-                self._forget_session_facts(n)
-            # A profile whose spawn is still in flight counts as running so the
-            # UI shows it busy and a second launch is refused.
-            return set(self._active_sessions.keys()) | set(self._starting)
+            return self._running_names_locked()
+
+    def running_session_builds(self) -> "dict[str, tuple[str, str | None] | None]":
+        """Every RUNNING profile mapped to the (engine, build) it is executing
+        from, or to None when that is not established (PS-221).
+
+        THE KEY SET IS EXACTLY ``running_profile_names()``, and the two are
+        taken in ONE lock acquisition on purpose. Asking for the names and then
+        asking for the builds would let a session start or stop between the two
+        reads, and a consumer that spares "the builds in use" would then be
+        acting on a name set that no longer matches — the skew is small and the
+        consequence (deleting a build a live session is on) is not.
+
+        A value of None means UNKNOWN for that profile, and there are exactly
+        two ways to get one, both ordinary:
+
+        * the profile is in ``_starting`` — its spawn is in flight, so nothing
+          has been registered for it yet. This is why an in-flight launch is
+          UNKNOWN BY CONSTRUCTION rather than by a stamp that happens to be
+          missing;
+        * the build could not be read at launch (``engine_build_for`` returns
+          None on any read failure, deliberately), so the pair is
+          ``(engine, None)``.
+
+        Note the two are distinguishable and a caller may care: the first is
+        ``None`` for the whole entry, the second is a pair whose build is None.
+        Both must be treated as "cannot say", never as "on no build".
+
+        This reads the LIVE session map, never ``Profile.last_launch_build``.
+        That field is a persisted LAST-launch stamp written after registration
+        and best-effort, so for a running profile it can name the PREVIOUS
+        launch's build — see ``_session_build`` for why intersecting it with
+        the running names does not make it safe.
+        """
+        with self._lock:
+            names = self._running_names_locked()
+            return {n: self._session_build.get(n) for n in names}
 
     def running_count(self) -> int:
         return len(self.running_profile_names())
@@ -1006,6 +1110,13 @@ class BrowserLauncher:
         """
         self._session_started_at.pop(profile_name, None)
         self._session_cdp_open.pop(profile_name, None)
+        # PS-221: the live (engine, build) of this session. Dropped here for
+        # exactly the reason this helper exists — a dead session must stop
+        # asserting things about itself. Left behind, it would tell the engine
+        # prune to SPARE a build nothing is running from, which is a disk leak
+        # rather than a deletion, so it fails in the safe direction; it is
+        # dropped anyway because "safe direction" is not the same as correct.
+        self._session_build.pop(profile_name, None)
         # AND THE PERSISTED MIRROR. Dropped HERE, in the shared helper, rather
         # than at the six call sites: the whole reason this helper exists is
         # that a per-session fact added without visiting every teardown site
@@ -1034,6 +1145,7 @@ class BrowserLauncher:
         """
         self._session_started_at.clear()
         self._session_cdp_open.clear()
+        self._session_build.clear()  # PS-221 — see the per-session twin above
         # AND THE PERSISTED MIRROR — BUT ONLY FOR WHAT WE KILLED.
         #
         # This used to call registry.forget_all(), on the reasoning that

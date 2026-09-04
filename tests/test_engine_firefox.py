@@ -1217,13 +1217,32 @@ def test_set_in_use_provider_is_visible_to_the_prune_path(monkeypatch, tmp_path)
 
 
 def _stamped(engine, build):
-    """A minimal stand-in for a Profile carrying a launch stamp."""
+    """A minimal stand-in for a Profile carrying a launch stamp.
+
+    Retained for the tests that assert on the PERSISTED record. The prune's
+    narrowing no longer reads it — see `_session` below and the module note on
+    why a persisted last-launch stamp cannot answer a liveness question.
+    """
     return SimpleNamespace(last_launch_engine=engine, last_launch_build=build)
 
 
-def _wire_narrowing(monkeypatch, running, profiles):
+def _session(engine, build):
+    """A LIVE session's (engine, build), the shape the launcher records at
+    registration and the shape the prune's narrowing actually consumes.
+
+    None (rather than a pair) is the launcher's "this running name has no
+    session record" — an in-flight spawn.
+    """
+    return (engine, build)
+
+
+def _wire_narrowing(monkeypatch, sessions):
     """Wire both oracles the way the app does: the boolean GATE from the set of
-    running names, and the NARROWING join over the profile store.
+    running names, and the NARROWING join over the launcher's live session map.
+
+    `sessions` is `{name: (engine, build) | None}` — exactly the shape
+    `BrowserLauncher.running_session_builds()` returns, keyed by the running
+    names. A None VALUE is a running name with no session record yet.
 
     Deliberately routed through the real `firefox_builds_in_use` rather than a
     hand-written set, because the UNKNOWN cases below are properties of that
@@ -1232,11 +1251,11 @@ def _wire_narrowing(monkeypatch, running, profiles):
     """
     from src.services.browser.launch_provenance import firefox_builds_in_use
 
-    monkeypatch.setattr(eng, "_in_use_provider", lambda: len(running) > 0)
+    monkeypatch.setattr(eng, "_in_use_provider", lambda: len(sessions) > 0)
     monkeypatch.setattr(
         eng,
         "_in_use_builds_provider",
-        lambda: firefox_builds_in_use(running, lambda: profiles),
+        lambda: firefox_builds_in_use(lambda: sessions),
     )
 
 
@@ -1271,14 +1290,13 @@ def test_prune_reclaims_a_build_no_running_profile_is_stamped_to(
     )
     _wire_narrowing(
         monkeypatch,
-        {"live-one"},
-        {"live-one": _stamped("firefox", "firefox-13")},
+        {"live-one": _session("firefox", "firefox-13")},
     )
     logs = []
     inv._prune_old_engine_builds(keep="firefox-16", log=logs.append)
 
     assert (tmp_path / "firefox-13").exists(), (
-        "the build the running profile is stamped to must survive — deleting "
+        "the build the running session is executing from must survive — "
         "it is the exact harm the wholesale guard existed to prevent"
     )
     assert not (tmp_path / "firefox-14").exists(), (
@@ -1290,22 +1308,23 @@ def test_prune_reclaims_a_build_no_running_profile_is_stamped_to(
     assert (tmp_path / "firefox-16").exists()
 
 
-def test_prune_defers_when_a_running_profiles_stamp_is_none(monkeypatch, tmp_path):
-    """UNKNOWN #1 — the stamp is None.
+def test_prune_defers_when_a_running_sessions_build_is_none(monkeypatch, tmp_path):
+    """UNKNOWN #1 — the session's build could not be read at launch.
 
-    `engine_build_for` returns None on ANY read failure, deliberately: a stamp
-    that names the wrong build is worse than no stamp, because the comparison
-    it enables returns a confident false answer. So None reaching the prune
-    means "not known", and the prune must defer wholesale. Reading it as "this
-    profile is on no build" would authorise deleting every build.
-    A SECOND running profile is stamped and resolvable, deliberately. With only
-    the unresolved one, an implementation that silently SKIPPED it would return
-    an EMPTY set and be caught by the separate empty-set backstop — so the test
+    `engine_build_for` returns None on ANY read failure, deliberately: a build
+    that names the wrong thing is worse than none, because the comparison it
+    enables returns a confident false answer. So a session registered as
+    (firefox, None) means "running, build not known", and the prune must defer
+    wholesale. Reading it as "this session is on no build" would authorise
+    deleting every build.
+    A SECOND running session is resolvable, deliberately. With only the
+    unresolved one, an implementation that silently SKIPPED it would return an
+    EMPTY set and be caught by the separate empty-set backstop — so the test
     would stay green over an inverted UNKNOWN rule and prove nothing about it.
-    With a resolved profile beside it, skipping yields a NON-empty set, the
+    With a resolved session beside it, skipping yields a NON-empty set, the
     backstop does not fire, and the only thing between the prune and a live
     build is the UNKNOWN rule itself. It is also the realistic shape: one
-    profile launched normally, one that cannot be accounted for.
+    session accounted for, one that is not.
     """
     _fake_cache(
         monkeypatch,
@@ -1320,39 +1339,42 @@ def test_prune_defers_when_a_running_profiles_stamp_is_none(monkeypatch, tmp_pat
     )
     _wire_narrowing(
         monkeypatch,
-        {"live-one", "resolved-one"},
         {
-            "live-one": _stamped("firefox", None),
-            "resolved-one": _stamped("firefox", "firefox-15"),
+            "live-one": _session("firefox", None),
+            "resolved-one": _session("firefox", "firefox-15"),
         },
     )
     logs = []
     inv._prune_old_engine_builds(keep="firefox-16", log=logs.append)
 
     assert (tmp_path / "firefox-13").exists(), (
-        "a None stamp is UNKNOWN, not 'using no build' — the prune must defer"
+        "a None build is UNKNOWN, not 'using no build' — the prune must defer"
     )
     assert (tmp_path / "firefox-15").exists()
     assert any("running" in m for m in logs), logs
 
 
-def test_prune_defers_when_a_running_profile_has_no_stamp_field(
+def test_prune_defers_when_a_running_name_has_no_session_record(
     monkeypatch, tmp_path
 ):
-    """UNKNOWN #2 — the field is absent entirely.
+    """UNKNOWN #2 — a running name the launcher holds no session record for.
 
-    Two real populations: a profile whose last launch predates the record
-    shipping, and one imported from an archive. Neither carries the attribute,
-    and `getattr(..., None)` must land in the same defer branch as an explicit
-    None rather than raising or reading as free.
-    A SECOND running profile is stamped and resolvable, deliberately. With only
-    the unresolved one, an implementation that silently SKIPPED it would return
-    an EMPTY set and be caught by the separate empty-set backstop — so the test
+    The populations the ticket named here were properties of the PERSISTED
+    stamp: a profile whose last launch predates the record shipping, and one
+    imported from an archive. Neither can reach this guard any more, because
+    the guard no longer reads that record — which is a strengthening, not a
+    gap: a profile that never launched under THIS process has no session entry
+    at all, so it can only ever read as UNKNOWN and can never contribute a
+    stale build. The shape that does reach it is a running name with no entry,
+    and it must defer rather than be skipped.
+    A SECOND running session is resolvable, deliberately. With only the
+    unresolved one, an implementation that silently SKIPPED it would return an
+    EMPTY set and be caught by the separate empty-set backstop — so the test
     would stay green over an inverted UNKNOWN rule and prove nothing about it.
-    With a resolved profile beside it, skipping yields a NON-empty set, the
+    With a resolved session beside it, skipping yields a NON-empty set, the
     backstop does not fire, and the only thing between the prune and a live
     build is the UNKNOWN rule itself. It is also the realistic shape: one
-    profile launched normally, one that cannot be accounted for.
+    session accounted for, one that is not.
     """
     _fake_cache(
         monkeypatch,
@@ -1365,21 +1387,20 @@ def test_prune_defers_when_a_running_profile_has_no_stamp_field(
         ],
         binary_version="firefox-15",
     )
-    # No last_launch_* attributes at all — a pre-record / imported profile.
+    # Running, but the launcher has no session record for it.
     _wire_narrowing(
         monkeypatch,
-        {"legacy-one", "resolved-one"},
         {
-            "legacy-one": SimpleNamespace(),
-            "resolved-one": _stamped("firefox", "firefox-15"),
+            "legacy-one": None,
+            "resolved-one": _session("firefox", "firefox-15"),
         },
     )
     logs = []
     inv._prune_old_engine_builds(keep="firefox-16", log=logs.append)
 
     assert (tmp_path / "firefox-13").exists(), (
-        "a profile carrying no stamp at all (pre-record, or imported) is "
-        "UNKNOWN — the prune must defer, not reclaim"
+        "a running name with no session record is UNKNOWN — the prune must "
+        "defer, not reclaim"
     )
     assert (tmp_path / "firefox-15").exists()
     assert any("running" in m for m in logs), logs
@@ -1388,7 +1409,7 @@ def test_prune_defers_when_a_running_profile_has_no_stamp_field(
 def test_prune_defers_on_a_chromium_stamp_because_the_shapes_do_not_compare(
     monkeypatch, tmp_path
 ):
-    """UNKNOWN #3 — a CHROMIUM stamp on a running profile, firefox prune.
+    """UNKNOWN #3 — a CHROMIUM session while the firefox prune runs.
 
     The two engines' build strings are deliberately not normalised: chromium
     reports a dotted version (151.0.8000.10), firefox a firefox-NN tag, and
@@ -1397,14 +1418,14 @@ def test_prune_defers_on_a_chromium_stamp_because_the_shapes_do_not_compare(
     — which silently asserts "no firefox build is in use" on the strength of a
     string that says nothing about firefox. It must collapse the answer to
     UNKNOWN instead.
-    A SECOND running profile is stamped and resolvable, deliberately. With only
-    the unresolved one, an implementation that silently SKIPPED it would return
-    an EMPTY set and be caught by the separate empty-set backstop — so the test
+    A SECOND running session is resolvable, deliberately. With only the
+    unresolved one, an implementation that silently SKIPPED it would return an
+    EMPTY set and be caught by the separate empty-set backstop — so the test
     would stay green over an inverted UNKNOWN rule and prove nothing about it.
-    With a resolved profile beside it, skipping yields a NON-empty set, the
+    With a resolved session beside it, skipping yields a NON-empty set, the
     backstop does not fire, and the only thing between the prune and a live
     build is the UNKNOWN rule itself. It is also the realistic shape: one
-    profile launched normally, one that cannot be accounted for.
+    session accounted for, one that is not.
     """
     _fake_cache(
         monkeypatch,
@@ -1419,17 +1440,16 @@ def test_prune_defers_on_a_chromium_stamp_because_the_shapes_do_not_compare(
     )
     _wire_narrowing(
         monkeypatch,
-        {"chrome-one", "resolved-one"},
         {
-            "chrome-one": _stamped("chromium", "151.0.8000.10"),
-            "resolved-one": _stamped("firefox", "firefox-15"),
+            "chrome-one": _session("chromium", "151.0.8000.10"),
+            "resolved-one": _session("firefox", "firefox-15"),
         },
     )
     logs = []
     inv._prune_old_engine_builds(keep="firefox-16", log=logs.append)
 
     assert (tmp_path / "firefox-13").exists(), (
-        "a chromium stamp is not comparable to firefox-NN — dropping it and "
+        "a chromium build is not comparable to firefox-NN — dropping it and "
         "pruning would delete a firefox build on no evidence at all"
     )
     assert (tmp_path / "firefox-15").exists()
@@ -1441,22 +1461,32 @@ def test_prune_defers_for_a_launch_still_in_flight(monkeypatch, tmp_path):
 
     `running_profile_names()` unions `_starting` in by design (a spawn in
     flight counts as running so the UI shows it busy and a second launch is
-    refused). The record hook fires only AFTER the spawn succeeds, so such a
-    profile carries either no stamp or the PREVIOUS launch's — and the previous
-    launch is not a claim about what this one is loading. It is a first-class
-    defer case, not an edge case to optimise away.
+    refused). Such a profile has NOT been registered yet, so the launcher holds
+    no session record for it and `running_session_builds()` maps it to None.
+    That is UNKNOWN BY CONSTRUCTION — there is no value to read, correct or
+    otherwise — and it is a first-class defer case, not an edge to optimise
+    away.
 
-    Driven through the REAL launcher rather than a hand-made name set, because
-    the property under test is that `running_profile_names()` reports an
-    in-flight launch at all.
-    A SECOND running profile is stamped and resolvable, deliberately. With only
-    the unresolved one, an implementation that silently SKIPPED it would return
-    an EMPTY set and be caught by the separate empty-set backstop — so the test
+    THIS IS THE CASE THE PERSISTED STAMP GOT WRONG, and the reason this test is
+    driven through the REAL launcher rather than a hand-made map. An earlier
+    implementation resolved the name through `Profile.last_launch_build`, whose
+    docstring claimed an in-flight launch "carries either no stamp or the
+    PREVIOUS launch's" and therefore lands in a defer case. The first half was
+    true and the second half was NOT: a profile that has launched before —
+    i.e. the common case — carries the previous launch's build, which is a
+    positive, resolvable value, so the join returned a confident answer about a
+    build the in-flight launch may not be loading. It is asserted below that
+    the previous launch's stamp does NOT rescue the reading, because nothing
+    reads it.
+
+    A SECOND running session is resolvable, deliberately. With only the
+    unresolved one, an implementation that silently SKIPPED it would return an
+    EMPTY set and be caught by the separate empty-set backstop — so the test
     would stay green over an inverted UNKNOWN rule and prove nothing about it.
-    With a resolved profile beside it, skipping yields a NON-empty set, the
+    With a resolved session beside it, skipping yields a NON-empty set, the
     backstop does not fire, and the only thing between the prune and a live
     build is the UNKNOWN rule itself. It is also the realistic shape: one
-    profile launched normally, one that cannot be accounted for.
+    session accounted for, one that is not.
     """
     from src.services.browser.launcher import BrowserLauncher
 
@@ -1471,48 +1501,79 @@ def test_prune_defers_for_a_launch_still_in_flight(monkeypatch, tmp_path):
         ],
         binary_version="firefox-15",
     )
+
+    class _Proc:
+        def poll(self):
+            return None
+
     bl = BrowserLauncher()
     bl._starting.add("spawning-one")
     assert "spawning-one" in bl.running_profile_names(), (
         "precondition: an in-flight spawn counts as running"
     )
-    # The store holds the profile with NO stamp for the launch now in flight —
-    # the hook has not fired yet.
-    bl._starting.add("resolved-one")
-    _wire_narrowing(
-        monkeypatch,
-        bl.running_profile_names(),
-        {
-            "spawning-one": _stamped("firefox", None),
-            "resolved-one": _stamped("firefox", "firefox-15"),
-        },
+    # A SECOND profile, fully registered and resolvable — see the docstring.
+    bl._active_sessions["resolved-one"] = _Proc()
+    bl._session_build["resolved-one"] = ("firefox", "firefox-15")
+
+    # THE HALF THE OLD IMPLEMENTATION GOT WRONG, pinned: the in-flight profile
+    # HAS launched before, so its persisted stamp names the PREVIOUS launch's
+    # build. If anything resolved the name through that record it would get a
+    # confident "firefox-13" and spare the wrong build while pruning the rest.
+    stale_store = {
+        "spawning-one": _stamped("firefox", "firefox-13"),
+        "resolved-one": _stamped("firefox", "firefox-15"),
+    }
+    assert stale_store["spawning-one"].last_launch_build == "firefox-13", (
+        "precondition: the in-flight profile carries a PREVIOUS launch's stamp"
+    )
+    assert bl.running_session_builds()["spawning-one"] is None, (
+        "an in-flight launch must have NO session record — this is what makes "
+        "it UNKNOWN by construction rather than by a stamp that happens to be "
+        "absent, and it is the claim the previous implementation got wrong"
+    )
+
+    from src.services.browser.launch_provenance import firefox_builds_in_use
+
+    monkeypatch.setattr(eng, "_in_use_provider", lambda: True)
+    monkeypatch.setattr(
+        eng,
+        "_in_use_builds_provider",
+        lambda: firefox_builds_in_use(bl.running_session_builds),
     )
     logs = []
     inv._prune_old_engine_builds(keep="firefox-16", log=logs.append)
 
     assert (tmp_path / "firefox-13").exists(), (
-        "a launch still in flight is not yet stamped for the build it is "
-        "loading — the prune must defer"
+        "a launch still in flight has no record of the build it is loading — "
+        "the prune must defer, and must not fall back to the stamp from its "
+        "PREVIOUS launch"
+    )
+    assert (tmp_path / "firefox-14").exists(), (
+        "deferral is wholesale: nothing may be reclaimed while a running "
+        "session cannot be accounted for"
     )
     assert (tmp_path / "firefox-15").exists()
     assert any("running" in m for m in logs), logs
+    bl._active_sessions.clear()
 
 
-def test_prune_defers_when_a_running_profile_is_absent_from_the_store(
+def test_prune_defers_when_a_running_name_is_unaccounted_for(
     monkeypatch, tmp_path
 ):
-    """UNKNOWN #5 — a running name the profile store does not hold.
+    """UNKNOWN #5 — a running name reported with no build of any kind.
 
-    Renamed since the launch, or a store this caller cannot see. There is no
-    stamp to read, so there is nothing to say which build it is on.
-    A SECOND running profile is stamped and resolvable, deliberately. With only
-    the unresolved one, an implementation that silently SKIPPED it would return
-    an EMPTY set and be caught by the separate empty-set backstop — so the test
+    A SURVIVOR is the concrete population: a browser a PREVIOUS persona left
+    running is reported by the guard but was never registered by this process,
+    so nothing here knows which build it is executing from. There is no reading
+    at all, which is exactly "cannot say".
+    A SECOND running session is resolvable, deliberately. With only the
+    unresolved one, an implementation that silently SKIPPED it would return an
+    EMPTY set and be caught by the separate empty-set backstop — so the test
     would stay green over an inverted UNKNOWN rule and prove nothing about it.
-    With a resolved profile beside it, skipping yields a NON-empty set, the
+    With a resolved session beside it, skipping yields a NON-empty set, the
     backstop does not fire, and the only thing between the prune and a live
     build is the UNKNOWN rule itself. It is also the realistic shape: one
-    profile launched normally, one that cannot be accounted for.
+    session accounted for, one that is not.
     """
     _fake_cache(
         monkeypatch,
@@ -1526,24 +1587,26 @@ def test_prune_defers_when_a_running_profile_is_absent_from_the_store(
     )
     _wire_narrowing(
         monkeypatch,
-        {"ghost-one", "resolved-one"},
-        {"resolved-one": _stamped("firefox", "firefox-15")},
+        {
+            "ghost-one": None,
+            "resolved-one": _session("firefox", "firefox-15"),
+        },
     )
     logs = []
     inv._prune_old_engine_builds(keep="firefox-16", log=logs.append)
 
     assert (tmp_path / "firefox-13").exists(), (
-        "a running profile the store cannot account for is UNKNOWN"
+        "a running name nothing can account for is UNKNOWN"
     )
     assert any("running" in m for m in logs), logs
 
 
-def test_prune_defers_when_the_profile_store_raises(monkeypatch, tmp_path):
+def test_prune_defers_when_the_session_source_raises(monkeypatch, tmp_path):
     """AC5's second half, and the deliberate OPPOSITE of the in-use provider's
     fail-OPEN default two tests below.
 
     A broken in-use ORACLE must not wedge disk reclamation forever, so that one
-    fails open. An unreadable PROFILE STORE is not evidence that nothing is
+    fails open. An unreadable SESSION SOURCE is not evidence that nothing is
     running, so this one fails CLOSED — and it costs nothing to do so, because
     deferring is exactly the pre-PS-221 behaviour. The two directions are not
     an inconsistency; they are the same rule (never delete a live build)
@@ -1561,27 +1624,27 @@ def test_prune_defers_when_the_profile_store_raises(monkeypatch, tmp_path):
     )
     from src.services.browser.launch_provenance import firefox_builds_in_use
 
-    def unreadable_store():
-        raise OSError("profiles.json is unreadable")
+    def unreadable_launcher():
+        raise OSError("the launcher could not be read")
 
     monkeypatch.setattr(eng, "_in_use_provider", lambda: True)
     monkeypatch.setattr(
         eng,
         "_in_use_builds_provider",
-        lambda: firefox_builds_in_use({"live-one"}, unreadable_store),
+        lambda: firefox_builds_in_use(unreadable_launcher),
     )
     logs = []
     inv._prune_old_engine_builds(keep="firefox-16", log=logs.append)
 
     assert (tmp_path / "firefox-13").exists(), (
-        "an unreadable profile store must fail CLOSED — it is not evidence "
+        "an unreadable session source must fail CLOSED — it is not evidence "
         "that nothing is running"
     )
     assert any("running" in m for m in logs), logs
 
 
 def test_prune_defers_when_the_narrowing_provider_raises(monkeypatch, tmp_path):
-    """The narrowing oracle itself raising is the same reading as the store
+    """The narrowing oracle itself raising is the same reading as the launcher
     being unreadable: cannot say which builds are live, so defer. Asserted
     separately because it is a different failure SITE — the guard lives in
     `_in_use_build_numbers`, not inside the join."""
@@ -1738,8 +1801,7 @@ def test_prune_startup_housekeeping_narrows_to_the_live_build(
     )
     _wire_narrowing(
         monkeypatch,
-        {"live-one"},
-        {"live-one": _stamped("firefox", "firefox-13")},
+        {"live-one": _session("firefox", "firefox-13")},
     )
     logs = []
     inv.prune_superseded_builds(log=logs.append)
@@ -1777,8 +1839,7 @@ def test_a_suffixed_stamp_still_spares_its_build(monkeypatch, tmp_path):
     )
     _wire_narrowing(
         monkeypatch,
-        {"live-one"},
-        {"live-one": _stamped("firefox", "firefox-13_151.0_20260724001829")},
+        {"live-one": _session("firefox", "firefox-13_151.0_20260724001829")},
     )
     inv._prune_old_engine_builds(keep="firefox-16", log=lambda m: None)
 
@@ -1809,10 +1870,9 @@ def test_two_running_profiles_on_different_builds_both_survive(
     )
     _wire_narrowing(
         monkeypatch,
-        {"a", "b"},
         {
-            "a": _stamped("firefox", "firefox-13"),
-            "b": _stamped("firefox", "firefox-14"),
+            "a": _session("firefox", "firefox-13"),
+            "b": _session("firefox", "firefox-14"),
         },
     )
     inv._prune_old_engine_builds(keep="firefox-16", log=lambda m: None)
@@ -1843,24 +1903,110 @@ def test_a_stopped_profiles_stale_stamp_does_not_spare_its_build(
         ],
         binary_version="firefox-16",
     )
+    # "stopped-one" is NOT in the map at all: its session ended, so
+    # _forget_session_facts dropped its build with it.
     _wire_narrowing(
         monkeypatch,
-        {"live-one"},  # "stopped-one" is NOT running
-        {
-            "live-one": _stamped("firefox", "firefox-14"),
-            "stopped-one": _stamped("firefox", "firefox-13"),
-        },
+        {"live-one": _session("firefox", "firefox-14")},
     )
     inv._prune_old_engine_builds(keep="firefox-16", log=lambda m: None)
 
     assert not (tmp_path / "firefox-13").exists(), (
-        "a stopped profile's stamp is history, not a live fact — intersecting "
-        "with running_profile_names() is what makes the reading current"
+        "a stopped session's build is history, not a live fact — it dies with "
+        "the session, so nothing spares the build it was on"
     )
     assert (tmp_path / "firefox-14").exists(), (
-        "the RUNNING profile's build is spared — so the reclaim above is the "
-        "join working, not the narrowing having been skipped wholesale"
+        "the RUNNING session's build is spared — so the reclaim above is the "
+        "narrowing working, not it having been skipped wholesale"
     )
+
+
+def test_a_running_profiles_stale_stamp_does_not_delete_the_build_it_is_on(
+    monkeypatch, tmp_path
+):
+    """UNKNOWN #6 — THE REGRESSION THIS GUARD'S FIRST IMPLEMENTATION SHIPPED.
+
+    The other five cases are all about a running profile that cannot be
+    RESOLVED. This one is the opposite and is far more dangerous: the profile
+    resolves perfectly, confidently, and to the WRONG BUILD.
+
+    `Profile.last_launch_build` is a PERSISTED, LAST-launch stamp, and for a
+    RUNNING profile it can name a different build than the one being executed.
+    Two ordinary paths produce that, neither of them exotic:
+
+    * the record hook fires AFTER the session is registered (`launcher.py`), so
+      between those two points the profile is reported running while the record
+      still names the PREVIOUS launch. EVERY launch passes through that window;
+    * the hook's failure is swallowed so the browser still opens — which leaves
+      the previous launch's build STANDING rather than clearing it.
+
+    An implementation that read the stamp as authoritative therefore SPARED the
+    stale build and DELETED the live one. That is strictly worse than the disk
+    it reclaims, and it is the shape the ticket's constraint #4 was believed to
+    rule out: intersecting with `running_profile_names()` does NOT repair it,
+    because the value being intersected is stale for a RUNNING profile and not
+    only for a stopped one.
+
+    Driven through the REAL launcher, in the exact state that window produces:
+    registered in `_active_sessions`, executing firefox-14, while the profile
+    store still says firefox-11. Asserted on directories on disk.
+    """
+    _fake_cache(
+        monkeypatch,
+        tmp_path,
+        [
+            ("firefox-11", True, True),   # what the STALE STAMP names
+            ("firefox-13", True, True),   # nothing is on it → reclaimable
+            ("firefox-14", True, True),   # THE LIVE BUILD → must survive
+            ("firefox-15", True, True),   # retained rollback target (PS-51)
+            ("firefox-16", True, True),   # keep
+        ],
+        binary_version="firefox-16",
+    )
+
+    class _Proc:
+        def poll(self):
+            return None
+
+    from src.services.browser.launcher import BrowserLauncher
+
+    bl = BrowserLauncher()
+    bl._active_sessions["live-one"] = _Proc()
+    bl._session_build["live-one"] = ("firefox", "firefox-14")
+
+    # The persisted record DISAGREES — it still names the previous launch.
+    stale_store = {"live-one": _stamped("firefox", "firefox-11")}
+    assert stale_store["live-one"].last_launch_build == "firefox-11", (
+        "precondition: the running profile's persisted stamp names a DIFFERENT "
+        "build than the session is executing from"
+    )
+
+    from src.services.browser.launch_provenance import firefox_builds_in_use
+
+    monkeypatch.setattr(eng, "_in_use_provider", lambda: True)
+    monkeypatch.setattr(
+        eng,
+        "_in_use_builds_provider",
+        lambda: firefox_builds_in_use(bl.running_session_builds),
+    )
+    inv._prune_old_engine_builds(keep="firefox-16", log=lambda m: None)
+
+    assert (tmp_path / "firefox-14").exists(), (
+        "THE REGRESSION: the build the session is ACTUALLY executing from must "
+        "survive. Reading the persisted stamp as authoritative deletes it — a "
+        "live deletion on the ordinary launch path, reached without any "
+        "failure at all"
+    )
+    assert not (tmp_path / "firefox-11").exists(), (
+        "and the STALE build must NOT be spared — sparing it is the same bug "
+        "seen from the other side, and a test that only checked the live build "
+        "survived would pass over an implementation that deferred wholesale"
+    )
+    assert not (tmp_path / "firefox-13").exists(), (
+        "the prune still runs: this is a narrowing that resolved, not a defer"
+    )
+    assert (tmp_path / "firefox-15").exists(), "retained rollback target (PS-51)"
+    bl._active_sessions.clear()
 
 
 def test_app_construction_wires_the_engine_prune_in_use_builds_guard(monkeypatch):
@@ -1869,8 +2015,11 @@ def test_app_construction_wires_the_engine_prune_in_use_builds_guard(monkeypatch
     can tell a wired app from an unwired one — an unwired app defers exactly as
     it did before, silently reclaiming nothing.
 
-    And it must be the REAL join, not a stub: drive the launcher and the
-    profile store and check the provider tracks BOTH halves.
+    And it must be the REAL join over the REAL launcher, not a stub — the
+    wiring is exactly where the wrong SOURCE would be reintroduced. It is
+    asserted below that the provider follows the launcher's live session map
+    and NOT the profile store's persisted stamp, because those two disagree
+    precisely in the window that deletes a live build.
     """
     import src.services.browser.engine_install as eng_mod
     import src.ui.app as app_mod
@@ -1884,26 +2033,41 @@ def test_app_construction_wires_the_engine_prune_in_use_builds_guard(monkeypatch
         "App construction must wire the engine-prune in-use BUILDS guard"
     )
 
-    running: set[str] = set()
-    monkeypatch.setattr(app.bl, "running_profile_names", lambda: set(running))
+    class _Proc:
+        def poll(self):
+            return None
+
+    app.bl._active_sessions.clear()
+    app.bl._session_build.clear()
+    app.bl._starting.clear()
     app.pm.profiles.clear()
     assert eng_mod._in_use_builds_provider() == set(), "nothing running, no builds"
 
-    # A running profile with a firefox stamp resolves to that build...
-    app.pm.profiles["live-one"] = SimpleNamespace(
-        last_launch_engine="firefox", last_launch_build="firefox-15"
-    )
-    running.add("live-one")
+    # A registered session resolves to the build IT was launched with...
+    app.bl._active_sessions["live-one"] = _Proc()
+    app.bl._session_build["live-one"] = ("firefox", "firefox-15")
     assert eng_mod._in_use_builds_provider() == {"firefox-15"}, (
-        "the wired provider must join the launcher's running names against "
-        "the profile store's launch stamps"
+        "the wired provider must read the launcher's live session builds"
     )
 
-    # ...and an unstamped one collapses the whole answer to UNKNOWN.
-    app.pm.profiles["ghost"] = SimpleNamespace(
-        last_launch_engine="firefox", last_launch_build=None
+    # ...AND IT MUST NOT BE THE PERSISTED STAMP. Give the same profile a
+    # CONTRADICTORY last_launch_build: if the wiring were reading the store,
+    # the answer would move to firefox-11 and the prune would spare a build
+    # nothing is on while deleting the one this session is executing from.
+    app.pm.profiles["live-one"] = SimpleNamespace(
+        last_launch_engine="firefox", last_launch_build="firefox-11"
     )
-    running.add("ghost")
+    assert eng_mod._in_use_builds_provider() == {"firefox-15"}, (
+        "the provider must follow the LIVE session build, not the persisted "
+        "last-launch stamp — the two disagree exactly in the window that "
+        "would delete a live build"
+    )
+
+    # ...and an in-flight launch collapses the whole answer to UNKNOWN.
+    app.bl._starting.add("ghost")
     assert eng_mod._in_use_builds_provider() is None, (
-        "one unresolved running profile must make the whole answer UNKNOWN"
+        "one unresolved running session must make the whole answer UNKNOWN"
     )
+    app.bl._active_sessions.clear()
+    app.bl._session_build.clear()
+    app.bl._starting.clear()

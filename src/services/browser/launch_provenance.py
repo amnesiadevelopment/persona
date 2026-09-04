@@ -119,88 +119,87 @@ def resolve(profile: Profile) -> tuple[str, str | None]:
     return engine, engine_build_for(engine)
 
 
-def firefox_builds_in_use(
-    running_names, profiles_by_name
-) -> "set[str] | None":
-    """Which firefox builds the RUNNING profiles are executing from, or None.
+def firefox_builds_in_use(session_builds) -> "set[str] | None":
+    """Which firefox builds the RUNNING sessions are executing from, or None.
 
-    This is the JOIN the engine prune consults (PS-221). Neither half answers
-    it alone: ``running_names`` is a set of NAMES (the launcher keeps only the
-    Popen per name), and ``last_launch_build`` is a LAST-launch stamp that
-    nothing clears on exit, so it is stale for a stopped profile. Intersected,
-    they are the live fact.
+    This is the JOIN the engine prune consults (PS-221). ``session_builds`` is
+    a zero-arg CALLABLE returning the launcher's ``running_session_builds()`` —
+    ``{name: (engine, build) | None}`` over exactly the running names. A
+    callable rather than the dict itself so the read happens HERE, inside this
+    function's own guard, and a launcher that raises becomes a None rather than
+    an exception in the prune path.
 
-    ``running_names`` is an iterable of profile names (the launcher's
-    ``running_profile_names()``). ``profiles_by_name`` is a zero-arg callable
-    returning ``{name: Profile}`` — a callable rather than a dict so the read
-    happens HERE, inside this function's own guard, and an unreadable profile
-    store becomes a None rather than an exception in the prune path.
+    ⚠️ IT DOES NOT READ ``Profile.last_launch_build``, AND THAT IS THE POINT
+    ---------------------------------------------------------------------------
+    An earlier version of this function resolved each running name through that
+    persisted stamp, on the reasoning that the stamp is only stale for a
+    STOPPED profile, so intersecting it with the running names yields the live
+    fact. **That reasoning is false**, and it is false on the ordinary path
+    rather than in an exotic corner:
+
+    * the stamp is written by a hook that fires AFTER the session is registered
+      (``launcher.start_thread``), so between those two points the profile is
+      reported as running while the record still names the PREVIOUS launch's
+      build. Every launch passes through that window;
+    * that write is best-effort and its failure is swallowed, which LEAVES the
+      previous launch's build standing rather than clearing it.
+
+    Both yield a running profile whose stamp names a build it is not on, and
+    sparing "the builds in use" then deletes the live build and spares a dead
+    one. The intersection does not save it, because the value being intersected
+    is stale for a RUNNING profile — not only for a stopped one.
+
+    So the live question is asked of the live object. The launcher records the
+    build in the same locked block that registers the session, which makes
+    "running" and "what it is running" one atomic fact with no window between.
 
     RETURNS None FOR "UNKNOWN", AND THAT IS THE WHOLE POINT
     -------------------------------------------------------
     The caller spares every build in the returned set and reclaims the rest, so
     a set is an affirmative claim that every OTHER build is free. That claim
-    may only be made when EVERY running profile was resolved. If even one was
+    may only be made when EVERY running session was resolved. If even one was
     not, the honest answer is None — "cannot say" — and the caller defers
     wholesale, exactly as it did before this join existed.
 
-    Five things produce None, and each is an ordinary state rather than an
-    exotic one:
+    Four things produce None, and each is an ordinary state:
 
-    1. The profile is not in the store at all (created or renamed since the
-       launch, or a store this caller cannot see).
-    2. ``last_launch_build`` is None. ``engine_build_for`` returns None on ANY
-       read failure, deliberately — a stamp that says the wrong build is worse
-       than no stamp. That None must not be read as "no build".
-    3. The field is absent entirely: a profile last launched before the record
-       shipped, or one imported from an archive.
-    4. ``last_launch_engine`` is not firefox. A chromium stamp is a dotted
+    1. Reading the launcher raised. Not evidence that nothing is running.
+    2. A running name has no session entry: its spawn is in flight
+       (``_starting``), so nothing has been registered for it yet. An in-flight
+       launch is UNKNOWN BY CONSTRUCTION here — there is no stamp to be absent
+       and no previous launch's value to mistake for this one's.
+    3. The session's build is None. ``engine_build_for`` returns None on ANY
+       read failure, deliberately — a build that says the wrong thing is worse
+       than no build. That None must not be read as "on no build".
+    4. The session's engine is not firefox. A chromium build is a dotted
        version and is NOT comparable to ``firefox-NN`` (see this module's
        header) — it says nothing about which firefox build is free, so reading
        it as "no firefox build in use" would authorise exactly the deletion
        this guard exists to prevent.
-    5. Reading the store raised. An unreadable profile list is not evidence
-       that nothing is running.
 
-    A profile still in ``_starting`` lands in case 2 or 3 by construction: its
-    current launch has not been stamped yet (the hook fires after the spawn
-    succeeds), so it carries either no stamp or the PREVIOUS launch's, and the
-    previous one is not a claim about what it is loading now. That is why
-    ``running_profile_names()`` unioning ``_starting`` in is safe here rather
-    than a hole — an in-flight launch defers the whole prune.
+    An EMPTY input maps to an empty set: nothing is running, so no firefox
+    build is in use. The prune only asks once its own gate has said otherwise,
+    and it treats that disagreement as UNKNOWN itself — see
+    ``engine_install._in_use_build_numbers``.
     """
-    names = set(running_names or ())
-    if not names:
-        # Nothing is running, so no build is in use. The caller only asks once
-        # its own in-use oracle has said otherwise, but answering honestly
-        # keeps this function meaningful when called directly.
-        return set()
     try:
-        profiles = profiles_by_name()
+        sessions = session_builds()
     except Exception:
         logger.exception(
-            "Could not read the profile store while resolving which engine "
+            "Could not read the running sessions while resolving which engine "
             "builds are in use; treating the answer as unknown"
         )
         return None
 
     builds: set[str] = set()
-    for name in names:
-        profile = None
-        try:
-            profile = profiles.get(name)
-        except Exception:
-            logger.exception(
-                "Could not look up profile %r while resolving in-use engine "
-                "builds; treating the answer as unknown", name,
-            )
+    for _name, entry in (sessions or {}).items():
+        if not entry:
+            # No session record for a running name — an in-flight spawn.
             return None
-        if profile is None:
-            return None
-        engine = getattr(profile, "last_launch_engine", None)
-        build = getattr(profile, "last_launch_build", None)
+        engine, build = entry
         if engine != "firefox" or not build:
-            # Not a firefox stamp, or no stamp at all — UNKNOWN, not "free".
+            # Not a firefox session, or its build could not be read at launch.
+            # UNKNOWN, never "free".
             return None
         builds.add(build)
     return builds
