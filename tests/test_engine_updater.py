@@ -116,13 +116,21 @@ def test_fetch_latest_full_selects_per_os_asset(monkeypatch):
             {"name": MAC_ASSET, "browser_download_url": "http://x/mac", "digest": "sha256:cc"},
         ],
     }
+    # PS-305 discovery is TWO requests: the tag refs (server-filtered by our
+    # prefix), then that tag's release document. So the fake answers BY URL.
+    refs = [{"ref": f"refs/tags/{ENGINE_TAG}"}]
 
     class FakeResp:
+        def __init__(self, payload): self._payload = payload
         def __enter__(self): return self
         def __exit__(self, *a): return False
-        def read(self): return __import__("json").dumps([release]).encode()
+        def read(self): return __import__("json").dumps(self._payload).encode()
 
-    monkeypatch.setattr(updater.urllib.request, "urlopen", lambda *a, **k: FakeResp())
+    def fake_urlopen(req, *a, **k):
+        url = getattr(req, "full_url", req)
+        return FakeResp(refs if "matching-refs" in url else release)
+
+    monkeypatch.setattr(updater.urllib.request, "urlopen", fake_urlopen)
 
     _force_os(monkeypatch, win=True)
     tag, url, digest = updater.fetch_latest_full()
