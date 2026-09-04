@@ -1369,9 +1369,10 @@ def test_fork_close_watch_closes_on_content_procs_gone_while_parent_lingers(
     # count dropping to zero after it was seen, NOT by the parent dying.
     #
     # PS-298 updates the SHAPE of this close without removing it: four zero
-    # polls instead of two, and the second signal (engine children) must agree
-    # that the browser really is gone. Here it does — a genuine close takes the
-    # whole fleet down — so the close still fires, ~2s later than before.
+    # polls instead of two. The engine-child count is stubbed only because the
+    # close line reads it — it is RECORDED, NOT OBEYED, and no value of it
+    # changes this outcome (see test_the_engine_child_reading_is_recorded_and_
+    # never_obeyed). So the close still fires, ~2s later than before.
     monkeypatch.setattr(invisible_launch, "_firefox_pid", lambda d: 4242)
     monkeypatch.setattr(invisible_launch, "_pid_alive", lambda p: True)  # parent hangs on
     # content present (window up), then zero four times (user closed the window).
