@@ -2425,11 +2425,34 @@ class App:
 
         def do_rotate() -> None:
             try:
+                # READ FIRST, THEN INVALIDATE, THEN ROTATE — the order matters
+                # and is not interchangeable. pstore.get() returned the LIVE
+                # Proxy object above (store.py get(), no copy), so `proxy` is
+                # the same object invalidate_geo() zeroes: reading `old_ip` or
+                # `old_url` after the invalidation reads "" instead of the
+                # recorded values, and the "exit unchanged — static or sticky"
+                # branch below would silently stop firing.
                 old_ip = proxy.last_ip
-                url, note = self.ps.rotate_proxy(proxy.url, proxy.rotate_url)
+                old_url = proxy.url
+                old_rotate_url = proxy.rotate_url
+                # The geography on file describes the exit we are about to
+                # ABANDON. Drop it before asking for a new one, not after the
+                # follow-up check: two of rotate_proxy's three arms (rotate
+                # endpoint OK, and fresh connection) return the URL UNCHANGED —
+                # a rotating/backconnect proxy's URL is constant by design — so
+                # set_url's url-keyed invalidation below never fires for them.
+                # Without this the record keeps asserting the previous exit's
+                # country/timezone/coordinates under a verdict that still reads
+                # "verified", which _proxy_timezone hands to a launching
+                # profile. That window is a live one for a concurrent launch
+                # (check_proxy_detailed_sync is a real network round trip) and
+                # a PERMANENT one on disk if the process ends before the
+                # re-check lands.
+                self.pstore.invalidate_geo(name)
+                url, note = self.ps.rotate_proxy(old_url, old_rotate_url)
                 if note:
                     self._log(f"[{name}] {note}")
-                if url != proxy.url:
+                if url != old_url:
                     self.pstore.set_url(name, url)
                 ok, message, code, country, ip, tz, lat, lon = (
                     self.ps.check_proxy_detailed_sync(url)
