@@ -3317,7 +3317,7 @@ class App:
             logger.exception("Could not wire the engine-prune in-use guard")
         try:
             # PS-221: the NARROWING oracle — WHICH firefox builds the running
-            # profiles are executing from, so a build none of them is on can be
+            # sessions are executing from, so a build none of them is on can be
             # reclaimed instead of the prune deferring wholesale on "is anything
             # running?". Wired separately from the boolean above, and on purpose:
             # the two are not one oracle with a richer return type. The boolean
@@ -3326,15 +3326,17 @@ class App:
             # fails CLOSED when unwired, so a half-wired app defers exactly as it
             # did before this existed rather than pruning a live build.
             #
-            # The join needs both halves and the app is the only place that
-            # holds them: the launcher owns which names are running, the profile
-            # manager owns what each was launched under.
+            # Reads the LAUNCHER's live session map and NOT the profile store's
+            # last_launch_build. The persisted stamp is written after the
+            # session is registered and its write is best-effort, so for a
+            # RUNNING profile it can name the previous launch's build — see
+            # launch_provenance.firefox_builds_in_use. That is why this lambda
+            # needs only one half now: the launcher answers "running" and "what
+            # it is running" together, in one lock, with no window between them.
             from ..services.browser.launch_provenance import firefox_builds_in_use
 
             inv.set_in_use_builds_provider(
-                lambda: firefox_builds_in_use(
-                    self.bl.running_profile_names(), lambda: self.pm.profiles
-                )
+                lambda: firefox_builds_in_use(self.bl.running_session_builds)
             )
         except Exception:
             logger.exception(

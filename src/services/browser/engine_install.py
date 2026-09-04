@@ -47,29 +47,34 @@ _WHOLE_BUILD_BYTES = 50_000_000
 # for it; a direct library call with no UI has no session state to defer to.
 _in_use_provider = None  # Callable[[], bool] | None
 
-# The NARROWING oracle (PS-221): WHICH firefox builds running profiles are
+# The NARROWING oracle (PS-221): WHICH firefox builds running sessions are
 # executing from, rather than merely WHETHER anything is running.
 #
 # A zero-arg callable returning a set of firefox-NN tags, or None. The two
 # answers are not interchangeable and the difference is the whole guard:
 #
-#   set  — every running profile was resolved to a firefox build, and these
+#   set  — every running session was resolved to a firefox build, and these
 #          are the builds they are on. Every OTHER build is provably not being
 #          executed from and may be reclaimed.
-#   None — at least one running profile could not be resolved. That is
+#   None — at least one running session could not be resolved. That is
 #          "UNKNOWN", never "using no build", so pruning defers wholesale
 #          exactly as it did before this narrowing existed.
 #
-# Four real populations produce None, all of them ordinary rather than exotic:
-# a stamp that is None (launch_provenance returns None on ANY read failure,
-# deliberately — a wrong stamp is worse than no stamp), a profile carrying no
-# stamp at all (last launched before the record shipped, or imported from an
-# archive), a CHROMIUM stamp (its build string is not comparable to firefox-NN
-# and must not be read as "no firefox build"), and a profile still in
-# `_starting` whose current launch has not been stamped yet. Reading any of
-# those as "not in use" would delete a build out from under a live session —
-# the precise harm the wholesale guard above exists to prevent, and strictly
-# worse than the disk it would reclaim.
+# Three real populations produce None, all of them ordinary rather than exotic:
+# a session whose build could not be read at launch (launch_provenance returns
+# None on ANY read failure, deliberately — a wrong build is worse than none), a
+# CHROMIUM session (its build string is not comparable to firefox-NN and must
+# not be read as "no firefox build"), and a launch still in flight, which has
+# no session record yet. Reading any of those as "not in use" would delete a
+# build out from under a live session — the precise harm the wholesale guard
+# above exists to prevent, and strictly worse than the disk it would reclaim.
+#
+# THE ANSWER IS A LIVE FACT, NOT A PERSISTED STAMP. Profile.last_launch_build
+# exists and looks like it should be the source here, but it is written AFTER
+# the session is registered and its write is best-effort, so for a RUNNING
+# profile it can name the PREVIOUS launch's build (see
+# launch_provenance.firefox_builds_in_use). The provider reads the launcher's
+# live session map instead.
 #
 # Unset ⇒ None ⇒ defer wholesale. This one fails CLOSED where _in_use_provider
 # fails open, and the asymmetry is deliberate: an unwired _in_use_provider means
@@ -135,15 +140,15 @@ def _in_use_build_numbers(log=None) -> "set[int] | None":
     * no narrowing provider is wired (fail CLOSED — see
       _in_use_builds_provider; this is only reached once _engine_in_use has
       already said something IS running);
-    * the provider RAISED. An unreadable profile store is not evidence that
+    * the provider RAISED. An unreadable launcher is not evidence that
       nothing is running, so unlike _engine_in_use's fail-OPEN default this
       one fails closed. The two are opposite on purpose: a broken in-use
       oracle must not wedge disk reclamation forever, but a broken *build*
       oracle only ever removes a NARROWING — deferring is exactly today's
       behaviour, so failing closed costs one prune cycle and risks nothing;
-    * the provider itself returned None, i.e. at least one running profile
-      could not be resolved to a firefox build (an absent or None stamp, a
-      chromium stamp, a launch still in flight);
+    * the provider itself returned None, i.e. at least one running session
+      could not be resolved to a firefox build (a build unreadable at launch,
+      a chromium session, a launch still in flight);
     * the provider returned an EMPTY set while the gate says something IS
       running. The two oracles then contradict each other, and an empty set is
       the most dangerous shape this function can return — it is an affirmative
@@ -736,22 +741,39 @@ def _prune_old_engine_builds(keep: str, log=None) -> None:
 
     A previous version of this docstring said the sharper question could not be
     asked — "per-session build provenance, which nothing records today (the
-    launcher keeps only the Popen per name)". THAT IS NO LONGER TRUE, and it
-    was left standing after the record shipped. `Profile.last_launch_engine` /
-    `last_launch_build` are written on every launch by a hook the composition
-    root wires (core/container.py → launcher.set_launch_record_hook), covering
-    all three launch lanes. The launcher half of the diagnosis still holds —
-    running_profile_names() returns NAMES — so the live fact is the JOIN of the
-    two: the stamp alone is LAST-launch and is stale for a stopped profile.
+    launcher keeps only the Popen per name)". THE FIRST HALF IS NO LONGER TRUE
+    and the second half is what made the first one's remedy subtle, so both are
+    recorded here rather than left for a later reader to rediscover.
 
-    UNKNOWN DEFERS, and that is the load-bearing half. A running profile whose
-    build cannot be established (no stamp, a None stamp, a CHROMIUM stamp whose
-    string is not comparable to firefox-NN, or a launch still in flight and not
-    yet stamped) collapses the answer to None and this prune defers wholesale
-    exactly as it did before. Absence of a reading is not a reading of absence:
-    treating an unstamped running profile as "using no build" would delete a
-    build out from under a live session, which is strictly worse than the disk
-    it would reclaim.
+    `Profile.last_launch_engine` / `last_launch_build` are written on every
+    launch by a hook the composition root wires (core/container.py →
+    launcher.set_launch_record_hook), covering all three launch lanes. That is
+    a real record and it is the right one for comparing a profile's identity
+    ACROSS sessions. IT IS NOT THE RECORD THIS PRUNE READS, and the reason is
+    the whole correctness argument of the guard:
+
+        it is a PERSISTED, LAST-launch stamp, written AFTER the session is
+        registered and written best-effort. So for a RUNNING profile it can
+        name the PREVIOUS launch's build — during the ordinary window between
+        registration and the hook firing, and permanently if that write failed.
+        Sparing "the builds in use" computed from it therefore deletes the
+        build the session is actually on and spares one nothing is on.
+
+    Intersecting the stamp with running_profile_names() does NOT repair that:
+    the intersection is with a value that is stale for a RUNNING profile, not
+    merely for a stopped one. The launcher instead records the session's build
+    in the SAME locked block that registers the session (launcher.py
+    `_session_build` / `running_session_builds`), which makes "running" and
+    "what it is running" one atomic fact, and the prune reads that.
+
+    UNKNOWN DEFERS, and that is the load-bearing half. A running session whose
+    build cannot be established (unreadable at launch, a CHROMIUM session whose
+    build string is not comparable to firefox-NN, or a launch still in flight
+    and therefore not yet registered) collapses the answer to None and this
+    prune defers wholesale exactly as it did before. Absence of a reading is
+    not a reading of absence: treating an unresolved running session as "using
+    no build" would delete a build out from under a live session, which is
+    strictly worse than the disk it would reclaim.
 
     THE MID-LOOP RACE IS CLOSED BY ARGUMENT, not by the check's timing. The
     reading is still taken ONCE, before the loop, so a profile that LAUNCHES

@@ -421,3 +421,190 @@ def test_an_imported_archive_keeps_a_well_formed_build(tmp_path):
     assert ok is True, profile
     assert profile.last_launch_engine == "firefox"
     assert profile.last_launch_build == "firefox-18"
+
+
+# --------------------------------------------------------------------------
+# PS-221: the LIVE session build — a separate record from the persisted stamp
+# above, because the persisted one cannot answer a liveness question.
+# --------------------------------------------------------------------------
+
+def test_a_registered_session_knows_which_build_it_is_running(launcher, monkeypatch):
+    # The whole mechanism: a session that is registered has its build recorded
+    # in the SAME locked block, so "running" and "what it is running" are one
+    # atomic fact rather than two reads with a window between them.
+    import src.services.browser.launch_provenance as lp
+
+    monkeypatch.setattr(lp, "engine_build_for", lambda engine: "firefox-14")
+    launcher.start_thread(
+        Profile(name="p1", engine="firefox"), log_callback=lambda _m: None
+    )
+
+    assert launcher.running_session_builds() == {"p1": ("firefox", "firefox-14")}
+
+
+def test_the_session_build_is_recorded_before_the_stamp_hook_runs(
+    launcher, monkeypatch
+):
+    # THE WINDOW THE PERSISTED STAMP CANNOT COVER, pinned as a property rather
+    # than argued in a comment.
+    #
+    # The record hook fires AFTER the session is registered, so at the moment
+    # the hook runs the profile is ALREADY reported as running. If the prune's
+    # narrowing read the persisted stamp, that window would be a live deletion
+    # on the ordinary launch path — no failure required. The live map must
+    # already be correct by then.
+    import src.services.browser.launch_provenance as lp
+
+    monkeypatch.setattr(lp, "engine_build_for", lambda engine: "firefox-14")
+
+    seen_at_hook_time = {}
+
+    def _hook(profile):
+        seen_at_hook_time.update(launcher.running_session_builds())
+
+    launcher.set_launch_record_hook(_hook)
+    launcher.start_thread(
+        Profile(name="p1", engine="firefox"), log_callback=lambda _m: None
+    )
+
+    assert seen_at_hook_time == {"p1": ("firefox", "firefox-14")}, (
+        "the session's build must already be known by the time the persistence "
+        "hook runs — otherwise there is a window in which the profile reads as "
+        "running while nothing knows which build it is on"
+    )
+
+
+def test_a_launch_whose_build_cannot_be_read_is_running_with_an_unknown_build(
+    launcher, monkeypatch
+):
+    # None is honest — "running, build not known" — and every consumer must
+    # treat it as UNKNOWN. A guess here would be worse than nothing, because it
+    # is an affirmative claim a prune acts on.
+    import src.services.browser.launch_provenance as lp
+
+    def unreadable(engine):
+        raise OSError("version file unreadable")
+
+    monkeypatch.setattr(lp, "engine_build_for", unreadable)
+    launcher.start_thread(
+        Profile(name="p1", engine="firefox"), log_callback=lambda _m: None
+    )
+
+    assert launcher.running_session_builds() == {"p1": ("firefox", None)}
+    assert launcher.is_running("p1") is True, (
+        "an unreadable build must not fail the launch"
+    )
+
+
+def test_an_in_flight_launch_has_no_session_build_at_all(launcher):
+    # A name in _starting is reported as running (so the UI shows it busy and a
+    # second launch is refused) but has NOT been registered, so there is no
+    # build for it. That is UNKNOWN by construction — there is no value to read,
+    # correct or otherwise — which is what the persisted stamp could not offer:
+    # a profile that has launched before carries the PREVIOUS launch's build,
+    # which is a positive value about the wrong launch.
+    launcher._starting.add("spawning")
+    assert "spawning" in launcher.running_profile_names()
+    assert launcher.running_session_builds() == {"spawning": None}
+
+
+def test_the_session_build_dies_with_the_session(launcher, monkeypatch):
+    # Left behind, it would tell the prune to SPARE a build nothing is running
+    # from — a disk leak rather than a deletion, so it fails safe, but "fails
+    # safe" is not the same as correct. _forget_session_facts is the file's own
+    # mechanism for exactly this and the new dict must be in it.
+    import src.services.browser.launch_provenance as lp
+
+    monkeypatch.setattr(lp, "engine_build_for", lambda engine: "firefox-14")
+    launcher.start_thread(
+        Profile(name="p1", engine="firefox"), log_callback=lambda _m: None
+    )
+    assert launcher.running_session_builds() == {"p1": ("firefox", "firefox-14")}
+
+    launcher.stop_profile("p1")
+    assert launcher.running_session_builds() == {}
+    assert launcher._session_build == {}
+
+
+def test_shutdown_all_clears_every_session_build(launcher, monkeypatch):
+    # The bulk counterpart, which the file's own comment names as the site most
+    # easily forgotten when a per-session dict is introduced.
+    import src.services.browser.launch_provenance as lp
+
+    monkeypatch.setattr(lp, "engine_build_for", lambda engine: "firefox-14")
+    for name in ("p1", "p2"):
+        launcher.start_thread(
+            Profile(name=name, engine="firefox"), log_callback=lambda _m: None
+        )
+    assert len(launcher._session_build) == 2
+
+    launcher.shutdown_all()
+    assert launcher._session_build == {}
+
+
+def test_the_names_and_the_builds_are_taken_in_one_lock_acquisition(launcher):
+    # Asking for the names and then asking for the builds would let a session
+    # start or stop between the two reads, and a consumer that spares "the
+    # builds in use" would be acting on a name set that no longer matches. The
+    # KEY SET must be exactly running_profile_names(), from one acquisition.
+    class _Proc:
+        def poll(self):
+            return None
+
+    launcher._active_sessions["running"] = _Proc()
+    launcher._session_build["running"] = ("firefox", "firefox-14")
+    launcher._starting.add("spawning")
+    # A leftover build for a name that is NOT running must not leak into the
+    # answer — the map is keyed off the live name set, not iterated directly.
+    launcher._session_build["gone"] = ("firefox", "firefox-9")
+
+    builds = launcher.running_session_builds()
+    assert set(builds) == launcher.running_profile_names() == {"running", "spawning"}
+    assert builds["running"] == ("firefox", "firefox-14")
+    assert builds["spawning"] is None
+    launcher._active_sessions.clear()
+
+
+def test_a_failed_stamp_write_clears_the_build_rather_than_leaving_a_stale_one(
+    monkeypatch
+):
+    # THE MODULE'S OWN RULE APPLIED AT THE ONE SITE THAT VIOLATED IT: "a stamp
+    # that says the wrong build is worse than no stamp at all". The launcher
+    # swallows a raise from this hook so the browser still opens — correct, and
+    # unchanged — but leaving the PREVIOUS launch's build standing is an
+    # affirmative claim about a build this session is not on. Clearing it makes
+    # the record's absence honest.
+    #
+    # This is hygiene on the persisted record, NOT the prune's guard: the prune
+    # reads the launcher's live map and is unaffected either way.
+    from src.core.container import Container
+
+    c = Container()
+    calls = []
+
+    class _PM:
+        def set_last_launch_build(self, name, engine, build):
+            calls.append((name, engine, build))
+            if len(calls) == 1:
+                raise OSError("profiles.json is unwritable")
+            return True
+
+    monkeypatch.setattr(type(c), "profile_manager", property(lambda self: _PM()))
+    monkeypatch.setattr(
+        "src.services.browser.launch_provenance.resolve",
+        lambda profile: ("firefox", "firefox-14"),
+    )
+
+    hook = c.browser_launcher._launch_record_hook
+    with pytest.raises(OSError):
+        # Re-raised on purpose: the launcher's own except is what keeps the
+        # browser open, and swallowing here would hide the first failure.
+        hook(Profile(name="p1", engine="firefox"))
+
+    assert calls == [
+        ("p1", "firefox", "firefox-14"),
+        ("p1", "firefox", None),
+    ], (
+        "a failed write must be followed by an explicit CLEAR, so the record "
+        "reads 'not known' rather than naming the previous launch's build"
+    )
