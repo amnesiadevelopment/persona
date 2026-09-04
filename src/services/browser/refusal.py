@@ -41,6 +41,7 @@ from dataclasses import dataclass
 from ..proxy.errors import (
     GeographyDisprovenError,
     GeographyUnknownError,
+    LocaleUnderivableError,
     ProxyUnresolvedError,
     TimezoneUnderivableError,
 )
@@ -66,6 +67,14 @@ _UNKNOWN = "proxy never checked"
 # states: it describes the EVIDENCE ("no zone for this country") and stops
 # there, never hinting that launching without the proxy would be a way out.
 _UNDERIVABLE = "no timezone for exit country"
+# The locale half of the same shape, and it needs its OWN label for the same
+# reason the zone half did: the proxy may have checked successfully seconds ago,
+# so any re-check prompt is wrong. It is a SEPARATE label rather than a shared
+# "no data for exit country" because the two name DIFFERENT missing rows in
+# DIFFERENT tables, and an operator reading a scanning list has to know which
+# one to add. Same rule as the block above: it describes the evidence and stops
+# there, never hinting that launching without the proxy would be a way out.
+_LOCALE_UNDERIVABLE = "no locale for exit country"
 
 
 @dataclass(frozen=True)
@@ -74,7 +83,7 @@ class Refusal:
 
     ``kind``    stable identifier for tests and callers ("proxy_unresolved",
                 "geography_disproven", "geography_unknown",
-                "timezone_underivable"). Never rendered.
+                "timezone_underivable", "locale_underivable"). Never rendered.
 
                 NOT internal: this goes out over the wire as the 409 body
                 (routes/browser.py) and out of the MCP tool (mcp_server.py),
@@ -138,6 +147,16 @@ def classify_refusal(exc: BaseException, now: float) -> Refusal | None:
     # precede the parent. There is a test pinning this ordering specifically.
     if isinstance(exc, TimezoneUnderivableError):
         return Refusal("timezone_underivable", _UNDERIVABLE, str(exc), now)
+    # A THIRD sibling, before the parent for the identical reason: it subclasses
+    # GeographyUnknownError too, so the parent's branch would swallow it and
+    # label it "proxy never checked" — sending the operator to re-run a check
+    # that may already have PASSED and will keep passing, because the missing
+    # thing is a _COUNTRY_LOCALE row rather than a check result. Like the two
+    # above it is a SIBLING, not a narrowing: none of the three is a subclass of
+    # another, so their relative order among themselves does not matter, but ALL
+    # THREE must precede the parent. There is a test pinning this ordering.
+    if isinstance(exc, LocaleUnderivableError):
+        return Refusal("locale_underivable", _LOCALE_UNDERIVABLE, str(exc), now)
     if isinstance(exc, GeographyUnknownError):
         return Refusal("geography_unknown", _UNKNOWN, str(exc), now)
     if isinstance(exc, ProxyUnresolvedError):

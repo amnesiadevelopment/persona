@@ -79,6 +79,59 @@ class TimezoneUnderivableError(GeographyUnknownError):
     """
 
 
+class LocaleUnderivableError(GeographyUnknownError):
+    """A profile's proxy carries a COUNTRY, but no locale can be derived for it
+    — the country has no row in ``_COUNTRY_LOCALE``.
+
+    The exact mirror of ``TimezoneUnderivableError``, and it exists because its
+    absence was the defect. ``_locale_for`` used to answer this case with
+    ``"en-US"`` while ``_timezone_for`` RAISED for the identical input, so the
+    two halves of one derivation took opposite positions on the same country.
+
+    ⚠️ AND THE REFUSAL DID NOT SAVE IT, which is the part that is easy to get
+    wrong. ``_proxy_timezone``'s FIRST branch returns the zone the check
+    recorded and never reaches ``_timezone_for``, so an ordinary PASSING check
+    against a Bulgarian exit shipped ``en-US`` beside ``Europe/Sofia`` — an
+    American-English browser whose clock is in Sofia. The zone half being strict
+    did not stop it; it only guaranteed that when the two halves disagreed, the
+    disagreement SHIPPED.
+
+    Why ``en-US`` was worse than the ``UTC`` it mirrors. ``UTC`` was reachable
+    for NO key in ``_COUNTRY_TZ``, so it could only ever mean "unknown" —
+    detectable, at least in principle, as a sentinel. ``en-US`` is a legitimate
+    row in ``_COUNTRY_LOCALE`` (``US`` maps to it), so an invented answer here
+    is byte-identical to a genuine American one and nothing downstream can tell
+    "this profile is American" from "we do not know what this profile is".
+
+    ⚠️ NOT RAISED FOR THE NO-COUNTRY CASE, and that distinction is the whole
+    point of this class rather than a caveat on it. ``_locale_for("")`` still
+    returns ``"en-US"``, because an empty country is not an unanswerable country
+    — it is the DIRECT (no-proxy) path, where persona forces ``en-US``
+    deliberately so it never leaks the host locale, and pins a US zone so the
+    pair agrees. Raising there would break a coherent, intentional identity in
+    the name of fixing an incoherent, accidental one.
+
+    Fail CLOSED, for the reason every sibling here does. A profile that will not
+    launch has disclosed nothing; a profile that launches declaring a language
+    its own clock contradicts has disclosed that it is spoofed.
+
+    An exception rather than a sentinel string, on the parent's stated rule: the
+    unknown must be UNREPRESENTABLE as a locale, so no caller can ship it to an
+    engine as though it were a real one. Both engines consume this value as
+    fact — Firefox as ``"locale"``, Chromium as ``--lang`` / ``--accept-lang``
+    plus the locale and voice extensions — so a returned ``"en-US"`` reached
+    four separate surfaces at once.
+
+    The remedy is NOT a re-check — like ``TimezoneUnderivableError`` and unlike
+    the other two siblings. The check may already have passed and will keep
+    passing; what is missing is a table row, not a check result. So the message
+    names the COUNTRY: an operator who cannot launch must be told WHICH country
+    and WHY. Adding the row means adding it to BOTH tables — the correspondence
+    suite fails a one-sided row in either direction, which is the mechanism that
+    stops this defect being reintroduced one table at a time.
+    """
+
+
 class GeographyDisprovenError(GeographyUnknownError):
     """A profile's proxy carries geography, but the most recent check FAILED —
     so the product's own latest evidence says that geography is untrue.
