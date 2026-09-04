@@ -45,8 +45,17 @@ therefore carries one of five positions, and the fifth is the deliverable:
                          ``outer-size``.
 
 This is a CHARACTERIZATION test, on exactly the terms its network sibling states:
-it pins the matrix AS IT IS TODAY, unknowns included, and is green on day one. It
-does not demand parity, and it closes no cell.
+it pins the matrix AS IT IS TODAY, unknowns included, and is green on day one —
+on all three CI platforms, which is a stronger claim than it sounds and was not
+free. The Chromium column is read off a launch's argv, and ``process.py`` builds
+the ``--load-extension`` entries with ``os.path.join``, so the SAME product code
+hands this file ``\\``-separated paths on Windows. Round 1 of this ticket parsed
+them with a ``/``-only split: four tests failed loudly there and a fifth — a
+NEGATIVE assertion — passed VACUOUSLY, and would have kept passing with the
+product's proxy gate deleted. Hence two standing rules in the helpers below: the
+argv parser is separator-agnostic and RAISES on anything it cannot parse rather
+than skipping it, and every negative assertion is anchored by a positive one
+taken from the same reading. It does not demand parity, and it closes no cell.
 
 * Add a vector to one engine only -> the census tests below fail, forcing the
   parity question to be answered out loud.
@@ -90,6 +99,7 @@ The matrix, for ONE profile per column:
 
 import ast
 import inspect
+from pathlib import Path, PurePath
 
 import pytest
 
@@ -102,6 +112,16 @@ from src.services.browser.webgl_ext import firefox_webgl_init_script
 from src.services.profile import coherence
 from src.services.verify import masking_layer
 from tests.test_process import _StoreWithCheckedProxy, _spawn_chromium_args
+
+# The repo, anchored to THIS FILE rather than to the process CWD. Every path in
+# this file is repo-relative, and a bare ``open()`` on one resolves against
+# wherever pytest happened to be invoked from — green from the repo root and
+# FileNotFoundError from anywhere else (which is how round 1 failed on the macOS
+# and Windows runners). The convention is already this repo's
+# (``test_ci_verification_gates``, ``test_build_config``, ``test_assets``,
+# ``test_canvas_loopback_probe`` all do it); an anti-rot test that cannot find
+# the file it guards reports the reader's CWD, not the tree.
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 # --- positions ---------------------------------------------------------------
 
@@ -459,20 +479,60 @@ def _firefox_spoof_census():
     return spoofs, raw
 
 
+_EXT_PREFIX = ".persona-"
+_EXT_SUFFIX = "-ext"
+
+
+def _ext_dir_vector(directory):
+    """The vector name of one ``--load-extension`` entry.
+
+    Separator-agnostic ON PURPOSE. ``process.py`` builds these with
+    ``os.path.join``, so the SAME product code hands this parser ``/``-joined
+    paths on Linux and macOS and ``\\``-joined ones on Windows — and a parser
+    that splits on ``/`` alone does not fail loudly there, it returns the whole
+    unsplit path as the "vector" and quietly poisons every set this file
+    compares. ``tests/test_ps283_refused_launch_does_no_work`` records the same
+    hazard on the same argv ("on Windows the extension list is
+    ``<PROFILE>\\.persona-gpu-ext``") and normalises for the same reason.
+
+    A name that does not fit the product's own ``.persona-<vector>-ext`` shape
+    RAISES rather than being skipped: dropping it would shrink the Chromium
+    column silently, which is the false green this whole file exists to refuse.
+    """
+    name = PurePath(directory.replace("\\", "/")).name
+    if not (name.startswith(_EXT_PREFIX) and name.endswith(_EXT_SUFFIX)):
+        raise AssertionError(
+            f"--load-extension entry {directory!r} does not match the product's "
+            f"own {_EXT_PREFIX}<vector>{_EXT_SUFFIX} shape. This parser must be "
+            f"updated with it — a silently unparsed entry removes a vector from "
+            f"the Chromium column and turns every negative assertion below into "
+            f"a vacuous pass."
+        )
+    return name[len(_EXT_PREFIX) : -len(_EXT_SUFFIX)].replace("-", "_")
+
+
 def _ext_vectors(args):
     """The vectors a LAUNCH actually loaded, read off its argv.
 
     The oracle for the Chromium column, and deliberately argv rather than source:
     the sibling matrix's rule is that a sentinel must read the layer it guards,
     and ``--load-extension`` is the layer Chromium's masking actually arrives on.
+
+    Raises when the flag is absent or empty. Several cells below assert a
+    NEGATIVE ("geo is not in this launch"), and a negative over a set this helper
+    built is only a measurement while the set is real — an empty return would
+    satisfy every one of them no matter what the product did.
     """
     for a in args:
         if a.startswith("--load-extension="):
-            return {
-                d.rsplit("/", 1)[-1][len(".persona-") : -len("-ext")].replace("-", "_")
-                for d in a.split("=", 1)[1].split(",")
-            }
-    return set()
+            vectors = {_ext_dir_vector(d) for d in a.split("=", 1)[1].split(",") if d}
+            assert vectors, "--load-extension= is present but empty"
+            return vectors
+    raise AssertionError(
+        "this launch produced no --load-extension argument at all, so the "
+        "Chromium column cannot be read from it. Every cell below would read as "
+        "'not installed' — an empty measurement, not a finding."
+    )
 
 
 def _firefox_installed_js():
@@ -538,8 +598,18 @@ def test_firefox_spoof_registry_matches_the_matrix():
     spoofs, _ = _firefox_spoof_census()
     assert spoofs == FIREFOX_SPOOF_CONDITIONS
     for label in spoofs:
-        vector = label if label in MATRIX else label
-        assert MATRIX[vector]["firefox"][0] == COVERED, (
+        # The spoof LABEL is the matrix's vector key — asserted rather than
+        # translated. The two vocabularies agree today (``outer-size`` is spelled
+        # the same on both sides), and pinning that agreement is what a mapping
+        # would have hidden: register a spoof under a label no cell names and
+        # this fails HERE, naming the label, instead of raising a bare KeyError
+        # one line down or — worse — being quietly mapped onto some other row.
+        assert label in MATRIX, (
+            f"{label!r} is registered as a Firefox spoof but names no row in "
+            f"the matrix. Add the vector's row, or reconcile the label with the "
+            f"row it belongs to — do not translate it silently."
+        )
+        assert MATRIX[label]["firefox"][0] == COVERED, (
             f"{label} is registered as a Firefox spoof but the matrix does not "
             f"say COVERED"
         )
@@ -590,12 +660,41 @@ def test_chromium_geo_cell_is_proxy_conditional(monkeypatch, tmp_path):
     # The condition, asserted rather than merely written down. A direct profile
     # leaves geolocation untouched, so "geo: covered" is true of a PROXIED
     # profile and false of this one — exactly what the cell's condition says.
-    vectors = _ext_vectors(
+    #
+    # ⚠️ THE NEGATIVE IS ANCHORED BY A POSITIVE, and that pairing is the point of
+    # this test rather than a belt-and-braces flourish. ``"geo" not in vectors``
+    # is satisfied by ANY set that does not contain the token — including an
+    # empty one, and including one of unparsed paths. Round 1 of this ticket
+    # shipped exactly that: a ``/``-only split left every Windows entry mangled,
+    # four sibling tests failed loudly and THIS one passed vacuously, and it
+    # would have gone green with the proxy gate deleted from the product
+    # entirely. So the direct launch must first be shown to be a REAL reading
+    # (it installs the unconditional vectors), and the proxied companion must be
+    # shown to contain the very token whose absence is the claim. Then, and only
+    # then, does the absence measure the gate.
+    direct = _ext_vectors(
         _spawn_chromium_args(
             monkeypatch, tmp_path, Profile(name="masking-matrix-direct")
         )["args"]
     )
-    assert "geo" not in vectors
+    proxied = _ext_vectors(
+        _spawn_chromium_args(
+            monkeypatch,
+            tmp_path,
+            Profile(name="masking-matrix-geo-proxied", proxy="p1"),
+            store=_StoreWithCheckedProxy,
+        )["args"]
+    )
+    unconditional = {v for v, c in CHROMIUM_CONDITIONS.items() if c == ""}
+    assert unconditional <= direct, (
+        "the direct launch did not install the unconditional vectors, so this "
+        "reading is malformed and the absence below would measure nothing"
+    )
+    assert "geo" in proxied, (
+        "the proxied companion does not carry 'geo', so either the parser or "
+        "the product changed — the absence below is not evidence of the gate"
+    )
+    assert "geo" not in direct
     assert CHROMIUM_CONDITIONS["geo"] == "proxy"
 
 
@@ -874,12 +973,12 @@ def test_recorded_reasons_still_in_tree():
     # rewording through. A word change still fails.
     for vector, (path, quote) in RECORDED_REASON_SOURCES.items():
         assert MATRIX[vector]["firefox"][0] == NOT_COVERED_RECORDED
-        with open(path, encoding="utf-8") as fh:
-            assert _collapse(quote) in _collapse(fh.read()), (
-                f"the recorded reason for the {vector!r} cell is gone from "
-                f"{path}. Either restore it or restate the cell's position — "
-                f"do not leave a cell citing a reason the tree no longer holds."
-            )
+        text = (REPO_ROOT / path).read_text(encoding="utf-8")
+        assert _collapse(quote) in _collapse(text), (
+            f"the recorded reason for the {vector!r} cell is gone from "
+            f"{path}. Either restore it or restate the cell's position — "
+            f"do not leave a cell citing a reason the tree no longer holds."
+        )
 
 
 def test_device_ext_rationale_still_in_tree():
@@ -887,8 +986,10 @@ def test_device_ext_rationale_still_in_tree():
     # unspoofed), but it is the sentence that justifies the Chromium builder
     # existing at all, and the matrix's device row leans on it. Re-read for the
     # same anti-rot purpose, and kept separate so the two are not conflated.
-    with open("src/services/browser/device_ext.py", encoding="utf-8") as fh:
-        assert _collapse(DEVICE_EXT_RATIONALE) in _collapse(fh.read())
+    text = (REPO_ROOT / "src/services/browser/device_ext.py").read_text(
+        encoding="utf-8"
+    )
+    assert _collapse(DEVICE_EXT_RATIONALE) in _collapse(text)
 
 
 # --- shape invariants: an unknown may never read as coverage -----------------
