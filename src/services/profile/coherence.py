@@ -92,20 +92,31 @@ the blast radius is what makes recording it worthwhile. PS-161 round 4 closed
 the GPU **authorship** leak (``engine_platform`` is one computation over both
 fields, handed to both consumers), and it closed exactly that one vector:
 
-* **chromium** — ``is_mobile`` is true, so an Android device preset drives the
-  UA, screen and touch, while the GPU **pool arm** (``gpu_ext._os_norm``) and
-  the **voice roster** (``voice_ext``) are still selected from ``os_type``
-  alone: a Direct3D11 renderer and Microsoft desktop voices underneath an
-  Android UA. Those two vectors still read one field.
+* **chromium — HISTORY, closed by PS-236.** Until PS-236 reconciled the field
+  at the launch path, ``is_mobile`` was true on such a record, so an Android
+  device preset drove the UA, screen and touch, while the GPU **pool arm**
+  (``gpu_ext._os_norm``) and the **voice roster** (``voice_ext``) were still
+  selected from ``os_type`` alone: a Direct3D11 renderer and Microsoft desktop
+  voices underneath an Android UA, told ``--fingerprint-platform=linux``. One
+  machine, three answers. ``process.spawn_browser`` now calls
+  ``coherent_device_type`` (below) ONCE before either consumer reads the field,
+  so the two vectors that read it agree with the two that do not, and the
+  launched chromium machine is the coherent ``windows`` + ``desktop`` one. The
+  GPU pool arm and the voice roster still read ``os_type`` alone — that is
+  unchanged and is precisely why reconciling the ONE field was the remedy.
 * **firefox** — the launch path reads NEITHER field (``invisible_launch.py``
   has no ``device_type`` or ``is_mobile`` reference at all, #211), and the pair
   rules make ``windows`` the only OS Firefox may carry, so a ``windows`` +
   ``mobile`` + ``firefox`` record is pair-COHERENT, launches Firefox, and has
   its ``device_type`` dropped entirely: the record claims a phone and the
-  browser presents a desktop Windows machine.
+  browser presents a desktop Windows machine. **Still true** — PS-236 touched
+  the chromium path only, because there is nothing on the Firefox arm to
+  reconcile.
 
-Reconciling either belongs on the launch path (``process.py``), not in this
-module — see ``device_type_error``.
+The RULE is owned here — ``coherent_device_type`` below, the counterpart of
+``coherent_engine`` — and its CALL SITE is the launch path (``process.py``),
+which is the only place that needs the reconciled answer. The stored record is
+never rewritten by either; see ``device_type_error``.
 
 ⚠️ RULE 4 IS NOT DISPOSED OF BY THAT LIST, and the difference matters. Rules 1-3
 judge a PAIR of fields, so they can only be applied where both values are in
@@ -488,9 +499,9 @@ def coherent_engine(os_type: str, engine: str | None) -> str:
     answers "which engine?", and Rule 3 has no engine remedy — a windows +
     mobile profile is contradictory on chromium and on firefox alike, so
     feeding the third field in here could only make this function return
-    chromium for a record it cannot repair. Rule 3's reconciliation at launch
-    belongs on the launch path (``process.py``), which is out of scope for this
-    slice; see the PR.
+    chromium for a record it cannot repair. Rule 3's reconciliation is
+    ``coherent_device_type`` immediately below (PS-236), a separate function
+    with its own answer, called from the launch path (``process.py``).
     """
     normalized = normalize_engine(engine)
     if not is_coherent(os_type, normalized):

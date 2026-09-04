@@ -523,10 +523,22 @@ def test_the_gpu_authorship_leak_really_is_closed_on_this_pair():
     """PS-161 round 4, restated as the premise this ticket builds on rather than
     as a claim inherited from its description.
 
-    `engine_platform` is ONE computation over both fields, so on windows+mobile
-    the engine is told `linux` and our layer does NOT stand down expecting a
-    `windows` identity nobody wrote. That is why this ticket adds no guard on
-    the GPU vector.
+    ⚠️ FRAMING CORRECTED BY PS-236; THE ASSERTIONS ARE UNTOUCHED AND STILL TRUE.
+    `engine_platform_for` is ONE computation over both fields and its own
+    semantics were deliberately left alone — handed `windows` + `mobile` it
+    still answers `linux`, and on that value our layer keeps authorship. What
+    changed is that NO LAUNCH HANDS IT THAT PAIR ANY MORE:
+    `process.spawn_browser` reconciles `device_type` first, so a stored
+    `windows`+`mobile` record reaches this helper as `windows`+`desktop` and is
+    told `windows`. The consequence is stated rather than hidden — on that value
+    `engine_authors_identity_for_engine_platform` is True, so the WebGL pair is
+    authored by the ENGINE, which is byte-identical to what the coherent
+    `windows`+`desktop` record already did. That is AC1 (one machine), not a
+    third answer, and it needed no guard: it falls out of the one-value design.
+
+    This test therefore pins the HELPER's contract for callers that hand it raw
+    values, which is exactly what PS-236 did not change. That is why this ticket
+    adds no guard on the GPU vector.
     """
     from src.services.browser.engine_platform import engine_platform_for
     from src.services.browser.gpu_ext import (
