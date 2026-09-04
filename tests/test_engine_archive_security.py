@@ -17,7 +17,9 @@ resolving outside the destination survived on disk. The zip arm is the control �
 CPython's ZipFile.extractall already sanitizes member paths — and is untouched.
 """
 
+import io
 import os
+import sys
 import tarfile
 import zipfile
 
@@ -50,6 +52,12 @@ def _symlink_member(tf, name, target):
     tf.addfile(ti)
 
 
+def _regular_member(tf, name, data=b"payload"):
+    ti = tarfile.TarInfo(name)
+    ti.size = len(data)
+    tf.addfile(ti, io.BytesIO(data))
+
+
 def _extract_ignoring_refusal(archive, dst, asset_name):
     """Drive the REAL `_extract_as` and swallow a refusal.
 
@@ -62,14 +70,6 @@ def _extract_ignoring_refusal(archive, dst, asset_name):
         _extract_as(str(archive), str(dst), asset_name)
     except Exception:
         pass
-
-
-def _regular_member(tf, name, data=b"payload"):
-    import io
-
-    ti = tarfile.TarInfo(name)
-    ti.size = len(data)
-    tf.addfile(ti, io.BytesIO(data))
 
 
 # --------------------------------------------------------------------------
@@ -146,7 +146,12 @@ def test_tar_relative_symlink_pointing_outside_destination_is_not_created(tmp_pa
         f"{os.readlink(link) if link.is_symlink() else ''}"
     )
     # And nothing under the destination can be used to read the host file.
-    assert link.read_bytes() if link.exists() else b"" != b"host secret"
+    # NOTE the parentheses: `a if c else b != x` binds the conditional LOOSER
+    # than `!=`, so writing it unparenthesised asserts the truthiness of the
+    # link's own bytes and PASSES while the host secret is readable through the
+    # destination. That is a false green in a file whose whole point is disk
+    # state; the parens are what make this assertion the one the comment claims.
+    assert (link.read_bytes() if link.exists() else b"") != b"host secret"
 
 
 # --------------------------------------------------------------------------
@@ -191,7 +196,12 @@ def test_tar_benign_engine_shaped_archive_still_extracts(tmp_path):
 
     launcher = dst / "firefox"
     assert launcher.is_file()
-    assert launcher.stat().st_mode & 0o111, "launcher lost its executable bit"
+    if sys.platform != "win32":
+        # NTFS surfaces 0o666 — there is no POSIX execute bit to keep, so this
+        # one assertion cannot hold on Windows. The rest of the test is the AC4
+        # regression guard and is exactly as meaningful there, so only the
+        # permission-bit line is gated, never the whole test.
+        assert launcher.stat().st_mode & 0o111, "launcher lost its executable bit"
     assert (dst / "browser/chrome/icons/default/default32.png").is_file()
     assert (dst / "res/locale/necko/necko.properties").is_file()
     assert (dst / "browser/chrome/browser/content/branding/icon32.png").is_file()
