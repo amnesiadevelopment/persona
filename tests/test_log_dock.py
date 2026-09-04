@@ -112,6 +112,46 @@ def test_ac5_profile_is_parsed_from_all_four_shapes():
         assert msg == want_msg, (line, msg)
 
 
+def test_ps298_a_roster_name_inside_the_reason_text_cannot_steal_the_row():
+    """The suffix is free ENGLISH, and the roster is user-chosen — so they
+    collide, and the collision must not decide who the row is about.
+
+    ``Session ended: <name> (<why>)`` is the first line on this surface to
+    carry prose, and the reason text contains ordinary words: ``persona``,
+    ``window``, ``closed``, ``browser``, ``engine``. ``window`` and ``engine``
+    are not exotic profile names for this product. The name-matching loop runs
+    longest-first and stops at the first name that matches ANY shape, so a
+    roster name occurring only in the SUFFIX used to be reached first and win
+    on the generic substring branch — attributing the row to a profile that had
+    nothing to do with the event, and cutting the matched word out of the
+    message on the way.
+
+    That lands on precisely the use this reason text exists to serve: an
+    operator reading the Activity Log to find out WHICH profile died by itself
+    was shown the wrong one. The fix is an ordering one — every specific shape
+    is tried for every name before any generic substring match — so this test
+    is about pass ordering, not about the regex.
+
+    ``mail-us-011`` in the roster below is the profile the line is genuinely
+    about; the rest are the decoys, each longer than it so longest-first
+    reaches them first.
+    """
+    line = (
+        "10:00:05  > Session ended: mail-us-011 (persona inferred the "
+        "window was closed)"
+    )
+    for decoy in ("window", "persona", "closed", "inferred"):
+        roster = {"mail-us-011", decoy}
+        _, profile, msg, _ = parse_event(line, roster)
+        assert profile == "mail-us-011", (
+            f"a roster name ({decoy!r}) appearing only in the reason text stole "
+            f"the row from the profile the event is about; got {profile!r}"
+        )
+        assert msg == "Session ended (persona inferred the window was closed)", (
+            f"the reason text was mangled by the {decoy!r} substitution: {msg!r}"
+        )
+
+
 def test_ac5_unresolvable_profile_shows_the_neutral_placeholder():
     _, profile, msg, _ = parse_event("10:00:05  > Engine update available", ROSTER)
     assert profile == ""

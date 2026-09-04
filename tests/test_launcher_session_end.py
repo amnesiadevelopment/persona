@@ -141,27 +141,31 @@ def test_ps298_an_inferred_close_is_quiet_but_not_identical_to_a_real_one(
     assert any("inferred" in m for m in ended)
 
 
-def test_ps298_an_unconfirmed_close_names_the_disagreement(monkeypatch):
-    """The sharper of the two tokens, and the one worth finding in a log.
+def test_ps298_a_close_never_reports_a_disagreement_it_does_not_arbitrate(
+    monkeypatch,
+):
+    """⛔ WITHDRAWN token — ``window-gone-unconfirmed`` no longer exists.
 
-    ``window-gone-unconfirmed`` means the watch's SECOND, independent signal
-    disagreed — the browser still had engine processes running — and the close
-    fired anyway on the bounded fallback. A run whose closes are mostly
-    unconfirmed is the fingerprint of exactly the defect this ticket describes.
-    The operator-facing line must therefore say more than "inferred".
+    The earlier revision emitted it when a second signal (the browser's engine
+    child fleet) disagreed with the zero content count. That gate is gone: its
+    premise is contradicted three times in ``invisible_launch.py`` and has
+    never been measured on the Linux fork path, and if the fleet DOES outlive
+    the window there, every ordinary close would have carried this token — the
+    diagnostic would have screamed on healthy hosts. The number is now recorded
+    on the LIFECYCLE line and obeyed by nothing.
+
+    An unknown token is not quiet, so it renders "Session ended unexpectedly".
+    This pins that it cannot be emitted by accident: if the token ever comes
+    back without its entry in ``_QUIET_CLOSE_REASONS``, this fails loudly
+    instead of every normal Linux close reading as a failure.
     """
-    messages = _run_session(monkeypatch, [
-        "BROWSER_STARTED",
-        "LIFECYCLE close=window-gone-unconfirmed pid=10 streak=10 content=0 "
-        "engine_children=3",
-        "BROWSER_CLOSED",
-    ])
-    ended = [m for m in messages if m.startswith("Session ended")]
-    assert ended and not any("unexpectedly" in m for m in messages)
-    assert any("UNCONFIRMED" in m for m in ended), (
-        "the disagreement must be visible to the operator, not only in the "
-        "engine's LIFECYCLE line"
+    from src.services.browser.launcher import (
+        _INFERRED_CLOSE_REASONS,
+        _QUIET_CLOSE_REASONS,
     )
+
+    assert "window-gone-unconfirmed" not in _QUIET_CLOSE_REASONS
+    assert "window-gone-unconfirmed" not in _INFERRED_CLOSE_REASONS
 
 
 def test_ps298_a_real_operator_close_is_unchanged(monkeypatch):
