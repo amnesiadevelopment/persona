@@ -608,3 +608,55 @@ def test_a_failed_stamp_write_clears_the_build_rather_than_leaving_a_stale_one(
         "a failed write must be followed by an explicit CLEAR, so the record "
         "reads 'not known' rather than naming the previous launch's build"
     )
+
+
+def test_the_session_build_is_known_the_instant_the_session_is_registered(
+    launcher, monkeypatch
+):
+    # THE INVARIANT THIS WHOLE GUARD RESTS ON: "registered" and "we know which
+    # build it is running" must be ONE atomic fact, not two writes with a gap.
+    #
+    # The sibling test above probes at the record HOOK, which is the LAST thing
+    # start_thread does — so it passes even if the build is recorded moments
+    # earlier but still after registration. That leaves the exact defect this
+    # ticket was re-opened for uncovered: any window between the session being
+    # visible as running and its build being known is a window in which the
+    # prune sees a running profile it cannot account for. Today that direction
+    # merely loses a reclaim, but the invariant is what stops it from being
+    # resolved by a STALE value instead, which is a live deletion.
+    #
+    # Probed at the registry write, which runs BETWEEN registration and the
+    # hook and is the earliest observable point after the session goes live.
+    import src.services.browser.launch_provenance as lp
+
+    monkeypatch.setattr(lp, "engine_build_for", lambda engine: "firefox-14")
+
+    observed = {}
+
+    class _Spy:
+        def record(self, rec):
+            # The session is registered by now — is its build known too?
+            observed["running"] = launcher.running_profile_names()
+            observed["builds"] = launcher.running_session_builds()
+
+        def forget(self, name):
+            pass
+
+        def forget_all(self):
+            pass
+
+    launcher._registry = _Spy()
+    launcher.start_thread(
+        Profile(name="p1", engine="firefox"), log_callback=lambda _m: None
+    )
+
+    assert observed["running"] == {"p1"}, (
+        "precondition: the session is already reported as running here"
+    )
+    assert observed["builds"] == {"p1": ("firefox", "firefox-14")}, (
+        "a session that is visible as RUNNING must already carry the build it "
+        "is executing from — recording it later opens a window in which the "
+        "prune sees a running profile it cannot account for, which is exactly "
+        "where the persisted-stamp implementation resolved a STALE build and "
+        "deleted the live one"
+    )
