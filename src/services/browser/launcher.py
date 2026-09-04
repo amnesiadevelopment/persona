@@ -75,7 +75,6 @@ _QUIET_CLOSE_REASONS = {
     # cry wolf until the word meant nothing. What it must NOT do is read
     # byte-identically to an operator close — see _INFERRED_CLOSE_REASONS.
     "window-gone-inferred",
-    "window-gone-unconfirmed",
     # PS-204: renamed from "all-pids-exit", which claimed more than the watch
     # could observe. The watch quantifies over the pid set it captured ONCE, so
     # the old name asserted that EVERY process the session spawned had exited —
@@ -104,17 +103,14 @@ _QUIET_CLOSE_REASONS = {
 # they say so, and the message names the reason so the two populations can be
 # counted apart in a log an operator sends in.
 #
-# `window-gone-unconfirmed` is the sharper of the two: the watch's second,
-# independent signal DISAGREED (the browser still had engine children running)
-# and the close fired anyway on the bounded fallback. A run whose closes are
-# mostly `unconfirmed` is the fingerprint of exactly the defect this ticket
-# describes, and that is now readable from the log instead of invisible.
+# The engine's own LIFECYCLE line carries the numbers the decision rested on —
+# the content count, the streak, and a second independent measurement of the
+# browser's engine-child fleet. That fleet count is RECORDED, NOT OBEYED (see
+# `_firefox_engine_child_count`): a non-zero one on a close is the reading that
+# would tell us whether the fleet really does outlive the window on this path,
+# which is the question a future gate has to answer before it can exist.
 _INFERRED_CLOSE_REASONS = {
     "window-gone-inferred": "persona inferred the window was closed",
-    "window-gone-unconfirmed": (
-        "persona inferred the window was closed, UNCONFIRMED - the browser "
-        "still had engine processes running"
-    ),
 }
 
 _NOISY_PREFIXES = (

@@ -26,10 +26,17 @@ What these tests DO establish is narrower and worth stating in exactly those
 terms:
 
 * the guard is wider than it was (four consecutive zero polls, not two);
-* a zero content count that a SECOND, INDEPENDENT signal contradicts does not
-  kill the session, and that deferral is bounded rather than open-ended;
-* a "could not look" from that second signal decides nothing, in either
-  direction (the PS-192/PS-204 discipline);
+* a second, INDEPENDENT measurement — the browser's engine-child fleet — is
+  recorded on every close line, so the next report is answerable;
+* ⚠️ that measurement **gates nothing**, deliberately. A gate on it would need
+  a premise this codebase contradicts three times in live-measured comments
+  (``_run_invisible_forked``'s teardown, ``_thread_close_watch``, and the very
+  existence of ``_kill_profile_firefox``, which force-kills the GPU/socket
+  children AFTER the watch returns). If the fleet does outlive the window here
+  too, a gate would defer every ordinary close and flag it as an anomaly —
+  worse than the defect it guards. Nobody has measured which way it goes on
+  this path, so the number goes on the record and a handful of real operator
+  logs get to settle it;
 * and — the property that is worth landing on its own — an operator, and a
   future investigation, **can now tell a heuristic-inferred close from a real
   one**, which no evidence a user could collect could do before.
@@ -183,20 +190,38 @@ def test_a_genuine_sustained_close_still_closes():
     assert "close=window-gone-inferred" in _close_line(logs)
 
 
-def test_the_corroborating_signal_defers_a_kill_the_browser_contradicts():
-    """The second, INDEPENDENT signal — the part that is not just a bigger number.
+def test_the_engine_child_reading_is_recorded_and_never_obeyed():
+    """⚠️ THE DELIBERATE NON-CHANGE, and the reason it is deliberate.
 
-    A longer streak only makes a coincidence rarer. This asks a genuinely
-    different question: is the browser still running a process FLEET? A live
-    Firefox window is never a lone parent — the socket process, the GPU process
-    and the tab content processes are all ``firefox`` binaries under it — and a
-    real window close takes that fleet down in the same phase that kills the
-    content procs. So engine children still running while the content count
-    reads zero is the browser CONTRADICTING the inference.
+    The obvious next step after widening the debounce is to GATE the kill on a
+    second signal: measure whether the browser still has an engine child fleet,
+    and defer while it does. This test pins that the gate does **not** exist,
+    because the premise it would need is one this codebase contradicts three
+    times in live-measured comments (all of them predating this change):
 
-    Here the content count is zero for six straight polls — well past the
-    four-poll guard, so this cannot pass by the widened debounce alone — and the
-    session survives because the fleet says it is alive.
+      * ``_run_invisible_forked``'s teardown — "parent + GPU/content/socket
+        children stayed alive after an X-close";
+      * ``_thread_close_watch`` — "the multi-process Firefox does NOT exit when
+        the window is X-closed — GPU/content/socket firefox.exe children (and
+        the connected parent) keep running";
+      * ``_kill_profile_firefox`` exists to force-kill "a parent's GPU/content/
+        socket children" AFTER the watch returned — which only makes sense if
+        that fleet is still up at that moment.
+
+    A gate would need the opposite to be true. If it is not, then on a GENUINE
+    close this count stays non-zero for as long as the parent lingers (60-90s,
+    #168), so every ordinary close would be deferred for the whole length of the
+    gate's fallback and stamped as a disagreement — the one diagnostic this
+    ticket adds would read maximally alarming on a perfectly healthy host. That
+    is a worse defect than the one it would be guarding against, and nobody has
+    measured which world the Linux fork path is in.
+
+    So the number is put ON the close line and obeyed by nothing. The sequence
+    below is the exact shape that reconciliation turns on: content procs die in
+    one poll (#168's live-measured 6 → 0) while the socket/GPU children linger
+    with the parent. The close must fire on the 4th zero poll — the debounce
+    alone — and carry ``engine_children=2`` so a real operator log can settle
+    the question a gate would have had to assume.
     """
     import pytest
 
@@ -204,68 +229,38 @@ def test_the_corroborating_signal_defers_a_kill_the_browser_contradicts():
     try:
         got, logs, leftover = _watch(
             monkeypatch,
-            content=[4, 0, 0, 0, 0, 0, 0, 4],
-            children=3,  # the browser is plainly still running
+            content=[6, 6, 0, 0, 0, 0, 6, 6, 6],
+            children=2,  # socket + GPU still up, as the three comments describe
         )
     finally:
         monkeypatch.undo()
 
-    assert leftover == [], "nothing closed — the whole sequence was consumed"
     assert got == {4242}
-    # The only close on the record is the harness's own STOP at the end of the
-    # sequence — never a window-gone verdict.
-    assert not any("close=window-gone" in m for m in logs)
-    assert "close=stop-requested" in _close_line(logs)
-
-
-def test_the_deferral_is_bounded_and_cannot_wedge_a_profile_running():
-    """The cost of being wrong about the corroboration is BOUNDED.
-
-    If ``_firefox_engine_child_count`` is wrong on some host — reporting
-    children for a browser that really is gone — an unbounded deferral would
-    wedge the profile "running" forever, which is the #143 defect wearing a new
-    hat. So after ``unconfirmed_streak_needed`` zero-content polls the close
-    fires anyway, and it fires under a DIFFERENT reason token that records the
-    disagreement.
-
-    A run whose closes are mostly ``unconfirmed`` is the fingerprint of exactly
-    the defect this ticket describes — now readable from a log instead of
-    invisible.
-    """
-    import pytest
-
-    monkeypatch = pytest.MonkeyPatch()
-    try:
-        got, logs, _ = _watch(
-            monkeypatch,
-            content=[4] + [0] * 40,
-            children=3,  # never agrees
-        )
-    finally:
-        monkeypatch.undo()
-
-    assert got == {4242}, "the bounded fallback must still close"
+    assert leftover == [6, 6, 6], (
+        "the close was delayed past the 4th zero poll — the engine-child count "
+        "is gating the kill, on a premise this file contradicts three times"
+    )
     close = _close_line(logs)
-    assert "close=window-gone-unconfirmed" in close, (
-        "a close taken over the corroborating signal's objection must not wear "
-        "the same token as one it agreed with"
+    assert "close=window-gone-inferred" in close, (
+        "a lingering child fleet changed the reason token, so an ordinary close "
+        "on such a host would be reported as an anomaly"
     )
-    assert "engine_children=3" in close, (
-        "the objection itself must be on the record, not merely its verdict"
+    assert "engine_children=2" in close, (
+        "the measurement is not on the record, so nothing a user sends in can "
+        "settle whether the fleet outlives the window on this path"
     )
+    assert not any("close-deferred" in m for m in logs)
 
 
-def test_a_no_verdict_corroboration_decides_nothing_in_either_direction():
-    """"Could not look" is not an answer — the PS-192/PS-204 discipline.
+def test_a_no_verdict_engine_reading_is_recorded_as_a_failed_scan():
+    """"Could not look" must be visibly a failed scan, not a confident zero.
 
-    ``None`` from the scan must neither BLOCK a close (which would wedge the
-    profile "running" whenever the process table was briefly unreadable) nor be
-    read as "no children" (which would strengthen an inference on the strength
-    of a failed scan). It leaves the behaviour exactly as it was before the
-    corroboration existed: the widened debounce alone decides.
-
-    This is the asymmetry the ticket named — a successful scan finding nothing
-    and a scan that could not run were much closer than the code assumed.
+    ``None`` from the helper means the process table could not be read. On a
+    line an operator sends in, rendering that as ``engine_children=0`` would be
+    the PS-192 false clean all over again — a reader counting confident zeros
+    would count failures among them. It reaches the line as ``None``, and it
+    changes no decision (there is no decision for it to change: see the test
+    above).
     """
     import pytest
 
@@ -281,10 +276,14 @@ def test_a_no_verdict_corroboration_decides_nothing_in_either_direction():
 
     assert got == {4242}
     assert leftover == [9, 9], "closed on the 4th zero poll — the debounce decided"
-    assert "close=window-gone-inferred" in _close_line(logs)
+    close = _close_line(logs)
+    assert "close=window-gone-inferred" in close
+    assert "engine_children=None" in close, (
+        "a scan that could not run is rendered as a confident zero"
+    )
 
 
-def test_the_streak_and_the_deferral_both_reset_on_a_live_poll():
+def test_the_streak_resets_on_a_live_poll():
     """A profile that recovers is fully forgiven, not merely paused.
 
     Three zeros, then live, then three zeros again must NOT accumulate into a
@@ -300,7 +299,7 @@ def test_the_streak_and_the_deferral_both_reset_on_a_live_poll():
         got, logs, leftover = _watch(
             monkeypatch,
             content=[5, 0, 0, 0, 5, 0, 0, 0, 5],
-            children=0,  # would confirm instantly if a streak ever reached 4
+            children=0,
         )
     finally:
         monkeypatch.undo()
@@ -340,13 +339,19 @@ def test_the_close_line_carries_the_evidence_the_decision_rested_on():
 
 
 def test_a_declined_kill_is_on_the_record_too():
-    """The deferral is LOGGED, not silent.
+    """⛔ WITHDRAWN — there is no declined kill to record.
 
-    A kill that was declined is exactly as interesting as one that fired — it is
-    the direct evidence that the corroborating signal is doing something on this
-    host. Emitted once per episode (the streak resets on any live poll) so a
-    long idle profile cannot flood the Activity Log, but the FIRST deferral is
-    always on the record.
+    The earlier revision of this change gated the kill on the engine-child
+    count and logged a ``close-deferred`` line whenever it declined. That gate
+    is gone (see ``test_the_engine_child_reading_is_recorded_and_never_obeyed``
+    for why: its premise is contradicted three times in the file it lives in
+    and has never been measured on this path), so there is no deferral, and a
+    ``close-deferred`` line would be a claim about a decision nothing makes.
+
+    This test is kept as its INVERSE rather than deleted, because a
+    silently-vanished test is how a removed behaviour comes back by accident:
+    if a future change reintroduces the gate, this fails and sends the reader
+    to the reasoning instead of letting it land unnoticed.
     """
     import pytest
 
@@ -360,12 +365,9 @@ def test_a_declined_kill_is_on_the_record_too():
     finally:
         monkeypatch.undo()
 
-    deferrals = [m for m in logs if "close-deferred" in m]
-    assert deferrals, "a declined kill left no trace"
-    assert "engine_children=2" in deferrals[0]
-    assert len(deferrals) == 2, (
-        "one line per deferral EPISODE (two episodes here), not one per poll — "
-        "a per-poll emit would flood the log on an idle profile"
+    assert not any("close-deferred" in m for m in logs), (
+        "a deferral was logged, so the kill is being gated on the engine-child "
+        "count again — read that helper's docstring before restoring it"
     )
 
 
@@ -398,12 +400,16 @@ def test_every_new_reason_is_still_parsed_and_still_quiet():
     ``_QUIET_CLOSE_REASONS``. A new reason that is not added there makes every
     NORMAL Linux close read "Session ended unexpectedly" in the Activity Log —
     a second false signal introduced by fixing the first. (PS-204 shipped that
-    exact pairing; this is its guard, re-armed for the new tokens.)
+    exact pairing; this is its guard, re-armed for the new token.)
+
+    Driven at both ends of the engine-child reading — a confident zero and a
+    fleet still up — because the token must NOT vary with it: that number is
+    recorded, not obeyed, so an ordinary close on a host where the fleet
+    lingers has to read exactly like one where it does not.
     """
     import pytest
 
-    for children, expected in ((0, "window-gone-inferred"),
-                               (3, "window-gone-unconfirmed")):
+    for children in (0, 3, None):
         monkeypatch = pytest.MonkeyPatch()
         try:
             _, logs, _ = _watch(
@@ -415,7 +421,11 @@ def test_every_new_reason_is_still_parsed_and_still_quiet():
             monkeypatch.undo()
         m = _CLOSE_REASON.search(_close_line(logs))
         assert m, "the launcher's own regex does not parse the close line"
-        assert m.group(1) == expected
+        assert m.group(1) == "window-gone-inferred", (
+            f"the reason token varied with the engine-child reading "
+            f"({children!r}), so an ordinary close on some hosts would be "
+            "reported as a different kind of event"
+        )
         assert m.group(1) in _QUIET_CLOSE_REASONS, (
             f"{m.group(1)!r} is not quiet, so an ordinary Linux close now "
             "reports as an unexpected end"

@@ -169,9 +169,28 @@ def parse_event(line: str, profiles: frozenset[str] | set[str]) -> tuple:
     if colon and head in profiles:
         profile, rest = head, tail.strip()
     else:
-        # Shapes 2-4, longest name first so 'shop-us-1' cannot shadow
+        # Shapes 2-5 in TWO passes, and the split between them is the whole
+        # correctness argument (PS-298).
+        #
+        # Pass A tries the SPECIFIC shapes — the ones anchored to a keyword or
+        # to the whole line — for EVERY name. Pass B is the generic "this name
+        # appears somewhere in the line" fallback. Running all of A before any
+        # of B is what stops a roster name that merely OCCURS in a message from
+        # out-ranking the name the message is actually ABOUT.
+        #
+        # A single interleaved pass broke exactly that way on the close reasons
+        # this ticket added: those lines carry free English text ("persona
+        # inferred the window was closed"), so with a roster containing
+        # `window`, "Session ended: fox (persona inferred the window was
+        # closed)" was attributed to `window` — longest-name-first reached it
+        # first and its generic branch matched the SUFFIX. The row named the
+        # wrong profile and mangled the message, on the exact line an operator
+        # reads to find out which profile died by itself.
+        #
+        # Within each pass, longest name first so 'shop-us-1' cannot shadow
         # 'shop-us-11'.
-        for name in sorted(profiles, key=len, reverse=True):
+        names = sorted(profiles, key=len, reverse=True)
+        for name in names:
             if not name or name not in rest:
                 continue
             pattern = re.escape(name)
@@ -200,11 +219,17 @@ def parse_event(line: str, profiles: frozenset[str] | set[str]) -> tuple:
                 profile = name
                 rest = f"Session ended ({_why.group('why')})"
                 break
-            if re.search(rf"\b{pattern}\b", rest):
-                profile = name
-                rest = re.sub(rf"\s*\b{pattern}\b\s*", " ", rest).strip()
-                rest = rest.strip(":,-  ") or "event"
-                break
+        else:
+            # Pass B: no specific shape claimed the line.
+            for name in names:
+                if not name or name not in rest:
+                    continue
+                pattern = re.escape(name)
+                if re.search(rf"\b{pattern}\b", rest):
+                    profile = name
+                    rest = re.sub(rf"\s*\b{pattern}\b\s*", " ", rest).strip()
+                    rest = rest.strip(":,-  ") or "event"
+                    break
 
     return stamp, profile, rest, event_severity(line, rest)
 
