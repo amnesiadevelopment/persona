@@ -65,7 +65,7 @@ def _app(running=(), survivors=(), shutdown_raises=False, stubborn=()):
     rather than the behaviour under examination.
     """
     app = App.__new__(App)
-    calls = {"shutdown": 0, "close_survivors": 0}
+    calls = {"shutdown": 0, "close_survivors": 0, "exit": 0}
 
     class _BL:
         def running_profile_names(self):
@@ -85,6 +85,12 @@ def _app(running=(), survivors=(), shutdown_raises=False, stubborn=()):
 
     app.bl = _BL()
     app.page = _FakePage()
+    # The exit backstop is REPLACED, not left live: _destroy_window arms a
+    # daemon thread that calls os._exit(0) after a grace period, which would
+    # take the test runner down with it. Recording it instead keeps the
+    # behaviour ASSERTABLE — "did this path arm the exit" is exactly the half
+    # of closing that the old fake window could not see (PS-303).
+    app._exit_process = lambda: calls.__setitem__("exit", calls["exit"] + 1)
     return app, calls
 
 

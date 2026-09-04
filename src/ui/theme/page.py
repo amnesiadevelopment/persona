@@ -1,3 +1,5 @@
+import asyncio
+import inspect
 import os
 import sys
 
@@ -153,6 +155,41 @@ def build_engine_dropdown(value: str = "chromium") -> ft.Dropdown:
     )
 
 
+def _center_window(page: ft.Page) -> None:
+    """Centre the window, driving flet 0.85.3's ASYNC ``Window.center()``.
+
+    ``Window.center`` is a coroutine function, so ``page.window.center()``
+    returns a coroutine that nobody awaits — the call is a no-op that leaves a
+    ``RuntimeWarning`` behind. This is the same defect class that made persona
+    unclosable (PS-303, where the dropped coroutine was ``destroy()``); fixed
+    here too so the next reader does not copy the broken shape.
+
+    Best-effort throughout: this is the fallback for a work-area rect we could
+    not read, and a window that opens off-centre must never stop persona
+    starting.
+    """
+    try:
+        coro = page.window.center()
+        if not inspect.isawaitable(coro):
+            return  # a synchronous center() did the job on the call itself
+        try:
+            asyncio.get_running_loop().create_task(coro)
+            return
+        except RuntimeError:
+            pass
+
+        async def _drive():
+            await coro
+
+        run_task = getattr(page, "run_task", None)
+        if callable(run_task):
+            run_task(_drive)
+        else:
+            coro.close()
+    except Exception:
+        pass
+
+
 def configure_page(page: ft.Page) -> None:
     page.title = "persona"
     win_w, win_h = 1280, 820
@@ -174,7 +211,16 @@ def configure_page(page: ft.Page) -> None:
             page.window.left = wx + max(0, (ww - win_w) // 2)
             page.window.top = wy + max(0, (wh - win_h) // 2)
         else:
-            page.window.center()
+            # SAME never-awaited-coroutine hazard as the close path (PS-303):
+            # Window.center() is `async def` in flet 0.85.3, so calling it bare
+            # builds a coroutine and drops it — the window is never centred and
+            # a RuntimeWarning is all you get. This runs from a SYNCHRONOUS
+            # main() before any loop is servicing us, so there is nothing to
+            # await it with; drive it through page.run_task, which schedules on
+            # the session's own loop. Best-effort by design: this is the
+            # fallback for an unreadable work-area rect, and a window that
+            # opens off-centre is not a reason to fail startup.
+            _center_window(page)
 
     from ...core.assets import asset_path
 
