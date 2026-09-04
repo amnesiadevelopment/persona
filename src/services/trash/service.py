@@ -149,7 +149,10 @@ class TrashService:
         entry = self.trash.pop(entry_id)
         if entry is None:
             return False, "That item is no longer in the trash."
-        destroy_entry(entry, self.pm, self.cert_store)
+        destroy_entry(
+            entry, self.pm, self.cert_store,
+            ssh_store=self.ssh_store, trash=self.trash,
+        )
         logger.info("Permanently deleted %s: %s", entry.label, entry.name)
         return True, ""
 
@@ -158,7 +161,10 @@ class TrashService:
         many entries were destroyed."""
         entries = self.trash.clear()
         for entry in entries:
-            destroy_entry(entry, self.pm, self.cert_store)
+            destroy_entry(
+                entry, self.pm, self.cert_store,
+                ssh_store=self.ssh_store, trash=self.trash,
+            )
         return len(entries)
 
     def purge_expired(self, retention_days: int | None = None) -> int:
@@ -173,7 +179,10 @@ class TrashService:
         for entry in expired:
             popped = self.trash.pop(entry.id)
             if popped is not None:
-                destroy_entry(popped, self.pm, self.cert_store)
+                destroy_entry(
+                    popped, self.pm, self.cert_store,
+                    ssh_store=self.ssh_store, trash=self.trash,
+                )
         if expired:
             logger.info(
                 "Purged %d trash entry/entries past the %d-day retention window",
@@ -182,7 +191,14 @@ class TrashService:
         return len(expired)
 
 
-def destroy_entry(entry: TrashEntry, profile_manager=None, cert_store=None) -> None:
+def destroy_entry(
+    entry: TrashEntry,
+    profile_manager=None,
+    cert_store=None,
+    *,
+    ssh_store=None,
+    trash=None,
+) -> None:
     """Destroy whatever on-disk material a trash entry owns.
 
     A profile's parked data dir is rmtree'd through the manager's containment
@@ -190,9 +206,33 @@ def destroy_entry(entry: TrashEntry, profile_manager=None, cert_store=None) -> N
     through CertStore._delete_owned_p12, which refuses to delete a file outside
     persona's own store dir — a legacy record may point at the operator's
     ORIGINAL file, which is never persona's to delete. That restraint survives
-    the trash unchanged. Every other kind is pure JSON and needs nothing beyond
-    being dropped from trash.json.
+    the trash unchanged.
+
+    An SSH host owns a second file too, and this docstring used to deny it:
+    connecting pins the host key into persona's own ``known_hosts`` (0600 in
+    PERSONA_HOME, outside every profile perimeter), and nothing removed it. The
+    operator performed the product's irreversible delete gesture and the name of
+    the machine they were reaching stayed on disk. That pin is dropped here —
+    conditionally; see :func:`_destroy_ssh_host_pin` for the two conditions,
+    both of which are about NOT re-arming trust-on-first-use for a host that is
+    still saved. Every remaining kind really is pure JSON and needs nothing
+    beyond being dropped from trash.json.
+
+    ``ssh_store`` and ``trash`` are keyword-only and default to None because one
+    call site — ``ProfileManager._purge_trash_for_wipe`` — structurally has
+    neither to give. Without the live store the "is this pin still reachable?"
+    question is unanswerable, and the safe answer to an unanswerable safety
+    question is to leave the pin standing, which is also exactly the wipe's
+    existing behaviour (it deliberately does not destroy the live credential
+    stores either).
     """
+    # ABOVE the material_path guard, DELIBERATELY. An SSH host is trashed with
+    # material_path='' — SSHHostStore.remove calls trash.add(...) with no
+    # material_path — so a branch placed below the guard could never execute.
+    # This return is what the guard would have done for this kind anyway.
+    if entry.kind == KIND_SSH_HOST:
+        _destroy_ssh_host_pin(entry, ssh_store, trash)
+        return
     if not entry.material_path:
         return
     if entry.kind == KIND_PROFILE:
@@ -220,3 +260,83 @@ def destroy_entry(entry: TrashEntry, profile_manager=None, cert_store=None) -> N
             logger.exception(
                 "Could not delete trashed certificate file %s", entry.material_path
             )
+
+
+def _destroy_ssh_host_pin(entry: TrashEntry, ssh_store, trash) -> None:
+    """Drop the permanently-deleted host's known_hosts pin — when it is safe.
+
+    THE PIN IS SHARED BY HOST:PORT, NOT BY RECORD. known_hosts keys on the
+    machine, and two saved records can name the same one. Removing the pin
+    because ONE of them was deleted would silently re-arm trust-on-first-use for
+    the survivor: the next connection would accept whatever key an untrusted
+    SOCKS exit offered, turning `_TOFUPolicy`'s MITM *detection* into MITM
+    *acceptance*. So the pin only goes when nothing reachable still points at
+    that host:port.
+
+    Two conditions, both refusals:
+
+    1. **No live store, no removal.** The wipe's call site has no SSH store to
+       give (ProfileManager._purge_trash_for_wipe), so the "is it shared?"
+       question cannot be answered there — and an unanswerable safety question
+       is answered by leaving the pin. This also keeps the wipe byte-identical
+       to what it did before, which is deliberate: the wipe does not destroy the
+       live credential stores either.
+    2. **A remaining record reaches it, no removal.** Live records first; and
+       DECISION — records still sitting in the TRASH count as blocking too.
+       They are restorable (`TrashService.restore` -> `restore_host`), and a
+       restored record re-arms TOFU exactly as a live one would, so a pin that a
+       restore would need is not ours to drop yet. The conservative direction:
+       when that trashed record is itself permanently deleted, this runs again
+       and the pin goes then. When no trash store was supplied we can no longer
+       see the trash, so we do not remove — same rule as condition 1.
+
+    Best-effort and NON-FATAL, mirroring the per-kind try/except above: a delete
+    that raised because the file was locked (Windows) would be worse than the
+    residue it failed to clear.
+    """
+    try:
+        payload = entry.payload.get("host") or {}
+        host = payload.get("host") or ""
+        if not host:
+            return
+        port = int(payload.get("port", 22) or 22)
+
+        if ssh_store is None:
+            logger.debug(
+                "Left the pinned SSH host key for %s in place: no live store to "
+                "check whether another record still reaches it", entry.name
+            )
+            return
+        if trash is None:
+            logger.debug(
+                "Left the pinned SSH host key for %s in place: no trash to check "
+                "whether a restorable record still reaches it", entry.name
+            )
+            return
+
+        for other in ssh_store.list():
+            if other.host == host and int(other.port or 22) == port:
+                logger.info(
+                    "Kept the pinned SSH host key for %s:%s — SSH host %r still "
+                    "reaches it", host, port, other.name
+                )
+                return
+        for other_entry in trash.list(KIND_SSH_HOST):
+            if other_entry.id == entry.id:
+                continue
+            other = other_entry.payload.get("host") or {}
+            if other.get("host") == host and int(other.get("port", 22) or 22) == port:
+                logger.info(
+                    "Kept the pinned SSH host key for %s:%s — trashed SSH host "
+                    "%r could still be restored onto it",
+                    host, port, other_entry.name,
+                )
+                return
+
+        from ..ssh.client import remove_pinned_host_key
+
+        remove_pinned_host_key(host, port)
+    except Exception:
+        logger.exception(
+            "Could not remove the pinned SSH host key for %s", entry.name
+        )
