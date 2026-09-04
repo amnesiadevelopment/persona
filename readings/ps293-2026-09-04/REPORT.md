@@ -55,7 +55,7 @@ macOS, which the same upstream removed.
 `updater.download_engine(..., defer_if_in_use=True)` (`updater.py:832`).
 
 I ran that chain against the **real upstream release**, into a throwaway
-`PERSONA_ENGINE_DIR`. Transcript: `artifacts/live_chromium.log`.
+`PERSONA_ENGINE_DIR`. Transcript: `artifacts/live_chromium.txt`.
 
 ### 1.1 Every stop point in the tick, and what each did
 
@@ -480,12 +480,12 @@ Stated rather than estimated, per the project's standing rule.
 
 Artifacts are committed beside this report.
 
-* `artifacts/live_chromium.log` — the full live Chromium tick transcript (§1).
+* `artifacts/live_chromium.txt` — the full live Chromium tick transcript (§1).
 * `artifacts/live_chromium.py` — the script that produced it. Downloads ~190 MB into
   a throwaway `PERSONA_HOME`; touches no real engine dir.
 * `artifacts/firefox_gates.py` — the Firefox seal/driver probe (§2.3, §2.4). Needs
   the two engine trees; it prints the URLs it wants.
-* `artifacts/ff_install.log` — `install_engine_build("firefox-21")` succeeding while
+* `artifacts/ff_install.txt` — `install_engine_build("firefox-21")` succeeding while
   `installed_builds()` discards it (§2.2).
 
 The seal probes need `xvfb` for the launch legs (`sudo apt install xvfb`); the
