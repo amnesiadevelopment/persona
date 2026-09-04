@@ -296,6 +296,47 @@ jobs:
       # That is the PS-192 shape this ticket cites: a confident reading from an
       # instrument nobody re-zeroed. The guard fired on absence; staleness needs
       # this.
+      # ── THE MACHINE MUST BE ABLE TO BUILD, NOT MERELY CLAIM TO ──────────
+      # `runs-on:` above narrows scheduling to a Linux x64 self-hosted runner,
+      # which excludes `persona-mac-builder`. But a LABEL IS A SELF-DECLARED
+      # STRING supplied at registration — GitHub attaches OS/arch labels by
+      # default, and `--no-default-labels` / a hand-written label set can make
+      # any machine claim any of them. So `runs-on:` is a SCHEDULING HINT, not
+      # a capability check, and it cannot be the only thing standing between a
+      # dispatch and a host that cannot build Chromium.
+      #
+      # This step is that check, and it costs about a second. It runs FIRST so
+      # a wrong machine fails HERE, by name, instead of ~20 seconds later
+      # inside docker-build.sh with `docker: command not found` — an error that
+      # reads like a build problem and sent two reviewers looking for a defect
+      # in the tree (runs 33920732173 / 33920892080, PS-299).
+      - name: Verify this runner can actually build Chromium
+        run: |
+          set -u
+          fail=0
+          echo "runner:  ${RUNNER_NAME:-<unset>}"
+          echo "os/arch: $(uname -s) $(uname -m)"
+
+          if [ "$(uname -s)" != "Linux" ]; then
+            echo "::error::this runner is $(uname -s), not Linux — the build is a Linux container build and cannot run here"
+            fail=1
+          fi
+          case "$(uname -m)" in
+            x86_64|amd64) ;;
+            *) echo "::error::this runner is $(uname -m), not x86_64 — it would produce a binary for the WRONG ARCHITECTURE, which is worse than not building"
+               fail=1 ;;
+          esac
+          if ! command -v docker >/dev/null 2>&1; then
+            echo "::error::docker is not installed on this runner — scripts/docker-build.sh cannot run, so no tree can be built here"
+            fail=1
+          fi
+
+          if [ "$fail" -ne 0 ]; then
+            echo "::error::refusing to build on a runner that cannot build. This machine answered the \`persona-build\` label but does not meet the requirements above. Fix the runner registration, or narrow \`runs-on:\`; do NOT install docker on a non-x86_64 host to make this pass."
+            exit 1
+          fi
+          echo "OK — Linux x86_64 with docker $(docker --version 2>/dev/null | head -1)"
+
       - name: Zero record/ from any previous dispatch
         run: |
           rm -rf record
@@ -484,6 +525,47 @@ jobs:
       # This job additionally READS a control log copied in from the artifact,
       # so a leftover from an earlier run is the exact input that would poison
       # attribution.
+      # ── THE MACHINE MUST BE ABLE TO BUILD, NOT MERELY CLAIM TO ──────────
+      # `runs-on:` above narrows scheduling to a Linux x64 self-hosted runner,
+      # which excludes `persona-mac-builder`. But a LABEL IS A SELF-DECLARED
+      # STRING supplied at registration — GitHub attaches OS/arch labels by
+      # default, and `--no-default-labels` / a hand-written label set can make
+      # any machine claim any of them. So `runs-on:` is a SCHEDULING HINT, not
+      # a capability check, and it cannot be the only thing standing between a
+      # dispatch and a host that cannot build Chromium.
+      #
+      # This step is that check, and it costs about a second. It runs FIRST so
+      # a wrong machine fails HERE, by name, instead of ~20 seconds later
+      # inside docker-build.sh with `docker: command not found` — an error that
+      # reads like a build problem and sent two reviewers looking for a defect
+      # in the tree (runs 33920732173 / 33920892080, PS-299).
+      - name: Verify this runner can actually build Chromium
+        run: |
+          set -u
+          fail=0
+          echo "runner:  ${RUNNER_NAME:-<unset>}"
+          echo "os/arch: $(uname -s) $(uname -m)"
+
+          if [ "$(uname -s)" != "Linux" ]; then
+            echo "::error::this runner is $(uname -s), not Linux — the build is a Linux container build and cannot run here"
+            fail=1
+          fi
+          case "$(uname -m)" in
+            x86_64|amd64) ;;
+            *) echo "::error::this runner is $(uname -m), not x86_64 — it would produce a binary for the WRONG ARCHITECTURE, which is worse than not building"
+               fail=1 ;;
+          esac
+          if ! command -v docker >/dev/null 2>&1; then
+            echo "::error::docker is not installed on this runner — scripts/docker-build.sh cannot run, so no tree can be built here"
+            fail=1
+          fi
+
+          if [ "$fail" -ne 0 ]; then
+            echo "::error::refusing to build on a runner that cannot build. This machine answered the \`persona-build\` label but does not meet the requirements above. Fix the runner registration, or narrow \`runs-on:\`; do NOT install docker on a non-x86_64 host to make this pass."
+            exit 1
+          fi
+          echo "OK — Linux x86_64 with docker $(docker --version 2>/dev/null | head -1)"
+
       - name: Zero record/ from any previous dispatch
         run: |
           rm -rf record
