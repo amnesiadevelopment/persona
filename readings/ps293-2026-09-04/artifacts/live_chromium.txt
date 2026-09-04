@@ -1,0 +1,26 @@
+08:06:40 ENGINE_DIR=/tmp/ps293/home/engine
+08:06:40 is_installed (cold) = False
+08:06:40 fetch_latest_checked -> tag=148.0.7778.215 verdict=ok msg='' (0.0s)
+08:06:40 policy.check(148.0.7778.215) -> ('ok', '')  is_installable=True
+08:06:40   ... 42/189 MB
+08:06:41   ... 84/189 MB
+08:06:41   ... 126/189 MB
+08:06:41   ... 168/189 MB
+08:06:41 cold download_engine -> True (1s)
+08:06:41 is_installed after cold install = True  current_version='148.0.7778.215'
+08:06:41 forced current_version -> '100.0.0.0'; is_newer(148.0.7778.215) = True
+08:06:42 in-use unattended -> InstallDeferred(a profile is running — install deferred to a later check) after 1.0s  (no re-download: asset reused)
+08:06:42 after deferral: version.txt still '100.0.0.0', is_installed=True
+08:06:43 Chromium engine: no in-use oracle wired — deferring the unattended install rather than risking a live session
+08:06:43 unwired oracle -> InstallDeferred(a profile is running — install deferred to a later check)
+08:06:43 Chromium engine: in-use check failed (RuntimeError('boom')) — deferring the unattended install
+08:06:43 raising oracle -> InstallDeferred(a profile is running — install deferred to a later check)
+08:06:44 idle unattended download_engine -> True (1s, asset already on disk)
+08:06:44 FINAL current_version='148.0.7778.215' is_installed=True
+08:06:44 builds.json = {
+  "current": {
+    "tag": "148.0.7778.215",
+    "digest": "a5fa5e6c05cb7fa3617ec2ca642ad3cc6e586ac5249cc29edb0a602d695685f0"
+  }
+}
+08:06:44 ENGINE_DIR listing: ['.engine-complete', 'builds.json', 'fpchrome.AppImage', 'version.txt']
