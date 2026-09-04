@@ -410,7 +410,32 @@ def _extract_as(archive_path, dst, asset_name: str) -> None:
     The downloaded file is named "<asset>.download", whose suffix hides the real
     type; passing the asset name (".zip" on Windows, ".tar.gz" on Linux) lets us
     extract the partial in place with no rename — which is what avoids the
-    Windows "file in use" lock on os.replace."""
+    Windows "file in use" lock on os.replace.
+
+    ARCHIVE MEMBERS ARE CONFINED TO `dst`, and the two arms need DIFFERENT
+    treatment because "extractall" does not mean one thing. CPython's
+    ZipFile.extractall already sanitizes member paths (it rewrites a "../../x"
+    member to land under the destination), so the zip arm is safe as written and
+    is deliberately left untouched. tarfile.extractall does NOT: with no
+    `filter=` it happily writes a "../../x" member outside `dst` and keeps a
+    symlink whose target is /etc/passwd. Verified by driving this very function
+    against synthetic hostile archives (PS-228).
+
+    `filter="data"` rather than "tar": "tar" closes path traversal only and
+    still keeps BOTH an absolute symlink and a relative symlink resolving
+    outside the destination. "data" refuses all three. The worry that "data"
+    would abort on the link members a real engine build contains was MEASURED
+    rather than assumed — all four published firefox-20 assets (linux
+    x86_64/arm64, macOS x86_64/arm64) were fetched, checksum-verified against
+    the release's own checksums.txt, and extracted under no filter, "tar" and
+    "data": the resulting trees are identical file-for-file, mode-for-mode. The
+    Linux builds' only link members are 10 hardlinks to siblings inside the
+    tree, the macOS .app bundles carry no link members at all, and the launcher
+    keeps mode 0o755 under every filter.
+
+    This is not a MITM fix — the caller verifies the sha256 against upstream's
+    checksums.txt before it ever reaches here. It confines a hostile member in
+    an archive that is authentically what upstream published."""
     import os as _os
     import tarfile
     import zipfile
@@ -422,7 +447,7 @@ def _extract_as(archive_path, dst, asset_name: str) -> None:
             zf.extractall(dst)
     elif name.endswith(".tar.gz") or name.endswith(".tgz"):
         with tarfile.open(archive_path, "r:gz") as tf:
-            tf.extractall(dst)
+            tf.extractall(dst, filter="data")
     else:
         raise RuntimeError(f"unknown archive format for asset: {asset_name}")
 
