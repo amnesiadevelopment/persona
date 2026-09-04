@@ -5,6 +5,10 @@
 to end (real fetch, real 189 MB download, real install, all four deferral branches),
 and the Firefox gate probed by **launching three real engine builds** under the
 shipped driver and under the current one.
+**Reproducing:** every section's script *and* its transcript are committed — see §7,
+and note the driver-version prerequisite there, which decides what the Firefox probe
+measures. `artifacts/verify_citations.py` re-checks every `file:line` below against
+this tree and exits non-zero on a miss.
 
 The ticket asks one question: *for each engine, can an operator running a released
 persona actually end up on a newer build today — and where exactly does that stop?*
@@ -61,17 +65,17 @@ I ran that chain against the **real upstream release**, into a throwaway
 
 | # | Gate | Code | Live result |
 |---|---|---|---|
-| 1 | `self._engine_busy` | `app.py:4551` | False — proceeds |
-| 2 | `engine.is_installed()` | `app.py:4551` | upgrade-only guard; a cold machine goes to `_download_engine_fresh` instead |
-| 3 | `engine.pinned_build()` | `app.py:2679` | `""` — no operator revert in force |
-| 4 | `is_newer(latest, current)` | `app.py:2681` | True |
-| 5 | `_engine_unverifiable_tag` | `app.py:2683` | not set — upstream publishes a digest for **every** matched asset (verified: all 5 assets carry `sha256:`) |
-| 6 | **`engine_policy.is_installable`** | `policy.py:262` | **`ok`** — `KNOWN_BAD_VERSIONS` ships empty, `max_tested_major()` → `inf` |
-| 7 | `_engine_tree_in_use()` | `app.py:4557` | cheap early exit only; a TOCTOU by construction, so not the guard |
-| 8 | `httpdl.digest_missing(digest)` | `updater.py:897` | digest present — no `EngineUnverifiable` |
-| 9 | download + sha256 verify | `updater.py:934` | **188,811,768 B fetched and verified, 1s** |
-| 10 | **`_engine_in_use()` under `_install_lock`** | `updater.py:938` | the binding guard — see §1.2 |
-| 11 | `_install_linux` / `_install_windows` / `_install_macos` | `updater.py:583+` | atomic replace — **succeeded** |
+| 1 | `self._engine_busy` | `app.py:4549` | False — proceeds |
+| 2 | `engine.is_installed()` | `app.py:4549` | upgrade-only guard; a cold machine goes to `_download_engine_fresh` instead |
+| 3 | `engine.pinned_build()` | `app.py:2677` | `""` — no operator revert in force |
+| 4 | `is_newer(latest, current)` | `app.py:2679` | True |
+| 5 | `_engine_unverifiable_tag` | `app.py:2681` | not set — upstream publishes a digest for **every** matched asset (verified: all 5 assets carry `sha256:`) |
+| 6 | **`engine_policy.is_installable`** | `policy.py:257` | **`ok`** — `KNOWN_BAD_VERSIONS` ships empty, `max_tested_major()` → `inf` |
+| 7 | `_engine_tree_in_use()` | `app.py:4555` | cheap early exit only; a TOCTOU by construction, so not the guard |
+| 8 | `httpdl.digest_missing(digest)` | `updater.py:895` | digest present — no `EngineUnverifiable` |
+| 9 | download + sha256 verify | `updater.py:932` | **188,811,768 B fetched and verified, 1s** |
+| 10 | **`_engine_in_use()` under `_install_lock`** | `updater.py:938` (lock) → `:950` (defer) | the binding guard — see §1.2 |
+| 11 | `_install_linux` / `_install_windows` / `_install_macos` | `updater.py:583` / `:592` / `:711` | atomic replace — **succeeded** |
 
 Live, on tag `148.0.7778.215`:
 
@@ -114,8 +118,9 @@ idle retry: download_engine -> True (asset already on disk, no re-download)
 ```
 
 **A deferral is not a stop.** The verified asset stays on disk, `is_installed()`
-stays True (the marker/sentinel writes are deliberately *after* the deferral check,
-`updater.py:938-951`), and the next hourly tick installs it without spending the
+stays True (the deferral at `updater.py:950` precedes both the marker removal `updater.py:954-960`
+and the in-progress sentinel write `updater.py:966-970`, deliberately — see the
+comment that says so at `updater.py:945`), and the next hourly tick installs it without spending the
 bytes again. The docstring's claim that "the hourly tick is both the discovery of a
 new build AND the retry that eventually installs one" is **verified behaviour**, not
 an aspiration.
@@ -130,7 +135,7 @@ a defect, and none of which needs a persona release to clear:
 * **The operator set `max_tested_major`** in their own `engine-policy.json`. persona
   ships no ceiling; `ABOVE_CEILING` is unreachable unless someone asked for it, and
   its message correctly names *their* file rather than telling them to update
-  persona (`policy.py:245`).
+  persona (`policy.py:246-253`, the `ABOVE_CEILING` message).
 * **Upstream publishes no digest** for the matched asset → `EngineUnverifiable`,
   keyed by tag so a later build supersedes it. Not observed on any current asset.
 
@@ -177,7 +182,7 @@ darwin/arm64   fetch_latest_full -> ('firefox-20', True, 'firefox-26')
 ```
 
 The operator is correctly told, on every platform, that firefox-26 exists and needs
-a newer persona (`app.py:3358` / `app.py:3392`). The reporting is honest. The
+a newer persona (`app.py:3269` / `app.py:3396`). The reporting is honest. The
 question is whether the refusal itself is necessary.
 
 ### 2.2 It is not one gate but THREE, and only the third is load-bearing
@@ -185,9 +190,10 @@ question is whether the refusal itself is necessary.
 Persona has two of its own, and the driver has one:
 
 1. **`firefox.fetch_latest_full`** caps the *offer* at `build_number(BINARY_VERSION)`
-   (`firefox.py:171`). Persona's own code. Removable.
+   (`firefox.py:173`, `if num <= pkg_num …` — note `:171` above it is the UNCAPPED
+   highest release, not the cap). Persona's own code. Removable.
 2. **`engine_install.installed_builds`** discards any cached build above the pin
-   (`engine_install.py:145`, `if num > pinned_num: continue`). Persona's own code.
+   (`engine_install.py:148`, `if num > pinned_num: continue`). Persona's own code.
    Removable.
 3. **`invisible_core`'s seal** — `verify_engine` / `ensure_binary`. **Not persona's
    code, and not removable from persona.**
@@ -229,7 +235,8 @@ the seal still refuses — because the seal's claim is about *this exact CI buil
 not about a version range.
 
 This is enforced on **every** route that turns a path into a running Firefox
-(`invisible_playwright/_engine.py:37-39`), so it is not bypassable via
+(`invisible_playwright/_engine.py:36-39`, `resolve_executable` — the `binary_path`
+leg calls `verify_engine` at `:38`), so it is not bypassable via
 `binary_path=` — which is exactly the route persona's `_binary_path_override()`
 uses. Confirmed live:
 
@@ -273,13 +280,20 @@ The juggler contract genuinely changed between firefox-20 and firefox-21. The se
 is not bureaucratic version-stamping — it is standing in front of a real
 incompatibility, and it fails *loudly at launch* rather than silently misbehaving.
 
-For the control, the same probe on the builds each driver is actually paired with:
+For the control, the same probe on the builds each driver is actually paired with.
+All three rows are **executed** by `artifacts/firefox_gates.py` — including the
+third, which subprocesses into a second interpreter carrying the current driver —
+and the run is committed verbatim as `artifacts/firefox_gates.txt`:
 
 | driver | engine | result |
 |---|---|---|
 | shipped (`353df4fa` + core 20.14.0) | firefox-20 | **DROVE OK** — `Firefox/151.0` |
 | shipped | firefox-21 (seal overridden) | **protocol error at `Browser.enable`** |
-| current upstream (`03f695d8` + core 26.17.0) | firefox-26 | **DROVE OK** — `Firefox/151.0` |
+| current upstream (`03f695d8` + core 26.17.0) | firefox-26 (seal overridden) | **DROVE OK** — `Firefox/151.0` |
+
+Each row prints the core version and active seal it actually ran under, and the
+script marks a row `WRONG DRIVER` rather than reporting it, so a row cannot be read
+as measuring a driver it did not run on.
 
 So the full loop is proven in both directions: a newer engine needs a newer driver,
 and with the newer driver it works. **"A persona release is required" is the
@@ -302,13 +316,20 @@ in-product path to it, and `engine_autobump.py` already models this correctly
 (`scripts/engine_autobump.py:5-8`: *"update the engine" == "bump the driver pin +
 rebuild persona"*), running daily at 06:00 UTC with a fingerprint gate.
 
-That autobump is, in fact, live and ready right now:
+That autobump is, in fact, live and ready right now (`artifacts/autobump_plan.py`,
+transcript `artifacts/autobump_plan.txt`):
 
 ```
 plan() -> needed: True
    reason: engine firefox-26 available (was firefox-20)
    current_core: 20.14.0  latest_core: 26.17.0  new_baseline: firefox-26
 ```
+
+⚠️ One trap for anyone re-running that: `plan()`'s default fetcher is **anonymous**,
+and a spent GitHub rate limit returns `needed=False, reason="could not fetch
+releases: HTTP Error 403"` — which is indistinguishable at a glance from the
+all-clear `needed=False`. The committed script injects an authenticated fetcher and
+exits non-zero rather than printing a reassuring negative it cannot stand behind.
 
 **Which is exactly the danger in §4.** Read that before acting on it.
 
@@ -323,7 +344,8 @@ not a release, and it is already paid.**
 **The asymmetry.** Firefox lands each build in its own versioned cache dir
 (`cache_dir_for_seal` → `firefox-20_151.0_20260817150018`), so a running profile
 keeps executing from an untouched tree; an install is additive. Chromium keeps **one
-un-versioned tree** (`ENGINE_DIR`, `updater.py:29`) and every install path replaces
+un-versioned tree** (`ENGINE_DIR`, defined at `src/core/config.py:201` and imported
+by `updater.py:21`) and every install path replaces
 entries of it **in place** (`_promote_staging`, `updater.py:643`). POSIX does not
 refuse that `os.replace` — only Windows does, by accident of its sharing rules — so
 on Linux/macOS an ill-timed install is *silent corruption of a live session*, not a
@@ -333,11 +355,11 @@ loud failure.
 
 | cost | where | paid how |
 |---|---|---|
-| An in-use oracle must be injected from the UI layer | `updater.set_in_use_provider`, wired at `app.py:3294` | done |
-| The guard must be re-asked under the install lock (TOCTOU) | `updater.py:938` | done |
+| An in-use oracle must be injected from the UI layer | `updater.set_in_use_provider` (`updater.py:105`), wired at `app.py:3325` | done |
+| The guard must be re-asked under the install lock (TOCTOU) | `updater.py:938` (lock) → `:950` (re-ask) | done |
 | It must fail **closed** (unwired/raising ⇒ defer) | `updater.py:117` | done, both branches measured (§1.2) |
 | A deferral must not look like a failure | `InstallDeferred`, distinct from `False` | done |
-| A deferral must not re-download ~190 MB per retry | verified-asset reuse, `updater.py:917` | done, measured |
+| A deferral must not re-download ~190 MB per retry | verified-asset reuse, `updater.py:927-931` | done, measured |
 | A failed promotion must not leave a half-tree | `BACKUP_NAME` rename + restore, `updater.py:643` | done |
 | A crashed install must not read as ready | `.engine-installing` sentinel vetoes the marker | done |
 
@@ -433,7 +455,7 @@ build. `engine_autobump.py` already implements exactly this and runs daily.
 **What would have to change for Firefox to meet the requirement** (stated for the
 ticket that may follow, not proposed here — implementation is out of scope):
 
-1. Persona's own two caps (`firefox.py:171`, `engine_install.py:145`) would have to
+1. Persona's own two caps (`firefox.py:173`, `engine_install.py:148`) would have to
    go. Necessary, nowhere near sufficient — measured in §2.2: removing them yields a
    downloaded, extracted, whole build that then **refuses to launch**.
 2. The seal would have to travel with the engine (`INVISIBLE_SEAL_FILE`, fetched
@@ -457,7 +479,7 @@ Stated rather than estimated, per the project's standing rule.
   Linux x86_64 in-container. `_install_windows` (zip → staging → promote) and
   `_install_macos` (dmg mount → copy → detach) were read, not run. The gates I
   measured (policy, digest, in-use, lock) are all **above** the per-OS branch at
-  `updater.py:966`, so the finding for §1 holds on all three; the promotion
+  `updater.py:971-976`, so the finding for §1 holds on all three; the promotion
   mechanics themselves are Linux-measured only.
 * **No claim about whether firefox-21+ actually leaks differently.** The gate-red
   fingerprint movement at firefox-21 is PS-290's measurement and I did not re-derive
@@ -469,7 +491,7 @@ Stated rather than estimated, per the project's standing rule.
   driver change would suffice.
 * **`_download_engine_fresh` (cold-start) was measured only in its success path.**
   Its refusal handling is deliberately separate from `_auto_update_engine`
-  (`app.py:4534`) and I did not exercise its failure branches.
+  (`app.py:4533-4536`) and I did not exercise its failure branches.
 * **The upstream stall was not investigated.** Chromium's newest release being 75
   days old is reported as an observation; whether the cadence resumes is PS-18's
   territory.
@@ -478,15 +500,61 @@ Stated rather than estimated, per the project's standing rule.
 
 ## 7. Reproducing this
 
-Artifacts are committed beside this report.
+Every number above is re-derivable from artifacts committed beside this report.
+Each measured section has both the script that produced it and the transcript it
+produced, so a reader can check the claim without re-running, and re-run it when
+they want to.
 
-* `artifacts/live_chromium.txt` — the full live Chromium tick transcript (§1).
-* `artifacts/live_chromium.py` — the script that produced it. Downloads ~190 MB into
-  a throwaway `PERSONA_HOME`; touches no real engine dir.
-* `artifacts/firefox_gates.py` — the Firefox seal/driver probe (§2.3, §2.4). Needs
-  the two engine trees; it prints the URLs it wants.
-* `artifacts/ff_install.txt` — `install_engine_build("firefox-21")` succeeding while
-  `installed_builds()` discards it (§2.2).
+| § | script | transcript |
+|---|---|---|
+| §1, §1.2 — the live Chromium tick, all four in-use branches | `artifacts/live_chromium.py` | `artifacts/live_chromium.txt` |
+| §2.2 — persona's own caps discarding a build it just installed | — | `artifacts/ff_install.txt` |
+| §2.1, §2.3, §2.4 — the seal, the override, and the two-directional drive | `artifacts/firefox_gates.py` | `artifacts/firefox_gates.txt` |
+| §2.5, §4 — the autobump is armed at firefox-20 → firefox-26 | `artifacts/autobump_plan.py` | `artifacts/autobump_plan.txt` |
+| every `file:line` in this report | `artifacts/verify_citations.py` | `artifacts/verify_citations.txt` |
 
-The seal probes need `xvfb` for the launch legs (`sudo apt install xvfb`); the
-non-launch legs (identity, `verify_engine`, `ensure_binary`) need no display.
+**⚠️ The one prerequisite that decides what the Firefox probe MEASURES is which
+driver it runs under.** The seal is bound at *import*, so the `invisible_core`
+version in the interpreter **is** the active seal. §2.3 opens `active seal:
+firefox-20` because it was taken under persona's shipped pin,
+`invisible_core==20.14.0`; run the identical script under a container that happens
+to carry core 26.17.0 and it reports `active seal: firefox-26` and refuses
+firefox-21 for a *different reason*, with no sign that anything is wrong.
+`firefox_gates.py` therefore refuses to guess — `_need_core()` asserts the version
+and exits loudly, the same treatment `_need()` already gave the tree files. §2.4's
+third row needs a **second** interpreter (the current driver, core 26.17.0); the
+script subprocesses into it rather than asserting that row in prose. Both venvs,
+the three engine trees and the two published seals are built by the commands in
+that script's docstring.
+
+`verify_citations.py` exists because the first submission of this report missed on
+16 of 23 checked references — and a finding whose citations do not land is a
+finding nobody can confirm. It asserts that each cited line still *contains the
+code the report invokes it for*, so it catches drift rather than only the misses a
+reviewer happened to list; an unrecognised citation fails as `UNKNOWN` rather than
+passing silently. Run it after any edit to this report.
+
+The two launch legs of the seal probe need `xvfb` (`sudo apt install xvfb`); the
+non-launch legs (identity, `verify_engine`, `ensure_binary`) need no display, and
+`verify_citations.py` needs neither a display nor a network.
+
+### 7.1 The same prerequisite governs the TEST SUITE, and it is worth knowing
+
+The driver-version prerequisite is not peculiar to this probe. A container that
+carries a different `invisible_core` than `pyproject.toml` pins also changes what
+the engine suite reports — and it does so in a way that reads as a code defect:
+
+* Under a stock container carrying core **26.17.0**, the engine specs fail at
+  import (`ModuleNotFoundError` if absent) or,
+  where the module resolves, `tests/test_engine_driver_platform_support.py`'s
+  `[darwin]` case fails — because `GAMBE_SUPPORTATE` exists in 26.17.0 and
+  excludes darwin, which is precisely the platform refusal §4 documents.
+* Installed at persona's actual pin, `invisible_core==20.14.0`, the same tree
+  passes: **124 passed** across
+  `test_engine_updater / test_engine_firefox / test_engine_policy /
+  test_engine_autobump / test_engine_driver_platform_support`, `[darwin]`
+  included.
+
+So a `[darwin]` failure in a dev container is **PS-288's guard reporting the
+environment, not a regression** — and the guard is behaving correctly in both
+directions. Install the pinned core before reading a red engine suite as a defect.
