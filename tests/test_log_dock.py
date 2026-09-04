@@ -92,6 +92,19 @@ def test_ac5_profile_is_parsed_from_all_four_shapes():
             "Loaded 6 bookmarks, 0 pools",
         ),
         ("10:00:04  > Session ended: mail-us-011", "mail-us-011", "Session ended"),
+        # PS-298: the same event carrying WHY it ended. The Linux close is an
+        # INFERENCE (persona decided the window was gone, from a content-process
+        # count that has four other causes on a live browser), and it used to
+        # render byte-identically to an operator close. The profile must still
+        # resolve, and the reason must survive into the rendered row — falling
+        # through to the generic name-substitution branch would leave a dangling
+        # ": " and lose the distinction the suffix exists to carry.
+        (
+            "10:00:05  > Session ended: mail-us-011 (persona inferred the "
+            "window was closed)",
+            "mail-us-011",
+            "Session ended (persona inferred the window was closed)",
+        ),
     ]
     for line, want_profile, want_msg in cases:
         _, profile, msg, _ = parse_event(line, ROSTER)

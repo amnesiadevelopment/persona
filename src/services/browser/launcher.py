@@ -67,6 +67,15 @@ def cert_trust_status_from(msg: str) -> str | None:
 _QUIET_CLOSE_REASONS = {
     "stop-requested",
     "window-gone",
+    # PS-298: the Linux fork path's close is an INFERENCE, not an observation
+    # (that path has no window enumeration at all — the only signal is a
+    # content-process count reading zero, which has four other causes on a live
+    # browser). It stays QUIET because on Linux it is the ORDINARY way a
+    # session ends, and rendering every normal close as "unexpectedly" would
+    # cry wolf until the word meant nothing. What it must NOT do is read
+    # byte-identically to an operator close — see _INFERRED_CLOSE_REASONS.
+    "window-gone-inferred",
+    "window-gone-unconfirmed",
     # PS-204: renamed from "all-pids-exit", which claimed more than the watch
     # could observe. The watch quantifies over the pid set it captured ONCE, so
     # the old name asserted that EVERY process the session spawned had exited —
@@ -78,6 +87,34 @@ _QUIET_CLOSE_REASONS = {
     "parent-pid-exit",
     "closed-event",
     "launch-failed",
+}
+
+# PS-298 — THE CLOSE THE OPERATOR MADE vs THE CLOSE persona INFERRED.
+#
+# The owner reported Firefox profiles closing by themselves. The reason that
+# went unreported for so long is that the kill was UNFALSIFIABLE from any
+# evidence a user could collect: the close-watch's heuristic teardown logged
+# "Session ended: <name>" — the same bytes, in the Activity Log and in the
+# engine log, as the operator closing the window themselves. A spurious kill
+# and a deliberate close were indistinguishable, so no report about one could
+# ever be checked.
+#
+# These reasons are the ones where persona DECIDED the window was gone rather
+# than being told. They stay quiet (they are the normal Linux close path) but
+# they say so, and the message names the reason so the two populations can be
+# counted apart in a log an operator sends in.
+#
+# `window-gone-unconfirmed` is the sharper of the two: the watch's second,
+# independent signal DISAGREED (the browser still had engine children running)
+# and the close fired anyway on the bounded fallback. A run whose closes are
+# mostly `unconfirmed` is the fingerprint of exactly the defect this ticket
+# describes, and that is now readable from the log instead of invisible.
+_INFERRED_CLOSE_REASONS = {
+    "window-gone-inferred": "persona inferred the window was closed",
+    "window-gone-unconfirmed": (
+        "persona inferred the window was closed, UNCONFIRMED - the browser "
+        "still had engine processes running"
+    ),
 }
 
 _NOISY_PREFIXES = (
@@ -469,7 +506,16 @@ class BrowserLauncher:
                         self._forget_session_facts(profile.name)
                 reason = close_reason[0]
                 if reason in _QUIET_CLOSE_REASONS:
-                    log_callback(f"Session ended: {profile.name}")
+                    # PS-298: an inferred close says so. Quiet (this is the
+                    # ordinary Linux close path) but NOT byte-identical to an
+                    # operator close, which is what made a spurious kill
+                    # impossible to tell from a real one in a log an operator
+                    # sends in.
+                    why = _INFERRED_CLOSE_REASONS.get(reason or "")
+                    if why:
+                        log_callback(f"Session ended: {profile.name} ({why})")
+                    else:
+                        log_callback(f"Session ended: {profile.name}")
                     logger.info(
                         "Session ended for profile: %s (close=%s)",
                         profile.name, reason,

@@ -185,6 +185,21 @@ def parse_event(line: str, profiles: frozenset[str] | set[str]) -> tuple:
             if re.search(rf"^Session ended: {pattern}$", rest):
                 profile, rest = name, "Session ended"
                 break
+            # PS-298: the same event, carrying WHY it ended. The Linux close
+            # is an INFERENCE (persona decided the window was gone), and it
+            # used to render byte-identically to an operator close — which is
+            # what made a spurious kill impossible to tell from a real one.
+            # Parsed as its own shape so the profile is still resolved and the
+            # row reads "Session ended (why)" rather than falling through to
+            # the generic name-substitution branch, which would leave a
+            # dangling ": " in the message.
+            _why = re.search(
+                rf"^Session ended: {pattern} \((?P<why>.+)\)$", rest
+            )
+            if _why:
+                profile = name
+                rest = f"Session ended ({_why.group('why')})"
+                break
             if re.search(rf"\b{pattern}\b", rest):
                 profile = name
                 rest = re.sub(rf"\s*\b{pattern}\b\s*", " ", rest).strip()

@@ -4146,6 +4146,50 @@ def _firefox_content_proc_count(profile_dir: str, parent: int = None):
     return count
 
 
+def _firefox_engine_child_count(parent: int):
+    """How many Firefox ENGINE processes are still running under `parent`
+    (the parent itself excluded), or None when the scan can't run.
+
+    PS-298 — the SECOND, INDEPENDENT signal the close inference was missing.
+    `_firefox_content_proc_count` answers "are any TABS being rendered", which
+    has more than one cause when it reads zero: the window closed, or every tab
+    was unloaded/discarded, or a content proc crashed between exit and respawn,
+    or a cross-origin navigation replaced them all at once. This answers a
+    different question — "is the browser still running a process FLEET" — and
+    only the first of those causes makes it zero too.
+
+    A live Firefox window is never a lone parent: the socket process, the GPU
+    process and the tab content processes are all `firefox` binaries under it
+    (the engine path always carries "firefox", .../firefox-NN/firefox — the
+    same needle `_forked_firefox_alive` matches on). A genuine window close
+    shuts the child fleet down in the same phase that kills the content procs,
+    while the PARENT lingers 60-90s on async shutdown blockers (#168) — which
+    is why the parent's own liveness can never be this signal and its children's
+    can.
+
+    None means "could not look" and must never be read as "no processes" — the
+    PS-192/PS-204 discipline. The caller treats None exactly as it treats zero,
+    so a scan that could not run can only ever leave the existing verdict
+    alone, never weaken OR strengthen it.
+
+    Uses the ONE-SNAPSHOT walk (`_session_descendants`: a single /proc read on
+    Linux, one `ps` on macOS) rather than `_descendant_pids`' per-node pgrep,
+    because this runs on every poll of every open profile — the 84ms/13-
+    subprocess cost PS-204 measured is exactly what that walk exists to avoid.
+    """
+    if _platform.IS_WINDOWS:
+        return None
+    tree = _session_descendants({parent})
+    if tree is None:
+        return None  # could not look — no verdict
+    count = 0
+    for p in tree:
+        cmd = _proc_cmdline(p)
+        if cmd is not None and b"firefox" in cmd:
+            count += 1
+    return count
+
+
 def _descendant_pids(root: int):
     """Every descendant pid of `root` via a pgrep -P tree walk (a single
     pgrep -P misses grandchildren, e.g. content procs under a forkserver
@@ -4392,7 +4436,49 @@ def _fork_close_watch(profile_dir, closed, no_process_timeout=60.0, interval=1.0
     consecutive zero-content polls so a single pgrep hiccup can't tear a LIVE
     session down (#169: never kill a working profile). Returns the tracked pid
     set (None if never seen) so the caller can force-kill the lingering parent
-    (+tree) after the polite teardown."""
+    (+tree) after the polite teardown.
+
+    PS-298 — THE INFERENCE IS NOT AN OBSERVATION, AND IT NOW SAYS SO.
+
+    The owner reported Firefox profiles closing by themselves after a random
+    interval. Read here, the mechanism fits: **the watch returning IS the kill**
+    (the caller runs teardown + `_kill_profile_firefox` immediately, with no
+    confirmation step), and a content count of zero has MORE THAN ONE CAUSE.
+    Only one of them is a user closing the window; the others — every tab
+    unloaded/discarded on an idle profile, a content proc crashing between exit
+    and respawn, a cross-origin navigation replacing every tab's process at
+    once, a `pgrep` beat under load — all produce a genuinely zero count on a
+    browser that is ALIVE AND WANTED. Each needs a coincidence to land on
+    consecutive polls, which is exactly why the observed delay was unbounded and
+    unpredictable rather than a fixed timeout.
+
+    Three changes, and none of them removes the close detection (without it the
+    card lies "running" for the parent's whole 60-90s shutdown, and #143/#168
+    come straight back):
+
+    1. **A longer debounce.** `gone_streak_needed` is 4, not 2. A coincidence
+       must now hold for four consecutive polls instead of two. The cost on a
+       genuine close is ~2 extra seconds before the card updates — nothing
+       against the minute-plus that removing the signal would cost.
+    2. **A second, independent signal before the kill.**
+       `_firefox_engine_child_count` asks a DIFFERENT question — is the browser
+       still running a process fleet at all — and only a real window close
+       makes it zero too. When it disagrees (children still alive) the close is
+       DEFERRED, not taken. It is bounded: after `unconfirmed_streak_needed`
+       zero-content polls the close fires anyway, so a corroborating signal that
+       is wrong on this host can cost a bounded delay and can never wedge a
+       profile "running". A no-verdict (None) from that scan decides nothing and
+       leaves today's behaviour exactly as it was — the PS-192/PS-204
+       discipline: "could not look" must never be read as an answer.
+    3. **The close line names its evidence, and the reason token says the close
+       was INFERRED.** Before this, a spurious kill logged byte-identically to
+       the operator closing the window themselves (`window-gone` is in
+       `launcher.py`'s `_QUIET_CLOSE_REASONS`, which renders "Session ended:
+       <name>"), so the bug was unfalsifiable from any evidence a user could
+       collect. The content count, the streak and the corroborating child count
+       are now on the line, and the token is `window-gone-inferred` /
+       `window-gone-unconfirmed` — never the `window-gone` that the thread
+       path emits from a REAL window enumeration."""
     def say(msg):
         if log:
             log(msg)
@@ -4400,7 +4486,19 @@ def _fork_close_watch(profile_dir, closed, no_process_timeout=60.0, interval=1.0
     pid = None
     content_seen = False
     gone_streak = 0
-    gone_streak_needed = 2
+    # PS-298: was 2. See the docstring — a transient zero must survive four
+    # consecutive polls, not two, before it is allowed to kill a live browser.
+    gone_streak_needed = 4
+    # PS-298: the bound on the corroboration. If the second signal keeps
+    # disagreeing this many zero-content polls in, close anyway rather than let
+    # a profile the user really did close sit "running" indefinitely.
+    unconfirmed_streak_needed = 10
+    deferred_said = False
+    # The tree path below is a DIFFERENT signal — "no firefox process anywhere
+    # in our own subtree" — which is far stronger than "no content procs", so it
+    # keeps the original two-poll debounce rather than inheriting the widened
+    # one above.
+    tree_gone_needed = 2
     tree_seen = False
     tree_gone = 0
     deadline = time.monotonic() + no_process_timeout
@@ -4413,15 +4511,51 @@ def _fork_close_watch(profile_dir, closed, no_process_timeout=60.0, interval=1.0
             if content:
                 content_seen = True
                 gone_streak = 0
+                deferred_said = False
             elif content == 0 and content_seen:
-                # The window's content processes are gone after we saw them:
-                # the user closed the window. The parent may still be winding
-                # down its shutdown blockers — don't wait it out; the caller
-                # force-kills the tracked parent's tree right after this returns.
+                # The window's content processes are gone after we saw them.
+                # That is EVIDENCE of a user close, not the fact of one — see
+                # the docstring for the four other causes of a zero count on a
+                # live browser. The parent may still be winding down its
+                # shutdown blockers — don't wait it out; the caller force-kills
+                # the tracked parent's tree right after this returns.
                 gone_streak += 1
                 if gone_streak >= gone_streak_needed:
-                    say(f"LIFECYCLE close=window-gone pid={pid} "
-                        f"streak={gone_streak}")
+                    # PS-298: corroborate before killing. A live window is never
+                    # a lone parent — the socket/GPU/tab processes are all
+                    # firefox binaries under it — so children still running says
+                    # the browser is alive and the zero content count had one of
+                    # its other causes.
+                    kids = _firefox_engine_child_count(pid)
+                    confirmed = (kids == 0)
+                    forced = gone_streak >= unconfirmed_streak_needed
+                    if kids is None:
+                        # No verdict. "Could not look" is not an answer either
+                        # way, so it neither confirms nor blocks: behave exactly
+                        # as this watch did before the corroboration existed.
+                        confirmed = True
+                    if not confirmed and not forced:
+                        if not deferred_said:
+                            # Emitted ONCE per deferral episode (the streak
+                            # resets on any live poll), so a long idle profile
+                            # cannot flood the activity log — but the FIRST
+                            # deferral is always on the record, which is the
+                            # whole point: this is the line that proves a kill
+                            # was declined and says on what evidence.
+                            say(f"LIFECYCLE close-deferred pid={pid} "
+                                f"content=0 streak={gone_streak} "
+                                f"engine_children={kids}")
+                            deferred_said = True
+                        continue
+                    # The reason token distinguishes an INFERENCE from an
+                    # observation. `window-gone` is what the thread path emits
+                    # from a real window enumeration; this path has none, so it
+                    # must never claim the same word (PS-298).
+                    reason = ("window-gone-inferred" if confirmed
+                              else "window-gone-unconfirmed")
+                    say(f"LIFECYCLE close={reason} pid={pid} "
+                        f"streak={gone_streak} content=0 "
+                        f"engine_children={kids}")
                     return {pid}
             # content is None (pgrep couldn't run) carries no verdict — leave
             # the streak untouched, same as the thread path's no-window
@@ -4447,9 +4581,15 @@ def _fork_close_watch(profile_dir, closed, no_process_timeout=60.0, interval=1.0
             tree_gone = 0
         elif alive is False and tree_seen:
             tree_gone += 1
-            if tree_gone >= gone_streak_needed:
-                say(f"LIFECYCLE close=window-gone pid=None "
-                    f"streak={tree_gone} (pid never resolved)")
+            if tree_gone >= tree_gone_needed:
+                # PS-298: still an INFERENCE (no window was ever enumerated —
+                # this path has no pid either), so it carries the inferred
+                # token too. The evidence is different and stronger than the
+                # content-count one: no firefox process anywhere in our own
+                # subtree.
+                say(f"LIFECYCLE close=window-gone-inferred pid=None "
+                    f"streak={tree_gone} evidence=no-firefox-in-subtree "
+                    f"(pid never resolved)")
                 return None
         elif not tree_seen:
             say("LIFECYCLE close=no-process-timeout (launch never resolved a pid)")
