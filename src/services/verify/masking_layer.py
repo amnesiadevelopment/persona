@@ -311,9 +311,16 @@ class LayerReport:
         Not in ``installed``, and not in ``failed`` either — so nothing in the
         record before this property could say a word about them. Sorted, so two
         records diff cleanly.
+
+        The ``or ()`` is for the type checker, not for the runtime:
+        ``__post_init__`` guarantees ``expected`` is never ``None`` after
+        construction, but the DECLARED type is optional (``None`` is the
+        sentinel meaning "unstated", distinct from an explicit empty tuple) and
+        mypy reads the declaration. Written this way rather than with a
+        ``cast`` so it reads beside the sentinel the docstring already explains.
         """
         attempted = set(self.installed) | set(self.failed)
-        return tuple(sorted(v for v in self.expected if v not in attempted))
+        return tuple(sorted(v for v in (self.expected or ()) if v not in attempted))
 
     @property
     def complete(self) -> bool:
@@ -330,7 +337,7 @@ class LayerReport:
             "route": self.route,
             "installed": sorted(self.installed),
             "failed": {k: self.failed[k] for k in sorted(self.failed)},
-            "expected": sorted(self.expected),
+            "expected": sorted(self.expected or ()),
             "missing": list(self.missing),
             "complete": self.complete,
         }
