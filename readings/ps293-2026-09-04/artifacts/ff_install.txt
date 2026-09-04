@@ -1,0 +1,11 @@
+Firefox engine: resolving release over Tor…
+Firefox engine: downloading…
+Firefox engine: extracting…
+install_engine_build('firefox-21') -> True
+cache dirs: ['firefox-21']
+installed_builds() -> []
+active_build()     -> firefox-20
+is_invisible_installed -> False
+ff.current_version()   -> ''
+launch probe path exists: True
+resolve_executable -> REFUSED: application.ini BuildID '20260826204710' != one of 20260817145957, 20260817150018; platform.ini BuildID '20260826204710' != one of 20260817145957, 20260817150018

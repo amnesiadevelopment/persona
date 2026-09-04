@@ -1,0 +1,16 @@
+PS-293 §2.5 / §4 — engine_autobump.plan(), live
+Produced by: GH_TOKEN=$(gh auth token) python3 readings/ps293-2026-09-04/artifacts/autobump_plan.py
+Date: 2026-09-04 · Tree: origin/main 18e30eb
+
+==================================================================
+
+  needed: True
+  reason: engine firefox-26 available (was firefox-20)
+  current_core: 20.14.0
+  latest_core: 26.17.0
+  new_baseline: firefox-26
+
+Expected (§2.5): needed=True, firefox-20 -> firefox-26, core 20.14.0 ->
+26.17.0. ⛔ That is the §4 hazard: firefox-26 ships NO macOS asset, and the
+job runs daily at 06:00 UTC (.github/workflows/engine-autoupdate.yml:15).
+tests/test_engine_driver_platform_support.py is what catches it.
