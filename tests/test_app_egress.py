@@ -34,6 +34,7 @@ import time
 import pytest
 
 from src.core import settings
+from src.core import platform as _platform
 from src.services import egress
 from src.services.engine import firefox as ff
 from src.services.engine import updater
@@ -102,11 +103,26 @@ def test_configured_policy_keeps_fetch_latest_full_off_urlopen(monkeypatch):
         raise AssertionError("fetch_latest_full reached urlopen despite a policy")
 
     monkeypatch.setattr(updater.urllib.request, "urlopen", forbidden)
-    monkeypatch.setattr(
-        egress,
-        "fetch_json_via_proxy_sync",
-        lambda *a, **k: {"tag_name": "148.0.0.1", "assets": []},
-    )
+
+    def via_proxy(transport, url, timeout=20, **k):
+        # PS-305 discovery is two requests — the prefix-filtered tag refs, then
+        # that tag's release document. BOTH must ride the policy.
+        if "matching-refs" in url:
+            return [{"ref": "refs/tags/personium-148.0.0.1"}]
+        return {
+            "tag_name": "personium-148.0.0.1",
+            "prerelease": True,
+            "assets": [{
+                "name": "personium-148.0.0.1-linux-x86_64.AppImage",
+                "browser_download_url": "http://x/engine",
+                "digest": "sha256:" + "a" * 64,
+            }],
+        }
+
+    monkeypatch.setattr(egress, "fetch_json_via_proxy_sync", via_proxy)
+    monkeypatch.setattr(_platform, "IS_WINDOWS", False)
+    monkeypatch.setattr(_platform, "IS_MACOS", False)
+    monkeypatch.setattr(_platform, "IS_LINUX", True)
 
     tag, _url, _digest = updater.fetch_latest_full()
     assert tag == "148.0.0.1", "the document must come back through the policy"
@@ -146,11 +162,30 @@ def test_default_is_direct_and_unchanged_for_chromium(monkeypatch):
     seen = {}
 
     def capture(req, timeout=None):
-        seen["url"] = req.full_url
-        seen["headers"] = dict(req.headers)
+        # PS-305: the Chromium updater discovers by TAG REF and then reads the
+        # named release, so this call site is two requests. Both must be direct,
+        # both must carry the same Accept and no User-Agent — record each, and
+        # answer by URL.
+        seen.setdefault("urls", []).append(req.full_url)
+        seen.setdefault("headers", []).append(dict(req.headers))
         seen["timeout"] = timeout
-        return _Resp(b'{"tag_name": "148.0.0.1", "assets": []}')
+        if "matching-refs" in req.full_url:
+            return _Resp(json.dumps(
+                [{"ref": "refs/tags/personium-148.0.0.1"}]
+            ).encode())
+        return _Resp(json.dumps({
+            "tag_name": "personium-148.0.0.1",
+            "prerelease": True,
+            "assets": [{
+                "name": "personium-148.0.0.1-linux-x86_64.AppImage",
+                "browser_download_url": "http://x/engine",
+                "digest": "sha256:" + "a" * 64,
+            }],
+        }).encode())
 
+    monkeypatch.setattr(_platform, "IS_WINDOWS", False)
+    monkeypatch.setattr(_platform, "IS_MACOS", False)
+    monkeypatch.setattr(_platform, "IS_LINUX", True)
     monkeypatch.setattr(updater.urllib.request, "urlopen", capture)
     # No proxy transport may be consulted at all on the default path.
     monkeypatch.setattr(
@@ -162,13 +197,17 @@ def test_default_is_direct_and_unchanged_for_chromium(monkeypatch):
     tag, _url, _digest = updater.fetch_latest_full()
 
     assert tag == "148.0.0.1"
-    assert seen["url"] == updater.RELEASES_API
-    # urllib title-cases header keys it is given.
-    assert seen["headers"].get("Accept") == "application/vnd.github+json"
-    assert "User-agent" not in seen["headers"], (
-        "the default must not add a User-Agent — that would change what an "
-        "unset key does on the wire"
+    assert seen["urls"][0] == updater.ENGINE_TAG_REFS_API
+    assert seen["urls"][1] == updater.RELEASE_BY_TAG_API.format(
+        tag="personium-148.0.0.1"
     )
+    for headers in seen["headers"]:
+        # urllib title-cases header keys it is given.
+        assert headers.get("Accept") == "application/vnd.github+json"
+        assert "User-agent" not in headers, (
+            "the default must not add a User-Agent — that would change what an "
+            "unset key does on the wire"
+        )
 
 
 def test_default_is_direct_and_unchanged_for_firefox(monkeypatch):
@@ -224,7 +263,7 @@ def test_unusable_policy_opens_no_socket_at_all(monkeypatch):
     )
 
     with pytest.raises(egress.EgressRefused):
-        egress.fetch_json(updater.RELEASES_API)
+        egress.fetch_json(updater.ENGINE_TAG_REFS_API)
 
     assert opened == [], f"a socket was opened despite the refusal: {opened}"
 
@@ -268,7 +307,7 @@ def test_a_failing_proxy_is_never_retried_directly(monkeypatch):
     )
 
     with pytest.raises(OSError):
-        egress.fetch_json(updater.RELEASES_API)
+        egress.fetch_json(updater.ENGINE_TAG_REFS_API)
 
 
 def test_refusal_is_surfaced_to_the_operator(caplog):
@@ -279,7 +318,7 @@ def test_refusal_is_surfaced_to_the_operator(caplog):
 
     with caplog.at_level("WARNING", logger="persona"):
         with pytest.raises(egress.EgressRefused):
-            egress.fetch_json(updater.RELEASES_API)
+            egress.fetch_json(updater.ENGINE_TAG_REFS_API)
 
     assert any(
         "NOT SENT" in r.getMessage() for r in caplog.records
@@ -614,7 +653,7 @@ def test_socks_policy_sends_a_socks_greeting_not_http_connect():
         # The listener hangs up after the handshake, so the fetch fails — what
         # is under test is what reached the wire before it did.
         with pytest.raises(Exception):
-            egress.fetch_json(updater.RELEASES_API, timeout=10)
+            egress.fetch_json(updater.ENGINE_TAG_REFS_API, timeout=10)
     finally:
         thread.join(15)
         srv.close()

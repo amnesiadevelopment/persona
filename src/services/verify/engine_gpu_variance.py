@@ -63,11 +63,13 @@ nothing; the header below used to say so, and no longer needs to.
 
 ⚠️ THE JOB IS DELIBERATELY UNPINNED, and that is the whole design. The
 tempting shape is to pin a known engine build so the job is reproducible — but
-THE RISK IS UPSTREAM'S ``/releases/latest``, which is exactly what a pin hides.
-A gate on a pinned build stays green forever while the build users actually
-receive goes bad. So the job measures the same bytes ``updater.fetch_latest()``
-hands the operator's app. The cost is accepted knowingly: this job can go red
-because upstream changed something, which IS the signal.
+THE RISK IS WHATEVER THE ENGINE UPDATER RESOLVES AS NEWEST (since PS-305, the
+newest ``personium-`` tag in our own repository), which is exactly what a pin
+hides. A gate on a pinned build stays green forever while the build users
+actually receive goes bad. So the job measures the same bytes
+``updater.fetch_latest()`` hands the operator's app. The cost is accepted
+knowingly: this job can go red because a published engine changed something,
+which IS the signal.
 
 It is NOT wired into ``engine-autoupdate.yml``, and that is not an oversight.
 Verified by re-running the greps: that job bumps the FIREFOX engine and only
