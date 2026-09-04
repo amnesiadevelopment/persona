@@ -1367,17 +1367,26 @@ def test_fork_close_watch_closes_on_content_procs_gone_while_parent_lingers(
     # promptly is the window: every -isForBrowser content/tab process exits
     # within ~1s (live-measured 6 → 0). So the close is decided by the content
     # count dropping to zero after it was seen, NOT by the parent dying.
+    #
+    # PS-298 updates the SHAPE of this close without removing it: four zero
+    # polls instead of two. The engine-child count is stubbed only because the
+    # close line reads it — it is RECORDED, NOT OBEYED, and no value of it
+    # changes this outcome (see test_the_engine_child_reading_is_recorded_and_
+    # never_obeyed). So the close still fires, ~2s later than before.
     monkeypatch.setattr(invisible_launch, "_firefox_pid", lambda d: 4242)
     monkeypatch.setattr(invisible_launch, "_pid_alive", lambda p: True)  # parent hangs on
-    # content present (window up), then zero twice (user closed the window).
-    content = iter([6, 6, 0, 0])
+    # content present (window up), then zero four times (user closed the window).
+    content = iter([6, 6, 0, 0, 0, 0])
     monkeypatch.setattr(
         invisible_launch, "_firefox_content_proc_count",
         lambda d, parent=None: next(content)
     )
+    monkeypatch.setattr(
+        invisible_launch, "_firefox_engine_child_count", lambda parent: 0
+    )
     got = invisible_launch._fork_close_watch("/p", threading.Event(), interval=0.0)
     assert got == {4242}                       # closed while the parent was still alive
-    assert next(content, "done") == "done"     # closed exactly on the 2nd zero poll
+    assert next(content, "done") == "done"     # closed exactly on the 4th zero poll
 
 
 def test_fork_close_watch_waits_for_content_procs_to_appear_first(monkeypatch):
@@ -1388,7 +1397,10 @@ def test_fork_close_watch_waits_for_content_procs_to_appear_first(monkeypatch):
     # Only zero-after-seen closes.
     monkeypatch.setattr(invisible_launch, "_firefox_pid", lambda d: 9)
     monkeypatch.setattr(invisible_launch, "_pid_alive", lambda p: True)
-    content = iter([0, 0, 4, 0, 0])
+    monkeypatch.setattr(
+        invisible_launch, "_firefox_engine_child_count", lambda parent: 0
+    )
+    content = iter([0, 0, 0, 0, 0, 4, 0, 0, 0, 0])
     monkeypatch.setattr(
         invisible_launch, "_firefox_content_proc_count",
         lambda d, parent=None: next(content)
@@ -1405,13 +1417,16 @@ def test_fork_close_watch_debounces_a_single_transient_no_content(monkeypatch):
     # sustained absence (the user actually closed the window) does.
     monkeypatch.setattr(invisible_launch, "_firefox_pid", lambda d: 11)
     monkeypatch.setattr(invisible_launch, "_pid_alive", lambda p: True)
-    content = iter([2, 0, 2, 2, 0, 0])
+    monkeypatch.setattr(
+        invisible_launch, "_firefox_engine_child_count", lambda parent: 0
+    )
+    content = iter([2, 0, 2, 2, 0, 0, 0, 0])
     monkeypatch.setattr(
         invisible_launch, "_firefox_content_proc_count",
         lambda d, parent=None: next(content)
     )
     invisible_launch._fork_close_watch("/p", threading.Event(), interval=0.0)
-    assert next(content, "done") == "done"     # lone zero didn't close; the two did
+    assert next(content, "done") == "done"     # lone zero didn't close; the four did
 
 
 def test_fork_close_watch_content_no_verdict_does_not_close(monkeypatch):
@@ -1422,7 +1437,10 @@ def test_fork_close_watch_content_no_verdict_does_not_close(monkeypatch):
     # procs were seen closes.
     monkeypatch.setattr(invisible_launch, "_firefox_pid", lambda d: 13)
     monkeypatch.setattr(invisible_launch, "_pid_alive", lambda p: True)
-    content = iter([4, None, None, 0, 0])
+    monkeypatch.setattr(
+        invisible_launch, "_firefox_engine_child_count", lambda parent: 0
+    )
+    content = iter([4, None, None, 0, 0, 0, 0])
     monkeypatch.setattr(
         invisible_launch, "_firefox_content_proc_count",
         lambda d, parent=None: next(content)
@@ -1446,8 +1464,11 @@ def test_fork_close_watch_uses_tracked_pid_for_content_count(monkeypatch):
         lambda d: resolves.append(d) or 555,
     )
     monkeypatch.setattr(invisible_launch, "_pid_alive", lambda p: True)
+    monkeypatch.setattr(
+        invisible_launch, "_firefox_engine_child_count", lambda parent: 0
+    )
     seen_parents = []
-    content = iter([3, 3, 0, 0])
+    content = iter([3, 3, 0, 0, 0, 0])
 
     def count(d, parent=None):
         seen_parents.append(parent)
@@ -1468,9 +1489,16 @@ def test_fork_close_watch_logs_window_gone_close(monkeypatch):
 
     # #169: a silent FF death must become traceable — the watch logs WHY it
     # decided closed. A window-gone close emits a LIFECYCLE line naming the pid.
+    #
+    # PS-298: and the reason token now says the close was INFERRED, never the
+    # bare `window-gone` the thread path emits from a real window enumeration —
+    # this path has no window enumeration at all.
     monkeypatch.setattr(invisible_launch, "_firefox_pid", lambda d: 88)
     monkeypatch.setattr(invisible_launch, "_pid_alive", lambda p: True)
-    content = iter([2, 2, 0, 0])
+    monkeypatch.setattr(
+        invisible_launch, "_firefox_engine_child_count", lambda parent: 0
+    )
+    content = iter([2, 2, 0, 0, 0, 0])
     monkeypatch.setattr(
         invisible_launch, "_firefox_content_proc_count",
         lambda d, parent=None: next(content),
@@ -1479,7 +1507,7 @@ def test_fork_close_watch_logs_window_gone_close(monkeypatch):
     invisible_launch._fork_close_watch(
         "/p", threading.Event(), interval=0.0, log=logs.append
     )
-    assert any("close=window-gone" in m and "88" in m for m in logs)
+    assert any("close=window-gone-inferred" in m and "88" in m for m in logs)
 
 
 def test_fork_close_watch_logs_pid_exit_close(monkeypatch):

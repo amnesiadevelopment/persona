@@ -92,11 +92,68 @@ def test_ac5_profile_is_parsed_from_all_four_shapes():
             "Loaded 6 bookmarks, 0 pools",
         ),
         ("10:00:04  > Session ended: mail-us-011", "mail-us-011", "Session ended"),
+        # PS-298: the same event carrying WHY it ended. The Linux close is an
+        # INFERENCE (persona decided the window was gone, from a content-process
+        # count that has four other causes on a live browser), and it used to
+        # render byte-identically to an operator close. The profile must still
+        # resolve, and the reason must survive into the rendered row — falling
+        # through to the generic name-substitution branch would leave a dangling
+        # ": " and lose the distinction the suffix exists to carry.
+        (
+            "10:00:05  > Session ended: mail-us-011 (persona inferred the "
+            "window was closed)",
+            "mail-us-011",
+            "Session ended (persona inferred the window was closed)",
+        ),
     ]
     for line, want_profile, want_msg in cases:
         _, profile, msg, _ = parse_event(line, ROSTER)
         assert profile == want_profile, (line, profile)
         assert msg == want_msg, (line, msg)
+
+
+def test_ps298_a_roster_name_inside_the_reason_text_cannot_steal_the_row():
+    """The suffix is free ENGLISH, and the roster is user-chosen — so they
+    collide, and the collision must not decide who the row is about.
+
+    ``Session ended: <name> (<why>)`` is the first line on this surface to
+    carry prose, and the reason text contains ordinary words: ``persona``,
+    ``window``, ``closed``, ``inferred``. ``window`` is not an exotic profile
+    name for this product. The name-matching loop runs longest-first and stops
+    at the first name that matches ANY shape, so a roster name occurring only
+    in the SUFFIX used to be reached first and win on the generic substring
+    branch — attributing the row to a profile that had nothing to do with the
+    event, and cutting the matched word out of the message on the way.
+
+    That lands on precisely the use this reason text exists to serve: an
+    operator reading the Activity Log to find out WHICH profile died by itself
+    was shown the wrong one. The fix is an ordering one — every specific shape
+    is tried for every name before any generic substring match.
+
+    ⚠️ THE DECOYS MUST OUTRANK THE REAL NAME, WHICH IS WHY THE PROFILE HERE IS
+    THE SHORT ``fox``. The loop is longest-first, so a decoy SHORTER than the
+    profile is never reached before it and the case passes on the BROKEN code
+    too — a check that cannot fail is not coverage. This was caught by sabotage
+    rather than by review: an earlier draft used ``mail-us-011`` as the profile,
+    every decoy was shorter than it, and collapsing the two passes back into one
+    left the whole test green.
+    """
+    line = "10:00:05  > Session ended: fox (persona inferred the window was closed)"
+    want = "Session ended (persona inferred the window was closed)"
+    for decoy in ("window", "persona", "closed", "inferred"):
+        assert len(decoy) > len("fox"), (
+            f"{decoy!r} is not longer than the profile name, so longest-first "
+            "never reaches it and this case cannot fail"
+        )
+        roster = {"fox", decoy}
+        _, profile, msg, _ = parse_event(line, roster)
+        assert profile == "fox", (
+            f"a roster name ({decoy!r}) appearing only in the reason text stole "
+            f"the row from the profile the event is about; got {profile!r}"
+        )
+        assert msg == want, (
+            f"the reason text was mangled by the {decoy!r} substitution: {msg!r}"
+        )
 
 
 def test_ac5_unresolvable_profile_shows_the_neutral_placeholder():

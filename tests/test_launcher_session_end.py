@@ -105,6 +105,83 @@ def test_user_close_logs_quiet_session_end(monkeypatch):
     assert not any("unexpectedly" in m for m in messages)
 
 
+def test_ps298_an_inferred_close_is_quiet_but_not_identical_to_a_real_one(
+    monkeypatch,
+):
+    """PS-298 — the operator can tell which of the two happened.
+
+    The Linux fork path has no window enumeration, so its close is an
+    INFERENCE from a content-process count reading zero — and a zero count has
+    four other causes on a browser that is alive and wanted. Until now that
+    inferred kill logged ``"Session ended: fox"``, BYTE-IDENTICAL to the
+    operator closing the window themselves. That is why the owner's report
+    ("profiles close by themselves after some random time") was unfalsifiable
+    from any evidence a user could collect: a spurious kill and a deliberate
+    close produced the same line.
+
+    It must stay QUIET — on Linux this is the ordinary way a session ends, and
+    rendering every normal close as "unexpectedly" would cry wolf until the
+    word meant nothing — while still SAYING which one it was.
+    """
+    messages = _run_session(monkeypatch, [
+        "BROWSER_STARTED",
+        "LIFECYCLE close=window-gone-inferred pid=10 streak=4 content=0 "
+        "engine_children=0",
+        "BROWSER_CLOSED",
+    ])
+    ended = [m for m in messages if m.startswith("Session ended")]
+    assert ended, "an inferred close must still report the session ending"
+    assert not any("unexpectedly" in m for m in messages), (
+        "the ordinary Linux close must not read as a failure"
+    )
+    assert "Session ended: fox" not in messages, (
+        "an inferred close is still byte-identical to an operator close; the "
+        "two populations remain unseparable in a log an operator sends in"
+    )
+    assert any("inferred" in m for m in ended)
+
+
+def test_ps298_a_close_never_reports_a_disagreement_it_does_not_arbitrate(
+    monkeypatch,
+):
+    """⛔ WITHDRAWN token — ``window-gone-unconfirmed`` no longer exists.
+
+    The earlier revision emitted it when a second signal (the browser's engine
+    child fleet) disagreed with the zero content count. That gate is gone: its
+    premise is contradicted three times in ``invisible_launch.py`` and has
+    never been measured on the Linux fork path, and if the fleet DOES outlive
+    the window there, every ordinary close would have carried this token — the
+    diagnostic would have screamed on healthy hosts. The number is now recorded
+    on the LIFECYCLE line and obeyed by nothing.
+
+    An unknown token is not quiet, so it renders "Session ended unexpectedly".
+    This pins that it cannot be emitted by accident: if the token ever comes
+    back without its entry in ``_QUIET_CLOSE_REASONS``, this fails loudly
+    instead of every normal Linux close reading as a failure.
+    """
+    from src.services.browser.launcher import (
+        _INFERRED_CLOSE_REASONS,
+        _QUIET_CLOSE_REASONS,
+    )
+
+    assert "window-gone-unconfirmed" not in _QUIET_CLOSE_REASONS
+    assert "window-gone-unconfirmed" not in _INFERRED_CLOSE_REASONS
+
+
+def test_ps298_a_real_operator_close_is_unchanged(monkeypatch):
+    """The counterweight: the line the operator's OWN close produces must not
+    have moved. If both populations grew a suffix they would still be
+    indistinguishable — the property being asserted is a DIFFERENCE, so the
+    other side of it has to be pinned too."""
+    messages = _run_session(monkeypatch, [
+        "BROWSER_STARTED",
+        "LIFECYCLE close=stop-requested pids=[10]",
+        "BROWSER_CLOSED",
+    ])
+    assert "Session ended: fox" in messages
+    assert not any("inferred" in m for m in messages)
+
+
 def test_watch_timeout_end_logs_reason(monkeypatch):
     # #204: a session torn down by the watch's give-up is NOT a user close —
     # the bare "Session ended" hid every such kill. The close reason from the
