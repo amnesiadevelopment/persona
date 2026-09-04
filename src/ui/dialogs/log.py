@@ -130,6 +130,40 @@ _FILTERS = (
     (SEV_INFO, "info"),
 )
 
+#: The label on the control that CLEARS the profile filter.
+#:
+#: "all profiles", not "all", and the extra word is the whole fix for PS-292.
+#: The header lays the two filter rows out as ``*filter_row, 8px, *profile_row``
+#: — so the severity row's "all" and the profile row's clear control rendered
+#: as the SAME WORD eight pixels apart. An operator reaching to turn a profile
+#: filter off had an even chance of pressing the severity "all", which
+#: correctly does nothing to the profile filter and so reads exactly as the
+#: reported symptom: "обратно не возвращает на общий список". Nothing was
+#: broken in the predicate (:func:`matching` reads the empty string the control
+#: writes); the operator could not TELL THE TWO CONTROLS APART.
+#:
+#: The word goes on the PROFILE side deliberately. The severity row's "all" is
+#: the first of four severity words and reads as one of that set; the profile
+#: row's clear control has no such set to belong to — the names beside it are
+#: machine names — so it is the one that has to say what it clears.
+#:
+#: IT COSTS HEADER WIDTH, and that is stated rather than left to be discovered:
+#: nine extra characters at ``size=11.5`` monospace is roughly 62px, on a
+#: header that already has no wrap and no scroll (four severity words, a
+#: spacer, one word per profile, a 220px search field and a close button). This
+#: does not CREATE that overflow — a session with enough profiles clips
+#: without it — but it does arrive ~62px sooner. Making the header survive many
+#: profiles is a layout change to the Row itself and is deliberately NOT done
+#: here; PS-292's own ticket lists it as a separate candidate.
+_ALL_PROFILES_LABEL = "all profiles"
+
+#: Tooltips for the two clear controls. They say which filter each one clears,
+#: which is the same disambiguation the labels make — and they are also what
+#: makes each control addressable by name to a screen reader and to the live
+#: driver, rather than being one of two identically-labelled boxes.
+_ALL_SEVERITIES_TIP = "Show every severity"
+_ALL_PROFILES_TIP = "Show every profile — clears the profile filter"
+
 
 def page_width(page) -> float:
     """The width this view is laid out at — read ONCE, in one place.
@@ -485,6 +519,7 @@ def open_log_dialog(page: ft.Page, log_lines: list[str], profiles=None) -> None:
                 ink=True,
                 border_radius=3,
                 padding=ft.Padding.symmetric(horizontal=9, vertical=6),
+                tooltip=_ALL_SEVERITIES_TIP if key == "all" else None,
                 content=filter_texts[key],
             )
         )
@@ -510,6 +545,14 @@ def open_log_dialog(page: ft.Page, log_lines: list[str], profiles=None) -> None:
     # SEE which machines are in this session instead of discovering them by
     # opening a menu. It also keeps the whole header one control class: text
     # that changes weight when it is on.
+    #
+    # THE PRICE OF SHARING THAT PATTERN (PS-292): one control class in one row
+    # means the two rows' cleared states looked the SAME. Both are borderless
+    # text that goes accent-and-bold when selected, so the only thing telling
+    # this row's clear control apart from the severity row's was its label —
+    # and both said "all". The disambiguation therefore has to be carried by
+    # the label and the tooltip, since the pattern itself deliberately offers
+    # no box, border or grouping to carry it. See :data:`_ALL_PROFILES_LABEL`.
     profile_texts: dict[str, ft.Text] = {}
 
     def paint_profiles() -> None:
@@ -530,7 +573,7 @@ def open_log_dialog(page: ft.Page, log_lines: list[str], profiles=None) -> None:
         return go
 
     profile_row: list[ft.Control] = []
-    for key, label in [("", "all")] + [(p, p) for p in sorted(profiles)]:
+    for key, label in [("", _ALL_PROFILES_LABEL)] + [(p, p) for p in sorted(profiles)]:
         profile_texts[key] = ft.Text(
             label, size=11.5, font_family=MONO, no_wrap=True, max_lines=1
         )
@@ -540,6 +583,7 @@ def open_log_dialog(page: ft.Page, log_lines: list[str], profiles=None) -> None:
                 ink=True,
                 border_radius=3,
                 padding=ft.Padding.symmetric(horizontal=9, vertical=6),
+                tooltip=_ALL_PROFILES_TIP if key == "" else f"Only {label}",
                 content=profile_texts[key],
             )
         )
@@ -584,6 +628,15 @@ def open_log_dialog(page: ft.Page, log_lines: list[str], profiles=None) -> None:
     )
 
     paint_filters()
+    # PAINT THE PROFILE ROW TOO, and this call is half of the PS-292 fix. It
+    # was missing: only paint_filters() and repaint() ran at build, so on open
+    # every profile control had color=None and weight=None while the severity
+    # "all" was already painted active. Nothing marked the cleared state as the
+    # state the view opens in, so the profile row's clear control looked
+    # unselected — beside an identically-worded severity control that looked
+    # selected. Painting here makes the row state its own state from the first
+    # frame instead of only after the first click.
+    paint_profiles()
     repaint()
 
     # No shape, no border side, no scrim colour, no actions row: the dialog is
