@@ -88,14 +88,21 @@ def remove_pinned_host_key(host: str, port: int = 22) -> bool:
 
     Two restraints worth keeping:
 
-    * Every key TYPE pinned for that name goes (``HostKeys.__delitem__``
-      removes one entry per call), so an RSA pin is not left behind when the
-      ed25519 one is dropped.
+    * Every key TYPE pinned for that name goes, so an RSA pin is not left
+      behind when the ed25519 one is dropped.
     * An entry whose line names OTHER hosts as well is LEFT ALONE. OpenSSH
       allows ``a,b <keytype> <key>`` on one line; persona's writer never
       produces one, but a file we did not write can, and deleting that entry
       would silently un-pin ``b`` too — re-arming trust-on-first-use for a host
       nobody asked us to forget.
+
+    That second restraint is a PER-ENTRY skip, and it has to be: a file can
+    hold an inherited ``a,b`` line AND our own single-name pin for ``a``. A
+    guard that gave up on the whole file the moment it met a shared line would
+    leave our own pin standing — the very residue this function exists to
+    remove — and, because it stopped at whichever line came first, would do so
+    only for some orderings of the file. So the loop walks EVERY entry and
+    keeps the ones it must, rather than looking one up and bailing out.
 
     Caller-facing errors are the caller's to swallow; this raises so a real
     failure is not mistaken for "there was nothing to remove".
@@ -106,19 +113,20 @@ def remove_pinned_host_key(host: str, port: int = 22) -> bool:
             return False
         hostkeys = paramiko.HostKeys()
         hostkeys.load(_KNOWN_HOSTS)
+        entries = getattr(hostkeys, "_entries", None)
+        if entries is None:  # pragma: no cover - paramiko drift
+            return False
+        keep = []
         removed = False
-        # `del hostkeys[name]` removes ONE entry per call and raises KeyError
-        # when none is left, so loop until it does — that is how every key type
-        # pinned under this name goes rather than only the first.
-        while hostkeys.lookup(name) is not None:
-            if _names_other_hosts(hostkeys, name):
-                break
-            try:
-                del hostkeys[name]
-            except KeyError:  # pragma: no cover - lookup just said it is there
-                break
-            removed = True
+        for entry in entries:
+            if not _entry_matches(hostkeys, name, entry):
+                keep.append(entry)
+            elif _entry_names_other_hosts(hostkeys, name, entry):
+                keep.append(entry)
+            else:
+                removed = True
         if removed:
+            hostkeys._entries = keep
             hostkeys.save(_KNOWN_HOSTS)
             try:
                 os.chmod(_KNOWN_HOSTS, 0o600)
@@ -137,32 +145,41 @@ class _OneName:
         self.hostnames = [hostname]
 
 
-def _names_other_hosts(hostkeys, name: str) -> bool:
-    """True when the first matching entry's line also names a DIFFERENT host.
+def _entry_matches(hostkeys, name: str, entry) -> bool:
+    """True when this entry's line covers ``name``.
 
-    Deleting such an entry would un-pin a host nobody asked us to forget. The
-    inspection needs ``HostKeys._entries`` (paramiko exposes the hostnames of a
-    matched entry nowhere public); if a future paramiko drops it, we lose the
-    guard rather than the feature — persona's own writer never produces a
-    multi-name line, so the guarded case cannot arise from our own file.
+    ``HostKeys._hostname_matches`` is what knows the hashed ``|1|`` form and
+    the wildcard patterns; asking it per-entry is how we inherit paramiko's
+    normalization while still deciding entry by entry. If a future paramiko
+    drops it we keep every entry rather than guessing — a pin left standing is
+    residue, a pin wrongly dropped is a re-armed TOFU.
     """
-    entries = getattr(hostkeys, "_entries", None)
     matches = getattr(hostkeys, "_hostname_matches", None)
-    if entries is None or matches is None:  # pragma: no cover - paramiko drift
+    if matches is None:  # pragma: no cover - paramiko drift
         return False
-    for entry in entries:
-        if not matches(name, entry):
-            continue
-        others = [h for h in entry.hostnames if not matches(name, _OneName(h))]
-        if others:
-            logger.warning(
-                "Left the known_hosts entry for %s in place: its line also "
-                "names %s",
-                name,
-                ", ".join(others),
-            )
-            return True
+    return bool(matches(name, entry))
+
+
+def _entry_names_other_hosts(hostkeys, name: str, entry) -> bool:
+    """True when THIS entry's line also names a DIFFERENT host.
+
+    Takes the already-matched entry rather than re-finding one: re-finding is
+    what made an earlier version inspect only the first match and then abandon
+    the whole file, leaving our own single-name pin behind whenever an
+    inherited multi-name line happened to sit above it.
+    """
+    matches = getattr(hostkeys, "_hostname_matches", None)
+    if matches is None:  # pragma: no cover - paramiko drift
         return False
+    others = [h for h in entry.hostnames if not matches(name, _OneName(h))]
+    if others:
+        logger.warning(
+            "Left the known_hosts entry for %s in place: its line also "
+            "names %s",
+            name,
+            ", ".join(others),
+        )
+        return True
     return False
 
 

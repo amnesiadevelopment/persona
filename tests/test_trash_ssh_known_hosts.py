@@ -321,6 +321,66 @@ def test_a_multi_host_known_hosts_line_is_left_alone(home, trash, store):
     assert "shared.example.com" in _known_hosts_text()
 
 
+@pytest.mark.parametrize("shared_line_first", [True, False])
+def test_a_shared_line_does_not_shield_our_own_pin_for_the_same_host(
+    home, trash, store, shared_line_first
+):
+    # The composed case, and the one an earlier version got wrong: an
+    # INHERITED `a,b <key>` line AND our own single-name pin for `a`, both in
+    # the same file. The shared line must stand and OUR pin must go — the
+    # refusal is per-entry, not per-file. Asserted in BOTH file orders because
+    # a guard that inspects only the first match is order-dependent: it left
+    # our pin on disk whenever the shared line happened to sit above it, which
+    # is the residue this whole ticket exists to remove.
+    import paramiko
+
+    shared_key = paramiko.ECDSAKey.generate()
+    our_key = paramiko.RSAKey.generate(2048)
+    shared_line = (
+        f"box.example.com,shared.example.com "
+        f"{shared_key.get_name()} {shared_key.get_base64()}\n"
+    )
+    our_line = f"box.example.com {our_key.get_name()} {our_key.get_base64()}\n"
+    pathlib.Path(C._KNOWN_HOSTS).write_text(
+        shared_line + our_line if shared_line_first else our_line + shared_line,
+        encoding="utf-8",
+    )
+
+    store.add(SSHHost(name="box", host="box.example.com", port=22))
+    store.remove("box")
+    _service(trash, store).delete_permanently(trash.list("ssh_host")[0].id)
+
+    text = _known_hosts_text()
+    assert our_key.get_base64() not in text, (
+        "our own single-name pin must go — a shared line elsewhere in the file "
+        "is not a reason to keep it"
+    )
+    assert shared_key.get_base64() in text, (
+        "the inherited multi-name line must stand: dropping it would un-pin "
+        "shared.example.com too"
+    )
+
+
+def test_every_key_type_pinned_for_the_host_goes(home, trash, store):
+    # A host can be pinned under several key types. Leaving one behind leaves
+    # the hostname in cleartext just as completely as leaving them all.
+    import paramiko
+
+    rsa = paramiko.RSAKey.generate(2048)
+    ecdsa = paramiko.ECDSAKey.generate()
+    _pin("box.example.com", rsa)
+    _pin("box.example.com", ecdsa)
+
+    store.add(SSHHost(name="box", host="box.example.com", port=22))
+    store.remove("box")
+    _service(trash, store).delete_permanently(trash.list("ssh_host")[0].id)
+
+    text = _known_hosts_text()
+    assert rsa.get_base64() not in text
+    assert ecdsa.get_base64() not in text
+    assert "box.example.com" not in text
+
+
 # --- AC5: no store to ask means the pin stands ------------------------------
 
 
