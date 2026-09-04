@@ -1,0 +1,43 @@
+PS-293 — citation lint over REPORT.md
+Produced by: python3 readings/ps293-2026-09-04/artifacts/verify_citations.py
+Date: 2026-09-04 · Tree: origin/main 18e30eb (branch source is byte-identical: git diff 18e30eb HEAD -- src/ is empty)
+
+==================================================================
+
+OK   src/ui/app.py:3490               def _check_engines_periodic
+OK   app.py:4510                      def _auto_update_engine(self)
+OK   app.py:4827                      def _update_engine_async
+OK   updater.py:832                   def download_engine(
+OK   app.py:4549                      self._engine_busy or not engine.is_installed()
+OK   app.py:2677                      if engine.pinned_build():
+OK   app.py:2679                      if not engine.is_newer(self._engine_latest
+OK   app.py:2681                      if self._engine_unverifiable_tag == self._engine_latest:
+OK   policy.py:257                    def is_installable(tag: str)
+OK   app.py:4555                      if self._engine_tree_in_use():
+OK   updater.py:895                   if httpdl.digest_missing(digest):
+OK   updater.py:932                   if not have_asset and not _download_to
+OK   updater.py:938                   with _install_lock:
+OK   updater.py:583                   def _install_linux(asset_path: str)
+OK   updater.py:950                   if defer_if_in_use and _engine_in_use(log=log):
+OK   updater.py:954-960               os.remove(MARKER_FILE)
+OK   updater.py:966-970               _installing_file()
+OK   updater.py:945                   BEFORE the marker/sentinel writes
+OK   policy.py:246-253                max_tested_major in {POLICY_FILE}
+OK   app.py:3269                      needs a newer persona
+OK   app.py:3396                      needs a newer persona
+OK   firefox.py:173                   if num <= pkg_num and num > build_number(drivable_tag):
+OK   engine_install.py:148            if num > pinned_num:
+SKIP invisible_playwright/_engine.py:36-39 (third-party package, not in this repo)
+OK   scripts/engine_autobump.py:5-8   MUST ship together
+OK   src/core/config.py:201           ENGINE_DIR = _under_home("engine"
+OK   updater.py:21                    from ...core.config import ENGINE_DIR
+OK   updater.py:643                   def _promote_staging(staging: str)
+OK   updater.py:105                   def set_in_use_provider(fn)
+OK   app.py:3325                      engine.set_in_use_provider(
+OK   updater.py:117                   def _engine_in_use(log=None)
+OK   updater.py:927-931               have_asset = (
+OK   updater.py:971-976               if _platform.IS_WINDOWS:
+OK   app.py:4533-4536                 _download_engine_fresh
+
+34/34 citations verified
+All citations land.

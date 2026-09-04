@@ -1,0 +1,49 @@
+PS-293 §2.3 + §2.4 — the Firefox gate probe, live transcript
+Produced by: xvfb-run -a /tmp/ps293/venv-shipped/bin/python firefox_gates.py
+Date: 2026-09-04 · Tree: origin/main 18e30eb
+Interpreters: shipped = invisible_playwright@353df4fa + invisible_core 20.14.0
+              current = invisible_playwright@03f695d8 + invisible_core 26.17.0
+Engine trees: firefox-20, firefox-21, firefox-26 (linux-x86_64), extracted to /tmp/ps293/ff
+Display: xvfb (the two launch legs need one)
+
+==================================================================
+
+active seal: firefox-20, upstream 151.0
+BINARY_VERSION: firefox-20
+
+--- firefox-20 ---
+  Version 151.0  BuildID 20260817150018  juggler loose 4/4
+  verify_engine -> ACCEPTED
+--- firefox-21 ---
+  Version 151.0  BuildID 20260826204710  juggler loose 4/4
+  verify_engine -> REFUSED
+     application.ini BuildID '20260826204710' != one of 20260817145957, 20260817150018
+     platform.ini BuildID '20260826204710' != one of 20260817145957, 20260817150018
+
+ensure_binary('firefox-21') -> SealMismatch: this invisible-core is sealed to firefox-20 (Firefox 151.0 build 20260817150018, seal ad76d92efee0); it cannot install 'firefox-21'.
+
+=== §2.4 — the pin is a REAL protocol contract ===
+  driver core 20.14.0   seal firefox-20  x firefox-20                         -> DROVE OK, ua=Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:151.0) Gecko/20100101 Firefox/151.0
+  driver core 20.14.0   seal firefox-21  x firefox-21 (seal=seal-firefox-21.json) -> Error: BrowserType.launch: Protocol error (Browser.enable): Browser.enable no longer applies preferences. They are written into the profile before startup, so a browser started this way already has them. Remove userPrefs from the request.
+  driver core 26.17.0   seal firefox-26  x firefox-26 (seal=seal-firefox-26.json) -> DROVE OK, ua=Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:151.0) Gecko/20100101 Firefox/151.0
+
+  Expected: firefox-20 drives under the shipped driver; firefox-21 with
+  its own seal in force clears the seal check and then dies at
+  `Browser.enable`; firefox-26 drives under the CURRENT driver. So the
+  seal guards a real juggler change, not bookkeeping — and a newer engine
+  is drivable, but only by a newer driver, which is a persona release.
+
+=== §2.1 — the asset names did NOT change ===
+  firefox-26   macOS legs: 0
+  firefox-25   macOS legs: 0
+  firefox-24   macOS legs: 0
+  firefox-23   macOS legs: 0
+  firefox-22   macOS legs: 0
+  firefox-21   macOS legs: 0
+  firefox-20   macOS legs: 2
+  firefox-19   macOS legs: 2
+  firefox-18   macOS legs: 2
+  firefox-17   macOS legs: 2
+  firefox-16   macOS legs: 2
+  firefox-15   macOS legs: 2
+  firefox-14   macOS legs: 2
