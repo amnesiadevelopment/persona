@@ -57,6 +57,115 @@ class _TOFUPolicy(paramiko.MissingHostKeyPolicy):
                 logger.exception("Could not persist SSH host key for %s", hostname)
 
 
+def known_hosts_entry_name(host: str, port: int = 22) -> str:
+    """The name paramiko pins a host:port under in known_hosts.
+
+    NOT hand-rolled: this mirrors ``SSHClient.connect`` exactly — it computes
+    ``server_hostkey_name`` as the bare hostname on the default port and
+    ``[host]:port`` on any other, and that is the string both the TOFU pin and
+    the later lookup are keyed by. Reading the rule off paramiko's own constant
+    (rather than a literal 22) keeps the two in step.
+    """
+    try:
+        p = int(port)
+    except (TypeError, ValueError):
+        p = paramiko.config.SSH_PORT
+    return host if p == paramiko.config.SSH_PORT else f"[{host}]:{p}"
+
+
+def remove_pinned_host_key(host: str, port: int = 22) -> bool:
+    """Drop one host:port's TOFU pin from persona's known_hosts.
+
+    The counterpart to :class:`_TOFUPolicy`, and the ONLY remover: a saved SSH
+    host that has been connected to owns a second file outside every profile
+    perimeter, and permanent deletion of the record has to be able to take it
+    with it. Returns True when an entry was actually removed.
+
+    Deliberately NOT string matching against the file. paramiko owns the
+    normalization (bare name vs ``[host]:port``, and the hashed ``|1|`` form),
+    so load / lookup / delete go through ``HostKeys`` and inherit whatever it
+    does — including matching a hashed entry we never wrote.
+
+    Two restraints worth keeping:
+
+    * Every key TYPE pinned for that name goes (``HostKeys.__delitem__``
+      removes one entry per call), so an RSA pin is not left behind when the
+      ed25519 one is dropped.
+    * An entry whose line names OTHER hosts as well is LEFT ALONE. OpenSSH
+      allows ``a,b <keytype> <key>`` on one line; persona's writer never
+      produces one, but a file we did not write can, and deleting that entry
+      would silently un-pin ``b`` too — re-arming trust-on-first-use for a host
+      nobody asked us to forget.
+
+    Caller-facing errors are the caller's to swallow; this raises so a real
+    failure is not mistaken for "there was nothing to remove".
+    """
+    name = known_hosts_entry_name(host, port)
+    with _KNOWN_HOSTS_LOCK:
+        if not os.path.exists(_KNOWN_HOSTS):
+            return False
+        hostkeys = paramiko.HostKeys()
+        hostkeys.load(_KNOWN_HOSTS)
+        removed = False
+        # `del hostkeys[name]` removes ONE entry per call and raises KeyError
+        # when none is left, so loop until it does — that is how every key type
+        # pinned under this name goes rather than only the first.
+        while hostkeys.lookup(name) is not None:
+            if _names_other_hosts(hostkeys, name):
+                break
+            try:
+                del hostkeys[name]
+            except KeyError:  # pragma: no cover - lookup just said it is there
+                break
+            removed = True
+        if removed:
+            hostkeys.save(_KNOWN_HOSTS)
+            try:
+                os.chmod(_KNOWN_HOSTS, 0o600)
+            except OSError:
+                pass
+            logger.info("Removed the pinned SSH host key for %s", name)
+        return removed
+
+
+class _OneName:
+    """A stand-in entry so ``HostKeys._hostname_matches`` can be asked about a
+    SINGLE hostname string — which is the only way to tell a hashed name that
+    IS ours from one that belongs to another host."""
+
+    def __init__(self, hostname: str) -> None:
+        self.hostnames = [hostname]
+
+
+def _names_other_hosts(hostkeys, name: str) -> bool:
+    """True when the first matching entry's line also names a DIFFERENT host.
+
+    Deleting such an entry would un-pin a host nobody asked us to forget. The
+    inspection needs ``HostKeys._entries`` (paramiko exposes the hostnames of a
+    matched entry nowhere public); if a future paramiko drops it, we lose the
+    guard rather than the feature — persona's own writer never produces a
+    multi-name line, so the guarded case cannot arise from our own file.
+    """
+    entries = getattr(hostkeys, "_entries", None)
+    matches = getattr(hostkeys, "_hostname_matches", None)
+    if entries is None or matches is None:  # pragma: no cover - paramiko drift
+        return False
+    for entry in entries:
+        if not matches(name, entry):
+            continue
+        others = [h for h in entry.hostnames if not matches(name, _OneName(h))]
+        if others:
+            logger.warning(
+                "Left the known_hosts entry for %s in place: its line also "
+                "names %s",
+                name,
+                ", ".join(others),
+            )
+            return True
+        return False
+    return False
+
+
 @dataclass
 class SSHTarget:
     host: str
