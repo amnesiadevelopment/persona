@@ -36,7 +36,6 @@ compile happens on hardware this container does not have and must never attempt
 pin is the set of properties that must hold BEFORE anyone presses the button.
 """
 
-import os
 from pathlib import Path
 
 import pytest
@@ -495,45 +494,60 @@ def _preflight_script(workflow: dict, job: str) -> str:
 
 
 def _drive_preflight(script: str, tmp_path, *, uname_s: str, uname_m: str, docker: bool):
-    """Run the workflow's own preflight with `uname`/`docker` stubbed."""
+    """Run the workflow's own preflight with `uname`/`docker` shimmed.
+
+    The shims are SHELL FUNCTIONS prepended to the script, not executables
+    dropped on `PATH`. That is a portability fix, not a style preference: the
+    PATH approach passed on Linux and FAILED on `windows-latest`, where Git Bash
+    did not pick up the extension-less stubs and the script read the REAL
+    `uname` (`MINGW64_NT-10.0-26100 x86_64`). Two of the refusal assertions
+    still "passed" there for the wrong reason — MINGW is not Linux either — and
+    an accidental green is exactly what this file exists to prevent.
+
+    A POSIX shell resolves functions BEFORE `PATH`, on every platform, with no
+    executable bit and no path translation involved. The script under test is
+    still the verbatim body extracted from the workflow; only its environment is
+    controlled, which is all the PATH stubs were ever doing.
+    """
     import subprocess
 
-    bindir = tmp_path / "bin"
-    bindir.mkdir(exist_ok=True)
-    (bindir / "uname").write_text(
-        "#!/bin/sh\n"
-        f'case "$1" in -s) echo {uname_s};; -m) echo {uname_m};; *) echo {uname_s};; esac\n',
-        encoding="utf-8",
+    shim = (
+        'uname() { case "$1" in '
+        f"-s) echo {uname_s};; -m) echo {uname_m};; *) echo {uname_s};; esac; }}\n"
     )
-    (bindir / "uname").chmod(0o755)
     if docker:
-        (bindir / "docker").write_text(
-            '#!/bin/sh\necho "Docker version 29.7.2, build stub"\n', encoding="utf-8"
-        )
-        (bindir / "docker").chmod(0o755)
+        shim += 'docker() { echo "Docker version 29.7.2, build stub"; }\n'
+    # With docker False no shim is defined, so `command -v docker` has only
+    # `PATH` to consult — and `shell_env()` pins that to one known toolchain
+    # directory set, which carries no docker on any of the three CI platforms.
 
     script_path = tmp_path / "preflight.sh"
-    script_path.write_text(script, encoding="utf-8")
+    script_path.write_text(shim + script, encoding="utf-8")
 
     shell = find_posix_shell()
     assert shell is not None, "no POSIX shell could be resolved on this host"
 
-    env = shell_env()
-    # The stub dir must WIN over the real toolchain, so it goes first. `docker`
-    # is deliberately absent from the stub dir in the no-docker cases, and this
-    # container has no real docker either — but pinning PATH keeps that a
-    # property of the fixture rather than of whoever runs the suite.
-    env["PATH"] = str(bindir) + os.pathsep + env.get("PATH", "")
-
-    return subprocess.run(
+    proc = subprocess.run(
         [shell, str(script_path)],
         cwd=tmp_path,
-        env=env,
+        env=shell_env(),
         capture_output=True,
         text=True,
         encoding="utf-8",
         timeout=60,
     )
+
+    # Guard the FIXTURE, not the script under test. If a shim is ever bypassed
+    # again the tests must SAY SO, rather than quietly asserting against
+    # whatever the host happens to be — the Windows failure described above
+    # satisfied two refusal assertions by accident precisely because nothing
+    # checked this.
+    assert f"os/arch: {uname_s} {uname_m}" in proc.stdout, (
+        f"the uname shim did not take effect — the script read the HOST instead of the "
+        f"fixture, so this test is not measuring {uname_s} {uname_m} at all:\n"
+        f"{proc.stdout}\n{proc.stderr}"
+    )
+    return proc
 
 
 @pytest.mark.parametrize("job", ["unmodified", "patched"])
