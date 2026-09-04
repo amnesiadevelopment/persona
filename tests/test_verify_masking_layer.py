@@ -741,35 +741,101 @@ def test_a_firefox_SUBTRACTION_ARM_narrows_expected_and_stays_complete():
         assert record["complete"] is True, (narrowed, record["failed"])
 
 
-def test_a_firefox_arm_that_DROPPED_a_declared_vector_reads_incomplete():
+def test_a_firefox_arm_that_DROPPED_a_declared_vector_reads_incomplete(monkeypatch):
     """The Firefox production path's half of AC1/AC3: a vector the declared set
     names, which the install never attempted, is reported missing.
 
-    Driven through ``install_firefox_layer`` rather than hand-built, so a
-    circular ``expected`` (derived from the pairs it was handed) would fail
-    here: the pairs are short by one and the declared set is not.
+    ⚠️ ROUND 2 — THIS TEST PREVIOUSLY DID NOT TEST WHAT THIS DOCSTRING SAYS.
+    It claimed to be "driven through ``install_firefox_layer`` rather than
+    hand-built", but the part that drove the production path asserted
+    ``expected == []`` (the ``scripts=`` OPT-OUT arm, true for a circular
+    implementation too), and the part that actually compared declared-against-
+    installed was a hand-built ``LayerReport``. That is precisely the
+    construction this ticket names as insufficient. MEASURED: replacing the
+    configured branch of the Firefox declaration with the circular
+    ``tuple(v for v, _ in pairs)`` left the whole file GREEN at 72 passed.
+
+    So the drop is now applied where it can actually discriminate — to
+    ``firefox_layer_scripts``, the function whose output IS the list that
+    drifts — and the configured path is driven with ``scripts=None`` so the
+    declaration under test is the shipped one. A circular ``expected`` derived
+    from those pairs shrinks with the drop and reports nothing missing; the
+    declared set does not move, and the record says ``audio`` is gone.
+
+    This matters beyond the letter of AC3 (which names ``build_chromium_layer``
+    and is satisfied by the Chromium test): ``browser_tier.py:591`` is the
+    in-tree production caller of ``install_firefox_layer``, so this declaration
+    is live code carrying the same drift class.
     """
+    real_scripts = masking_layer.firefox_layer_scripts
+
+    def short_scripts(*args, **kwargs):
+        # Not a script that FAILS to install — a vector that is NOT THERE. The
+        # distinction is the whole ticket: a refused script lands in `failed`
+        # and always lowered `complete`; one that was never enumerated landed
+        # nowhere at all.
+        return [
+            (vector, js)
+            for vector, js in real_scripts(*args, **kwargs)
+            if vector != masking_layer.AUDIO
+        ]
+
+    # First: the real production call, unmodified, is COMPLETE — so the
+    # assertion below is about the dropped vector and not about an install that
+    # was broken to begin with.
+    healthy = install_firefox_layer(FakeContext(), SEED, locale="en-US")
+    assert healthy.as_record()["complete"] is True, healthy.failed
+    assert healthy.as_record()["missing"] == []
+
+    monkeypatch.setattr(masking_layer, "firefox_layer_scripts", short_scripts)
     ctx = FakeContext()
+    dropped = install_firefox_layer(ctx, SEED, locale="en-US")
+    record = dropped.as_record()
+
+    assert masking_layer.AUDIO not in record["installed"]
+    assert record["failed"] == {}, "a DROPPED vector is not a FAILED one"
+    assert record["missing"] == [masking_layer.AUDIO]
+    assert record["complete"] is False
+    assert masking_layer.AUDIO in record["expected"], (
+        "`expected` must NOT move with the script list — that is the whole "
+        "non-circularity requirement"
+    )
+    # ...and the script really was not handed to the context, so the shortened
+    # list is a genuine change to what the harness installs, not bookkeeping.
+    assert len(ctx.scripts) == len(record["installed"])
+
+
+def test_a_firefox_caller_that_supplies_its_own_scripts_declares_NO_expectation():
+    """The ``scripts=`` OPT-OUT, as its own fact.
+
+    Split out of the test above in round 2. It was folded in there, and being
+    the only assertion in that test that touched the production path it read as
+    support for a non-circularity claim it cannot make: ``expected == []`` is
+    equally true of a circular implementation, so it proves nothing about where
+    the declaration comes from.
+
+    It is still worth pinning on its own terms: a caller passing ``scripts=``
+    has stated its own pair list and is not asking about the declared
+    configuration, so it gets NO expectation rather than a fabricated one —
+    which is why such a report must not read incomplete for vectors its caller
+    never asked about.
+    """
     short_pairs = [
         (v, js)
         for v, js in masking_layer.firefox_layer_scripts(SEED, locale="en-US")
         if v != masking_layer.AUDIO
     ]
-    report = install_firefox_layer(ctx, SEED, locale="en-US", scripts=short_pairs)
-
-    # `scripts=` states its own pair list, so the report declares nothing —
-    # the caller is not asking about the declared configuration.
-    assert report.as_record()["expected"] == []
-
-    # The CONFIGURED path, by contrast, declares all three and catches the hole.
-    declared = masking_layer.firefox_expected_vectors(locale="en-US")
-    holed = LayerReport(
-        route="init_scripts",
-        installed=tuple(v for v, _ in short_pairs),
-        expected=declared,
+    report = install_firefox_layer(
+        FakeContext(), SEED, locale="en-US", scripts=short_pairs
     )
-    assert holed.as_record()["complete"] is False
-    assert holed.as_record()["missing"] == [masking_layer.AUDIO]
+    record = report.as_record()
+
+    assert record["expected"] == []
+    assert record["missing"] == []
+    assert record["complete"] is True, (
+        "a caller that supplied its own scripts stated its own set; it must "
+        "not be judged against a declaration it opted out of"
+    )
 
 
 def test_an_EMPTY_LOCALE_run_narrows_expected_rather_than_reading_incomplete():
