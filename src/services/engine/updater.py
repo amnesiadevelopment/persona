@@ -961,6 +961,33 @@ def _install_linux(asset_path: str) -> bool:
     return ok
 
 
+class _HostileMember(Exception):
+    """A zip member whose destination resolves outside the staging directory.
+
+    Its own type rather than a bare OSError so the refusal is distinguishable
+    from an ordinary I/O failure at the one place that catches it — the two are
+    different events and only one of them says the archive is not what it
+    claims."""
+
+
+def _within(base: str, target: str) -> bool:
+    """Does `target` resolve INSIDE `base`? (`base` itself does not count.)
+
+    Compares RESOLVED paths rather than the name the archive supplied, which is
+    the shape the rest of the tree already prefers — see profile/transfer.py's
+    _is_within and profile/manager.py. Matching on the member NAME instead
+    (rejecting a literal "..") is the fix that looks right and misses cases:
+    the name arrives with either separator, at any depth, and it is the JOIN
+    that decides where the write lands, so the join is what must be checked.
+
+    realpath of a not-yet-existing leaf is still its lexical parent + leaf, so
+    this answers correctly for a destination that has not been created yet —
+    which is the only moment at which the answer is useful here."""
+    base_r = os.path.realpath(base)
+    target_r = os.path.realpath(target)
+    return os.path.commonpath([base_r, target_r]) == base_r and target_r != base_r
+
+
 def _install_windows(asset_path: str) -> bool:
     """Extract the Windows zip into ENGINE_DIR. The archive holds chrome.exe plus
     its DLLs/resources, which the launcher expects at ENGINE_DIR/chrome.exe.
@@ -975,7 +1002,29 @@ def _install_windows(asset_path: str) -> bool:
     touched, and a promotion that failed and whose rollback _promote_staging
     CONFIRMED complete. A promotion whose rollback could not be completed
     reports nothing and so stays unknown — the tree is then part old and part
-    new, which is exactly what must not be launched."""
+    new, which is exactly what must not be launched.
+
+    ⚠️ EVERY MEMBER IS CONFINED TO STAGING, AND THAT CONFINEMENT IS THIS LOOP'S
+    OWN (PS-310). This walks `namelist()` and writes each member by hand, so it
+    inherits NONE of the member-path sanitization CPython's `ZipFile.extractall`
+    performs. That distinction is easy to lose: the Firefox engine's
+    `_extract_as` (services/browser/engine_install.py) is confined precisely
+    BECAUSE it calls extractall, and its docstring says so — a true statement
+    that does not transfer to a hand-rolled loop. Before this guard, a
+    `../../x` member landed in PERSONA_HOME (profiles.json, install_secret) and
+    SURVIVED the `finally` cleanup below, which removes staging and nothing
+    else. Refusing at WRITE time is therefore the fix; cleaning up afterwards
+    cannot be, because the escaped file is not in the tree being cleaned.
+
+    A member that resolves outside staging ABORTS the install rather than being
+    skipped. It cannot occur in an honest build, so its presence says the
+    archive is not what it claims — and skipping would let _promote_staging move
+    a tree assembled from an archive we have already judged hostile over the
+    build that is currently working.
+
+    The archive is sha256-verified against upstream's published digest before it
+    reaches here (EngineUnverifiable, PS-49) and that gate is intact. This is not
+    a MITM fix: a checksum attests the TRANSFER, never the CONTENTS."""
     import zipfile
 
     staging = os.path.join(ENGINE_DIR, ".staging")
@@ -1008,8 +1057,24 @@ def _install_windows(asset_path: str) -> bool:
                     continue
                 dest = os.path.join(staging, *rel.split("/"))
                 if m.endswith("/"):
+                    # A DIRECTORY entry, where resolving to staging ITSELF is
+                    # benign — an unnested zip can carry a "./" member, and
+                    # makedirs of staging is then a no-op. Equality is allowed
+                    # on this arm only; for a FILE it is a write at the base
+                    # path that nobody asked for, so it stays refused below.
+                    if not (
+                        _within(staging, dest)
+                        or os.path.realpath(dest) == os.path.realpath(staging)
+                    ):
+                        raise _HostileMember(m)
                     os.makedirs(dest, exist_ok=True)
                     continue
+                if not _within(staging, dest):
+                    # Refuse the ARCHIVE, not just this member — see the
+                    # docstring. Raising rather than returning keeps the single
+                    # exit path: the `finally` below still tears staging down,
+                    # and the caller still sees False.
+                    raise _HostileMember(m)
                 os.makedirs(os.path.dirname(dest), exist_ok=True)
                 with zf.open(m) as src, open(dest, "wb") as out:
                     out.write(src.read())
@@ -1030,13 +1095,26 @@ def _install_windows(asset_path: str) -> bool:
         _promote_staging(staging)
         os.remove(asset_path)
         return os.path.isfile(ENGINE_BINARY)
-    except (OSError, zipfile.BadZipFile):
+    except (OSError, zipfile.BadZipFile, _HostileMember):
         if not promotion_started:
             # The extract itself failed (a corrupt zip, a full disk while
-            # writing into staging). ENGINE_DIR's previous entries were never
+            # writing into staging), or a member was REFUSED as hostile
+            # (_HostileMember, PS-310). ENGINE_DIR's previous entries were never
             # renamed aside, so the tree is byte-for-byte as this install found
             # it — which is a claim about THIS attempt only. Whether what it
             # found was launchable is download_engine's `was_launchable` term.
+            #
+            # ⚠️ THE HOSTILE-MEMBER ARM DEPENDS ON PS-310's CONFINEMENT FOR THE
+            # ABOVE CLAIM TO BE TRUE, and the two guarantees hold each other up
+            # rather than competing. "Nothing outside staging was written" is
+            # only sound because the member loop refuses at WRITE TIME: before
+            # that guard, a `../../x` member had ALREADY landed in PERSONA_HOME
+            # by the time anything raised, and the `finally` below — which
+            # removes staging and nothing else — would not have taken it back.
+            # Reporting "restored" over that older behaviour would have been a
+            # false claim about a tree that had just been written outside.
+            # Members written into staging BEFORE the refusal are immaterial:
+            # they are inside the scratch tree the finally removes.
             _note_install_outcome(INSTALL_OUTCOME_RESTORED)
         # else: _promote_staging owns the verdict — it is the only code that
         # knows whether its own rollback completed, and it reports "restored"
