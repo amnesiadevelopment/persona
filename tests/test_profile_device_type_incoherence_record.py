@@ -543,46 +543,73 @@ def test_the_gpu_authorship_leak_really_is_closed_on_this_pair():
     assert engine_authors_identity_for_engine_platform("windows") is True
 
 
-def test_the_pair_still_contradicts_on_vectors_that_read_os_type_alone():
-    """"None, because the GPU one is fixed" is the reasoning that left this
-    open, so it is pinned as FALSE.
+def test_the_pair_no_longer_contradicts_the_vectors_that_read_os_type_alone():
+    """RE-POINTED by PS-236 — this test used to pin the contradiction as a
+    CHARACTERIZATION of the defect; it now pins its ABSENCE.
 
-    `engine_platform` reads both fields; the GPU POOL ARM and the voice roster
-    still read `os_type` alone. So a windows+mobile record launches an Android
-    device preset while its GPU pool and voices are Windows ones.
+    What it pinned before, verbatim: *"`engine_platform` reads both fields; the
+    GPU POOL ARM and the voice roster still read `os_type` alone. So a
+    windows+mobile record launches an Android device preset while its GPU pool
+    and voices are Windows ones."* That claim was TRUE at `c70a3c7` and is now
+    FALSE, deliberately: `process.spawn_browser` reconciles `device_type`
+    against `os_type` ONCE before either consumer reads it
+    (`coherence.coherent_device_type`), so the two vectors that read the field
+    now agree with the two that do not.
+
+    ⚠️ THE TEST IS INVERTED, NOT DELETED, and the source-read assertion is
+    RE-POINTED rather than dropped. It exists to catch someone removing
+    `device_type` from the launch gate — a real hazard both before and after
+    this slice, because the reconciled value is still a *function of the pair*.
+    The two assertions on the vectors that read `os_type` ALONE (`_os_norm` and
+    the voice signature) are unchanged and still TRUE: those arms never read
+    `device_type` and still do not. Only the *contradiction* they participated
+    in is gone.
     """
     import inspect
 
     from src.services.browser import process
     from src.services.browser.device_presets import is_mobile_profile
     from src.services.browser.gpu_ext import _os_norm
+    from src.services.profile.coherence import coherent_device_type
 
-    # The launch path treats it as a phone. Asserted TWICE, on purpose: once
-    # behaviourally against the shared predicate, and once against the launch
-    # site's real source.
+    # The shared predicate is UNCHANGED and still answers about the values it is
+    # HANDED — other callers depend on that, so this slice did not touch it.
     #
-    # ⚠️ THE FIRST ASSERTION ALONE IS NOT ENOUGH, and the previous version of
-    # this test proved it the hard way — it read
+    # ⚠️ THIS ASSERTION ALONE IS NOT ENOUGH, and the pre-PS-236 version of this
+    # test proved it the hard way — it read
     # `is_mobile_os("windows") or "mobile" == "mobile"`, a comparison between
     # two string literals, so it was `True` unconditionally and survived
     # DELETING `device_type` from the launch computation. The predicate being
-    # right does not establish that the launch path CALLS it with both fields.
+    # right does not establish what the launch path CALLS it with.
     assert is_mobile_profile("windows", "mobile") is True
     # ...and the desktop counterpart, so the above is a real distinction and
     # not a function that returns True for everything.
     assert is_mobile_profile("windows", "desktop") is False
 
+    # What CHANGED: the launch path no longer hands it the stored field raw. It
+    # reconciles first, and `windows` + `mobile` reconciles to `desktop`.
+    assert coherent_device_type("windows", "mobile") == "desktop"
+    assert is_mobile_profile("windows", coherent_device_type("windows", "mobile")) is False
+
     # The launch site itself, read as source (the technique the Firefox test
-    # below uses correctly). This is what fails if someone drops `device_type`
-    # from the gate and re-strands the pair on the vector this ticket measured.
+    # below uses correctly), RE-POINTED at the reconciled value. This is what
+    # fails if someone drops `device_type` from the gate — which would still
+    # re-strand the pair, because the reconciliation is a function of BOTH
+    # fields and reading `os_type` alone cannot produce it.
     launch_src = inspect.getsource(process.spawn_browser)
-    assert "is_mobile_profile(profile.os_type, profile.device_type)" in launch_src, (
-        "the launch gate no longer computes is_mobile from BOTH fields -- a "
-        "windows+mobile record would launch as a Windows desktop while its "
-        "record claims a phone"
+    assert "coherent_device_type(profile.os_type, profile.device_type)" in launch_src, (
+        "the launch gate no longer reconciles device_type against os_type from "
+        "BOTH fields -- a windows+mobile record would go back to presenting an "
+        "Android preset over a Windows GPU pool and Windows voices"
+    )
+    assert "is_mobile_profile(profile.os_type, device_type)" in launch_src, (
+        "the mobile gate no longer reads the RECONCILED device_type -- either "
+        "it went back to the stored field or it dropped the field entirely"
     )
 
-    # ...while the GPU pool arm is still chosen from os_type alone
+    # ...while the GPU pool arm is still chosen from os_type alone (UNCHANGED --
+    # this arm never read device_type and still does not; it is now what the
+    # other two vectors AGREE WITH rather than what they contradict)
     assert _os_norm("windows") == "windows"
     # ...as is the voice roster's arm, built from os_type with no device_type
     # parameter to consult at all.
