@@ -47,6 +47,7 @@ import subprocess
 import sys
 import textwrap
 from pathlib import Path
+from typing import NamedTuple
 
 import pytest
 
@@ -56,10 +57,17 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "engine-trial-build.yml"
 HARDEN_SH = REPO_ROOT / "scripts" / "ps306_harden_toolchain.sh"
 
-# `setup_toolchain()` at tag 152.0.7977.75-1, reproduced verbatim from
-# ungoogled-chromium-portablelinux. This is the tree the repair is keyed to, and
-# writing it out here rather than fetching it means these tests state exactly
-# which upstream shape they were verified against.
+# `setup_toolchain()` at tag 152.0.7977.75-1, copied VERBATIM from
+# ungoogled-chromium-portablelinux (fetched from
+# raw.githubusercontent.com/.../152.0.7977.75-1/scripts/shared.sh and pasted
+# unedited, tab-indented lines included).
+#
+# It is the real 49-line function rather than a reduction, deliberately: an
+# earlier cut of this fixture was a 17-line paraphrase whose docstring claimed
+# verbatim provenance, and a fixture that misrepresents upstream is exactly what
+# a future reader trusts when deciding whether the anchor still holds. The
+# surrounding file is a small harness — the anchors are matched against the
+# FUNCTION, and this is the function.
 UPSTREAM_SHARED = """\
 #!/bin/bash
 set -euo pipefail
@@ -78,14 +86,46 @@ setup_toolchain() {
         "${_src_dir}/tools/clang/scripts/update.py"
     else
         "${_src_dir}/tools/clang/scripts/build.py" \\
-            --without-fuchsia --without-android --disable-asserts
+            --without-fuchsia --without-android --disable-asserts \\
+            --host-cc=clang --host-cxx=clang++ --use-system-cmake \\
+            --with-ml-inliner-model=
 
         export CARGO_HOME="${_src_dir}/third_party/rust-src/cargo-home"
-        "${_src_dir}/tools/rust/build_rust.py" --skip-test
+        "${_src_dir}/tools/rust/build_rust.py" \\
+            --skip-test
+
         "${_src_dir}/tools/rust/build_bindgen.py"
     fi
 
+    if grep -q -F "use_sysroot=true" "${_out_dir}/args.gn"; then
+        "${_src_dir}/build/linux/sysroot_scripts/install-sysroot.py" --arch="$_host_arch" &
+        if [ "$_build_arch" != "$_host_arch" ]; then
+            "${_src_dir}/build/linux/sysroot_scripts/install-sysroot.py" --arch="$_build_arch" &
+        fi
+        wait
+    fi
+
     mkdir -p "${_src_dir}/third_party/node/linux/node-linux-x64/bin"
+    ln -sf "$(which node)" "${_src_dir}/third_party/node/linux/node-linux-x64/bin/node"
+    mkdir -p "${_src_dir}/third_party/gperf/cipd/bin/"
+    ln -sf "$(which gperf)" "${_src_dir}/third_party/gperf/cipd/bin/gperf"
+    mkdir -p "${_src_dir}/third_party/dawn/tools/golang/linux-amd64/bin"
+    ln -sf "$(which go)" "${_src_dir}/third_party/dawn/tools/golang/linux-amd64/bin/go"
+	mkdir -p "${_src_dir}/buildtools/linux64-format"
+	ln -sf "$(which clang-format)" "${_src_dir}/buildtools/linux64-format/clang-format"
+
+    local clang_bin="${_src_dir}/third_party/llvm-build/Release+Asserts/bin"
+    export CC="${clang_bin}/clang"
+    export CXX="${clang_bin}/clang++"
+    export AR="${clang_bin}/llvm-ar"
+    export NM="${clang_bin}/llvm-nm"
+    export LLVM_BIN="${clang_bin}"
+
+    local resource_dir
+    resource_dir="$(${CC%% *} --print-resource-dir)"
+    export CXXFLAGS+=" -resource-dir=${resource_dir} -B${LLVM_BIN}"
+    export CPPFLAGS+=" -resource-dir=${resource_dir} -B${LLVM_BIN}"
+    export CFLAGS+=" -resource-dir=${resource_dir} -B${LLVM_BIN}"
 }
 
 gn_gen() {
@@ -281,25 +321,107 @@ def test_applying_twice_is_a_no_op_rather_than_a_nested_retry(tmp_path):
 # a script that really fails. This is the half a static reading cannot reach.
 # ─────────────────────────────────────────────────────────────────────────────
 
-FAKE_SEGFAULT_THEN_OK = """\
-#!/bin/bash
+# The fakes below MODEL `update_rust.py` rather than merely failing, because the
+# thing that has to be tested is an interaction with the real script's own
+# behaviour, not just "a command returned non-zero".
+#
+# What is modelled, from `tools/rust/update_rust.py` at 152.0.7977.75:
+#
+#   * THE STAMP SHORT-CIRCUIT (:136-139). If `third_party/rust-toolchain` exists
+#     and its `VERSION` names the wanted revision, the script returns 0 having
+#     downloaded NOTHING. `GetStampVersion()` (:68-78) reads only that one file.
+#   * VERSION IS ONE MEMBER OF THE ARCHIVE, not a completion marker. It is
+#     written by `DownloadAndUnpack` -> `tarfile.extractall`
+#     (`tools/clang/scripts/update.py:194-207`) along with everything else, so a
+#     crash mid-extraction leaves a MATCHING VERSION beside a tree with no
+#     compiler.
+#   * `bin/rustc` is what Chromium actually consumes
+#     (`build/config/rust.gni:436` lists it as a build input).
+#
+# Those three together are what make a crash-after-VERSION dangerous: it does
+# not merely fail, it POISONS the next attempt into a silent success. A fake
+# that only calls `kill -SEGV` before touching the disk cannot express that, and
+# an earlier cut of this file had only such fakes — which is exactly why it
+# reported green over a build that could not link.
+
+# The stamp short-circuit, shared by the fakes that model it. Sourced first so
+# a leftover VERSION from a crashed attempt behaves the way the real script
+# behaves: instant success, nothing downloaded.
+_STAMP_SHORT_CIRCUIT = """\
+if [ -d "$TOOLCHAIN_DIR" ] && [ -s "$TOOLCHAIN_DIR/VERSION" ]; then
+    # update_rust.py:136-139 — up to date per the stamp, download nothing.
+    echo "(stamp matches; up-to-date -> return 0)"
+    exit 0
+fi
+"""
+
+# A clean, COMPLETE extraction: VERSION and the compiler, as the real archive
+# delivers them.
+_EXTRACT_FULLY = """\
+mkdir -p "$TOOLCHAIN_DIR/bin"
+echo "rustc 1.90.0 abcdef0123 (a1b2c3d4e5 chromium)" > "$TOOLCHAIN_DIR/VERSION"
+printf '#!/bin/sh\\nexit 0\\n' > "$TOOLCHAIN_DIR/bin/rustc"
+chmod +x "$TOOLCHAIN_DIR/bin/rustc"
+"""
+
+_COUNT = """\
 n=$(cat "$COUNTER" 2>/dev/null || echo 0); n=$((n+1)); echo $n > "$COUNTER"
+"""
+
+# Crashes BEFORE touching the disk, then succeeds completely. The plain
+# transient case.
+FAKE_SEGFAULT_THEN_OK = (
+    "#!/bin/bash\n"
+    + _COUNT
+    + _STAMP_SHORT_CIRCUIT
+    + 'if [ "$n" -lt {succeed_on} ]; then kill -SEGV $$; fi\n'
+    + _EXTRACT_FULLY
+)
+
+# THE REALISTIC SEGFAULT, and the one the first cut of this suite could not see:
+# the crash lands mid-extraction, AFTER `VERSION` and BEFORE `bin/rustc`. On the
+# next attempt the leftover stamp matches, so an implementation that does not
+# wipe the tree gets an instant "success" over a toolchain with no compiler.
+FAKE_SEGFAULT_AFTER_VERSION_THEN_OK = (
+    "#!/bin/bash\n"
+    + _COUNT
+    + _STAMP_SHORT_CIRCUIT
+    + '''mkdir -p "$TOOLCHAIN_DIR"
+echo "rustc 1.90.0 abcdef0123 (a1b2c3d4e5 chromium)" > "$TOOLCHAIN_DIR/VERSION"
 if [ "$n" -lt {succeed_on} ]; then kill -SEGV $$; fi
-mkdir -p "$(dirname "$VERSION_FILE")"
-echo "rustc 1.90.0-dev" > "$VERSION_FILE"
-"""
+'''
+    + _EXTRACT_FULLY
+)
 
-FAKE_ALWAYS_SEGFAULTS = """\
-#!/bin/bash
-n=$(cat "$COUNTER" 2>/dev/null || echo 0); n=$((n+1)); echo $n > "$COUNTER"
+# Crashes mid-extraction EVERY time. Each attempt leaves a matching stamp and no
+# compiler, so this is the shape that turns "all three attempts failed" into a
+# false green unless the exhausted-retry path is unconditional.
+FAKE_ALWAYS_SEGFAULTS_AFTER_VERSION = (
+    "#!/bin/bash\n"
+    + _COUNT
+    + _STAMP_SHORT_CIRCUIT
+    + '''mkdir -p "$TOOLCHAIN_DIR"
+echo "rustc 1.90.0 abcdef0123 (a1b2c3d4e5 chromium)" > "$TOOLCHAIN_DIR/VERSION"
 kill -SEGV $$
-"""
+'''
+)
 
-FAKE_EXITS_ZERO_PRODUCING_NOTHING = """\
-#!/bin/bash
-n=$(cat "$COUNTER" 2>/dev/null || echo 0); n=$((n+1)); echo $n > "$COUNTER"
+# Crashes before touching anything, every time.
+FAKE_ALWAYS_SEGFAULTS = "#!/bin/bash\n" + _COUNT + "kill -SEGV $$\n"
+
+# Exits clean and produces nothing at all.
+FAKE_EXITS_ZERO_PRODUCING_NOTHING = "#!/bin/bash\n" + _COUNT + "exit 0\n"
+
+# Exits clean having written only the stamp — the exit-code/artifact
+# disagreement in its subtlest direction.
+FAKE_EXITS_ZERO_WITH_ONLY_VERSION = (
+    "#!/bin/bash\n"
+    + _COUNT
+    + '''mkdir -p "$TOOLCHAIN_DIR"
+echo "rustc 1.90.0 abcdef0123 (a1b2c3d4e5 chromium)" > "$TOOLCHAIN_DIR/VERSION"
 exit 0
-"""
+'''
+)
 
 
 def _exercise(tmp_path: Path, fake: str):
@@ -320,7 +442,7 @@ def _exercise(tmp_path: Path, fake: str):
     rust.write_text(fake, encoding="utf-8")
     rust.chmod(0o755)
 
-    version_file = src / "third_party" / "rust-toolchain" / "VERSION"
+    toolchain_dir = src / "third_party" / "rust-toolchain"
 
     harness = tmp_path / "harness.sh"
     harness.write_text(textwrap.dedent(f"""\
@@ -336,7 +458,9 @@ def _exercise(tmp_path: Path, fake: str):
         env={
             "PATH": "/usr/bin:/bin",
             "COUNTER": str(tmp_path / "counter"),
-            "VERSION_FILE": str(version_file),
+            # The fakes model update_rust.py, which unpacks into this directory
+            # and writes VERSION as one member among many.
+            "TOOLCHAIN_DIR": str(toolchain_dir),
             # The real pause is 15s (the operator's request, asserted separately
             # against the injected source). Zeroed here so three attempts do not
             # cost 30s of wall-clock in the merge gate.
@@ -345,7 +469,36 @@ def _exercise(tmp_path: Path, fake: str):
         capture_output=True, text=True, encoding="utf-8", timeout=180,
     )
     attempts = int((tmp_path / "counter").read_text(encoding="utf-8").strip() or 0)
-    return proc.returncode, proc.stdout + proc.stderr, attempts
+    return _Run(
+        rc=proc.returncode,
+        out=proc.stdout + proc.stderr,
+        attempts=attempts,
+        toolchain_dir=toolchain_dir,
+    )
+
+
+class _Run(NamedTuple):
+    """The result of executing the injected function against a fake.
+
+    `toolchain_dir` is carried so a test can assert on the STATE LEFT ON DISK,
+    not only on what was printed. That matters here: the failure this ticket
+    exists to handle is one where the exit code, the log and the on-disk tree
+    can each tell a different story.
+    """
+
+    rc: int
+    out: str
+    attempts: int
+    toolchain_dir: Path
+
+    @property
+    def rustc_present(self) -> bool:
+        return (self.toolchain_dir / "bin" / "rustc").is_file()
+
+    @property
+    def version_present(self) -> bool:
+        vf = self.toolchain_dir / "VERSION"
+        return vf.is_file() and vf.stat().st_size > 0
 
 
 @requires_posix_shell
@@ -356,13 +509,14 @@ def test_a_transient_segfault_is_retried_and_the_build_survives(tmp_path):
     not read: upstream's `set -e` would abort on the first failed attempt if the
     retry were written as a bare command, and no static check can see that.
     """
-    rc, out, attempts = _exercise(tmp_path, FAKE_SEGFAULT_THEN_OK.format(succeed_on=2))
+    run = _exercise(tmp_path, FAKE_SEGFAULT_THEN_OK.format(succeed_on=2))
 
-    assert rc == 0, f"a transient segfault must be survived, not fatal:\n{out}"
-    assert attempts == 2, (
+    assert run.rc == 0, f"a transient segfault must be survived, not fatal:\n{run.out}"
+    assert run.attempts == 2, (
         f"expected the second attempt to run and succeed; the script was invoked "
-        f"{attempts} time(s). One invocation means `set -e` killed the loop.\n{out}"
+        f"{run.attempts} time(s). One invocation means `set -e` killed the loop.\n{run.out}"
     )
+    assert run.rustc_present, "the surviving run must leave a usable toolchain behind"
 
 
 @requires_posix_shell
@@ -373,15 +527,129 @@ def test_each_failed_attempt_reports_its_exit_code(tmp_path):
     the build log later. So each failed attempt must name ITSELF and its EXIT
     CODE — 139 for a segfault — rather than being swallowed.
     """
-    rc, out, attempts = _exercise(tmp_path, FAKE_SEGFAULT_THEN_OK.format(succeed_on=3))
+    run = _exercise(tmp_path, FAKE_SEGFAULT_THEN_OK.format(succeed_on=3))
 
-    assert rc == 0, out
-    assert attempts == 3
-    assert "attempt 1/3 FAILED with exit code 139" in out, out
-    assert "attempt 2/3 FAILED with exit code 139" in out, out
+    assert run.rc == 0, run.out
+    assert run.attempts == 3
+    assert "attempt 1/3 FAILED with exit code 139" in run.out, run.out
+    assert "attempt 2/3 FAILED with exit code 139" in run.out, run.out
     # On GitHub's own channel too, so it surfaces in the run summary rather than
     # only in a log a reader has to go looking for.
-    assert out.count("::warning::PS-306") >= 2, out
+    assert run.out.count("::warning::PS-306") >= 2, run.out
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# THE PARTIAL TOOLCHAIN — a crash mid-extraction, which is what the runner
+# actually produces, and which the stamp alone cannot tell from a success.
+# ─────────────────────────────────────────────────────────────────────────────
+
+@requires_posix_shell
+def test_a_crash_after_VERSION_is_retried_from_a_WIPED_tree_not_short_circuited(tmp_path):
+    """THE DEFECT THAT MADE THE FIRST CUT OF THIS SCRIPT WORSE THAN NO FIX.
+
+    `VERSION` is not a completion marker — it is one member of the archive
+    (`update.py:194-207`), written partway through `extractall`. So a SIGSEGV,
+    the exact failure being retried, can leave a VERSION that MATCHES the wanted
+    revision beside a tree containing no `bin/rustc`.
+
+    That alone is survivable. What is not, is what `update_rust.py` does next:
+    its stamp short-circuit (`update_rust.py:136-139`) sees an existing
+    directory whose VERSION matches and returns 0 having downloaded NOTHING. A
+    retry that does not clear the leftovers therefore gets an instant, silent
+    "success" over an unusable toolchain — and the run dies much later at
+    gn_gen/ninja with an error naming Rust rather than the segfault. That is
+    strictly worse than the unpatched failure, which at least dies at the right
+    place.
+
+    So the retry must WIPE the tree first, making attempt 2 a genuine fresh
+    download. The fake here models both halves of the real script — the crash
+    after VERSION, and the short-circuit — so an implementation without the wipe
+    fails on the artifact check.
+    """
+    run = _exercise(tmp_path, FAKE_SEGFAULT_AFTER_VERSION_THEN_OK.format(succeed_on=2))
+
+    assert run.attempts == 2, f"the crash must be retried:\n{run.out}"
+    assert "attempt 1/3 FAILED with exit code 139" in run.out, run.out
+
+    # The retry must NOT have taken the short-circuit. If it had, the fake would
+    # have printed this and exited 0 without extracting anything.
+    assert "stamp matches" not in run.out, (
+        "attempt 2 hit update_rust.py's stamp short-circuit, which means the "
+        "crashed attempt's leftovers were still on disk. The retry downloaded "
+        f"nothing and 'succeeded' over a partial toolchain:\n{run.out}"
+    )
+    assert "discarding the failed attempt" in run.out, (
+        f"the retry must announce that it cleared the partial tree:\n{run.out}"
+    )
+
+    assert run.rc == 0, f"a genuinely retried crash must be survived:\n{run.out}"
+    assert run.rustc_present, (
+        "the run reported success, so the toolchain must actually be complete — "
+        "this is the assertion a short-circuited retry cannot satisfy"
+    )
+
+
+@requires_posix_shell
+def test_a_partial_toolchain_is_never_accepted_as_a_materialised_one(tmp_path):
+    """The artifact test must be the COMPILER, not the stamp the crash wrote.
+
+    Every attempt here crashes after writing VERSION, so at the end of the loop
+    the stamp is present and `bin/rustc` is not. An implementation checking
+    `[ -s VERSION ]` returns 0 and lets the build continue; the honest test is
+    `bin/rustc`, which is what Chromium consumes (`build/config/rust.gni:436`).
+    """
+    run = _exercise(tmp_path, FAKE_ALWAYS_SEGFAULTS_AFTER_VERSION)
+
+    assert run.attempts == 3, f"expected exactly 3 attempts, got {run.attempts}:\n{run.out}"
+    assert run.version_present, (
+        "precondition: this fake must leave the misleading stamp behind, or the "
+        "test is not exercising the case it claims to"
+    )
+    assert not run.rustc_present, "precondition: and no compiler"
+
+    assert run.rc != 0, (
+        "a stamp without a compiler is a PARTIAL toolchain and must fail the "
+        f"run. Checking VERSION alone is the defect this test exists to catch:\n{run.out}"
+    )
+    assert "INCOMPLETE" in run.out, (
+        f"the log must name the partial extraction specifically:\n{run.out}"
+    )
+    assert "bin/rustc" in run.out, "and name the artifact that is actually missing"
+
+
+@requires_posix_shell
+def test_all_three_attempts_failing_fails_the_run_even_with_an_artifact_present(tmp_path):
+    """A present artifact must never launder a failed final attempt.
+
+    This is the second half of the same false green: even if a crashed attempt
+    happened to leave a COMPLETE toolchain behind, three segfaults are still
+    three segfaults. The ticket puts "making the build go green by other means"
+    explicitly out of scope, so a non-zero final exit code fails the run on its
+    own terms — the artifact check is an ADDITIONAL gate, not an alternative
+    one.
+    """
+    fake = (
+        "#!/bin/bash\n"
+        'n=$(cat "$COUNTER" 2>/dev/null || echo 0); n=$((n+1)); echo $n > "$COUNTER"\n'
+        'mkdir -p "$TOOLCHAIN_DIR/bin"\n'
+        'echo "rustc 1.90.0 abcdef0123 (a1b2c3d4e5 chromium)" > "$TOOLCHAIN_DIR/VERSION"\n'
+        "printf '#!/bin/sh\\nexit 0\\n' > \"$TOOLCHAIN_DIR/bin/rustc\"\n"
+        'chmod +x "$TOOLCHAIN_DIR/bin/rustc"\n'
+        "kill -SEGV $$\n"
+    )
+    run = _exercise(tmp_path, fake)
+
+    assert run.attempts == 3, f"expected exactly 3 attempts, got {run.attempts}:\n{run.out}"
+    assert run.rustc_present, (
+        "precondition: this fake leaves a COMPLETE toolchain behind, so the only "
+        "thing that can fail the run is the exit code"
+    )
+    assert run.rc != 0, (
+        "three failed attempts must fail the run. Continuing because the artifact "
+        f"happens to be present is exactly the laundering the ticket forbids:\n{run.out}"
+    )
+    assert "failed on all 3 attempts" in run.out
+    assert "Refusing to continue" in run.out
 
 
 @requires_posix_shell
@@ -393,12 +661,12 @@ def test_three_attempts_is_the_ceiling_and_then_the_build_FAILS(tmp_path):
     error. "Making the build go green by other means" is explicitly out of
     scope: if the toolchain cannot be produced, the run must fail.
     """
-    rc, out, attempts = _exercise(tmp_path, FAKE_ALWAYS_SEGFAULTS)
+    run = _exercise(tmp_path, FAKE_ALWAYS_SEGFAULTS)
 
-    assert attempts == 3, f"expected exactly 3 attempts, got {attempts}:\n{out}"
-    assert rc != 0, f"exhausted retries must FAIL the run:\n{out}"
-    assert "::error::" in out
-    assert "did NOT materialise" in out
+    assert run.attempts == 3, f"expected exactly 3 attempts, got {run.attempts}:\n{run.out}"
+    assert run.rc != 0, f"exhausted retries must FAIL the run:\n{run.out}"
+    assert "::error::" in run.out
+    assert "did NOT materialise" in run.out
 
 
 @requires_posix_shell
@@ -409,17 +677,104 @@ def test_exit_zero_without_the_artifact_still_fails(tmp_path):
     the check to rest on the artifact on disk. An implementation that retried
     and then trusted `$?` would pass every other test in this file and fail
     here: this fake exits 0 on its first attempt and produces no toolchain at
-    all. The build must stop, naming the missing VERSION file.
+    all. The build must stop, naming the missing artifact.
     """
-    rc, out, attempts = _exercise(tmp_path, FAKE_EXITS_ZERO_PRODUCING_NOTHING)
+    run = _exercise(tmp_path, FAKE_EXITS_ZERO_PRODUCING_NOTHING)
 
-    assert attempts == 1, "a clean exit must not be retried"
-    assert rc != 0, (
+    assert run.attempts == 1, "a clean exit must not be retried"
+    assert run.rc != 0, (
         "a zero exit code with NO toolchain on disk must still fail. Trusting "
-        f"$? here is the defect this test exists to catch:\n{out}"
+        f"$? here is the defect this test exists to catch:\n{run.out}"
     )
-    assert "third_party/rust-toolchain/VERSION" in out
-    assert "did NOT materialise" in out
+    assert "third_party/rust-toolchain/bin/rustc" in run.out
+    assert "did NOT materialise" in run.out
+
+
+@requires_posix_shell
+def test_exit_zero_with_only_the_stamp_still_fails(tmp_path):
+    """The same disagreement in its subtlest direction.
+
+    `update_rust.py` ends with `assert version == GetStampVersion()` — an
+    assertion over the STAMP, not over the tree — so a clean exit is not itself
+    evidence that the compiler was extracted. A fake that exits 0 having written
+    only VERSION must still be refused, and must be refused as INCOMPLETE
+    rather than as absent, because those are different diagnoses for a reader.
+    """
+    run = _exercise(tmp_path, FAKE_EXITS_ZERO_WITH_ONLY_VERSION)
+
+    assert run.attempts == 1, "a clean exit must not be retried"
+    assert run.version_present and not run.rustc_present, "precondition"
+    assert run.rc != 0, (
+        f"a stamp-only tree behind a zero exit code must still fail:\n{run.out}"
+    )
+    assert "INCOMPLETE" in run.out, run.out
+
+
+@requires_posix_shell
+def test_the_first_attempt_does_not_wipe_an_already_good_toolchain(tmp_path):
+    """The wipe is scoped to RETRIES, and that boundary is deliberate.
+
+    `update_rust.py`'s stamp short-circuit is a legitimate optimisation on a
+    re-run: a tree that is already at the wanted revision should return 0
+    immediately without re-downloading hundreds of MB. Wiping unconditionally
+    would destroy that and make every dispatch pay for a fresh download.
+
+    So attempt 1 must leave an existing tree alone. Only attempts 2..n clear it,
+    because only then is the tree known to be a crashed attempt's leftovers.
+    """
+    _make_ucpl(tmp_path)
+    assert _run_harden(tmp_path)[0] == 0
+
+    src = tmp_path / "src"
+    (src / "tools" / "rust").mkdir(parents=True, exist_ok=True)
+    rust = src / "tools" / "rust" / "update_rust.py"
+    rust.write_text(FAKE_SEGFAULT_THEN_OK.format(succeed_on=1), encoding="utf-8")
+    rust.chmod(0o755)
+
+    # A pre-existing, COMPLETE toolchain, as a previous successful run leaves it.
+    toolchain = src / "third_party" / "rust-toolchain"
+    (toolchain / "bin").mkdir(parents=True)
+    (toolchain / "VERSION").write_text(
+        "rustc 1.90.0 abcdef0123 (a1b2c3d4e5 chromium)\n", encoding="utf-8"
+    )
+    rustc = toolchain / "bin" / "rustc"
+    rustc.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    rustc.chmod(0o755)
+    sentinel = toolchain / "lib" / "libstd.rlib"
+    sentinel.parent.mkdir(parents=True)
+    sentinel.write_text("pre-existing", encoding="utf-8")
+
+    harness = tmp_path / "harness.sh"
+    harness.write_text(textwrap.dedent(f"""\
+        set -euo pipefail
+        . ucpl/scripts/shared.sh
+        _src_dir="{src}"
+        persona_update_rust_with_retry
+    """), encoding="utf-8")
+
+    proc = subprocess.run(
+        ["bash", str(harness)], cwd=tmp_path,
+        env={
+            "PATH": "/usr/bin:/bin",
+            "COUNTER": str(tmp_path / "counter"),
+            "TOOLCHAIN_DIR": str(toolchain),
+            "PS306_RETRY_PAUSE_SECONDS": "0",
+        },
+        capture_output=True, text=True, encoding="utf-8", timeout=180,
+    )
+    out = proc.stdout + proc.stderr
+
+    assert proc.returncode == 0, out
+    assert "stamp matches" in out, (
+        "attempt 1 must let update_rust.py take its own up-to-date short-circuit"
+    )
+    assert "discarding the failed attempt" not in out, (
+        f"attempt 1 must NOT wipe an existing tree — only retries do:\n{out}"
+    )
+    assert sentinel.is_file(), (
+        "the pre-existing toolchain was destroyed on the first attempt; that "
+        "would force a full re-download on every dispatch"
+    )
 
 
 @requires_posix_shell
