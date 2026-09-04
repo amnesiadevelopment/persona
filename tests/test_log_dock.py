@@ -542,6 +542,13 @@ def test_ps229_a_drag_accumulates_so_growing_works_as_well_as_shrinking():
     inside the row it started in and the console never grew however far he
     dragged, while shrinking crossed a boundary immediately and worked. Up was
     dead, down worked — which reads as the grip being broken again.
+
+    UPDATED BY PS-291. The accumulator is still the mechanism and this property
+    still holds, but the gesture now has an END: frames apply the raw height so
+    the panel follows the cursor, and the release settles it onto a whole row.
+    So this asserts the row count AT REST, which is when the row count is the
+    right question to ask. Per-frame travel — the quantity this test is
+    structurally unable to see — is pinned separately in the PS-291 block.
     """
     d = LogDock(window_height=1400)
     start = d.rows
@@ -549,11 +556,13 @@ def test_ps229_a_drag_accumulates_so_growing_works_as_well_as_shrinking():
     # Ten upward frames, none of them a whole row on its own.
     for _ in range(10):
         d.drag_by(-10.0)
+    d.drag_end()
     assert d.rows > start, "the console did not grow under an accumulated drag"
 
     grown = d.rows
     for _ in range(10):
         d.drag_by(+10.0)
+    d.drag_end()
     assert d.rows < grown, "the console did not shrink back"
 
 
@@ -583,6 +592,7 @@ def test_ps229_the_grip_is_bounded_by_the_rails_budget_not_only_by_max_height():
     d = LogDock(window_height=680)
     for _ in range(400):
         d.drag_by(-10.0)
+    d.drag_end()
 
     assert d.height <= affordable_height(680)
     assert 680 - d.height >= RAIL_CONTENT_HEIGHT, "the drag starved the rail"
@@ -595,6 +605,7 @@ def test_ps229_the_grip_is_bounded_by_the_rails_budget_not_only_by_max_height():
     tall = LogDock(window_height=1400)
     for _ in range(400):
         tall.drag_by(-10.0)
+    tall.drag_end()
     assert tall.height == MAX_HEIGHT
     assert tall.rows == 20
 
@@ -610,12 +621,14 @@ def test_ps229_the_grip_follows_the_window_it_is_budgeted_against():
     d = LogDock(window_height=1400)
     for _ in range(400):
         d.drag_by(-10.0)
+    d.drag_end()
     assert d.rows == 20
 
     # The window shrinks to the app minimum, then he drags again.
     d.apply_window_height(680)
     for _ in range(400):
         d.drag_by(-10.0)
+    d.drag_end()
     assert 680 - d.height >= RAIL_CONTENT_HEIGHT, "the drag used a stale budget"
     assert d.rows == 3
 
@@ -626,6 +639,7 @@ def test_ps229_a_console_whose_window_is_unknown_is_not_clamped_to_the_floor():
     d = LogDock(window_height=None)
     for _ in range(400):
         d.drag_by(-10.0)
+    d.drag_end()
     assert d.height == MAX_HEIGHT
 
 
@@ -702,3 +716,197 @@ def test_ps229_the_severity_dot_is_centred_by_the_row_not_by_the_font():
     dot_col = row.content.controls[0]
     assert dot_col.height == ROW_HEIGHT
     assert row.content.vertical_alignment == ft.CrossAxisAlignment.STRETCH
+
+
+# ---------------------------------------------------------------------------
+# PS-291: the drag FOLLOWS THE CURSOR instead of stepping a row at a time, and
+# NO path to a height — drag, stepper or minimise — can starve the rail.
+# ---------------------------------------------------------------------------
+
+
+def test_ps291_a_drag_frame_moves_the_panel_by_the_frame_not_by_a_whole_row():
+    """THE DEFECT, and the reason four green drag tests could not see it.
+
+    Every height went through quantize(), which floor-divides onto a 22px grid,
+    so the dock could only ever occupy 76/98/120/142/164... A drag frame
+    delivers ~9-10px (measured: local_delta.y = -9.0 on flet 0.85), so one
+    frame moved NOTHING and the next jumped a full row: the pointer travelled
+    continuously and the panel stepped, lagging by up to a row. That is the
+    owner's "сделать плавным лучше".
+
+    The existing drag tests all assert ROW COUNTS, which is exactly the
+    quantity that cannot see this — a steppy drag and a smooth one reach the
+    same row. So this asserts the TRAVEL, in pixels, per frame.
+    """
+    d = LogDock(window_height=1400)
+    heights = [d.height]
+    for _ in range(12):
+        heights.append(d.drag_by(-9.0))
+
+    steps = [b - a for a, b in zip(heights, heights[1:])]
+
+    # Every frame moves the panel, and moves it by the frame's own distance.
+    assert all(step == 9.0 for step in steps), f"the panel stepped: {steps}"
+    # Stated the other way round, because THIS is the shape of the bug: no
+    # frame may move nothing, and none may jump a whole row.
+    assert 0 not in steps, "a frame moved the panel by nothing"
+    assert ROW_HEIGHT not in steps, "a frame jumped a whole row"
+
+
+def test_ps291_the_release_settles_the_console_onto_a_whole_row():
+    """The snap is not gone — it MOVED to the release.
+
+    Dropping the per-frame snap is what lets the panel follow the cursor.
+    Without a settle it would also let the console rest permanently at "five
+    rows and a two-pixel sliver of a sixth", which is precisely the "пустое
+    место" the row unit exists to remove. So the console is continuous between
+    press and release, and lands on a row boundary the moment the pointer is
+    let go.
+    """
+    from src.ui.components.log_dock import height_for_rows as h
+
+    d = LogDock(window_height=1400)
+    for _ in range(5):
+        d.drag_by(-9.0)
+
+    mid = d.height
+    assert mid != h(rows_at(mid)), "premise: the drag left the panel mid-row"
+
+    d.drag_end()
+    assert d.height == h(d.rows), "the console did not settle onto a row"
+    assert float(d.height).is_integer()
+
+    # Settling goes to the NEAREST row, not the floor: a release 21px into a
+    # row was a release AT that row, and dropping almost a full row away from
+    # the pointer reads as the console rejecting the gesture.
+    d2 = LogDock(window_height=1400)
+    d2.set_rows(6)
+    for _ in range(21):
+        d2.drag_by(-1.0)  # 21px up: one pixel short of row 7
+    d2.drag_end()
+    assert d2.rows == 7, f"the release fell back a whole row (rows={d2.rows})"
+
+
+def rows_at(height):
+    from src.ui.components.log_dock import rows_for_height
+
+    return rows_for_height(height)
+
+
+def test_ps291_the_readout_never_claims_a_row_the_operator_cannot_see():
+    """The readout is in ROWS and the panel is now continuous, so the two can
+    disagree — and the direction of that disagreement is the whole point.
+
+    _paint_size FLOORS: a console 21px into row 8 reads "7 rows", because seven
+    is what it is actually showing. It must never round UP to a row that is
+    half-clipped, or the number stops being checkable against the screen, which
+    is the one property the row unit was chosen for.
+    """
+    d = LogDock(window_height=1400)
+    d.set_rows(6)
+    assert d._size_label.value == "6 rows"
+
+    for _ in range(21):  # 21px up — a sliver short of the seventh row
+        d.drag_by(-1.0)
+    assert d._size_label.value == "6 rows", "the readout claimed a clipped row"
+
+    d.drag_by(-1.0)  # the row completes
+    assert d._size_label.value == "7 rows"
+
+
+def test_ps291_the_plus_stepper_cannot_starve_the_rail_at_the_app_minimum():
+    """⭐ THE SECOND DEFECT: the budget bounded the DRAG and nothing else.
+
+    affordable_height() was referenced at three sites and none of them was the
+    button path, so set_height()/set_rows() clamped to MAX_HEIGHT only.
+    Computed on the app's own 680px minimum window: clicking + up to 20 rows
+    yields a 494px dock, leaving the rail 186px against the 560px it needs —
+    starving it by 374px. That is the exact failure drag_by's docstring says
+    was fixed, reproduced through the button instead of the grip.
+    """
+    d = LogDock(window_height=680)
+
+    # Hold + down as hard as the operator can.
+    for _ in range(40):
+        d.set_rows(d.rows + 1)
+
+    assert 680 - d.height >= RAIL_CONTENT_HEIGHT, (
+        f"the stepper starved the rail by "
+        f"{RAIL_CONTENT_HEIGHT - (680 - d.height)}px"
+    )
+    # The SAME cap the drag stops at — reaching a height through a different
+    # control must not reach a different budget.
+    assert d.rows == 3
+    assert d.height == affordable_height_at(680)
+
+    # And the readout tells the truth about the refusal rather than reporting
+    # the row count that was asked for.
+    assert d._size_label.value == "3 rows"
+
+
+def affordable_height_at(window_height):
+    from src.ui.components.log_dock import affordable_height
+
+    return affordable_height(window_height)
+
+
+def test_ps291_the_budget_bounds_growth_and_never_bounds_shrinking():
+    """MINIMIZE must still reach one row on ANY window.
+
+    The clamp is a CEILING. Shrinking is never what starves the rail, so a
+    short window may take height away from the console and must never deny the
+    operator a smaller one — the floor is the console's own MIN_ROWS.
+    """
+    from src.ui.components.log_dock import MIN_ROWS
+
+    for window in (680, 700, 900, 1400, None):
+        d = LogDock(window_height=window)
+        d.set_rows(MIN_ROWS)
+        assert d.rows == MIN_ROWS, f"MINIMIZE could not reach one row at {window}"
+        assert d.height == MIN_HEIGHT
+
+    # Even a window too short to afford a single row still owes him a usable
+    # console rather than nothing.
+    tiny = LogDock(window_height=400)
+    assert tiny.height == MIN_HEIGHT
+    tiny.set_rows(20)
+    assert tiny.height == MIN_HEIGHT
+
+
+def test_ps291_the_clamp_is_in_set_height_so_every_caller_inherits_it():
+    """WHERE the clamp lives, asserted rather than commented.
+
+    The reported route was the stepper, so clamping set_rows alone would have
+    closed it — and left the rail starvable by the next caller that sets a
+    height in PIXELS. That is exactly how this bug was born: drag_by was fixed,
+    set_height was not, and the defect walked to the button path. "The sidebar
+    must never compress below what its items need" is a property of the
+    console's HEIGHT, so it is enforced where every height passes.
+    """
+    d = LogDock(window_height=680)
+
+    # A pixel height, not a row count: the path set_rows does not go through.
+    d.set_height(MAX_HEIGHT)
+    assert 680 - d.height >= RAIL_CONTENT_HEIGHT, "a pixel height starved the rail"
+    assert d.height == affordable_height_at(680)
+
+    # A drag that ends beyond the budget settles inside it too.
+    for _ in range(400):
+        d.drag_by(-10.0)
+    d.drag_end()
+    assert 680 - d.height >= RAIL_CONTENT_HEIGHT, "the settle escaped the budget"
+
+
+def test_ps291_a_window_that_shrinks_mid_session_bounds_the_next_stepper_climb():
+    """A stale budget is the same defect one resize later — the property the
+    drag path already had, now shared by the buttons."""
+    d = LogDock(window_height=1400)
+    for _ in range(40):
+        d.set_rows(d.rows + 1)
+    assert d.rows == 20
+
+    d.apply_window_height(680)
+    for _ in range(40):
+        d.set_rows(d.rows + 1)
+    assert 680 - d.height >= RAIL_CONTENT_HEIGHT, "the stepper used a stale budget"
+    assert d.rows == 3
