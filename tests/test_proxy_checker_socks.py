@@ -5,7 +5,9 @@ scheme, so `check_proxy` used to send `CONNECT ipwho.is:443` at a SOCKS5 server
 that was waiting for a `\\x05` greeting. It never answered, the check failed
 permanently for persona's DEFAULT scheme, the proxy kept an empty
 country/timezone, and the launcher then fell back to the operator's REAL host
-timezone inside a proxied profile (services/browser/process.py:306-314).
+timezone inside a proxied profile (`process._profile_timezone` — which now
+refuses such a launch rather than falling back; the leak is closed, the broken
+check it depended on is what this file pins).
 
 The assertion that would have caught it is the one below on the FIRST BYTES the
 proxy receives: \\x05..., not `CONNECT `.

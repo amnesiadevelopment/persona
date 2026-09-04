@@ -154,10 +154,12 @@ def _is_socks_scheme(scheme: str) -> bool:
     validate the scheme: handed a socks5:// URL it sends an HTTP `CONNECT`,
     which a SOCKS server (waiting for a \\x05 greeting) never answers. socks5 is
     persona's default scheme, so the geo check failed permanently for the app's
-    primary proxy type — and a proxy left with no country/timezone makes the
-    launcher fall back to the operator's REAL host timezone inside a proxied
-    profile (services/browser/process.py:306-314). Routing a socks URL to
-    aiohttp is therefore a location leak, not just a broken check.
+    primary proxy type — and a proxy left with no country/timezone used to make
+    the launcher fall back to the operator's REAL host timezone inside a proxied
+    profile (`process._profile_timezone`, which now REFUSES that launch instead;
+    the leak this argument names is closed, the broken check is still a defect).
+    Routing a socks URL to aiohttp is therefore a location leak, not just a
+    broken check.
 
     Matched as a PREFIX, not against a fixed set. A hand-written set drifted
     from validation.py in both directions on the first attempt at this fix
@@ -337,12 +339,26 @@ async def _resolve_geo(
     proxy unlaunchable, which is the exact defect this function exists to stop.
     So the best PARTIAL answer seen along the way is remembered and used only
     once nobody has answered with a country. A body carrying a usable TIMEZONE
-    is enough for the launch path, which reads `proxy.timezone` FIRST and
-    derives from `country_code` only when there is no zone
-    (launch_policy.py:420-423) — so throwing that zone away and then condemning
-    the proxy for having no geography discards the very field the consumer
-    wanted. It is also what the single-provider version did before this change:
-    a partial body used to come back ok=True with its zone.
+    is enough for the TIMEZONE half of the launch path, which reads
+    `proxy.timezone` FIRST and derives from `country_code` only when there is no
+    zone (`launch_policy._proxy_timezone`, branch 1) — so throwing that zone
+    away and then condemning the proxy for having no geography discards the very
+    field the consumer wanted. It is also what the single-provider version did
+    before this change: a partial body used to come back ok=True with its zone.
+
+    ⚠️ A PARTIAL NO LONGER MAKES THE PROFILE LAUNCHABLE, and that is a real
+    narrowing of what this paragraph promises (PS-240). The LOCALE half has no
+    zone to fall back on: handed a record with a timezone but no country it used
+    to answer `en-US`, which shipped an American-English browser beside the
+    exit's own non-US clock — the contradiction the geo derivation exists to
+    avoid. `process._profile_locale` now refuses that launch with
+    `ExitCountryUnknownError`. Remembering the partial is still WORTH DOING and
+    this behaviour is deliberately unchanged: the record keeps `last_check_ok`
+    true rather than condemning a healthy exit, the refusal names a re-check as
+    the remedy (unlike its missing-row siblings, a check that answers with a
+    country resolves it), and the alternative — reporting the proxy as failed —
+    is strictly worse for the operator. What the partial buys is a proxy that is
+    still trusted and one check away from launching, not one that launches now.
 
     A PARTIAL IS STILL NOT AN ANSWER, and that is what keeps the rule above
     intact: remembering one never ends the loop early, so every remaining

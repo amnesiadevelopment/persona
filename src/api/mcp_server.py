@@ -187,7 +187,8 @@ def build_mcp(container: Container) -> FastMCP:
         #
         # DO NOT re-derive this from `_needs_fetch` — that flag is a dead end,
         # and following it is what made this route look unreachable. process.py's
-        # `"_needs_fetch"` (process.py:364) has ZERO consumers: `_child` reads
+        # `"_needs_fetch"` (the key it writes into the invisible cfg dict) has
+        # ZERO consumers: `_child` reads
         # cfg key-by-key via .get() and never forwards it, and the engine is
         # handed an explicitly-constructed kwargs dict, never cfg. So the flag
         # cannot trigger anything — and ruling out the FLAG does not rule out the

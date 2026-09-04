@@ -68,12 +68,19 @@ MONO = "monospace"
 #:     1280px -> (1280-297)/6.9 = ~142 chars/line
 #:     1024px -> (1024-297)/6.9 = ~105 chars/line     (window.min_width)
 #:
-#: The longest refusal this product composes is TimezoneUnderivableError
-#: (process.py:233-241), which reaches the log as
-#: "Error starting process: ..." at 460 characters -> ceil(460/142) = 4 lines
-#: at 1280px and ceil(460/105) = 5 at 1024px. Five therefore clears the worst
-#: REAL message at the smallest window the app can be at, and stops well short
-#: of turning one pasted stack trace into a screenful.
+#: The longest refusal this product composes is LocaleUnderivableError
+#: (``process._profile_locale``, which overtook TimezoneUnderivableError's 460
+#: in PS-240), which reaches the log as "Error starting process: ..." at 475
+#: characters -> ceil(475/142) = 4 lines at 1280px and ceil(475/105) = 5 at
+#: 1024px. Five therefore clears the worst REAL message at the smallest window
+#: the app can be at, and stops well short of turning one pasted stack trace
+#: into a screenful.
+#:
+#: ⚠️ FIVE IS NOW EXACTLY MET AT 1024px, not cleared with room to spare. A
+#: refusal longer than ~525 characters would need SIX and would be cut, so a
+#: reworded or added refusal must be measured against this budget rather than
+#: assumed to fit. The two other refusals added by that ticket were sized to it
+#: (ExitCountryUnknownError composes 407 -> 4 lines at 1024px).
 #:
 #: THOSE TWO NUMBERS ARE A CEILING, NOT A PREDICTION, and the driven run says
 #: so: the live screenshots show that refusal wrapping over THREE lines at
