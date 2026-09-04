@@ -15,6 +15,16 @@ a reviewer cannot see by reading the YAML quickly, and both are pinned here.
    workflow that was never triggered. That is a silent failure, so it gets a
    test rather than a comment.
 
+2b. A label is not a machine. `persona-build` is a custom label and a SECOND
+   runner was registered carrying it — `persona-mac-builder`, arm64 Darwin with
+   no docker, which cannot build Chromium at all. Dispatches then went to
+   whichever runner grabbed them first, and two did land there (runs
+   33920732173 and 33920892080, both confirmed by `runner_name` on the jobs
+   API). This is worse than (2) because it does NOT hang: it fails in ~20
+   seconds with an error that reads like a build problem. Pinned by requiring
+   GitHub's automatic `Linux`/`X64` labels, which the WSL builder carries and an
+   arm64 Mac cannot.
+
 The third assertion is about blast radius rather than the machine: this workflow
 must stay OUT of ci.yml, so the owner closing his laptop cannot fail the checks
 that gate every other ticket in the project.
@@ -105,6 +115,41 @@ def test_every_job_targets_the_label_the_owner_registered(workflow):
             "job would queue FOREVER WITH NO ERROR, which looks exactly like a "
             "workflow that was never triggered."
         )
+
+
+def test_every_job_excludes_a_runner_that_cannot_build_chromium(workflow):
+    """A LABEL IS NOT A MACHINE — and on 2026-09-04 a second machine answered ours.
+
+    `persona-build` is a custom label, and nothing stops a second runner being
+    registered with it. One was: `persona-mac-builder`, Darwin arm64 (T8112),
+    8 cores, no docker. Dispatches then went to whichever runner picked up
+    first, and two landed on the Mac — run 33920732173 (`trees=patched`, refused
+    by the PS-244 borrowed-control guard on the host mismatch) and run
+    33920892080 (`trees=both`, dead at the instrument check with
+    `docker: command not found`). Both were confirmed by reading
+    `runner_name` off the jobs API, not inferred from the symptom.
+
+    That failure mode is WORSE than the wrong-label one the test above pins,
+    because it does not hang: it fails in ~20 seconds with an error that reads
+    like a build problem, so the reader goes looking for a defect in the tree.
+
+    GitHub gives every self-hosted runner automatic OS/arch labels, so the fix
+    lives in this repo and needs no runner re-registration: requiring `Linux`
+    and `X64` matches the WSL builder and cannot match an arm64 Mac. This test
+    exists so that "simplifying" `runs-on` back to two labels fails here rather
+    than silently on the next dispatch.
+    """
+    for name, job in workflow["jobs"].items():
+        runs_on = job["runs-on"]
+        for required in ("Linux", "X64"):
+            assert required in runs_on, (
+                f"job {name!r}: runs-on must require {required!r} so the job can only be "
+                f"scheduled onto a Linux x64 self-hosted runner. Without it a machine "
+                f"carrying {RUNNER_LABEL!r} but incapable of building Chromium "
+                f"(persona-mac-builder: arm64, no docker) can take the dispatch and fail "
+                f"in ~20 seconds with an error that looks like a build problem. "
+                f"Found: {runs_on!r}"
+            )
 
 
 def test_patched_build_cannot_run_before_its_own_control(workflow):

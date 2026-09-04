@@ -33,17 +33,52 @@
 # must name ONE branch and must never be `main` or pull requests.
 #
 # ─────────────────────────────────────────────────────────────────────────────
-# THE RUNNER LABEL IS `persona-build`.
+# THE RUNNER SELECTOR IS `[self-hosted, Linux, X64, persona-build]` — ALL FOUR.
 # ─────────────────────────────────────────────────────────────────────────────
 # An earlier comment on PS-218 recommended `persona-build-linux`; the owner
 # registered under `persona-build` and a later comment corrected it. The
 # correction is authoritative and is what is written below. Using the wrong
 # label would queue against a label no runner carries and wait forever WITH NO
-# ERROR — the single most confusing failure mode available here.
+# ERROR — for a long time the single most confusing failure mode available
+# here.
 #
 # Registered runner: `persona-wsl-builder` on amnesiadevelopment/persona,
 # labels `self-hosted, Linux, X64, persona-build`, WSL2 Ubuntu 26.04,
 # 32 threads / 54 GB RAM / 16 GB swap, Docker 29.7.2.
+#
+# ⚠️ A LABEL DOES NOT IDENTIFY A MACHINE, AND ON 2026-09-04 A SECOND ONE
+#    ANSWERED THIS ONE. That is a NEW and WORSE failure mode than the queue-
+#    forever one above, because it does not hang: it fails in about twenty
+#    seconds with an error that reads like a build problem, on a machine that
+#    cannot build Chromium at all.
+#
+#    `persona-mac-builder` — Darwin arm64 (T8112), 8 cores, NO DOCKER — was
+#    registered carrying `persona-build`, and a dispatch went to whichever
+#    runner picked it up first. Two runs landed on it, measured, not inferred
+#    (`gh api .../actions/runs/<id>/jobs --jq '.jobs[].runner_name'`):
+#
+#      33920732173  trees=patched  → persona-mac-builder; the PS-244 borrowed-
+#                                    control guard REFUSED it correctly, naming
+#                                    the host mismatch and the 32-vs-8 nproc gap
+#      33920892080  trees=both     → persona-mac-builder; died at the instrument
+#                                    check with
+#                                    `./scripts/docker-build.sh: line 9:
+#                                     docker: command not found`
+#
+#    (Both guards behaved correctly — the workflow never compared a patched tree
+#    against a control it could not trust. What was broken was the SCHEDULING.)
+#
+#    GitHub gives every self-hosted runner automatic OS/arch labels alongside
+#    its custom ones, so the repo can exclude the wrong machine WITHOUT anyone
+#    touching a runner registration: requiring `Linux` and `X64` matches the WSL
+#    builder and CANNOT match an arm64 Mac. That is why both `runs-on:` lines
+#    below name four labels and not two. Do not "simplify" them back to
+#    `[self-hosted, persona-build]` — that is the bug, and
+#    `tests/test_ps218_trial_build_workflow.py` asserts against it.
+#
+#    Installing docker on the Mac is NOT the fix: it is arm64, so it would
+#    produce a binary for the wrong architecture — a green run that ships the
+#    wrong thing is worse than a red one.
 #
 # ─────────────────────────────────────────────────────────────────────────────
 # THE ORDER IS THE WHOLE DESIGN — AND IT IS ENFORCED BY `needs:`, NOT BY PROSE
@@ -235,7 +270,10 @@ jobs:
     # to have been SKIPPED on the patched-only path, and on that path a
     # BORROWED control must pass verification before anything is compiled.
     if: inputs.trees != 'patched'
-    runs-on: [self-hosted, persona-build]
+    # Linux + X64 are GitHub's automatic labels for the WSL builder; they are
+    # here to exclude `persona-mac-builder`, which also carries `persona-build`
+    # and cannot build Chromium (arm64, no docker). See the header.
+    runs-on: [self-hosted, Linux, X64, persona-build]
     # Two builds of ~4–5.5 h each are expected; the upstream CI entrypoint
     # itself carries a 5 h ninja timeout. This ceiling is deliberately well
     # above the prediction so that a SLOW build reports a slow wall-clock —
@@ -435,7 +473,10 @@ jobs:
       ${{ !cancelled()
       && ( (inputs.trees == 'both' && needs.unmodified.result == 'success')
         || (inputs.trees == 'patched' && needs.unmodified.result == 'skipped') ) }}
-    runs-on: [self-hosted, persona-build]
+    # Linux + X64 are GitHub's automatic labels for the WSL builder; they are
+    # here to exclude `persona-mac-builder`, which also carries `persona-build`
+    # and cannot build Chromium (arm64, no docker). See the header.
+    runs-on: [self-hosted, Linux, X64, persona-build]
     timeout-minutes: 900
     steps:
       # Same zeroing as the control job, and for the same reason: `record/` is
