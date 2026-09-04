@@ -146,6 +146,10 @@ def build_mcp(container: Container) -> FastMCP:
         "detail": ...}`` when a fail-closed guard refused the launch — the same
         refusal shape this tool already uses above, now covering the case that
         matters most.
+
+        Answers ``{"launched": False, "error": ...}`` — the two-key
+        precondition shape — when a check BEFORE the attempt refused it: no
+        such profile, already running, or the Firefox engine not installed.
         """
         pm = container.profile_manager
         bl = container.browser_launcher
@@ -154,6 +158,101 @@ def build_mcp(container: Container) -> FastMCP:
             return {"launched": False, "error": "no such profile"}
         if bl.is_running(name):
             return {"launched": False, "error": "already running"}
+        # ENGINE READINESS — the precondition the UI and REST doors both perform
+        # before start_thread, and the one this lane reached the launch path
+        # without (PS-222).
+        #
+        # Falling through costs BOTH of the harms below, and the first is the
+        # one the two guarding doors name. Traced and executed here (PS-222),
+        # not inherited from those comments.
+        #
+        # (1) THE BLOCKING, NON-RESUMABLE DOWNLOAD — reachable, and reached.
+        # With no build installed `_binary_path_override()`
+        # (engine_install.py:325) returns None, meaning "let the engine resolve
+        # its own build", so `binary_path` is OMITTED from the engine kwargs
+        # entirely (invisible_launch.py:3333-3335). The engine's
+        # `resolve_executable` (invisible_playwright/_engine.py:20) branches on
+        # exactly that: a falsy `binary_path` takes the `ensure_binary(seal=...)`
+        # arm, which falls past its cache-hit and cache-adoption legs to
+        # `_download_file` (invisible_core/download.py:431) — a single
+        # `requests.get(stream=True, timeout=60)` with NO Range header and no
+        # resume, bounded only by a 1800s deadline. Verified by running it with
+        # an empty engine cache and the fetcher instrumented so nothing
+        # transferred: the fetch started against the firefox-20 release asset.
+        # This is the hazard `routes/browser.py:87` and `ui/actions/browser.py`
+        # describe, and the one persona's own `ensure_invisible_installed`
+        # docstring (engine_install.py:387-392) explains it wrote a resumable
+        # wrapper to avoid — "a single non-resumable request with a 60s timeout,
+        # which Tor reliably tears down mid-stream".
+        #
+        # DO NOT re-derive this from `_needs_fetch` — that flag is a dead end,
+        # and following it is what made this route look unreachable. process.py's
+        # `"_needs_fetch"` (process.py:364) has ZERO consumers: `_child` reads
+        # cfg key-by-key via .get() and never forwards it, and the engine is
+        # handed an explicitly-constructed kwargs dict, never cfg. So the flag
+        # cannot trigger anything — and ruling out the FLAG does not rule out the
+        # FETCH, because the fetch is reached by the omitted-`binary_path` route
+        # above, which never consults it. Dead config, left in place
+        # deliberately; removing it is a separate slice.
+        #
+        # (2) AND THEN THE LAUNCH IS REPORTED AS A SUCCESS. Whatever the fetch
+        # does — fail, time out, or 404 on a host whose asset is missing — the
+        # enter raises inside the child, which emits LAUNCH_FAILED on the pipe
+        # (invisible_launch.py:3497-3502, and :3315 for the import-error case),
+        # AFTER the profile was marked running and a child was forked. That
+        # emission is a pipe message, not an exception, so the
+        # `refusal_for_attempt` read below finds no verdict and this tool answers
+        # {"launched": True} for a browser that never opened. Same class of
+        # defect PS-82 fixed on this very lane: the off-machine caller told the
+        # launch succeeded, with the real reason announced only on a pipe it
+        # cannot see. This second harm is what makes THIS door's version worse
+        # than REST's — REST at least fails visibly.
+        #
+        # Resolved on the EFFECTIVE engine, never profile.engine: a mobile
+        # profile storing "firefox" actually launches chromium, and reading the
+        # stored field would demand the Firefox engine for a launch that will
+        # really use chromium. effective_engine's docstring makes install checks
+        # follow it specifically; both guarding doors already do.
+        #
+        # Imported function-locally, like every other consumer: a module-level
+        # import closes an import cycle that fails at import time (see the note
+        # at effective_engine's own definition).
+        from ..services.browser.process import effective_engine
+
+        if effective_engine(profile) == "firefox":
+            from ..services.browser.invisible_launch import is_invisible_installed
+
+            if not is_invisible_installed():
+                # This lane's OWN two-key precondition shape, mirroring the two
+                # refusals directly above — not the four-key
+                # {kind, detail} shape, which belongs to a verdict
+                # `refusal_for_attempt` read back off the launcher after an
+                # attempt actually ran. No attempt runs here, so there is no
+                # verdict to report and no new refusal kind is minted.
+                #
+                # The sentence is deliberately NOT the REST lane's operator
+                # sentence. refusal.py explains why a settled sentence copied
+                # into a second module forks at the first edit — and REST's
+                # remedy ("download it from the app first") addresses a human at
+                # the app, which is not this lane's caller. Short lane-native
+                # label, exactly like "no such profile" and "already running".
+                return {"launched": False, "error": "firefox engine not installed"}
+        # CHROMIUM IS DELIBERATELY NOT GUARDED HERE, and the omission is a
+        # recorded decision rather than a gap (PS-222 required it be settled
+        # either way, never by silence). REST — the other off-machine
+        # programmatic door, and this lane's true peer — guards Firefox only;
+        # only the UI, where an operator can watch the download progress that
+        # makes the refusal legible, guards both. Matching REST keeps the two
+        # API doors answering identically. The chromium asymmetry is real and
+        # now spans BOTH API doors, which makes it one coherent second instance
+        # to close in one slice rather than a half-covered arm here.
+        #
+        # It is also not free to add: the shipped MCP suites drive
+        # chromium-effective profiles with no chromium installed
+        # (tests/test_mcp_launch_refusal.py, tests/test_ps198_cert_trust_api_lanes.py),
+        # so a chromium arm would refuse before the behaviour those files exist
+        # to test could run — inverting suites that own other lanes' semantics.
+        #
         # Stamped BEFORE the call: it is what tells a verdict THIS attempt
         # produced from one an earlier attempt left on record. See
         # api/refusal_report.py — the rule lives there so this lane and the REST
