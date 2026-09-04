@@ -34,6 +34,7 @@ import time
 import pytest
 
 from src.core import settings
+from src.core import platform as _platform
 from src.services import egress
 from src.services.engine import firefox as ff
 from src.services.engine import updater
@@ -105,8 +106,22 @@ def test_configured_policy_keeps_fetch_latest_full_off_urlopen(monkeypatch):
     monkeypatch.setattr(
         egress,
         "fetch_json_via_proxy_sync",
-        lambda *a, **k: {"tag_name": "148.0.0.1", "assets": []},
+        # The releases LIST, per-OS engine asset — the shape the Chromium
+        # updater reads since PS-305 (engine releases are prereleases, so
+        # /releases/latest can never serve one).
+        lambda *a, **k: [{
+            "tag_name": "personium-148.0.0.1",
+            "prerelease": True,
+            "assets": [{
+                "name": "personium-148.0.0.1-linux-x86_64.AppImage",
+                "browser_download_url": "http://x/engine",
+                "digest": "sha256:" + "a" * 64,
+            }],
+        }],
     )
+    monkeypatch.setattr(_platform, "IS_WINDOWS", False)
+    monkeypatch.setattr(_platform, "IS_MACOS", False)
+    monkeypatch.setattr(_platform, "IS_LINUX", True)
 
     tag, _url, _digest = updater.fetch_latest_full()
     assert tag == "148.0.0.1", "the document must come back through the policy"
@@ -149,8 +164,22 @@ def test_default_is_direct_and_unchanged_for_chromium(monkeypatch):
         seen["url"] = req.full_url
         seen["headers"] = dict(req.headers)
         seen["timeout"] = timeout
-        return _Resp(b'{"tag_name": "148.0.0.1", "assets": []}')
+        # The releases LIST (PS-305): engine releases are prereleases, so the
+        # Chromium updater enumerates and filters by tag rather than asking
+        # /releases/latest, which by design would never serve one.
+        return _Resp(json.dumps([{
+            "tag_name": "personium-148.0.0.1",
+            "prerelease": True,
+            "assets": [{
+                "name": "personium-148.0.0.1-linux-x86_64.AppImage",
+                "browser_download_url": "http://x/engine",
+                "digest": "sha256:" + "a" * 64,
+            }],
+        }]).encode())
 
+    monkeypatch.setattr(_platform, "IS_WINDOWS", False)
+    monkeypatch.setattr(_platform, "IS_MACOS", False)
+    monkeypatch.setattr(_platform, "IS_LINUX", True)
     monkeypatch.setattr(updater.urllib.request, "urlopen", capture)
     # No proxy transport may be consulted at all on the default path.
     monkeypatch.setattr(

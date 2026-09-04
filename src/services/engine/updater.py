@@ -1,11 +1,17 @@
-"""fingerprint-chromium engine version check + download, per OS.
+"""Personium engine version check + download, per OS.
 
 The engine lives in ENGINE_DIR. We track the installed version in
-ENGINE_DIR/version.txt and compare it against the latest GitHub release. The
-release ships a different asset per OS — a Linux AppImage, a Windows zip
-(containing chrome.exe), and a macOS dmg — so download/install branches on the
-running platform while the launcher always finds the binary at the path
-platform.fingerprint_chromium_filename() resolves to.
+ENGINE_DIR/version.txt and compare it against the newest published Personium
+release. Releases are published in persona's OWN repository alongside the
+application (see RELEASING.md), tagged `personium-<chromium version>` and marked
+as prereleases; each ships a different asset per OS — a Linux AppImage, a
+Windows zip (containing chrome.exe), and a macOS dmg — so download/install
+branches on the running platform while the launcher always finds the binary at
+the path platform.fingerprint_chromium_filename() resolves to.
+
+⚠️ THE APPLICATION'S OWN RELEASES LIVE IN THAT SAME REPOSITORY, and this module
+must never select one. See is_engine_tag and _asset_matches — two independent
+guards, either of which excludes every application release on its own.
 """
 
 import json
@@ -71,13 +77,50 @@ BACKUP_NAME = ".engine-backup"
 # not a version history and there is no way back to an arbitrary older build.
 # Matches the Firefox side's policy (engine_install.rollback_target).
 BUILDS_FILE = os.path.join(ENGINE_DIR, "builds.json")
+# WHERE PERSONIUM RELEASES COME FROM — OUR OWN REPOSITORY, ALONGSIDE THE APP.
+#
+# This used to be adryfish/fingerprint-chromium, the upstream that has stopped
+# (last commit 2026-06-21; its newest tag ships no source tree). The owner's
+# decision, 2026-09-03: the application and the engine only work as a pair and
+# are versioned together, so Personium releases are published in persona's own
+# repository. See RELEASING.md for the whole scheme.
+#
+# THE CONSEQUENCE THAT SHAPES THIS WHOLE MODULE: both updaters now read the SAME
+# repository's releases, and neither may ever select the other's artifact. Three
+# independent guards keep them apart (RELEASING.md § Why this matters); two of
+# them live here — the tag filter (`is_engine_tag`) and the asset rule
+# (`_asset_matches`) — and each excludes every application release ON ITS OWN.
+ENGINE_REPO = "amnesiadevelopment/persona"
+
+# What marks a release as an ENGINE release rather than an application one. The
+# app tags `vX.Y.Z`; Personium tags `personium-<chromium version>`, which keeps
+# engine releases sortable among themselves and unmistakable against the app's.
+ENGINE_TAG_PREFIX = "personium-"
+
+# THE RELEASES LIST, NOT `/releases/latest`, AND THAT IS LOAD-BEARING.
+#
+# Engine releases are published as PRERELEASES, so that the app's one
+# `releases/latest` pointer stays on the application (verified 2026-09-04
+# against neovim/neovim, whose 11-day-newer `nightly` prerelease does not take
+# that pointer). `/releases/latest` would therefore never return an engine
+# release at all — it has to be found by enumerating and filtering by tag, the
+# same shape the Firefox updater already uses for the same reason (its upstream
+# also publishes releases this one must not pick).
+#
+# NO RATE-LIMIT REGRESSION AND NO TOKEN (PS-216). This is the same
+# api.github.com rate class the `/releases/latest` API call it replaces was in —
+# 60/hour unauthenticated per IP — so nothing got cheaper or more expensive.
+# The APP updater deliberately avoids the API entirely by reading the
+# rate-limit-free redirect, and that trick is unavailable here precisely because
+# the pointer it reads is the one engine releases must not take. Do NOT "solve"
+# a rate limit by adding a token: installs stay unauthenticated and proxied.
 RELEASES_API = (
-    "https://api.github.com/repos/adryfish/fingerprint-chromium/releases/latest"
+    f"https://api.github.com/repos/{ENGINE_REPO}/releases?per_page=30"
 )
 # The by-tag sibling of RELEASES_API. Same document shape, so fetch_release_full
 # below is a variant of fetch_latest_full rather than a second mechanism.
 RELEASE_BY_TAG_API = (
-    "https://api.github.com/repos/adryfish/fingerprint-chromium/releases/tags/{tag}"
+    f"https://api.github.com/repos/{ENGINE_REPO}/releases/tags/{{tag}}"
 )
 
 # Serialises concurrent installs (the UI update thread and ensure_engine can
@@ -387,98 +430,222 @@ def is_newer(latest: str, current: str) -> bool:
     return parse_version(latest) > parse_version(current)
 
 
+def is_engine_tag(tag: str) -> bool:
+    """True when a release tag names a PERSONIUM ENGINE release.
+
+    THE FIRST OF THE TWO GUARDS THIS MODULE OWNS, and the one that runs first:
+    persona's own repository carries application releases (`vX.Y.Z`) beside
+    engine ones (`personium-<version>`), and an engine install that considered
+    an application release at all would be one loosened asset rule away from
+    installing the app as the browser. So application releases are not merely
+    outranked here, they are never candidates.
+
+    Deliberately NOT "it is a prerelease". The prerelease marking is what keeps
+    engine releases off the app's `releases/latest` pointer, but it is a box a
+    person ticks by hand at release time, and a guard that rests on it would
+    fail exactly when that hand slipped. This reads the TAG, which is the same
+    string the version is derived from and cannot be got wrong independently."""
+    return (tag or "").startswith(ENGINE_TAG_PREFIX)
+
+
+def version_from_tag(tag: str) -> str:
+    """'personium-152.0.7977.75' -> '152.0.7977.75'; anything else unchanged.
+
+    THE PREFIX MUST NOT TRAVEL PAST THIS MODULE'S API BOUNDARY. version.txt is
+    the SOLE source of the Chromium version an Android profile advertises
+    (`current_version` -> `browser/engine_version.parse`), so a prefixed string
+    recorded there would leak straight into what a page can read. Everything
+    this module hands a caller — `fetch_latest_full`, `fetch_release_full`,
+    `ensure_engine` — therefore speaks BARE VERSIONS, exactly as it did when
+    upstream's tags were bare, and `engine_tag()` puts the prefix back at the
+    one place it is needed (the by-tag URL).
+
+    That also means `policy.check`, `is_newer`, `parse_version`, builds.json and
+    every UI reader keep working unchanged, and no on-disk record needs
+    migrating."""
+    t = tag or ""
+    return t[len(ENGINE_TAG_PREFIX):] if t.startswith(ENGINE_TAG_PREFIX) else t
+
+
+def engine_tag(version: str) -> str:
+    """'152.0.7977.75' -> 'personium-152.0.7977.75'; an already-prefixed value
+    is returned unchanged. The inverse of version_from_tag, used only where a
+    real published tag is required — i.e. the by-tag release URL."""
+    v = version or ""
+    if not v or v.startswith(ENGINE_TAG_PREFIX):
+        return v
+    return ENGINE_TAG_PREFIX + v
+
+
 def _asset_matches(name: str) -> bool:
-    """True when a release asset filename is the one for this OS. The release
-    carries several artifacts; we pick the AppImage on Linux, the Windows zip
-    (chrome.exe inside), and the macOS dmg."""
+    """True when a release asset filename is the ENGINE asset for this OS.
+
+    THE SECOND OF THIS MODULE'S TWO GUARDS, and it is anchored at BOTH ENDS on
+    purpose. The rule used to be a bare suffix test — on Linux,
+    `name.endswith("x86_64.AppImage")` — and the moment engine and application
+    assets shared a repository that rule selected `persona-x86_64.AppImage`, the
+    APPLICATION's own Linux asset. Reproduced, not predicted (PS-305).
+
+    So an engine asset must carry the `personium-` prefix AND this OS's marker
+    (`personium-<version>-linux-x86_64.AppImage`, `-windows-x86_64.zip`,
+    `-macos-x86_64.dmg`; see RELEASING.md). EITHER anchor alone already excludes
+    every application asset — `persona-` is not `personium-`, and no application
+    asset carries an OS-marked engine suffix — which is the point: neither is
+    load-bearing by itself, so loosening one does not silently reopen the hole.
+
+    Note the prefix is checked with an explicit separator-bearing constant
+    rather than by leaning on `persona` vs `personium` differing by three
+    characters: the per-OS suffix is the fuller anchor and both are required."""
+    if not name.startswith(ENGINE_TAG_PREFIX):
+        return False
     if _platform.IS_WINDOWS:
-        return name.endswith("_windows_x64.zip")
+        return name.endswith("-windows-x86_64.zip")
     if _platform.IS_MACOS:
-        return name.endswith("_macos.dmg")
-    return name.endswith("x86_64.AppImage")
+        return name.endswith("-macos-x86_64.dmg")
+    return name.endswith("-linux-x86_64.AppImage")
 
 
-def appimage_url_for(tag: str) -> str:
-    """Direct Linux-AppImage URL for a tag, used as a fallback when the release
-    JSON doesn't list assets. Linux only — the other OSes have no stable
-    predictable name (the Windows/macOS assets carry a build suffix like
-    '-1.1'), so off-Linux we rely on the asset list instead."""
-    return (
-        f"https://github.com/adryfish/fingerprint-chromium/releases/download/"
-        f"{tag}/ungoogled-chromium-{tag}-1-x86_64.AppImage"
-    )
+# THE LINUX PREDICTABLE-URL FALLBACK IS GONE, DELIBERATELY (PS-305).
+#
+# `appimage_url_for(tag)` built a download URL by string-formatting a tag, for
+# releases whose JSON listed no assets. It hardcoded an adryfish download URL
+# and could not survive the move to our own repository as written, so it had to
+# be re-pointed or removed. REMOVED, for three reasons:
+#
+#   * It never bought the availability it cost. It fired only when the asset
+#     matcher found nothing, and PS-49 measured that on every upstream release
+#     where that happened the URL it formatted 404'd. It rescued no real
+#     release; it only widened what persona would install without looking.
+#   * We cut our own releases now. A release listing no asset for this OS is a
+#     BROKEN RELEASE, and the right answer to one is a refusal a person can see
+#     and fix — not a guessed URL that installs whatever answers it.
+#   * It could not install anything anyway. A guessed URL carries no digest, and
+#     since PS-49 a digest-less asset is refused at the transfer on every OS.
+#     The fallback's only remaining effect would be to turn a clean "no asset
+#     for this OS" into an EngineUnverifiable further down the path.
+#
+# If a predictable URL is ever wanted again, derive it from RELEASING.md's asset
+# table as a named per-OS rule — not as a Linux-only special case.
 
 
 def _release_asset(data) -> tuple[str, str, str]:
-    """Pull (tag, asset_url, sha256_digest) for THIS OS out of one GitHub
-    release document, or ('','','') when it is not a usable document.
+    """Pull (version, asset_url, sha256_digest) for THIS OS out of one GitHub
+    release document, or ('','','') when it is not a usable ENGINE release.
 
     Shared by the latest-release fetch and the by-tag fetch below, which is the
     point: the two endpoints return the SAME document shape, so the selection
-    rule — which asset is ours, where its digest lives, the Linux
-    predictable-URL fallback — must be one piece of code. Two copies of it is
-    how a rollback quietly starts picking a different asset than an install."""
+    rule — is this an engine release at all, which asset is ours, where its
+    digest lives — must be one piece of code. Two copies of it is how a rollback
+    quietly starts picking a different asset than an install.
+
+    RETURNS THE BARE VERSION, not the published tag: see version_from_tag for
+    why the `personium-` prefix must not travel past this boundary.
+
+    REFUSES RATHER THAN GUESSES. An application release answers ('','','')
+    because its tag is not an engine tag; an engine release that lists no asset
+    for this OS answers ('','','') too, because the predictable-URL fallback
+    that used to paper over that case is gone (see the note above it)."""
     if not isinstance(data, dict):
         return "", "", ""
     tag = data.get("tag_name", "")
+    if not is_engine_tag(tag):
+        # An APPLICATION release (or anything else published in this repo). Not
+        # a candidate at all — see is_engine_tag.
+        return "", "", ""
+    version = version_from_tag(tag)
     url = ""
     digest = ""
-    for asset in data.get("assets", []):
-        name = asset.get("name", "")
+    assets = data.get("assets") or []
+    if not isinstance(assets, list):
+        return "", "", ""
+    for asset in assets:
+        if not isinstance(asset, dict):
+            continue
+        name = asset.get("name", "") or ""
         if _asset_matches(name):
             url = asset.get("browser_download_url", "")
             digest = asset.get("digest", "") or ""
             break
-    if tag and not url and _platform.IS_LINUX:
-        url = appimage_url_for(tag)
-    return tag, url, digest
+    return version, url, digest
 
 
 def fetch_latest_full(timeout: int = 20) -> tuple[str, str, str]:
-    """Return (tag, asset_url, sha256_digest) of the latest release for THIS OS,
-    or ('','','') on failure. Picks the per-OS asset.
+    """Return (version, asset_url, sha256_digest) of the newest ENGINE release
+    for THIS OS, or ('','','') on failure. Picks the per-OS engine asset.
 
-    This is the RAW fetch: it reports what upstream published and applies no
-    policy. Anything that INSTALLS should call fetch_latest_checked() instead,
-    which runs the same fetch through the known-bad list and the tested-major
-    ceiling (see engine/policy.py) and blanks the URL when a build is refused.
+    ENUMERATES AND FILTERS rather than asking `/releases/latest`, because our
+    repository publishes both kinds of release and engine releases are
+    prereleases (which `/releases/latest` excludes by design — that is what
+    keeps that pointer on the application). Same shape as the Firefox updater's
+    fetch, for the same reason.
+
+    THE MAXIMISATION IS OVER ENGINE RELEASES ONLY. An application release is not
+    a candidate (is_engine_tag), an engine release with no asset for this OS is
+    not a candidate either (_release_asset refuses rather than guesses), and the
+    winner is the highest by `parse_version` — NOT simply the first the API
+    listed. GitHub returns releases newest-created-first, but an engine release
+    published out of order, or a re-published older build, must not be able to
+    read as "latest" and downgrade an operator's engine.
+
+    Returns the BARE version, never the `personium-` tag: see version_from_tag.
+
+    This is the RAW fetch: it reports what is published and applies no policy.
+    Anything that INSTALLS should call fetch_latest_checked() instead, which
+    runs the same fetch through the known-bad list and the tested-major ceiling
+    (see engine/policy.py) and blanks the URL when a build is refused.
     """
     try:
         # Through persona's OWN egress policy, never a bare urlopen: this runs
         # unattended at every startup, so it must leave the way the operator
         # said the application's traffic should leave. With no policy set that
         # is a direct send — byte-identical to what this line used to do.
-        data = egress.fetch_json(RELEASES_API, timeout=timeout)
-        return _release_asset(data)
+        releases = egress.fetch_json(RELEASES_API, timeout=timeout)
     except Exception:
         return "", "", ""
+    best = ("", "", "")
+    for release in releases if isinstance(releases, list) else []:
+        if not isinstance(release, dict) or release.get("draft"):
+            continue
+        version, url, digest = _release_asset(release)
+        if not version or not url:
+            continue
+        if not best[0] or parse_version(version) > parse_version(best[0]):
+            best = (version, url, digest)
+    return best
 
 
 def fetch_release_full(tag: str, timeout: int = 20) -> tuple[str, str, str]:
-    """Return (tag, asset_url, sha256_digest) for ONE NAMED release, or
-    ('','','') when upstream does not serve it.
+    """Return (version, asset_url, sha256_digest) for ONE NAMED engine release,
+    or ('','','') when it is not served or is not an engine release.
 
     The by-tag sibling of fetch_latest_full: same egress authority, same
     document shape, same per-OS asset selection (_release_asset). It exists
     because a rollback needs the URL of a SPECIFIC older build, and the only
-    fetch this module had reported whatever upstream currently calls "latest" —
-    which is precisely the build being rolled back FROM.
+    fetch this module had reported whatever is currently newest — which is
+    precisely the build being rolled back FROM.
+
+    ACCEPTS A BARE VERSION and puts the `personium-` prefix back for the URL
+    (engine_tag), because everything on disk — builds.json, version.txt — holds
+    bare versions. An already-prefixed value is accepted too and is not double-
+    prefixed, so a hand-edited record naming the real published tag still works.
 
     ('','','') here is the honest answer to a YANKED OR DELETED RELEASE, and it
     is the trade this whole mechanism was chosen for: persona no longer keeps a
-    copy of the previous engine, so if upstream stops hosting that release the
+    copy of the previous engine, so if that release stops being hosted the
     rollback target is genuinely unreachable and the operator is where they were
     before this existed. The caller must REPORT that plainly — a rollback that
-    silently installs something else is worse than one that refuses."""
+    silently installs something else is worse than one that refuses. It is also
+    the answer for an APPLICATION tag handed to this function by mistake: an
+    engine rollback must never resolve to an application release."""
     if not tag:
         return "", "", ""
     try:
         data = egress.fetch_json(
-            RELEASE_BY_TAG_API.format(tag=tag), timeout=timeout
+            RELEASE_BY_TAG_API.format(tag=engine_tag(tag)), timeout=timeout
         )
-        return _release_asset(data)
     except Exception:
         return "", "", ""
+    return _release_asset(data)
 
 
 def fetch_latest(timeout: int = 20) -> tuple[str, str]:

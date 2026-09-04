@@ -5,16 +5,23 @@ import pytest
 import src.core.platform as _platform
 from src.services.engine import updater
 from src.services.engine.updater import (
-    appimage_url_for,
+    engine_tag,
+    is_engine_tag,
     is_newer,
     parse_version,
+    version_from_tag,
 )
 
-WIN_ASSET = "ungoogled-chromium_148.0.7778.215-1.1_windows_x64.zip"
-MAC_ASSET = "ungoogled-chromium_148.0.7778.215-1.1_macos.dmg"
-LINUX_ASSET = "ungoogled-chromium-148.0.7778.215-1-x86_64.AppImage"
-LINUX_TARXZ = "ungoogled-chromium-148.0.7778.215-1-x86_64_linux.tar.xz"
-WIN_INSTALLER = "ungoogled-chromium_148.0.7778.215-1.1_installer_x64.exe"
+# The PERSONIUM asset names, per RELEASING.md's table. Engine assets carry the
+# `personium-` prefix AND an explicit OS marker — see _asset_matches for why
+# both anchors exist and why neither may be dropped.
+WIN_ASSET = "personium-148.0.7778.215-windows-x86_64.zip"
+MAC_ASSET = "personium-148.0.7778.215-macos-x86_64.dmg"
+LINUX_ASSET = "personium-148.0.7778.215-linux-x86_64.AppImage"
+LINUX_TARXZ = "personium-148.0.7778.215-linux-x86_64.tar.xz"
+WIN_INSTALLER = "personium-148.0.7778.215-windows-x86_64-installer.exe"
+ENGINE_TAG = "personium-148.0.7778.215"
+ENGINE_VERSION = "148.0.7778.215"
 
 
 def _force_os(monkeypatch, *, win=False, mac=False, linux=False):
@@ -40,10 +47,40 @@ def test_is_newer_edges():
     assert is_newer("", "144.0.0.1") is False       # no latest info
 
 
-def test_appimage_url():
-    url = appimage_url_for("144.0.7559.132")
-    assert url.endswith("/144.0.7559.132/ungoogled-chromium-144.0.7559.132-1-x86_64.AppImage")
-    assert url.startswith("https://github.com/adryfish/fingerprint-chromium/")
+def test_engine_tag_and_version_round_trip():
+    """The `personium-` prefix lives on the PUBLISHED TAG and nowhere else.
+
+    Re-points what test_appimage_url used to assert. That test pinned the
+    Linux predictable-URL fallback's hardcoded adryfish URL; the fallback is
+    gone (PS-305 — see the note where it used to live), so the assertion is
+    replaced by the mapping that now stands between a published tag and every
+    on-disk record, rather than deleted.
+
+    The bare-version half is LOAD-BEARING: version.txt is the sole source of the
+    Chromium version an Android profile advertises, so a prefixed string
+    recorded there would leak into what a page can read."""
+    assert is_engine_tag(ENGINE_TAG) is True
+    assert is_engine_tag("v3.0.2") is False, "an APPLICATION release is not an engine one"
+    assert is_engine_tag("") is False
+
+    assert version_from_tag(ENGINE_TAG) == ENGINE_VERSION
+    assert version_from_tag(ENGINE_VERSION) == ENGINE_VERSION  # already bare
+    assert engine_tag(ENGINE_VERSION) == ENGINE_TAG
+    assert engine_tag(ENGINE_TAG) == ENGINE_TAG, "must not double-prefix"
+    assert engine_tag("") == ""
+
+    # And the recorded value stays something parse_version handles.
+    assert parse_version(version_from_tag(ENGINE_TAG)) == (148, 0, 7778, 215)
+
+
+def test_appimage_url_fallback_is_gone():
+    """The Linux predictable-URL fallback was REMOVED, not re-pointed.
+
+    Pinned so it cannot come back by accident: it built a download URL by
+    string-formatting a tag, it carried no digest (so PS-49 refuses whatever it
+    produced anyway), and against our own releases a missing per-OS asset is a
+    broken release that must be refused visibly rather than guessed at."""
+    assert not hasattr(updater, "appimage_url_for")
 
 
 def test_asset_matches_linux_picks_appimage(monkeypatch):
@@ -71,7 +108,8 @@ def test_asset_matches_macos_picks_dmg(monkeypatch):
 
 def test_fetch_latest_full_selects_per_os_asset(monkeypatch):
     release = {
-        "tag_name": "148.0.7778.215",
+        "tag_name": ENGINE_TAG,
+        "prerelease": True,
         "assets": [
             {"name": LINUX_ASSET, "browser_download_url": "http://x/linux", "digest": "sha256:aa"},
             {"name": WIN_ASSET, "browser_download_url": "http://x/win", "digest": "sha256:bb"},
@@ -82,13 +120,13 @@ def test_fetch_latest_full_selects_per_os_asset(monkeypatch):
     class FakeResp:
         def __enter__(self): return self
         def __exit__(self, *a): return False
-        def read(self): return __import__("json").dumps(release).encode()
+        def read(self): return __import__("json").dumps([release]).encode()
 
     monkeypatch.setattr(updater.urllib.request, "urlopen", lambda *a, **k: FakeResp())
 
     _force_os(monkeypatch, win=True)
     tag, url, digest = updater.fetch_latest_full()
-    assert (tag, url, digest) == ("148.0.7778.215", "http://x/win", "sha256:bb")
+    assert (tag, url, digest) == (ENGINE_VERSION, "http://x/win", "sha256:bb")
 
     _force_os(monkeypatch, mac=True)
     _, url, _ = updater.fetch_latest_full()
