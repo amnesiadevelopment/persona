@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import subprocess
 import sys
 import time
@@ -1786,6 +1787,278 @@ def test_a_survivor_never_overwrites_a_session_this_run_owns(monkeypatch):
     assert bl.running_session_builds()["both"] == ("firefox", "firefox-15"), (
         "a session THIS run owns is the better answer; a survivor entry must "
         "never downgrade it to UNKNOWN"
+    )
+    bl._active_sessions.clear()
+
+
+def test_prune_defers_for_a_record_whose_liveness_is_indeterminate(
+    monkeypatch, tmp_path
+):
+    """UNKNOWN #6 — AN INDETERMINATE: a live process we cannot prove is ours.
+
+    ``scan_survivors`` returns ``(alive, indeterminate)`` and the two lists are
+    NOT the same population. ``alive`` was probed and confirmed; an
+    INDETERMINATE is a record whose liveness could not be SETTLED — the module
+    lists three producers, all ordinary: no psutil, permission denied, and no
+    create time captured at registration. ``Liveness.UNKNOWN`` means the
+    question could not be answered, NOT "probably dead": a record that probes
+    GONE is dropped from the file by the registry as it reads, so it is in
+    neither list. The process here is running; we merely cannot show it is the
+    one the record named.
+
+    THE KEY SET, NOT THE BRANCHES, IS WHERE THIS CLASS OF DEFECT LIVES. Every
+    producer of an UNKNOWN in ``firefox_builds_in_use`` is a property of a name
+    that APPEARS in the map — none can fire for a name that never appears at
+    all. An earlier version of the widening carried ``alive`` alone, so an
+    indeterminate was structurally absent, and absent is not neutral: the join
+    returned a confident set over the sessions it COULD see and the prune
+    deleted the build the indeterminate process was executing from.
+
+    This is driven through the REAL ``SessionRegistry`` and the REAL
+    ``scan_survivors`` with ``create_time=None`` (producer three) on a REAL
+    live process, and asserts on directories on disk. The two preconditions the
+    test rests on are asserted rather than assumed: that the scan really does
+    classify the record as indeterminate, and that it is NOT adopted as a
+    survivor — if either changed, this test must fail loudly rather than pass
+    over a state the production wiring cannot reach.
+
+    A SECOND, RESOLVABLE session runs beside it on a DIFFERENT build, for the
+    same reason as UNKNOWN #5: with only the unresolved one, an implementation
+    that silently SKIPPED it would return an EMPTY set and be caught by the
+    separate empty-set backstop, so the test would stay green over an inverted
+    UNKNOWN rule and prove nothing about it.
+    """
+    pytest.importorskip("psutil")
+    from src.services.browser.launcher import BrowserLauncher
+    from src.services.browser.launch_provenance import firefox_builds_in_use
+    from src.services.browser.session_registry import (
+        Liveness,
+        SessionRecord,
+        SessionRegistry,
+        liveness_of,
+    )
+
+    _fake_cache(
+        monkeypatch,
+        tmp_path,
+        [
+            ("firefox-13", True, True),   # THE INDETERMINATE'S BUILD → survives
+            ("firefox-15", True, True),   # our own session's build
+            ("firefox-16", True, True),   # keep
+        ],
+        binary_version="firefox-16",
+    )
+
+    # A REAL live process. The pid must resolve, or liveness would answer GONE
+    # and the record would be dropped as stale — the test would then pass for
+    # the wrong reason. create_time=None is what makes it INDETERMINATE: we can
+    # see a process on the pid but cannot show it is ours.
+    proc = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(120)"]
+    )
+    try:
+        record = SessionRecord(
+            profile="murky-one",
+            pid=proc.pid,
+            create_time=None,
+            pgid=None,
+            engine="firefox",
+            started_at=time.time(),
+            owner_pid=1,
+        )
+        assert liveness_of(record) is Liveness.UNKNOWN, (
+            "precondition: the record must probe INDETERMINATE, not GONE — a "
+            "GONE record is dropped by the registry and asserts nothing here"
+        )
+
+        registry = SessionRegistry(tmp_path / "sessions.json")
+        registry.record(record)
+
+        bl = BrowserLauncher(registry=registry)
+        alive, unknown = bl.scan_survivors()
+        assert [r.profile for r in alive] == [], (
+            "precondition: an indeterminate is NOT adopted as a survivor — "
+            "that is exactly why the survivor widening cannot cover it"
+        )
+        assert [r.profile for r in unknown] == ["murky-one"], (
+            "precondition: it lands in the indeterminate bucket"
+        )
+        assert not bl.is_running("murky-one"), (
+            "precondition: an unanswerable question must not refuse a launch. "
+            "The launch path fails OPEN on this record and the prune fails "
+            "CLOSED on it — opposite directions over the same UNKNOWN, because "
+            "refusing a launch on no evidence costs the user their session "
+            "while deferring a prune on no evidence costs one prune cycle"
+        )
+
+        # Our own session, on a NEWER build: the ordinary post-bump shape.
+        bl._active_sessions["resolved-one"] = _PollingProc()
+        bl._session_build["resolved-one"] = ("firefox", "firefox-15")
+
+        assert "murky-one" not in bl.running_profile_names(), (
+            "precondition: the indeterminate is structurally absent from the "
+            "running NAMES — the widening belongs to running_session_builds()"
+        )
+        assert bl.running_session_builds()["murky-one"] is None, (
+            "THE SEAM: an indeterminate must be IN the map with a None value. "
+            "A name that is merely missing is not an UNKNOWN at all — it is a "
+            "licence to delete the build it is executing from"
+        )
+
+        monkeypatch.setattr(eng, "_in_use_provider", lambda: True)
+        monkeypatch.setattr(
+            eng,
+            "_in_use_builds_provider",
+            lambda: firefox_builds_in_use(bl.running_session_builds),
+        )
+        logs = []
+        inv._prune_old_engine_builds(keep="firefox-16", log=logs.append)
+
+        assert (tmp_path / "firefox-13").exists(), (
+            "THE INDETERMINATE'S BUILD: a recorded process whose liveness "
+            "could not be settled may well be live, and UNKNOWN defers"
+        )
+        assert (tmp_path / "firefox-15").exists(), (
+            "deferral is wholesale: nothing may be reclaimed while a recorded "
+            "session cannot be accounted for"
+        )
+        assert any("running" in m for m in logs), logs
+        bl._active_sessions.clear()
+    finally:
+        proc.kill()
+        proc.wait(timeout=5)
+
+
+def test_prune_defers_for_every_record_when_psutil_is_unavailable(
+    monkeypatch, tmp_path
+):
+    """UNKNOWN #6, the shape that fires for EVERY record at once.
+
+    ``liveness_of``'s FIRST check is psutil's availability, and with the
+    dependency gone it answers UNKNOWN for every record it is handed — a
+    PERFECT record with a real pid and a real create time included. So ``alive``
+    is empty, ``_survivors`` is empty, and the survivor widening protects
+    nothing whatsoever: every browser a previous persona left running is
+    invisible unless the INDETERMINATE bucket is carried too.
+
+    This is the trap this codebase records having been bitten by twice —
+    ``session_registry.py`` notes that "a psutil-less container once measured a
+    teardown as CLEAN precisely because the measuring code silently answered
+    'nothing there'", and ``process_group.py`` carries its twin. The measuring
+    code answering "nothing there" is not the same as nothing being there.
+
+    A resolvable session runs beside it on a different build, for the same
+    reason as the tests above: so the empty-set backstop cannot be what passes
+    this.
+    """
+    import builtins
+
+    from src.services.browser.launcher import BrowserLauncher
+    from src.services.browser.launch_provenance import firefox_builds_in_use
+    from src.services.browser.session_registry import (
+        SessionRecord,
+        SessionRegistry,
+    )
+
+    _fake_cache(
+        monkeypatch,
+        tmp_path,
+        [
+            ("firefox-13", True, True),   # THE UNSEEABLE BROWSER'S BUILD
+            ("firefox-15", True, True),   # our own session's build
+            ("firefox-16", True, True),   # keep
+        ],
+        binary_version="firefox-16",
+    )
+
+    registry = SessionRegistry(tmp_path / "sessions.json")
+    # A perfect record: real pid, real create time. Nothing about the RECORD is
+    # deficient — only our ability to probe it is.
+    registry.record(
+        SessionRecord(
+            profile="unseeable-one",
+            pid=os.getpid(),
+            create_time=time.time(),
+            pgid=None,
+            engine="firefox",
+            started_at=time.time(),
+            owner_pid=1,
+        )
+    )
+
+    real_import = builtins.__import__
+
+    def _no_psutil(name, *a, **k):
+        if name == "psutil":
+            raise ImportError("no psutil")
+        return real_import(name, *a, **k)
+
+    monkeypatch.setattr(builtins, "__import__", _no_psutil)
+
+    bl = BrowserLauncher(registry=registry)
+    alive, unknown = bl.scan_survivors()
+    assert [r.profile for r in alive] == [], (
+        "precondition: with no psutil NOTHING probes ALIVE, so the survivor "
+        "widening is empty and cannot be what protects this build"
+    )
+    assert [r.profile for r in unknown] == ["unseeable-one"], (
+        "precondition: a perfectly good record lands in the indeterminate "
+        "bucket purely because the probe is unavailable"
+    )
+
+    bl._active_sessions["resolved-one"] = _PollingProc()
+    bl._session_build["resolved-one"] = ("firefox", "firefox-15")
+
+    monkeypatch.setattr(eng, "_in_use_provider", lambda: True)
+    monkeypatch.setattr(
+        eng,
+        "_in_use_builds_provider",
+        lambda: firefox_builds_in_use(bl.running_session_builds),
+    )
+    logs = []
+    inv._prune_old_engine_builds(keep="firefox-16", log=logs.append)
+
+    assert (tmp_path / "firefox-13").exists(), (
+        "the build of a browser we cannot probe: losing the ability to MEASURE "
+        "whether something is running is not the same as measuring that "
+        "nothing is"
+    )
+    assert (tmp_path / "firefox-15").exists()
+    assert any("running" in m for m in logs), logs
+    bl._active_sessions.clear()
+
+
+def test_an_indeterminate_never_overwrites_a_session_this_run_owns(monkeypatch):
+    """The indeterminate widening is a `setdefault` too, same direction.
+
+    ``scan_survivors`` already excludes names it finds in ``_active_sessions``
+    from BOTH buckets, so they should not overlap — but the scan is a point in
+    time and the exclusion is enforced there, not here. If a name ever appeared
+    in both, an indeterminate entry overwriting the session's resolved pair
+    would turn a perfectly known build into an UNKNOWN and defer the prune
+    forever. The resolved answer is strictly better information, so it wins.
+    """
+    from src.services.browser.launcher import BrowserLauncher
+    from src.services.browser.session_registry import SessionRecord
+
+    bl = BrowserLauncher()
+    bl._active_sessions["both"] = _PollingProc()
+    bl._session_build["both"] = ("firefox", "firefox-15")
+    bl._indeterminate = {
+        "both": SessionRecord(
+            profile="both",
+            pid=4242,
+            create_time=None,
+            pgid=None,
+            engine="firefox",
+            started_at=1.0,
+            owner_pid=1,
+        )
+    }
+
+    assert bl.running_session_builds()["both"] == ("firefox", "firefox-15"), (
+        "a session THIS run owns is the better answer; an indeterminate entry "
+        "must never downgrade it to UNKNOWN"
     )
     bl._active_sessions.clear()
 

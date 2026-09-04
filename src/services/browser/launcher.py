@@ -289,6 +289,23 @@ class BrowserLauncher:
         # would mean. Held so the launch guard can answer without re-probing
         # psutil on every render.
         self._survivors: dict[str, SessionRecord] = {}
+        # The INDETERMINATE half of the same scan: records whose liveness could
+        # not be settled (no psutil, permission denied, no create time captured
+        # at registration). These are deliberately NOT adopted as survivors and
+        # never refuse a launch — an unanswerable question must not lock a user
+        # out of their own profile. They are retained here for exactly one
+        # reader: running_session_builds(), which must count them as UNKNOWN.
+        #
+        # ⚠️ AN INDETERMINATE IS A LIVE PROCESS WE CANNOT PROVE IS OURS, NOT A
+        # PROBABLY-DEAD ONE. `liveness_of` answers GONE when it establishes the
+        # process is gone, and a GONE record is dropped by the registry as it
+        # reads; UNKNOWN means only that the question could not be answered.
+        # Reading it as "nothing is running there" is the mistake
+        # session_registry.py:185 and process_group.py:518 both record having
+        # been bitten by — a psutil-less container measuring a teardown as
+        # CLEAN precisely because the measuring code silently answered
+        # "nothing there".
+        self._indeterminate: dict[str, SessionRecord] = {}
         atexit.register(self.shutdown_all)
 
     def set_launch_record_hook(
@@ -748,36 +765,55 @@ class BrowserLauncher:
 
         THE KEY SET IS DELIBERATELY WIDER THAN ``running_profile_names()``
         -----------------------------------------------------------------
-        It is ``running_profile_names() | self._survivors``, and the extra term
-        is load-bearing rather than tidy. A SURVIVOR is a browser a PREVIOUS
-        persona left running: a real, probed-alive process executing out of a
-        real build directory, which ``is_running()`` reports as running and the
-        UI paints as running. But ``scan_survivors`` populates ``_survivors``
-        only with names that are in NEITHER ``_active_sessions`` NOR
-        ``_starting`` (that exclusion is correct for its own purpose — never
-        shadow a session this run owns), so a survivor can never appear in
-        ``_running_names_locked()``.
+        It is ``running_profile_names() | self._survivors |
+        self._indeterminate``, and both extra terms are load-bearing rather
+        than tidy. A SURVIVOR is a browser a PREVIOUS persona left running: a
+        real, probed-alive process executing out of a real build directory,
+        which ``is_running()`` reports as running and the UI paints as running.
+        An INDETERMINATE is the same kind of thing one probe short — a real
+        recorded process whose liveness could not be settled (no psutil,
+        permission denied, no create time captured at registration). But
+        ``scan_survivors`` populates both maps only with names that are in
+        NEITHER ``_active_sessions`` NOR ``_starting`` (that exclusion is
+        correct for its own purpose — never shadow a session this run owns), so
+        neither can ever appear in ``_running_names_locked()``.
 
         The consumer of this map spares the builds it can see and RECLAIMS the
         rest, so a name that is missing entirely does not produce an UNKNOWN —
-        it produces a confident claim that the survivor's build is free, and
-        the survivor's live build is deleted out from under it. Omitting the
-        survivors would therefore make this map answer a question about
-        "running" over a name set narrower than running.
+        it produces a confident claim that the process's build is free, and its
+        live build is deleted out from under it. Omitting either bucket would
+        therefore make this map answer a question about "running" over a name
+        set narrower than running.
+
+        ⚠️ ``Liveness.UNKNOWN`` IS NOT "PROBABLY DEAD". A record that probes
+        GONE is dropped by the registry as it reads, so it is never in either
+        bucket; UNKNOWN means the question could not be answered about a
+        process that may well be running. The psutil-absent shape is the one to
+        hold in mind, because it fires for EVERY record at once: with psutil
+        unavailable ``alive`` is empty and ``_survivors`` is empty, so the
+        survivor widening alone protects nothing and every browser a previous
+        persona left running would be invisible here.
 
         ``running_profile_names()`` is NOT widened to match, and that asymmetry
-        is intentional: its callers are the UI's running snapshot and the
-        launch-refusal path, which have their own survivor handling
-        (``survivor_for``/``close_survivor``) and would double-count. The
-        widening belongs to THIS map, whose contract is "every live thing that
-        could be executing a build".
+        is intentional for both buckets. Its callers are the UI's running
+        snapshot and the launch-refusal path: survivors have their own handling
+        there (``survivor_for``/``close_survivor``) and would double-count, and
+        an indeterminate deliberately fails OPEN for launch refusal — an
+        unanswerable question must not lock a user out of their own profile
+        (``test_an_indeterminate_record_does_not_block_a_launch`` pins that,
+        and it is correct). The two directions are opposite over the same
+        UNKNOWN because the costs are: refusing a launch on no evidence costs
+        the user their session, whereas deferring a prune on no evidence costs
+        one prune cycle. The widening belongs to THIS map, whose contract is
+        "every live thing that could be executing a build".
 
-        A survivor's value is ALWAYS None, and None is the honest answer rather
-        than a placeholder: ``SessionRecord`` carries the engine but no build,
-        so there is genuinely no record of which build it is on. Resolving one
-        from ``active_build()`` at scan time would invent a confident wrong
-        answer — a survivor predates our startup and may well be on an older
-        build than the one active now, which is exactly the case that deletes it.
+        A survivor's and an indeterminate's value is ALWAYS None, and None is
+        the honest answer rather than a placeholder: ``SessionRecord`` carries
+        the engine but no build, so there is genuinely no record of which build
+        it is on. Resolving one from ``active_build()`` at scan time would
+        invent a confident wrong answer — such a process predates our startup
+        and may well be on an older build than the one active now, which is
+        exactly the case that deletes it.
 
         The whole map is taken in ONE lock acquisition on purpose. Asking for
         the names and then asking for the builds would let a session start or
@@ -787,7 +823,7 @@ class BrowserLauncher:
         on) is not.
 
         A value of None means UNKNOWN for that profile, and there are exactly
-        three ways to get one, all ordinary:
+        four ways to get one, all ordinary:
 
         * the profile is in ``_starting`` — its spawn is in flight, so nothing
           has been registered for it yet. This is why an in-flight launch is
@@ -795,12 +831,16 @@ class BrowserLauncher:
           missing;
         * the profile is a SURVIVOR — this process never launched it, so there
           is no session record of any kind to read (see above);
+        * the profile is INDETERMINATE — a recorded process this run did not
+          launch and whose liveness could not be settled. Same absence of a
+          build for the same reason, and the same rule: not provably alive is
+          not evidence of dead;
         * the build could not be read at launch (``engine_build_for`` returns
           None on any read failure, deliberately), so the pair is
           ``(engine, None)``.
 
-        Note the last is distinguishable from the first two and a caller may
-        care: the first two are ``None`` for the whole entry, the last is a
+        Note the last is distinguishable from the first three and a caller may
+        care: the first three are ``None`` for the whole entry, the last is a
         pair whose build is None. All must be treated as "cannot say", never as
         "on no build".
 
@@ -815,11 +855,14 @@ class BrowserLauncher:
             out: "dict[str, tuple[str, str | None] | None]" = {
                 n: self._session_build.get(n) for n in names
             }
-            # Survivors last and unconditionally None. `setdefault` rather than
-            # an update so a name that is somehow in both keeps its resolved
-            # session pair — a session THIS run owns is the better answer, and
-            # a survivor entry must never overwrite one with an UNKNOWN.
+            # Survivors and indeterminates last and unconditionally None.
+            # `setdefault` rather than an update so a name that is somehow in
+            # both keeps its resolved session pair — a session THIS run owns is
+            # the better answer, and neither bucket may overwrite one with an
+            # UNKNOWN.
             for n in self._survivors:
+                out.setdefault(n, None)
+            for n in self._indeterminate:
                 out.setdefault(n, None)
             return out
 
@@ -855,6 +898,15 @@ class BrowserLauncher:
           the user should have, and it is the honest alternative to inventing
           either answer.
 
+          They are ALSO retained on ``self._indeterminate``, for one reader
+          only: ``running_session_builds()``. Refusing a launch and deferring a
+          prune are opposite duties over the same UNKNOWN — refusing on no
+          evidence costs the user their session, whereas deferring on no
+          evidence costs one prune cycle — so this bucket fails OPEN for the
+          first and CLOSED for the second. See ``running_session_builds`` for
+          why a name that is merely absent from that map is not an UNKNOWN at
+          all but a licence to delete the build it is executing from.
+
         A record whose process probed GONE is dropped from the file by the
         registry as it reads — that is the stale-record case, and the correct
         handling of it is silence: nothing survived, nothing to report, and
@@ -874,6 +926,20 @@ class BrowserLauncher:
             self._survivors = {
                 r.profile: r
                 for r in alive
+                if r.profile not in self._active_sessions
+                and r.profile not in self._starting
+            }
+            # The indeterminate half, retained under the SAME exclusion and for
+            # a different reader. It refuses nothing (see survivor_for /
+            # is_running, which do not consult it, and
+            # test_an_indeterminate_record_does_not_block_a_launch, which pins
+            # that); its only consumer is running_session_builds(), which must
+            # report a live-but-unprovable process as UNKNOWN rather than as
+            # absent. Absent is not neutral there — it is a positive claim that
+            # the build the process is executing from is free.
+            self._indeterminate = {
+                r.profile: r
+                for r in unknown
                 if r.profile not in self._active_sessions
                 and r.profile not in self._starting
             }
