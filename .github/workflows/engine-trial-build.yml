@@ -261,6 +261,34 @@ jobs:
         env:
           UCPL_DIR: ucpl
 
+      # ── PS-306: THE TOOLCHAIN STEP SEGFAULTS INTERMITTENTLY ─────────────────
+      # `tools/rust/update_rust.py` crashes at random under build load on this
+      # runner and takes the whole ~12-minute prepare phase with it — three
+      # consecutive PS-299 dispatches died there and the compile never ran. In
+      # isolation the same script is fine (14/14 clean runs in the same image),
+      # and one dispatch did get past it, so the script is not broken: the
+      # INVOCATION does not tolerate a transient crash.
+      #
+      # The call lives in upstream's `scripts/shared.sh`, reached from inside
+      # the container by `.github/scripts/build.sh`, so it cannot be wrapped
+      # from outside — the repair has to be on disk before `prepare` runs. And
+      # `ucpl/` is re-checked-out per dispatch, so it is re-applied per run
+      # rather than committed once. It is keyed to the CALL, not to a line
+      # number, and refuses to run if the tag's shape is not the one verified.
+      #
+      # THIS STEP IS IN BOTH JOBS ON PURPOSE. Both run the same prepare phase
+      # and both are exposed to the same flake; hardening only one would make
+      # the control and the subject non-comparable, which is the single thing
+      # this workflow exists to protect.
+      #
+      # ⚠️ NO `continue-on-error` HERE. This step only rewrites a shell
+      # function; if it cannot, the anchor is wrong and the build would proceed
+      # with an unverified modification — stop instead.
+      - name: Harden the toolchain step against the update_rust.py segfault
+        run: persona/scripts/ps306_harden_toolchain.sh unmodified
+        env:
+          UCPL_DIR: ucpl
+
       - name: Apply patches (de-googling only) — PATCH APPLICATION, not compile
         id: prepare
         continue-on-error: true
@@ -439,6 +467,22 @@ jobs:
 
       - name: Record the build environment as the CONTAINER sees it
         run: persona/scripts/ps218_record_env.sh patched pre-prepare
+        env:
+          UCPL_DIR: ucpl
+
+      # ── PS-306 — the same repair as the control job, for the same reason ────
+      # See the long note on the identical step in `unmodified`. Placed here so
+      # both trees enter the prepare phase with the same toolchain invocation:
+      # hardening only one of the two would leave the control and the subject
+      # running different code, and a comparison between them would measure the
+      # difference in the harness rather than the difference in the patches.
+      #
+      # Sits above the borrow/verify steps only for readability — it touches
+      # `ucpl/scripts/shared.sh`, which nothing else in this job goes near, so
+      # its position relative to `ps218_stage_patches.sh` is immaterial. What is
+      # NOT immaterial is that it is before `ps218_build.sh prepare`.
+      - name: Harden the toolchain step against the update_rust.py segfault
+        run: persona/scripts/ps306_harden_toolchain.sh patched
         env:
           UCPL_DIR: ucpl
 
