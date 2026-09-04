@@ -246,7 +246,15 @@ def _previous_build_restored() -> bool:
     a partial restore, a first install with nothing to go back to, a stand-in
     that reported nothing — is unknown, and unknown is indistinguishable from a
     half-promoted tree. Launching that tree is the exact failure PS-24/PS-32
-    built the sentinel to prevent, so the doubtful case must keep it."""
+    built the sentinel to prevent, so the doubtful case must keep it.
+
+    NOT SUFFICIENT ON ITS OWN to clear the sentinel, and the caller must not
+    treat it as such. Several installer arms report "restored" on the strength
+    of having written nothing outside a staging dir — true about that attempt,
+    and silent about what an EARLIER attempt left on disk. download_engine pairs
+    this with a `was_launchable` reading taken before its own writes, so a tree
+    an earlier failed promotion left mixed cannot be cleared by a later attempt
+    failing early and harmlessly."""
     return _last_install_outcome == INSTALL_OUTCOME_RESTORED
 
 
@@ -1006,8 +1014,16 @@ def _install_windows(asset_path: str) -> bool:
                 with zf.open(m) as src, open(dest, "wb") as out:
                     out.write(src.read())
         if not os.path.isfile(os.path.join(staging, "chrome.exe")):
-            # A bad archive, refused BEFORE promotion. Nothing outside `staging`
-            # was written, so the installed tree is untouched and launchable.
+            # A bad archive, refused BEFORE promotion. Nothing outside
+            # `staging` was written, so the installed tree is byte-for-byte as
+            # this install found it.
+            #
+            # NOTE THE SCOPE OF THAT CLAIM: it says this attempt changed
+            # nothing, NOT that what is there is a working build. An earlier
+            # failed promotion may have left the tree mixed. download_engine
+            # supplies the missing term — it required the tree to be launchable
+            # BEFORE the install began, which is a question no installer can
+            # answer about itself.
             _note_install_outcome(INSTALL_OUTCOME_RESTORED)
             return False
         promotion_started = True
@@ -1018,7 +1034,9 @@ def _install_windows(asset_path: str) -> bool:
         if not promotion_started:
             # The extract itself failed (a corrupt zip, a full disk while
             # writing into staging). ENGINE_DIR's previous entries were never
-            # renamed aside, so the working tree is exactly as it was.
+            # renamed aside, so the tree is byte-for-byte as this install found
+            # it — which is a claim about THIS attempt only. Whether what it
+            # found was launchable is download_engine's `was_launchable` term.
             _note_install_outcome(INSTALL_OUTCOME_RESTORED)
         # else: _promote_staging owns the verdict — it is the only code that
         # knows whether its own rollback completed, and it reports "restored"
@@ -1195,7 +1213,10 @@ def _install_macos(asset_path: str) -> bool:
     except OSError:
         if not promotion_started:
             # Failed before the previous bundle was renamed aside — it is still
-            # exactly where it was, and still launchable.
+            # exactly where this install found it. Same scope as the Windows
+            # arm: a statement about what THIS attempt wrote, not a warrant
+            # that the bundle is good. download_engine's `was_launchable` term
+            # is what supplies the second half.
             _note_install_outcome(INSTALL_OUTCOME_RESTORED)
         # else: a failure between the move_aside and the inner try's own
         # handling. We cannot vouch for what is at `dest`, so say nothing and
@@ -1382,6 +1403,28 @@ def download_engine(
             raise InstallDeferred(
                 "a profile is running — install deferred to a later check"
             )
+        # WAS THERE A LAUNCHABLE ENGINE HERE BEFORE WE STARTED? Read now, while
+        # the answer is still about the operator's tree rather than about our
+        # own bookkeeping — the two writes immediately below (marker cleared,
+        # sentinel set) both force this to False, so asking any later would only
+        # ever tell us what we just did.
+        #
+        # This is the term that keeps the rollback exception from becoming a
+        # bypass. An installer can honestly report that IT did not touch the
+        # tree; it cannot report that the tree was any good, and those are
+        # different claims. A tree left mixed by an EARLIER failed promotion
+        # already carries the sentinel and reads False here — so the next
+        # attempt, failing before it promotes anything, cannot clear that
+        # sentinel by pleading "I wrote nothing". Without this conjunct the
+        # guard survives one attempt and falls on the second, which is exactly
+        # the retry loop ensure_engine already performs (attempts=3).
+        #
+        # is_installed() rather than _install_complete(): "launchable" is the
+        # property being preserved, and it includes the binary actually being
+        # present and non-empty. A FIRST install reads False here and so can
+        # never clear the sentinel — correct, because there is no previous
+        # build to have been restored to.
+        was_launchable = is_installed()
         # Clear any prior completion marker so a failed install can't leave the
         # engine reading as "complete" — is_installed() must reflect the actual
         # on-disk state until we mark success below.
@@ -1455,7 +1498,19 @@ def download_engine(
         # here: this says "no install is in progress", not "a new build was
         # installed", and version.txt still carries the build that is actually
         # on disk.
-        elif _previous_build_restored():
+        #
+        # TWO CONJUNCTS, AND EACH ANSWERS A QUESTION THE OTHER CANNOT.
+        # `was_launchable` (captured above, before our own writes) says the tree
+        # this install started from was a working engine. `_previous_build_
+        # restored()` says the install put that same tree back. The installer
+        # can only ever establish the second: several of its arms report
+        # "restored" because they provably wrote nothing outside a staging dir,
+        # which is a true statement about THIS attempt and no statement at all
+        # about what an EARLIER attempt may have left behind. Requiring both is
+        # what keeps a mixed tree — sentinel already set by the failed
+        # promotion that made it — from being cleared by the very next attempt
+        # failing harmlessly and early.
+        elif was_launchable and _previous_build_restored():
             try:
                 os.remove(_installing_file())
             except OSError:

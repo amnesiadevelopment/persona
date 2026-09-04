@@ -30,6 +30,14 @@ def _force_os(monkeypatch, *, win=False, mac=False, linux=False):
     monkeypatch.setattr(_platform, "IS_LINUX", linux)
 
 
+def _copy_zip_to(src, dst):
+    """Stand in for a real download: drop a prepared zip where _download_to
+    would have written the asset. Returns None; callers discard it."""
+    import shutil as _sh
+
+    return _sh.copyfile(str(src), str(dst))
+
+
 def test_parse_version():
     assert parse_version("144.0.7559.132") == (144, 0, 7559, 132)
     assert parse_version("") == ()
@@ -1039,7 +1047,13 @@ def test_a_partially_restored_promotion_reports_nothing(monkeypatch, tmp_path):
         return real_replace(src, dst)
 
     monkeypatch.setattr(updater.shutil, "move", failing_move)
-    monkeypatch.setattr(os, "replace", locked_replace)
+    # Named at the seam that actually makes the call: the rollback rename is
+    # httpdl.restore_aside's, so it goes through httpdl's own `os` import. (It
+    # is the same module object as `updater.os` — patching either mutates the
+    # shared stdlib module — but naming the caller is what makes the fake
+    # reviewable, and it matches the `updater.os.replace` idiom the sibling
+    # tests in test_engine_ensure.py use for the Linux arm.)
+    monkeypatch.setattr(updater.httpdl.os, "replace", locked_replace)
     updater._reset_install_outcome()
     with pytest.raises(OSError):
         updater._promote_staging(str(staging))
@@ -1096,22 +1110,17 @@ def test_a_partial_rollback_leaves_the_engine_unlaunchable_end_to_end(
         return real_replace(src, dst)
 
     monkeypatch.setattr(updater.shutil, "move", failing_move)
-    monkeypatch.setattr(os, "replace", locked_replace)
+    # Same seam as the unit-level sibling above: restore_aside's own os.replace.
+    monkeypatch.setattr(updater.httpdl.os, "replace", locked_replace)
     monkeypatch.setattr(
         updater, "_download_to",
-        lambda path, *a, **k: (shutil_copy(zip_path, path), True)[1],
+        lambda path, *a, **k: (_copy_zip_to(zip_path, path), True)[1],
     )
     assert updater.download_engine("http://x/engine.zip", digest="sha256:aa") is False
     monkeypatch.undo()
 
     assert (engine_dir / ".engine-installing").exists()
     assert updater.is_installed() is False
-
-
-def shutil_copy(src, dst):
-    import shutil as _sh
-
-    return _sh.copyfile(str(src), str(dst))
 
 
 def test_a_bad_archive_leaves_the_previous_build_launchable(monkeypatch, tmp_path):
@@ -1135,10 +1144,153 @@ def test_a_bad_archive_leaves_the_previous_build_launchable(monkeypatch, tmp_pat
     _make_windows_zip(zip_path, {"chrome-win/readme.txt": b"no exe here"})
     monkeypatch.setattr(
         updater, "_download_to",
-        lambda path, *a, **k: (shutil_copy(zip_path, path), True)[1],
+        lambda path, *a, **k: (_copy_zip_to(zip_path, path), True)[1],
     )
 
     assert updater.download_engine("http://x/engine.zip", digest="sha256:aa") is False
     assert (engine_dir / "chrome.exe").read_bytes() == b"OLD-ENGINE-EXE"
     assert not (engine_dir / ".engine-installing").exists()
     assert updater.is_installed() is True
+
+
+def _wire_windows_engine(monkeypatch, engine_dir):
+    """Point the module's four ENGINE_DIR-derived paths at `engine_dir`, for the
+    Windows arm. Factored out because the two-attempt test below has to keep the
+    wiring alive across a `monkeypatch.undo()` in the middle."""
+    monkeypatch.setattr(updater, "ENGINE_DIR", str(engine_dir))
+    monkeypatch.setattr(updater, "ENGINE_BINARY", str(engine_dir / "chrome.exe"))
+    monkeypatch.setattr(updater, "MARKER_FILE", str(engine_dir / ".engine-complete"))
+    monkeypatch.setattr(updater, "VERSION_FILE", str(engine_dir / "version.txt"))
+
+
+def test_a_second_attempt_cannot_clear_a_sentinel_left_by_a_failed_rollback(
+    monkeypatch, tmp_path
+):
+    """⭐ AC3, ACROSS TWO ATTEMPTS — the durability of the keep, which is where
+    the single-attempt tests above stop one call too early.
+
+    ensure_engine retries (attempts=3), so on a disk-full host these two
+    download_engine calls happen back to back with no unusual operator
+    behaviour at all:
+
+      attempt 1 — promotion fails AND its rollback cannot complete. The tree is
+                  now part new build / part old, the only good copy is stranded
+                  in the backup dir, and the sentinel is correctly KEPT.
+      attempt 2 — the extract fails BEFORE promotion starts. This attempt
+                  genuinely wrote nothing outside .staging, and the installer
+                  says so — truthfully, and about ITSELF.
+
+    The trap is reading attempt 2's honest report as a warrant for the TREE.
+    "I did not touch it" and "what is there is a working build" are different
+    claims, and only the first is established. If the sentinel may be cleared on
+    the first alone, the guard survives exactly one attempt and the next one
+    launches the mixed engine PS-24/PS-32 built the mechanism to prevent.
+
+    The precondition every "restored" test above starts from — a HEALTHY tree —
+    is the one condition under which the pre-promotion arms' inference is safe.
+    This test starts where attempt 1 ended instead.
+    """
+    _force_os(monkeypatch, win=True)
+    engine_dir = tmp_path / "engine"
+    engine_dir.mkdir()
+    _populate_engine(engine_dir)
+    (engine_dir / ".engine-complete").touch()
+    (engine_dir / "version.txt").write_text("148.0.7778.215", encoding="utf-8")
+    _wire_windows_engine(monkeypatch, engine_dir)
+    assert updater.is_installed() is True  # precondition: a working engine
+
+    # ---- attempt 1: promotion fails, and so does its rollback -------------
+    zip_path = tmp_path / "engine.zip"
+    _new_build_zip(zip_path)
+
+    real_move = updater.shutil.move
+    calls = {"n": 0}
+
+    def failing_move(src, dst):
+        calls["n"] += 1
+        if calls["n"] > 1:
+            raise OSError("No space left on device")
+        return real_move(src, dst)
+
+    backup_root = engine_dir / updater.BACKUP_NAME
+    real_replace = updater.httpdl.os.replace
+
+    def locked_replace(src, dst):
+        if str(src).startswith(str(backup_root)):
+            raise PermissionError(32, "The process cannot access the file")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(updater.shutil, "move", failing_move)
+    monkeypatch.setattr(updater.httpdl.os, "replace", locked_replace)
+    monkeypatch.setattr(
+        updater, "_download_to",
+        lambda path, *a, **k: (_copy_zip_to(zip_path, path), True)[1],
+    )
+    assert updater.download_engine("http://x/engine.zip", digest="sha256:aa") is False
+    monkeypatch.undo()          # drop the fakes AND the ENGINE_DIR wiring...
+    _wire_windows_engine(monkeypatch, engine_dir)   # ...then put the wiring back
+    _force_os(monkeypatch, win=True)
+
+    # The tree really is mixed: the new chrome.exe landed, some.dll was moved
+    # aside and its replacement never arrived (so that file is simply GONE from
+    # the installed tree), and locales/ is still the old build's. The only
+    # complete copy of a working engine is the backup — stranded on purpose
+    # (PS-38), because deleting it is the difference between "the upgrade
+    # failed" and "there is no engine at all".
+    assert (engine_dir / "chrome.exe").read_bytes().startswith(b"MZ")   # NEW exe
+    assert not (engine_dir / "some.dll").exists()                       # GONE
+    assert (engine_dir / "locales" / "en.pak").read_bytes() == b"OLD-PAK"
+    assert (backup_root / "chrome.exe").read_bytes() == b"OLD-ENGINE-EXE"
+    assert (backup_root / "some.dll").read_bytes() == b"OLD-DLL"
+    # ...and the sentinel is correctly holding that tree shut.
+    assert (engine_dir / ".engine-installing").exists()
+    assert updater.is_installed() is False
+
+    # ---- attempt 2: fails BEFORE promotion, over that same mixed tree -----
+    bad_zip = tmp_path / "bad.zip"
+    _make_windows_zip(bad_zip, {"chrome-win/readme.txt": b"no exe here"})
+    monkeypatch.setattr(
+        updater, "_download_to",
+        lambda path, *a, **k: (_copy_zip_to(bad_zip, path), True)[1],
+    )
+    assert updater.download_engine("http://x/engine.zip", digest="sha256:aa") is False
+
+    # attempt 2 changed nothing on disk — the tree is still exactly as mixed...
+    assert (engine_dir / "chrome.exe").read_bytes().startswith(b"MZ")
+    assert not (engine_dir / "some.dll").exists()
+    assert (backup_root / "chrome.exe").read_bytes() == b"OLD-ENGINE-EXE"
+    # ...so the sentinel MUST still be there, and the engine unlaunchable.
+    assert (engine_dir / ".engine-installing").exists()
+    assert updater.is_installed() is False
+
+
+def test_a_first_install_with_no_previous_build_keeps_the_sentinel(
+    monkeypatch, tmp_path
+):
+    """The other half of the `was_launchable` term: with nothing installed yet,
+    a pre-promotion failure has no previous build to have preserved, so there is
+    nothing to make launchable and the sentinel must be kept.
+
+    Reads False for a reason worth stating: not because the installer lied, but
+    because "restored" is meaningless where there was never anything to restore
+    to. Clearing here would let a half-populated ENGINE_DIR from some earlier
+    partial attempt read as ready."""
+    _force_os(monkeypatch, win=True)
+    engine_dir = tmp_path / "engine"
+    engine_dir.mkdir()
+    # a stray chrome.exe from an earlier partial attempt — present, non-empty,
+    # and NOT a complete install
+    (engine_dir / "chrome.exe").write_bytes(b"HALF-EXTRACTED")
+    _wire_windows_engine(monkeypatch, engine_dir)
+    assert updater.is_installed() is False  # precondition: nothing complete
+
+    bad_zip = tmp_path / "bad.zip"
+    _make_windows_zip(bad_zip, {"chrome-win/readme.txt": b"no exe here"})
+    monkeypatch.setattr(
+        updater, "_download_to",
+        lambda path, *a, **k: (_copy_zip_to(bad_zip, path), True)[1],
+    )
+
+    assert updater.download_engine("http://x/engine.zip", digest="sha256:aa") is False
+    assert (engine_dir / ".engine-installing").exists()
+    assert updater.is_installed() is False
