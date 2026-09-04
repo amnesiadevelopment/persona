@@ -3675,8 +3675,6 @@ def _launch_and_watch(cfg, profile_dir, emit, _finish, stop_event, in_thread):
     # honest form is no guard at all.
     _install_spoof("webgl", firefox_webgl_init_script(seed))
 
-    on_ctx(_apply_spoofs_to_open_tabs)
-
     # PS-73: the per-seed audio perturbation, which until now was CHROMIUM-ONLY.
     # spawn_browser returns on the Firefox arm ~100 lines before the extension
     # list is assembled, so build_audio_extension was never called for a Firefox
@@ -3696,59 +3694,33 @@ def _launch_and_watch(cfg, profile_dir, emit, _finish, stop_event, in_thread):
     # directly above already take. Identical text to Chromium's apart from the
     # native-cloak seam, so a Firefox and a Chromium profile sharing a seed
     # perturb identically — and Chromium's own emitted script is unchanged.
-    _audio_js = firefox_audio_init_script(seed)
-    on_ctx(lambda: ctx.add_init_script(_audio_js))
-
-    # ...and into the tabs that are ALREADY OPEN. add_init_script only reaches
-    # documents created AFTER it is registered, and on a RESTORE launch Firefox
-    # has already rebuilt the session's tabs by the time __enter__ returns — so
-    # the init script alone covers a first launch and misses every restored tab.
     #
-    # MEASURED, not reasoned: with only the init script, one profile read
-    # audio.digest 35.749988 on its first launch and 35.749972 (the UNPERTURBED
-    # value) after a restart. That is worse than the defect this fixes. A vector
-    # that changes per launch is not an identity — it would have traded Level 2
-    # for the restart-continuity outcome PS-70 covers, turning one profile into
-    # two machines instead of making two profiles two machines.
+    # PS-302: through the registry, not beside it. This used to call
+    # `ctx.add_init_script` directly and then carry its OWN replay loop, which
+    # made it the one spoof in this engine that bypassed `_install_spoof` — the
+    # exact "fourth bespoke fix" the registry comment above names by name, and
+    # the nearest precedent a future spoof author would have copied.
     #
-    # Evaluating the patch in the open tabs closes that gap without navigating
-    # anything: a restore launch must NOT touch pages[0] (that is the user's
-    # restored tab, and reloading it to apply a spoof would clobber the session
-    # this engine went to some length to preserve). The patch is idempotent —
-    # applyAudioPatch returns early on a realm it already covered — so a tab
-    # that DID get the init script is unaffected, and a context-less fx-19 tab
-    # raises here and is skipped rather than failing the launch.
-    def _apply_audio_to_open_tabs():
-        for pg in list(ctx.pages):
-            try:
-                pg.evaluate(_audio_js)
-            except Exception as exc:
-                # A tab without a browsingContext (the fx-19 dead default tab)
-                # raises on any eval. Nothing to patch there; the next document
-                # in it comes from the init script.
-                #
-                # BREADCRUMB, deliberately not a re-raise. The swallow is
-                # correct for that known case, but its SYMPTOM when it fires
-                # for any OTHER reason is a silently unperturbed tab — which is
-                # precisely the defect this block exists to fix, and the hardest
-                # kind to notice (nothing fails; a digest just reads the stock
-                # value). So the reason is always recorded, and the known case
-                # is separated from the unknown one at the log level rather
-                # than being flattened into a single silent `continue`.
-                if "browsingContext" in str(exc):
-                    logger.debug(
-                        "audio patch skipped for a context-less tab "
-                        "(expected, fx-19 dead default tab): %s", exc,
-                    )
-                else:
-                    logger.warning(
-                        "audio patch FAILED on an open tab for an unexpected "
-                        "reason - that tab keeps the stock audio fingerprint "
-                        "and stays linkable: %s", exc,
-                    )
-                continue
+    # The bespoke replay it replaces was not defensive. MEASURED, not reasoned:
+    # with only the init script, one profile read audio.digest 35.749988 on its
+    # first launch and 35.749972 (the UNPERTURBED value) after a restart —
+    # `add_init_script` reaches only documents created AFTER it is registered,
+    # and on a RESTORE launch Firefox has already rebuilt the session's tabs by
+    # the time `__enter__` returns. That coverage is preserved here by the
+    # registry's own replay (`_apply_spoofs_to_open_tabs`, invoked BELOW this
+    # line — see the ordering note there), which does the same thing for every
+    # registered spoof: `evaluate` into the live realm, never a reload, because
+    # a restore launch must NOT touch pages[0]. The patch is idempotent
+    # (applyAudioPatch returns early on a realm it already covered), so a tab
+    # that DID get the init script is unaffected.
+    _install_spoof("audio", firefox_audio_init_script(seed))
 
-    on_ctx(_apply_audio_to_open_tabs)
+    # ORDER IS LOAD-BEARING (PS-302). `_apply_spoofs_to_open_tabs` reads
+    # `_spoof_scripts` at CALL time and runs exactly ONCE, so every spoof must
+    # be registered ABOVE this line or it silently loses already-open-tab
+    # coverage — present on a first launch, absent on every restore, nothing
+    # raised and nothing logged. Register new spoofs above; do not move this up.
+    on_ctx(_apply_spoofs_to_open_tabs)
 
     # The persistent context already opened ONE window: with a saved session
     # Firefox restored the user's tabs into it (the trailing -new-window arg
