@@ -5,6 +5,9 @@
 `--fuzz=0`.**
 
 Rebased from `144.0.7559.132-1` under PS-299, 2026-09-03.
+Compile fixes to 018-timezone under PS-309, 2026-09-04 — see
+"What broke at COMPILE time at 152" below, and read it before assuming a clean
+apply means anything about a build.
 
 ---
 
@@ -156,6 +159,100 @@ Two checks, both cheap:
    out byte-for-byte the same unless you deliberately changed them.
 
 Both passed for 144 → 152.
+
+---
+
+## What broke at COMPILE time at 152, after the text applied cleanly
+
+**This section is the proof of the sentence below it.** All 16 patches applied at
+152 with 81/81 hunks and fuzz 0 — and the build still failed, at ninja step
+29955/56861, on `timezone_controller.o` (run 33860055910, the first run whose
+unmodified control tree built end to end, so the failure was attributable to our
+patches rather than to the environment). Fixed under PS-309.
+
+Two API drifts, both of which a text probe is structurally incapable of seeing.
+
+### 1. `switches::` FROM INSIDE BLINK NOW MEANS `blink::switches`
+
+```
+error: no member named 'kFingerprintTimezone' in namespace 'blink::switches';
+       did you mean '::switches::kFingerprintTimezone'?
+```
+
+Our switches live in the **global** `switches` namespace —
+`000-add-fingerprint-switches.patch` declares them in
+`components/ungoogled/ungoogled_switches.h`, closing with `}  // namespace switches`
+at global scope. Upstream has a **same-named** `blink::switches`, in
+`third_party/blink/public/common/switches.h`.
+
+The trigger is a one-line upstream change with nothing to do with us: at 144
+`timezone_controller.cc` did **not** include `blink/public/common/switches.h`; at
+152 it does (line 12). From inside `namespace blink`, that include makes the
+unqualified name `switches::` resolve to `blink::switches` and stop finding ours.
+Nothing in our patch moved.
+
+**Fix: spell the global namespace, `::switches::kFingerprintTimezone`.** Not a
+`using`, not a rename — the leading `::` is the whole point, because the failure
+mode is precisely a same-named namespace winning lookup. The three call sites in
+018 now use it.
+
+⚠️ **THIS IS A LATENT TRAP IN TEN OTHER PATCHES, AND IT IS SILENT UNTIL THE FILE
+HAPPENS TO PULL THAT HEADER IN.** Ten of our patches reference unqualified
+`switches::kFingerprint*` from Blink translation units — 002, 003, 005, 006,
+011, 012, 013, 014, 015, 016 — across 22 files under
+`third_party/blink/renderer/`. Measured at 152: of those 22, exactly one
+(`core/loader/frame_fetch_context.cc`, touched by 002) already includes
+`blink/public/common/switches.h` directly, and it happens to be a file where we
+add **no** `switches::` reference — so nothing is broken today. The rest compile
+only because their files do not yet see that header, directly or transitively.
+That is **an accident of upstream's include graph, not a property of our
+patches**, and it can change at any tag from a one-line upstream include.
+
+**Do not pre-emptively rewrite them.** PS-309 was explicitly scoped to the
+observed breakage: a speculative rewrite changes behaviour with nothing to
+verify it against, and the transitive half of that measurement cannot be made
+without a compile anyway. But when one of them fails with `no member named
+'kFingerprint…' in namespace 'blink::switches'`, this is the fix, and it needs no
+investigation — add the leading `::` and move on.
+
+### 2. `String::FromUTF8` → `String::FromUtf8`
+
+A straight upstream rename in
+`third_party/blink/renderer/platform/wtf/text/wtf_string.h`. At 144 it is
+`FromUTF8`; at 152 only `FromUtf8` exists. All three of 018's call sites used it.
+
+**The `base::as_byte_span` wrapper is NOT needed, and adding one would be wrong.**
+The compiler also emitted, at each site:
+
+```
+error: no viable conversion from 'std::string' to 'base::span<const uint8_t>'
+```
+
+which reads as a third, independent breakage requiring an explicit conversion. It
+is not — it is **fallout from the typo-correction**. Having suggested `FromUtf8`,
+clang re-checked the argument against the *single* declaration it named
+(`FromUtf8(base::span<const uint8_t>)`, line 88) and reported that one not
+matching. The header at 152 carries **two** overloads:
+
+```cpp
+[[nodiscard]] static String FromUtf8(base::span<const uint8_t>);
+[[nodiscard]] static String FromUtf8(std::string_view s) {
+  return FromUtf8(base::as_byte_span(s));
+}
+```
+
+A `std::string` binds to the `string_view` overload, which does the byte-span
+conversion itself. Verified two ways rather than assumed: the 152 header was read
+at the tag, and a standalone harness reproducing the overload pair confirmed
+`std::string` selects `string_view` — and, reverted, reproduces the original
+three errors verbatim. Once the spelling is fixed the conversion error is gone.
+
+**The general lesson, worth more than either fix: when a clang error is preceded
+by a `did you mean` on the same expression, resolve the name first and re-read.
+A typo-correction narrows overload resolution to one candidate, so it can
+manufacture a second error that describes a problem you do not have.** Acting on
+that one here would have added a `base::as_byte_span()` to three call sites,
+carried on every future rebase, fixing nothing.
 
 ---
 
