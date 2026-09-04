@@ -10,6 +10,7 @@ apply_and_restart is a no-op guarded by the $APPIMAGE check.
 """
 
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -24,6 +25,48 @@ from . import install_env, relaunch_bat
 
 APP_VERSION = "3.0.2"
 APP_REPO = "amnesiadevelopment/persona"
+
+# THE APPLICATION'S OWN TAG SHAPE: `v<X.Y.Z>`.
+#
+# ⚠️ THIS REPOSITORY PUBLISHES TWO KINDS OF RELEASE (see RELEASING.md): the
+# application, tagged `vX.Y.Z`, and the Personium browser engine, tagged
+# `personium-<chromium version>`. This pattern is what stops the second from
+# ever being offered to an operator as the first.
+_APP_TAG_RE = re.compile(r"^v?\d+(?:\.\d+)*$")
+
+
+def is_app_release_tag(tag: str) -> bool:
+    """True when a release tag names an APPLICATION release of persona.
+
+    THE INDEPENDENT GUARD, AND THE MOST IMPORTANT LINE IN THIS FILE (PS-305).
+    Engine releases are published as PRERELEASES precisely so they cannot take
+    the `releases/latest` pointer this module reads — but that marking is a box
+    a person ticks by hand at release time. This guard exists so a MIS-MARKED
+    engine release, published as an ordinary release and holding that pointer,
+    still cannot be offered to operators as an application update. It is a
+    second line of defence, deliberately not derived from the first.
+
+    What it defends against is a ONE-WAY TRAP, not a cosmetic mislabel. This
+    module compares tags with `is_newer`, imported from the ENGINE updater,
+    which is a plain numeric-tuple compare. With the app at 3.0.2 and an engine
+    at 152.0.7977.75, `is_newer("152.0.7977.75", "3.0.2")` is True and the
+    reverse is False — so an engine release read as an app release would be
+    offered to every install as an update, and once a client recorded that
+    version NO real application release could ever read as newer again. On the
+    operator's machine that is unrecoverable without a reinstall.
+
+    Note it is a POSITIVE shape test, not a `personium-` blacklist: anything
+    that is not recognisably `vX.Y.Z` is refused, so a third kind of release
+    published here later (or an engine tag scheme that changes) is refused by
+    default rather than by having been anticipated.
+
+    Do NOT "fix" this by making `is_newer` engine-aware. That helper is shared
+    with the engine updater and a comparison change made for one side silently
+    changes the other's."""
+    t = (tag or "").strip()
+    if not t:
+        return False
+    return bool(_APP_TAG_RE.match(t))
 
 
 def asset_name() -> str:
@@ -285,21 +328,39 @@ def asset_download_url(tag: str) -> str:
 
 
 def update_available(latest: str, current: str = APP_VERSION) -> bool:
+    """True when `latest` is an APPLICATION release newer than `current`.
+
+    The tag-shape guard runs FIRST and is not negotiable — see
+    is_app_release_tag. This is the single chokepoint every "should we offer an
+    update?" path funnels through (check_for_update and the Windows fast-update
+    path both call it), which is why the guard lives here rather than at each
+    call site."""
+    if not is_app_release_tag(latest):
+        return False
     return is_newer(latest, current)
 
 
 def pick_asset(assets: list[dict]) -> tuple[str, int]:
-    """Pick this OS's release asset (download_url, size). The size comes straight
-    from the GitHub API, so the download has an exact total without a separate
-    (Tor-flaky) HEAD request."""
+    """Pick this OS's APPLICATION release asset (download_url, size). The size
+    comes straight from the GitHub API, so the download has an exact total
+    without a separate (Tor-flaky) HEAD request.
+
+    THE SUFFIX FALLBACK IS ANCHORED AT BOTH ENDS (PS-305). It used to accept any
+    asset ending in this OS's extension, and persona's repository now publishes
+    engine assets beside application ones — `personium-<version>-linux-
+    x86_64.AppImage` ends in `.AppImage` exactly as `persona-x86_64.AppImage`
+    does. So the fallback additionally requires the `persona-` filename prefix,
+    which no engine asset carries. The exact-name match above it was always
+    safe; the fallback was not."""
     want = asset_name()
     for asset in assets:
         if asset.get("name", "") == want:
             return asset.get("browser_download_url", ""), int(asset.get("size", 0) or 0)
-    # fallback: any asset with this OS's extension
+    # fallback: any APPLICATION asset with this OS's extension
     suffix = _asset_suffix()
     for asset in assets:
-        if asset.get("name", "").endswith(suffix):
+        name = asset.get("name", "")
+        if name.startswith("persona-") and name.endswith(suffix):
             return asset.get("browser_download_url", ""), int(asset.get("size", 0) or 0)
     return "", 0
 

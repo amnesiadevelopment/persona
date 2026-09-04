@@ -39,20 +39,22 @@ name: engine-gpu-variance
 #
 # ⚠️ AND DELIBERATELY NOT PINNED. The tempting shape is to pin a known engine
 # build so the job is reproducible. That would defeat the entire purpose: the
-# RISK IS UPSTREAM'S `/releases/latest`, which is exactly what a pin hides. A
-# gate on a pinned build stays green forever while the build users actually
-# receive goes bad. So this job downloads whatever `/releases/latest` returns —
-# the same bytes `updater.fetch_latest()` hands the operator's app — and
-# measures those. The cost is accepted knowingly: this job can go red because
-# upstream changed something, which IS THE SIGNAL, not noise.
+# RISK IS WHATEVER THE NEWEST PUBLISHED ENGINE RELEASE IS, which is exactly what
+# a pin hides. A gate on a pinned build stays green forever while the build
+# users actually receive goes bad. So this job downloads whatever the newest
+# Personium release serves — the same bytes `updater.fetch_latest()` hands the
+# operator's app — and measures those. The cost is accepted knowingly: this job
+# can go red because a newly published engine changed something, which IS THE
+# SIGNAL, not noise.
 #
 # WHAT THE OPERATOR'S APP ACTUALLY DOES, which is what makes this urgent:
 # `app.py` `_check_engines_periodic()` polls hourly, unattended, no spinner,
-# and ends at `_auto_update_engine()` -> `updater.py` ->
-# adryfish/fingerprint-chromium `/releases/latest`. `policy.py` ships
+# and ends at `_auto_update_engine()` -> `updater.py` -> the newest
+# `personium-`-tagged release in `amnesiadevelopment/persona` (PS-305 moved this
+# off the dead adryfish upstream; see RELEASING.md). `policy.py` ships
 # `KNOWN_BAD_VERSIONS = frozenset()` and NO ceiling. So persona installs
-# whatever upstream published most recently, on the user's machine, with no
-# human in the loop.
+# whatever engine release was published most recently, on the user's machine,
+# with no human in the loop.
 #
 # ---------------------------------------------------------------------------
 # WHAT THIS COVERS AND WHAT IT DOES NOT — STATED, NOT IMPLIED
@@ -138,7 +140,7 @@ jobs:
       # THE UNPINNED DOWNLOAD. This is the point of the job: the tag is
       # whatever upstream published, resolved the same way the operator's app
       # resolves it, and it is ECHOED so a red run names the build that was bad.
-      - name: Download whatever /releases/latest is serving right now
+      - name: Download whatever the newest Personium release is serving right now
         id: engine
         run: |
           python - <<'PY' >> "$GITHUB_OUTPUT"
@@ -149,7 +151,7 @@ jobs:
           # known-bad list is refused here rather than measured — the refusal is
           # the correct outcome and this job should not re-litigate it.
           tag, url, digest, verdict, message = updater.fetch_latest_checked(timeout=30)
-          print(f"upstream latest: {tag} (policy verdict: {verdict})", file=sys.stderr)
+          print(f"newest engine release: {tag} (policy verdict: {verdict})", file=sys.stderr)
           if verdict != "ok":
               print(f"persona already refuses this build: {message}", file=sys.stderr)
               sys.exit(f"refusing to measure a build persona will not install: {tag}")

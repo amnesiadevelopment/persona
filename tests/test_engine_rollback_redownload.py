@@ -712,15 +712,16 @@ def test_fetch_release_full_reads_the_by_tag_endpoint_for_this_os(monkeypatch):
     seen = {}
 
     doc = {
-        "tag_name": "148.0.7778.215",
+        "tag_name": "personium-148.0.7778.215",
+        "prerelease": True,
         "assets": [
             {
-                "name": "ungoogled-chromium_148.0.7778.215-1.1_macos.dmg",
+                "name": "personium-148.0.7778.215-macos-x86_64.dmg",
                 "browser_download_url": "http://x/mac.dmg",
                 "digest": "sha256:" + "c" * 64,
             },
             {
-                "name": "ungoogled-chromium_148.0.7778.215-1.1_windows_x64.zip",
+                "name": "personium-148.0.7778.215-windows-x86_64.zip",
                 "browser_download_url": "http://x/win.zip",
                 "digest": "sha256:" + "d" * 64,
             },
@@ -735,7 +736,12 @@ def test_fetch_release_full_reads_the_by_tag_endpoint_for_this_os(monkeypatch):
 
     tag, url, digest = updater.fetch_release_full("148.0.7778.215")
 
-    assert "releases/tags/148.0.7778.215" in seen["url"]
+    # The BARE version off disk is prefixed back into the real published tag
+    # for the URL (PS-305) — builds.json and version.txt hold bare versions.
+    assert "releases/tags/personium-148.0.7778.215" in seen["url"]
+    assert "amnesiadevelopment/persona" in seen["url"], (
+        "engine releases come from OUR repository now, not the dead upstream"
+    )
     assert tag == "148.0.7778.215"
     assert url == "http://x/win.zip"          # the WINDOWS asset, not the dmg
     assert digest == "sha256:" + "d" * 64
