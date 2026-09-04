@@ -56,6 +56,15 @@ Writing ``{"darwin", "linux", "win32"}`` here would be a second copy of the fact
 fact drifting apart. The build jobs ARE the declaration of what we ship: delete
 ``build-macos`` and this guard stops demanding macOS, in the same commit, with
 no second edit to remember.
+
+That parse must be tolerant of ARCHITECTURE SPLITS, because the mac recovery
+PS-288 prescribes is exactly one: ``build-macos-arm64`` + ``build-macos-x86_64``
+(§3.1 — the x86_64 leg must be native, so the two cannot be one job). A parser
+that treated those as unknown jobs would drop ``darwin`` from the guard at the
+very moment macOS came back, and the guard would be green forever while shipping
+an unlaunchable Mac. So job ids are read hyphens-and-all by ``_build_job_ids``
+and mapped on their OS prefix by ``_job_os`` — one parser, one place, used by
+every reader in this file.
 """
 import pathlib
 import re
@@ -75,14 +84,44 @@ _JOB_TO_SYS_PLATFORM = {
     "windows": "win32",
 }
 
+#: Top-level job ids sit at exactly two spaces of indent, and an OS may be built
+#: by SEVERAL jobs — one per architecture — so the suffix is captured WHOLE,
+#: hyphens included: "build-macos", "build-macos-arm64", "build-macos-x86_64".
+#: This is the single copy of "how a build job is spelled"; every reader below
+#: goes through ``_build_job_ids``. A second copy is exactly the drift this file
+#: was written to prevent.
+_BUILD_JOB_RE = re.compile(r"^  build-([a-z0-9_]+(?:-[a-z0-9_]+)*):", re.MULTILINE)
 
-def _shipped_sys_platforms() -> set[str]:
+
+def _release_yml_text() -> str:
+    return (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+
+
+def _build_job_ids(text: str | None = None) -> set[str]:
+    """Every ``build-<suffix>`` job id declared by the release workflow, as the
+    suffix alone: ``{"linux", "windows", "macos-arm64"}``."""
+    return set(_BUILD_JOB_RE.findall(_release_yml_text() if text is None else text))
+
+
+def _job_os(job_id: str) -> str:
+    """The OS a build job targets, dropping any architecture suffix.
+
+    ``macos`` and ``macos-arm64`` are the same OS built two ways. Keying the
+    platform mapping on the whole job id would make a per-arch split look like
+    the OS disappearing — which is precisely how a mac restoration would turn
+    this guard off (PS-288 review of PR #231).
+    """
+    return job_id.split("-", 1)[0]
+
+
+def _shipped_sys_platforms(text: str | None = None) -> set[str]:
     """The ``sys.platform`` values persona publishes a build for, read from the
     release workflow's own build jobs."""
-    text = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
-    # Top-level job ids sit at exactly two spaces of indent: "  build-macos:".
-    jobs = set(re.findall(r"^  build-([a-z0-9_]+):", text, flags=re.MULTILINE))
-    return {_JOB_TO_SYS_PLATFORM[j] for j in jobs if j in _JOB_TO_SYS_PLATFORM}
+    return {
+        _JOB_TO_SYS_PLATFORM[os_]
+        for os_ in map(_job_os, _build_job_ids(text))
+        if os_ in _JOB_TO_SYS_PLATFORM
+    }
 
 
 def _driver_launches_on(platform_key: str) -> tuple[bool, str]:
@@ -166,10 +205,17 @@ def test_the_guard_reads_a_real_job_list():
         "parametrize over an empty set and check nothing"
     )
     assert "darwin" in shipped, (
-        "release.yml no longer declares a build-macos job. If macOS was "
-        "deliberately dropped this test is what should be updated, and PS-288 "
-        "records that the owner required macOS on 2026-09-03 — so a human "
-        "decision belongs in that commit message"
+        "no macOS build job was found in release.yml, so this guard would stop "
+        "demanding that the pinned driver support macOS.\n"
+        "  Jobs parsed: " + repr(sorted(_build_job_ids())) + "\n"
+        "  NOTE: 'build-macos-arm64' and 'build-macos-x86_64' are BOTH macOS "
+        "and both count — a per-architecture split of the mac leg is a "
+        "RESTORATION and must read as success here, not as a removal. If this "
+        "fires while such jobs exist, the parse is wrong (fix _BUILD_JOB_RE / "
+        "_job_os), not the assertion.\n"
+        "  If macOS really was dropped, that contradicts the owner's "
+        "2026-09-03 instruction that macOS is required (PS-288); relaxing this "
+        "assertion needs that human decision in the commit message."
     )
 
 
@@ -193,15 +239,57 @@ def test_the_probe_can_actually_fail():
 def test_shipped_platforms_do_not_silently_include_an_unmapped_os():
     """If release.yml grows a build job for an OS this file has no
     ``sys.platform`` mapping for, that OS is skipped by the guard — silently.
-    Name the gap instead of dropping it."""
-    text = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
-    jobs = set(re.findall(r"^  build-([a-z0-9_]+):", text, flags=re.MULTILINE))
-    unmapped = jobs - set(_JOB_TO_SYS_PLATFORM)
+    Name the gap instead of dropping it.
+
+    Reads through the SAME ``_build_job_ids`` the guard above uses, so a job the
+    parser cannot see is not quietly absent from both: fix the parser and both
+    this test and the guard start seeing it together.
+    """
+    unmapped = {
+        job for job in _build_job_ids() if _job_os(job) not in _JOB_TO_SYS_PLATFORM
+    }
     assert not unmapped, (
         f"release.yml builds for {sorted(unmapped)}, which this guard has no "
         f"sys.platform mapping for — add it to _JOB_TO_SYS_PLATFORM or that OS "
         f"ships unchecked"
     )
+
+
+def test_a_per_architecture_mac_split_still_counts_as_shipping_macos():
+    """The restoration this file exists to protect must not turn it off.
+
+    PS-288 §3.1/§5.1 prescribes reviving upstream's TWO mac legs —
+    ``macos-arm64`` on ``macos-26`` and a NATIVE ``macos-x86_64`` on
+    ``macos-26-intel``; §3.1 established they cannot be one job. An earlier
+    parser here matched ``[a-z0-9_]+`` with no hyphen, so both of those legs
+    were invisible: ``darwin`` silently left the parametrize list and the mac
+    guard would have been green forever while shipping an unlaunchable Mac —
+    reached through the very file written to prevent it.
+
+    So: assert the parse against that exact successor workflow shape, and
+    assert the unmapped-OS backstop still names a genuinely new OS.
+    """
+    split = (
+        "jobs:\n"
+        "  build-linux:\n    runs-on: ubuntu-24.04\n"
+        "  build-windows:\n    runs-on: windows-latest\n"
+        "  build-macos-arm64:\n    runs-on: macos-26\n"
+        "  build-macos-x86_64:\n    runs-on: macos-26-intel\n"
+    )
+    assert _build_job_ids(split) == {
+        "linux",
+        "windows",
+        "macos-arm64",
+        "macos-x86_64",
+    }
+    assert _shipped_sys_platforms(split) == {"linux", "win32", "darwin"}
+
+    # And the backstop still fires for an OS we have no mapping for, rather
+    # than being weakened into silence by the hyphen tolerance above.
+    novel = split + "  build-plan9-386:\n    runs-on: self-hosted\n"
+    assert {
+        job for job in _build_job_ids(novel) if _job_os(job) not in _JOB_TO_SYS_PLATFORM
+    } == {"plan9-386"}
 
 
 def test_sys_platform_mapping_matches_this_interpreter():
