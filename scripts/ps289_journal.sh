@@ -109,8 +109,56 @@ now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 # the build's `last="…"` output verbatim, so a bare `[[:space:]]END[[:space:]]`
 # would be satisfied by a compiler printing the word END and would count a
 # phase as ended that never was.
-JOURNAL_BEGIN_MATCH='^[^[:space:]]+[[:space:]]+BEGIN[[:space:]]'
-JOURNAL_END_MATCH='^[^[:space:]]+[[:space:]]+END[[:space:]]'
+#
+# ⚠️ `#` IS EXCLUDED FROM THE FIRST TOKEN, AND THAT ONE CHARACTER IS THE WHOLE
+# DIFFERENCE BETWEEN THIS READER AND A DESTRUCTIVE ONE. `_header_if_new` writes
+# a LEGEND into every journal — `#   BEGIN <tree>/<label>  the phase started`,
+# and the matching `#   END   …` line. `#` is a non-space character, so an
+# anchor of `^[^[:space:]]+` matches those legend lines and EVERY journal ever
+# written starts life at begins=1, ends=1. That is invisible while a real phase
+# is running (both counters gain one), and it bites on the journal with NO real
+# phase lines — which is written by the exact failure this script exists for: a
+# runner that dies after the `mark` milestones but before `ps218_build.sh`
+# reaches `journal begin`. `1 > 1` is false, the run reads as FINISHED, and its
+# record is deleted unread while the log says it "uploaded its own record".
+# Excluding `#` makes the anchor mean "a timestamp", which is what this comment
+# always claimed it meant.
+JOURNAL_BEGIN_MATCH='^[^#[:space:]]+[[:space:]]+BEGIN[[:space:]]'
+JOURNAL_END_MATCH='^[^#[:space:]]+[[:space:]]+END[[:space:]]'
+# Any real (non-legend) event line, for reader-facing excerpts.
+JOURNAL_EVENT_MATCH='^[^#[:space:]]+[[:space:]]+(BEGIN|MARK|ALIVE|END)[[:space:]]'
+
+# ── the ONE predicate both readers use ───────────────────────────────────────
+# `_previous_run_finished` (the gate that decides whether to salvage a stranded
+# `record/`) and the orphan sweep (which decides whether to carry a journal out)
+# ask the SAME question of a journal, so they must not answer it with two
+# hand-rolled comparisons that can drift apart. A journal describes a run that
+# FINISHED its phases only when it has at least one real BEGIN and an END for
+# each of them. Both failure directions are unfinished:
+#
+#   begins == 0  → nothing ever started, so nothing finished. This is the dead
+#                  run that never reached `journal begin`, and reading it as
+#                  "finished" is the destructive answer.
+#   begins > ends → a phase started and never ended: the classic dropout.
+#
+# Returns 0 (true) when the journal is UNFINISHED — i.e. when its material must
+# be kept.
+_journal_is_unfinished() {
+  local j="$1" begins ends
+  [ -f "$j" ] || return 0
+  # `grep -c` prints a count and exits 1 when that count is zero, so the
+  # `|| echo 0` idiom would emit TWO lines ("0\n0") and break the comparison.
+  # `|| true` keeps the single number grep already printed.
+  begins="$(grep -Ec "$JOURNAL_BEGIN_MATCH" "$j" 2>/dev/null || true)"; begins="${begins:-0}"
+  ends="$(grep -Ec "$JOURNAL_END_MATCH" "$j" 2>/dev/null || true)";     ends="${ends:-0}"
+  # `if`, not a trailing `[ … ] && return 0`: an AND-list whose test is false is
+  # itself non-zero, and this function is also called from `|| continue` where
+  # that would be read as a verdict rather than as a fall-through.
+  if [ "$begins" -eq 0 ] || [ "$begins" -gt "$ends" ]; then
+    return 0
+  fi
+  return 1
+}
 
 # ── the one primitive that matters ───────────────────────────────────────────
 # Append, then push to disk. `sync FILE` is the whole point of this function: a
@@ -264,16 +312,15 @@ _owning_run_of_record() {
 # return, and a `saw` flag so "no journal at all" still answers "not finished"
 # (recover) rather than falling out of an empty loop as "finished".
 _previous_run_finished() {
-  local run="$1" d j begins ends saw=0
+  local run="$1" d j saw=0
   [ -n "$run" ] && [ "$run" != "unknown" ] || return 1
   for d in "${JOURNAL_ROOT}/${run}-"*/; do
     j="${d}journal.txt"
     [ -f "$j" ] || continue
     saw=1
-    begins="$(grep -Ec "$JOURNAL_BEGIN_MATCH" "$j" 2>/dev/null || true)"; begins="${begins:-0}"
-    ends="$(grep -Ec "$JOURNAL_END_MATCH" "$j" 2>/dev/null || true)";     ends="${ends:-0}"
-    # Any unfinished phase in ANY attempt means the run did not finish cleanly.
-    [ "$begins" -gt "$ends" ] && return 1
+    # Any unfinished attempt means the run did not finish cleanly — including
+    # an attempt whose journal holds no real phase line at all.
+    _journal_is_unfinished "$j" && return 1
   done
   [ "$saw" -eq 1 ]
 }
@@ -330,6 +377,7 @@ case "$CMD" in
     _prune
     stage=""
     prev_run="none"
+    salvaged_record=0
 
     if [ -d "$RECORD_DIR" ] && [ -n "$(ls -A "$RECORD_DIR" 2>/dev/null || true)" ]; then
       prev_run="$(_owning_run_of_record)"
@@ -347,6 +395,16 @@ case "$CMD" in
         rm -rf "$stage" 2>/dev/null || true
         mkdir -p "$stage" 2>/dev/null || true
         cp -R "$RECORD_DIR"/. "$stage"/ 2>/dev/null || true
+        # ⚠️ DO NOT CARRY A PREVIOUS SALVAGE INTO THIS ONE. `record/salvaged/`
+        # is itself part of `record/`, so a dispatch whose predecessor also
+        # salvaged something would nest the recovered tree one level deeper
+        # every time — `salvaged/record-from-run-unknown/salvaged/record-from-
+        # run-unknown/…`. That is not exotic: the PS-244 borrowed-control
+        # refusal exits before any provenance stamp is written, so consecutive
+        # refusals each leave an unprovenanced `record/` behind. The earlier
+        # material is not lost by this — it already rode out on the artifact of
+        # the dispatch that recovered it.
+        rm -rf "${stage}/salvaged" 2>/dev/null || true
       fi
     fi
 
@@ -368,13 +426,26 @@ case "$CMD" in
         _salvage_file "$f" "${dest}/${rel}"
       done
       echo "salvaged the previous dispatch's record/ (run ${prev_run}) -> ${dest}"
+      salvaged_record=1
     fi
     rm -rf "$stage" 2>/dev/null || true
 
     # Journals from earlier runs that never recorded an END for a phase they
-    # BEGAN. Those are precisely the dead runs, and they are the reason this
-    # script exists — so they ride out on the next dispatch's artifact.
+    # BEGAN — or that never recorded a BEGIN at all. Those are precisely the
+    # dead runs, and they are the reason this script exists, so they ride out on
+    # the next dispatch's artifact.
+    #
+    # ⚠️ EACH ONE IS CARRIED OUT EXACTLY ONCE, AND THE SENTINEL IS WHAT MAKES
+    # THAT TRUE. Without it this sweep re-finds the same unfinished journals on
+    # EVERY future dispatch until the 30-day prune, so a run whose predecessor
+    # was perfectly healthy still creates `record/salvaged/` and still posts
+    # "♻️ Recovered evidence from an earlier dispatch" to its summary — the
+    # exact false signal the gate above exists to prevent, sustained for a
+    # month after every dropout. The sentinel is a hidden file INSIDE the run's
+    # journal directory, so it does not appear in the `*/` glob and is pruned
+    # with the journal it belongs to.
     orphans=0
+    orphan_names=""
     if [ -d "$JOURNAL_ROOT" ]; then
       for d in "$JOURNAL_ROOT"/*/; do
         [ -d "$d" ] || continue
@@ -382,17 +453,13 @@ case "$CMD" in
         [ "$name" = "${RUN_ID}-${RUN_ATTEMPT}" ] && continue
         j="${d}journal.txt"
         [ -f "$j" ] || continue
-        # `grep -c` prints a count and exits 1 when that count is zero, so the
-        # `|| echo 0` idiom would emit TWO lines ("0\n0") and break the
-        # comparison below. `|| true` keeps the single number grep already
-        # printed.
-        begins="$(grep -Ec "$JOURNAL_BEGIN_MATCH" "$j" 2>/dev/null || true)"
-        ends="$(grep -Ec "$JOURNAL_END_MATCH" "$j" 2>/dev/null || true)"
-        begins="${begins:-0}"; ends="${ends:-0}"
-        [ "$begins" -le "$ends" ] && continue
+        [ -f "${d}.salvaged" ] && continue
+        _journal_is_unfinished "$j" || continue
         mkdir -p "${RECORD_DIR}/salvaged/journals"
         cp "$j" "${RECORD_DIR}/salvaged/journals/journal-${name}.txt" 2>/dev/null || true
+        : > "${d}.salvaged" 2>/dev/null || true
         orphans=$((orphans + 1))
+        orphan_names="${orphan_names}${orphan_names:+, }${name}"
       done
     fi
     # Written as an `if` and not `[ … ] && echo …`: under `set -e` a trailing
@@ -431,8 +498,9 @@ case "$CMD" in
         echo "  \`<id>\` is read from its own provenance stamps; \`unknown\` means it"
         echo "  died before \`prepare\` wrote one, which is itself a finding about how"
         echo "  far it got."
-        echo "- \`journals/\` — durable journals whose phases BEGAN and never ENDED."
-        echo "  Read the last \`ALIVE\` line: it bounds where the run stopped."
+        echo "- \`journals/\` — durable journals of runs that did not finish: a phase"
+        echo "  that BEGAN and never ENDED, or a run that died before any phase began"
+        echo "  at all. Read the last \`ALIVE\` line: it bounds where the run stopped."
         echo
         echo "Large logs are truncated head+tail with the drop stated in-line."
       } > "${RECORD_DIR}/salvaged/SALVAGE.md" 2>/dev/null || true
@@ -451,14 +519,28 @@ case "$CMD" in
       {
         echo "### ♻️ Recovered evidence from an earlier dispatch (PS-289)"
         echo
-        echo "A previous run left \`record/\` behind without uploading it — the signature"
-        echo "of a runner that died mid-step. Its evidence was recovered into this run's"
-        echo "record artifact under \`salvaged/\`, rather than being deleted unread."
+        echo "A previous run left evidence behind without uploading it — the signature"
+        echo "of a runner that died mid-step. It was recovered into this run's record"
+        echo "artifact under \`salvaged/\`, rather than being deleted unread."
         echo
         echo "| what | value |"
         echo "|---|---|"
-        echo "| previous run | \`${prev_run}\` |"
-        echo "| unfinished journals recovered | ${orphans} |"
+        # ⚠️ NAME WHAT WAS ACTUALLY RECOVERED. `prev_run` is reset to `none` on
+        # the healthy-predecessor path, so reusing it here would print
+        # "previous run: none" on a notice that only fires because a JOURNAL was
+        # recovered — a reader following the notice would be told a recovery
+        # happened from a run called "none", with the dead run's identity
+        # nowhere on the page.
+        if [ "$salvaged_record" -eq 1 ]; then
+          echo "| record recovered from run | \`${prev_run}\` |"
+        else
+          echo "| record recovered from run | none (no stranded \`record/\`) |"
+        fi
+        if [ "$orphans" -gt 0 ]; then
+          echo "| unfinished journals recovered | ${orphans} (\`${orphan_names}\`) |"
+        else
+          echo "| unfinished journals recovered | 0 |"
+        fi
         echo
         if [ -d "${RECORD_DIR}/salvaged/journals" ]; then
           echo "Last recorded position of each unfinished run — a \`BEGIN\` with no \`END\`"
@@ -468,7 +550,7 @@ case "$CMD" in
           for jf in "${RECORD_DIR}"/salvaged/journals/*.txt; do
             [ -f "$jf" ] || continue
             echo "--- $(basename "$jf") ---"
-            grep -E '  (BEGIN|MARK|ALIVE|END) ' "$jf" 2>/dev/null | tail -6 || true
+            grep -E "$JOURNAL_EVENT_MATCH" "$jf" 2>/dev/null | tail -6 || true
           done
           echo '```'
         fi
