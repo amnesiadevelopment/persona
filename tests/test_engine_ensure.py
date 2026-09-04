@@ -749,3 +749,216 @@ def test_a_lock_on_the_destination_does_not_destroy_it():
             assert f.read() == b"WHATEVER-IS-LIVE-NOW"
         with open(backup, "rb") as f:
             assert f.read() == b"THE-PREVIOUS-BUILD"
+
+
+# --- PS-245: a VERIFIED rollback clears the in-progress sentinel --------------
+#
+# PS-24/PS-32 made a failed upgrade DETECTABLE by leaving the sentinel behind;
+# PS-30/PS-38 made it RECOVERABLE by restoring the previous build. Those two are
+# individually right and combine into a brick: the installers return the same
+# bare False for a half-promoted tree and for one restored to the build that was
+# launchable minutes ago, so the sentinel was left over BOTH — and only a
+# successful install ever clears it, which needs a network the offline operator
+# does not have.
+#
+# Every assertion below is on is_installed() over REAL on-disk state, never on
+# whether a helper was called.
+
+
+def _prior_working_build(d, body=b"WORKING-BUILD"):
+    """An ENGINE_DIR holding a previous, WORKING install (the upgrade
+    precondition — the only state where a rollback has something to restore)."""
+    (d / "engine.bin").write_bytes(body)
+    (d / ".engine-complete").touch()
+    (d / "version.txt").write_text("148.0.7778.215", encoding="utf-8")
+
+
+def test_a_verified_rollback_clears_the_sentinel_and_the_engine_is_launchable(
+    tmp_path, monkeypatch
+):
+    """AC1 — the whole point. RED before this slice.
+
+    The REAL download_engine, over a real prior install, with the install
+    failing and its rollback putting the working build back. The bytes on disk
+    are the build that was launchable a moment earlier, so is_installed() must
+    say so.
+    """
+    d = _wire_engine_dir(monkeypatch, tmp_path)
+    _prior_working_build(d)
+    assert updater.is_installed() is True  # precondition
+
+    monkeypatch.setattr(updater, "_download_to", lambda *a, **k: True)
+
+    def failed_install_with_verified_rollback(p):
+        # the install failed and the rollback put the working build back —
+        # exactly what atomic_replace's restore arm leaves on disk
+        (d / "engine.bin").write_bytes(b"WORKING-BUILD")
+        updater._note_install_outcome(updater.INSTALL_OUTCOME_RESTORED)
+        return False
+
+    monkeypatch.setattr(
+        updater, "_install_linux", failed_install_with_verified_rollback
+    )
+
+    # the install still REPORTS failure — nothing about that changes
+    assert updater.download_engine("http://x/e", digest="sha256:aa") is False
+
+    # ...but the engine on disk is the working build, and reads as launchable
+    assert (d / "engine.bin").read_bytes() == b"WORKING-BUILD"
+    assert not (d / ".engine-installing").exists()
+    assert updater.is_installed() is True
+    # the provenance record still names the build that is ACTUALLY on disk
+    assert updater.current_version() == "148.0.7778.215"
+
+
+def test_a_verified_rollback_does_not_write_the_completion_marker(
+    tmp_path, monkeypatch
+):
+    """Clearing the sentinel says "no install is in progress". It must NOT say
+    "a new build was installed" — the marker is the success path's alone, and
+    the gate is carried here by version.txt, which describes the build genuinely
+    on disk."""
+    d = _wire_engine_dir(monkeypatch, tmp_path)
+    _prior_working_build(d)
+
+    monkeypatch.setattr(updater, "_download_to", lambda *a, **k: True)
+
+    def rolled_back(p):
+        updater._note_install_outcome(updater.INSTALL_OUTCOME_RESTORED)
+        return False
+
+    monkeypatch.setattr(updater, "_install_linux", rolled_back)
+    assert updater.download_engine("http://x/e", digest="sha256:aa") is False
+    assert not (d / ".engine-complete").exists()
+    assert updater.is_installed() is True
+
+
+def test_an_unverified_failure_keeps_the_sentinel(tmp_path, monkeypatch):
+    """AC3/AC4, the direction that must never invert. A rollback that could NOT
+    be confirmed leaves a tree that may be part old and part new — the mixed
+    engine the sentinel exists to refuse. Unknown KEEPS it."""
+    d = _wire_engine_dir(monkeypatch, tmp_path)
+    _prior_working_build(d)
+
+    monkeypatch.setattr(updater, "_download_to", lambda *a, **k: True)
+    # a bare-bool failure that reports nothing: a crash, a partial restore, or
+    # any installer stand-in. All read as unknown.
+    monkeypatch.setattr(updater, "_install_linux", lambda p: False)
+
+    assert updater.download_engine("http://x/e", digest="sha256:aa") is False
+    assert (d / ".engine-installing").exists()
+    assert updater.is_installed() is False
+
+
+def test_a_stale_restored_outcome_cannot_clear_a_later_failure(
+    tmp_path, monkeypatch
+):
+    """The side channel is module state, so a previous install's verdict must
+    not survive into the next one. Run a rolled-back install (which clears the
+    sentinel), then a genuine crash — the second must keep it."""
+    d = _wire_engine_dir(monkeypatch, tmp_path)
+    _prior_working_build(d)
+    monkeypatch.setattr(updater, "_download_to", lambda *a, **k: True)
+
+    def rolled_back(p):
+        updater._note_install_outcome(updater.INSTALL_OUTCOME_RESTORED)
+        return False
+
+    monkeypatch.setattr(updater, "_install_linux", rolled_back)
+    assert updater.download_engine("http://x/e", digest="sha256:aa") is False
+    assert not (d / ".engine-installing").exists()
+
+    # ...now a crash, reporting nothing. The earlier "restored" must be gone.
+    monkeypatch.setattr(updater, "_install_linux", lambda p: False)
+    assert updater.download_engine("http://x/e", digest="sha256:aa") is False
+    assert (d / ".engine-installing").exists()
+    assert updater.is_installed() is False
+
+
+def test_install_linux_reports_a_restored_rollback_end_to_end(
+    tmp_path, monkeypatch
+):
+    """AC1 through the REAL _install_linux and the REAL atomic_replace — no
+    stand-in installer anywhere. The ENOSPC fake fails only the swap onto the
+    engine, not the restore that puts the backup back, because a fake that fails
+    both leaves the old bytes merely UNOVERWRITTEN, which looks like a rollback
+    and is not one."""
+    import errno
+
+    d = _wire_engine_dir(monkeypatch, tmp_path)
+    _prior_working_build(d)
+    asset = tmp_path / "downloaded.AppImage"
+    asset.write_bytes(b"NEW-BUILD")
+
+    real_replace = updater.os.replace
+    backup = os.path.abspath(str(d / "engine.bin")) + ".bak"
+
+    def enospc(a, b, *args, **kwargs):
+        if (
+            os.path.abspath(str(b)) == os.path.abspath(str(d / "engine.bin"))
+            and os.path.abspath(str(a)) != backup
+        ):
+            raise OSError(errno.ENOSPC, "No space left on device")
+        return real_replace(a, b, *args, **kwargs)
+
+    monkeypatch.setattr(updater.os, "replace", enospc)
+    updater._reset_install_outcome()
+    assert updater._install_linux(str(asset)) is False
+    monkeypatch.undo()
+
+    assert (d / "engine.bin").read_bytes() == b"WORKING-BUILD"
+    assert updater._previous_build_restored() is True
+
+
+def test_install_linux_reports_dst_untouched_when_the_backup_fails(
+    tmp_path, monkeypatch
+):
+    """AC6, as an executable decision. The couldn't-back-up arm returns before
+    os.replace is attempted, so the engine binary was never written to — a
+    STRONGER guarantee than the restore arm, which had to undo something. It
+    counts as restored, and the bytes are the evidence."""
+    import errno
+
+    d = _wire_engine_dir(monkeypatch, tmp_path)
+    _prior_working_build(d)
+    asset = tmp_path / "downloaded.AppImage"
+    asset.write_bytes(b"NEW-BUILD")
+
+    def boom(*a, **k):
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(updater.httpdl.shutil, "copy2", boom)
+    updater._reset_install_outcome()
+    assert updater._install_linux(str(asset)) is False
+    monkeypatch.undo()
+
+    assert (d / "engine.bin").read_bytes() == b"WORKING-BUILD"
+    assert updater._previous_build_restored() is True
+
+
+def test_install_linux_first_install_failure_is_not_restored(
+    tmp_path, monkeypatch
+):
+    """A FIRST install has no previous build to go back to, so a failed swap
+    must not read as restored just because no restore was needed — there is
+    nothing launchable on disk."""
+    import errno
+
+    d = _wire_engine_dir(monkeypatch, tmp_path)
+    asset = tmp_path / "downloaded.AppImage"
+    asset.write_bytes(b"NEW-BUILD")
+    assert not (d / "engine.bin").exists()
+
+    real_replace = updater.os.replace
+
+    def enospc(a, b, *args, **kwargs):
+        if os.path.abspath(str(b)) == os.path.abspath(str(d / "engine.bin")):
+            raise OSError(errno.ENOSPC, "No space left on device")
+        return real_replace(a, b, *args, **kwargs)
+
+    monkeypatch.setattr(updater.os, "replace", enospc)
+    updater._reset_install_outcome()
+    assert updater._install_linux(str(asset)) is False
+    monkeypatch.undo()
+
+    assert updater._previous_build_restored() is False
