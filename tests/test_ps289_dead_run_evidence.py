@@ -806,6 +806,242 @@ def test_a_predecessor_with_no_journal_at_all_is_still_recovered(tmp_path):
     )
 
 
+@requires_posix_shell
+def test_a_run_that_died_before_any_phase_began_is_not_read_as_finished(tmp_path):
+    """The dead run that reaches the MARK milestones and never reaches BEGIN.
+
+    ⚠️ THE FIXTURE IS THE POINT, AND IT IS WHY EVERY OTHER TEST IN THIS FILE
+    MISSED THIS. Every journal fixture above is hand-written with a bare
+    `"# header\\n"` first line. The REAL header `_header_if_new` writes is 19
+    lines and contains a LEGEND — `#   BEGIN <tree>/<label>  the phase started`
+    and a matching `#   END   …` line. `#` is a non-space character, so an
+    anchor of `^[^[:space:]]+` matched both legend lines and every journal ever
+    written began life at begins=1, ends=1.
+
+    That is invisible while a real phase is running, because BEGIN and END each
+    gain one and the comparison is `>`. It bites on the journal with NO real
+    phase lines — and that journal is written by the exact failure this ticket
+    cites twice: `ps218_record_env.sh` and `ps218_stage_patches.sh` both call
+    `journal mark`, so the journal exists (with its header) before
+    `ps218_build.sh` ever runs, and runs 33170172175 and 33748889046 both died
+    inside `prepare` after those milestones. `1 > 1` is false, the run reads as
+    FINISHED, and `rm -rf record/` destroys the environment record, the staged
+    patch set and the verified borrowed control unread — while printing
+    "finished its phases and uploaded its own record".
+
+    So this fixture is built by the SCRIPT'S OWN `mark` command rather than by
+    hand. On a reader/writer pair, a hand-written fixture only ever tests the
+    reader against the fixture author's idea of the writer.
+    """
+    journal_root = tmp_path / "journal"
+    ws = tmp_path / "ws"
+    (ws / "record").mkdir(parents=True)
+
+    # ── the dead run, writing its journal through the real code path ──
+    for text in (
+        "environment recorded (pre-prepare) -> record/environment-patched.txt",
+        "staged 16 fingerprint patches into ungoogled's series",
+    ):
+        r = run_journal("mark", "patched", text, cwd=ws, journal_root=journal_root, run_id="9100")
+        assert r.returncode == 0, r.stderr
+
+    journal = journal_root / "9100-1" / "journal.txt"
+    assert journal.is_file()
+    # The header legend really is there — if this ever stops being true the test
+    # below stops testing anything, so assert it rather than assume it.
+    assert "#   BEGIN <tree>/<label>" in journal.read_text(encoding="utf-8")
+
+    # …and the eight steps' worth of evidence it left in record/.
+    (ws / "record" / "prepare-patched.provenance").write_text(
+        "phase=prepare\ntree=patched\ngithub_run_id=9100\ngithub_run_attempt=1\n",
+        encoding="utf-8",
+    )
+    (ws / "record" / "environment-patched.txt").write_text("nproc: 32\n", encoding="utf-8")
+    (ws / "record" / "patches-staged.txt").write_text("# count: 16\n", encoding="utf-8")
+    (ws / "record" / "control-borrow-verification.txt").write_text(
+        "borrowed control VERIFIED\n", encoding="utf-8"
+    )
+
+    result = run_journal("salvage", cwd=ws, journal_root=journal_root, run_id="9101")
+    assert result.returncode == 0, result.stderr
+
+    assert "nothing to salvage" not in result.stdout, (
+        "a run that died BEFORE its first phase began was reported as having "
+        "finished its phases and uploaded its own record — the message a reader "
+        f"gets is the opposite of the truth. Salvage said:\n{result.stdout}"
+    )
+
+    recovered = ws / "record" / "salvaged" / "record-from-run-9100"
+    for name, needle in (
+        ("environment-patched.txt", "nproc: 32"),
+        ("patches-staged.txt", "# count: 16"),
+        ("control-borrow-verification.txt", "borrowed control VERIFIED"),
+    ):
+        assert (recovered / name).is_file(), (
+            f"{name} was deleted unread. This is the ticket's own scenario: "
+            "eight completed steps including a verified borrowed control, and a "
+            "total blackout afterwards."
+        )
+        assert needle in (recovered / name).read_text(encoding="utf-8")
+
+    # The orphan sweep must reach the same verdict — it asks the same question,
+    # and a journal left behind is the run's last recorded position lost.
+    assert (ws / "record" / "salvaged" / "journals" / "journal-9100-1.txt").is_file(), (
+        "the dead run's own journal was not carried out either, so nothing says "
+        "how far it got"
+    )
+
+
+@requires_posix_shell
+def test_the_recovery_notice_fires_once_not_on_every_later_dispatch(tmp_path):
+    """A journal is carried out ONCE. Otherwise the notice is false for 30 days.
+
+    The orphan sweep re-finds every unfinished journal on every dispatch until
+    the retention prune. Without a sentinel, a dispatch whose predecessor was
+    perfectly HEALTHY still creates `record/salvaged/` and still posts
+    "♻️ Recovered evidence from an earlier dispatch" to its run summary — and
+    the table then names `previous run: none`, because `prev_run` was reset on
+    the healthy path. So the notice is simultaneously false on the common path
+    and uninformative on the path where it is true, which is precisely the
+    signal-destroying behaviour the finished-gate exists to prevent.
+
+    `test_no_recovery_notice_is_written_when_nothing_was_salvaged` cannot catch
+    this: its journal root is empty, so it never exercises the orphan path.
+    """
+    journal_root = tmp_path / "journal"
+
+    # ── dispatch 1: predecessor 9200 DIED. The notice SHOULD fire. ──
+    ws1 = tmp_path / "ws1"
+    ws1.mkdir()
+    seed_dead_record(ws1, run_id="9200")
+    (journal_root / "9200-1").mkdir(parents=True)
+    (journal_root / "9200-1" / "journal.txt").write_text(
+        "# header\n"
+        "2026-09-01T00:00:00Z  BEGIN  patched/prepare\n"
+        "2026-09-01T00:09:00Z  ALIVE  patched/prepare  elapsed=540s\n",
+        encoding="utf-8",
+    )
+    s1 = tmp_path / "s1.md"
+    r = run_journal(
+        "salvage", cwd=ws1, journal_root=journal_root, run_id="9201",
+        GITHUB_STEP_SUMMARY=str(s1),
+    )
+    assert r.returncode == 0, r.stderr
+    text1 = s1.read_text(encoding="utf-8")
+    assert "Recovered evidence" in text1, "the real recovery was not announced"
+    assert "9200" in text1, "the notice does not name the run whose evidence was recovered"
+
+    # ── dispatches 2 and 3: predecessors were HEALTHY. Silence, both times. ──
+    for n, (prev, run) in enumerate(((9201, 9202), (9202, 9203)), start=2):
+        ws = tmp_path / f"ws{n}"
+        (ws / "record").mkdir(parents=True)
+        (ws / "record" / "prepare-patched.provenance").write_text(
+            f"phase=prepare\ntree=patched\ngithub_run_id={prev}\ngithub_run_attempt=1\n",
+            encoding="utf-8",
+        )
+        (journal_root / f"{prev}-1").mkdir(parents=True, exist_ok=True)
+        (journal_root / f"{prev}-1" / "journal.txt").write_text(
+            "# header\n"
+            "2026-09-01T00:00:00Z  BEGIN  patched/prepare\n"
+            "2026-09-01T00:05:00Z  END    patched/prepare  rc=0\n",
+            encoding="utf-8",
+        )
+        summary = tmp_path / f"s{n}.md"
+        summary.write_text("", encoding="utf-8")
+        r = run_journal(
+            "salvage", cwd=ws, journal_root=journal_root, run_id=str(run),
+            GITHUB_STEP_SUMMARY=str(summary),
+        )
+        assert r.returncode == 0, r.stderr
+        assert "Recovered evidence" not in summary.read_text(encoding="utf-8"), (
+            f"dispatch {run} announced a recovery although its predecessor "
+            f"{prev} was healthy — the dead run 9200's journal was carried out "
+            "again. That notice repeats until the 30-day prune and teaches a "
+            "reader to ignore the one that is true."
+        )
+        assert not (ws / "record" / "salvaged").exists(), (
+            f"dispatch {run} created record/salvaged/ although nothing new was "
+            "recovered, so its artifact is filed as containing a dead run's "
+            "evidence when it does not"
+        )
+
+
+@requires_posix_shell
+def test_the_notice_never_reports_a_recovery_from_a_run_called_none(tmp_path):
+    """When only a JOURNAL is recovered, the table must not say `previous run: none`.
+
+    `prev_run` is reset to `none` on the healthy-predecessor and own-material
+    paths. Reusing it in the summary tells a reader a recovery happened from a
+    run called "none" with the dead run's identity nowhere on the page — the
+    notice fires, and following it leads nowhere.
+    """
+    journal_root = tmp_path / "journal"
+    # A dead run whose record/ is already gone; only its journal survives.
+    (journal_root / "9300-1").mkdir(parents=True)
+    (journal_root / "9300-1" / "journal.txt").write_text(
+        "# header\n"
+        "2026-09-01T00:00:00Z  BEGIN  patched/compile\n"
+        '2026-09-01T03:00:00Z  ALIVE  patched/compile  elapsed=10800s  last="[41200/50000] CXX gpu_shim.o"\n',
+        encoding="utf-8",
+    )
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    summary = tmp_path / "summary.md"
+
+    r = run_journal(
+        "salvage", cwd=ws, journal_root=journal_root, run_id="9301",
+        GITHUB_STEP_SUMMARY=str(summary),
+    )
+    assert r.returncode == 0, r.stderr
+
+    text = summary.read_text(encoding="utf-8")
+    assert "Recovered evidence" in text
+    assert "`none`" not in text, (
+        "the summary reports a recovery from a run called `none`; `prev_run` "
+        f"was reused where it does not apply. Summary was:\n{text}"
+    )
+    assert "9300-1" in text, (
+        "the notice fired but never names the dead run whose journal it "
+        "recovered, so a reader following it learns nothing"
+    )
+    assert "gpu_shim.o" in text, "the last recorded position is missing"
+
+
+@requires_posix_shell
+def test_salvaged_material_does_not_nest_one_level_deeper_every_dispatch(tmp_path):
+    """`record/salvaged/` must not be carried into the NEXT salvage.
+
+    `cp -R record/.` copies `salvaged/` too, so consecutive dispatches that each
+    leave an unprovenanced `record/` behind produce
+    `salvaged/record-from-run-unknown/salvaged/record-from-run-unknown/…`. That
+    is not exotic: the PS-244 borrowed-control refusal exits before any
+    provenance stamp is written, so a repeated refusal is a DESIGNED outcome.
+    Nothing is lost by excluding it — the earlier material already rode out on
+    the artifact of the dispatch that recovered it.
+    """
+    journal_root = tmp_path / "journal"
+    ws = tmp_path / "ws"
+    ws.mkdir()
+
+    for run in ("9401", "9402", "9403", "9404"):
+        (ws / "record").mkdir(exist_ok=True)
+        (ws / "record" / f"refusal-{run}.txt").write_text(
+            "the borrowed control was REFUSED\n", encoding="utf-8"
+        )
+        r = run_journal("salvage", cwd=ws, journal_root=journal_root, run_id=run)
+        assert r.returncode == 0, r.stderr
+
+    nested = ws / "record" / "salvaged" / "record-from-run-unknown" / "salvaged"
+    assert not nested.exists(), (
+        "salvaged material was carried into the next salvage, so the recovered "
+        "tree nests one level deeper on every dispatch and becomes unreadable"
+    )
+    # …and the LAST dispatch's own leftovers ARE still recovered: excluding
+    # `salvaged/` from the staging copy must not weaken the recovery itself.
+    assert (ws / "record" / "salvaged" / "record-from-run-unknown" /
+            "refusal-9404.txt").is_file()
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # The workflow wiring — the scripts are useless if no step invokes them
 # ─────────────────────────────────────────────────────────────────────────────

@@ -103,9 +103,17 @@ start_mem_sampler() {
   MEM_PID=$!
 }
 
+# Written as an `if`, not `[ … ] && kill …`. A trailing AND-list whose test is
+# false makes the whole statement non-zero, so under `set -e` an unset MEM_PID
+# would kill the script at the exact point it is trying to shut down cleanly and
+# write its evidence. Safe today only because start_mem_sampler always assigns
+# it; the `if` removes the dependence on that.
 stop_mem_sampler() {
-  [ -n "${MEM_PID:-}" ] && kill "$MEM_PID" 2>/dev/null || true
-  wait "${MEM_PID:-}" 2>/dev/null || true
+  if [ -n "${MEM_PID:-}" ]; then
+    kill "$MEM_PID" 2>/dev/null || true
+    wait "$MEM_PID" 2>/dev/null || true
+  fi
+  return 0
 }
 
 # ── PS-289 heartbeat ─────────────────────────────────────────────────────────
@@ -132,9 +140,16 @@ start_heartbeat() {
   HB_PID=$!
 }
 
+# Same `if` shape as stop_mem_sampler above, and for the same reason: a
+# trailing AND-list is non-zero when its test fails, which under `set -e` would
+# abort the script during teardown — the one moment the journal's END line still
+# has to be written.
 stop_heartbeat() {
-  [ -n "${HB_PID:-}" ] && kill "$HB_PID" 2>/dev/null || true
-  wait "${HB_PID:-}" 2>/dev/null || true
+  if [ -n "${HB_PID:-}" ]; then
+    kill "$HB_PID" 2>/dev/null || true
+    wait "$HB_PID" 2>/dev/null || true
+  fi
+  return 0
 }
 
 # ── ninja parallelism ────────────────────────────────────────────────────────
