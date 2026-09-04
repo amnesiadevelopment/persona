@@ -118,8 +118,8 @@ def _launch(monkeypatch, tmp_path, profile):
                 return a[len(prefix):]
         return None
 
-    gpu_js = (profile_dir / ".persona-gpu-ext" / "gpu.js").read_text()
-    voice_js = (profile_dir / ".persona-voice-ext" / "voices.js").read_text()
+    gpu_js = (profile_dir / ".persona-gpu-ext" / "gpu.js").read_text(encoding="utf-8")
+    voice_js = (profile_dir / ".persona-voice-ext" / "voices.js").read_text(encoding="utf-8")
 
     return {
         # vector 1 — the device preset. A desktop launch passes NO --user-agent
