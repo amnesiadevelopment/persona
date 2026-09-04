@@ -15,6 +15,7 @@ from ..proxy.bridge import ProxyBridge
 from ..proxy.errors import (
     GeographyDisprovenError,
     GeographyUnknownError,
+    LocaleUnderivableError,
     ProxyUnresolvedError,
     TimezoneUnderivableError,
 )
@@ -218,6 +219,54 @@ def _mobile_chromium_version(profile: Profile, preset) -> "ChromiumVersion | Non
         ) from e
 
 
+def _profile_locale(profile: Profile, proxy) -> str:
+    """The locale a profile declares — or a refusal, failing CLOSED exactly like
+    ``_profile_timezone`` below.
+
+    THE TWO MUST AGREE ABOUT WHETHER THE COUNTRY IS KNOWN. That is the whole
+    property this helper exists to hold: either both halves of one derivation
+    answer, or both refuse. Before it, the locale half answered ``en-US`` for a
+    country the zone half would have refused — and because ``_proxy_timezone``'s
+    first branch returns the checked zone without ever reaching that refusal,
+    the two answers SHIPPED TOGETHER: an American-English browser whose clock
+    was in Sofia.
+
+    No proxy: ``en-US``, unchanged and deliberate. persona forces it so it never
+    leaks the host locale (#218), and ``_profile_timezone`` pins a US zone so
+    the pair is coherent by construction. That path never consults the table and
+    can never refuse.
+
+    A proxy: the locale of its EXIT country. Re-raised here rather than in
+    launch_policy so the operator gets the profile and proxy BY NAME, matching
+    what the zone half already does — a refusal an operator cannot diagnose is a
+    worse product than a wrong locale.
+    """
+    if proxy is None:
+        return "en-US"
+    try:
+        return _locale_for(getattr(proxy, "country_code", "") or "")
+    except LocaleUnderivableError as e:
+        # Names the COUNTRY, and says the remedy is a code change rather than a
+        # re-check — the same two things the TimezoneUnderivableError arm below
+        # says, and for the same reason: the proxy's check may have passed
+        # moments ago and will keep passing, because what is missing is a table
+        # row. Sending this operator to "check the proxy" wastes their time.
+        #
+        # It names BOTH tables. Adding one row alone is precisely how this class
+        # of defect is reintroduced, and the correspondence suite fails it in
+        # either direction, so the message asks for the pair.
+        raise LocaleUnderivableError(
+            f"Profile {profile.name!r} has proxy {profile.proxy!r} assigned and its "
+            f"exit country is known ({(getattr(proxy, 'country_code', '') or '?').upper()}), "
+            "but no locale is known for that country. Refusing to launch: falling "
+            "back to en-US would declare an American-English browser beside the "
+            "exit's own non-US clock — the 'spoofed location' tell this product "
+            "exists to avoid. Re-checking will NOT help; add a row for that "
+            "country to _COUNTRY_LOCALE *and* the matching _COUNTRY_TZ row "
+            "(launch_policy.py) to resolve it."
+        ) from e
+
+
 def _profile_timezone(profile: Profile, proxy) -> str:
     """The zone a profile declares — or a refusal, failing CLOSED like the guard
     above.
@@ -311,8 +360,21 @@ def _spawn_invisible(profile: Profile, profile_dir: str, *, in_process: bool = F
     # with timezone=Europe/Kyiv, and language⊥timezone is a classic inconsistency
     # a detector flags. Pin a US zone so the direct identity reads as one coherent
     # US-English user AND the host location stays hidden.
-    lang = _locale_for(proxy.country_code) if proxy else "en-US"
+    #
+    # BOTH halves now go through the fail-closed helpers, and they AGREE about
+    # whether the country is known: either both answer or both refuse. The bare
+    # `_locale_for(proxy.country_code)` that used to sit here answered `en-US`
+    # for a country `_profile_timezone` would have refused for — and because
+    # `_proxy_timezone`'s first branch returns the CHECKED zone without ever
+    # reaching that refusal, the two answers shipped together: en-US beside the
+    # exit's real zone.
+    #
+    # TIMEZONE GATE FIRST, then the locale gate — the same order the chromium
+    # arm asks them in, so a profile both refusals could apply to is reported
+    # identically whichever engine it launches on. Both are asked before any
+    # launch work (PS-283).
     tz = _profile_timezone(profile, proxy)
+    lang = _profile_locale(profile, proxy)
 
     if _platform.supports_linux_desktop_integration():
         write_window_entry(profile.name, icon="firefox")
@@ -444,6 +506,11 @@ def spawn_browser(profile: Profile, *, in_process: bool = False) -> subprocess.P
     # A launch that will be refused must do no launch work. Computed once, here;
     # the arg builder below consumes _tz rather than re-asking.
     _tz = _profile_timezone(profile, proxy)
+    # The locale gate sits HERE, beside the timezone gate, not 26 lines down at
+    # the flag that consumes it — for PS-283's reason: a launch that will be
+    # refused must do no launch work. Both halves of the geo derivation are now
+    # asked before the profile dir, the desktop entry and the mTLS terminator.
+    _lang = _profile_locale(profile, proxy)
 
     seed_profile_prefs(profile_dir, profile.search_engine)
 
@@ -468,7 +535,10 @@ def spawn_browser(profile: Profile, *, in_process: bool = False) -> subprocess.P
         cert_session = _cert_session_for(profile, profile_dir, proxy_url)
 
         # Locale + timezone follow the proxy's geo so they match the exit IP.
-        lang = _locale_for(proxy.country_code) if proxy else "en-US"
+        # Computed once, at the gate above, alongside _tz — this consumes it
+        # rather than re-asking, so the two cannot drift and a refusal cannot
+        # arrive after the launch work has already been done.
+        lang = _lang
 
         # Mobile profiles are assembled at this layer (the engine has no Android/iOS
         # mode): a real device preset drives the UA, window size, screen and the

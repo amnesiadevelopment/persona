@@ -18,12 +18,33 @@ from ...core import platform as _platform
 from ..proxy.errors import (
     GeographyDisprovenError,
     GeographyUnknownError,
+    LocaleUnderivableError,
     TimezoneUnderivableError,
 )
 from ..proxy.freshness import proxy_indicator_state
 
 # Map a proxy's country to a sensible browser locale, so Accept-Language
-# matches the exit IP. Falls back to en-US when the country is unknown.
+# matches the exit IP.
+#
+# NO FALLBACK. This table used to be read as ``.get(code, "en-US")``, and that
+# default is gone for the reason ``_locale_for`` states below: it answered for
+# countries this table does not know, while its sibling ``_COUNTRY_TZ`` refused
+# for the very same input. Two halves of one derivation taking opposite
+# positions shipped a profile declaring an American-English browser whose clock
+# was in Sofia.
+#
+# THE FIRST 30 ROWS BELOW ARE THE ORIGINAL SET and are deliberately untouched —
+# auditing them is explicitly out of scope. The rows after them widen the shared
+# country set so that refusing outside it stops a short, nameable residue rather
+# than most of the world. ``_COUNTRY_TZ`` gains the SAME codes in the same act;
+# ``tests/test_country_table_correspondence.py`` enforces set-equality in both
+# directions, so a row added to one table without the other fails the suite.
+#
+# ONE ROW PER COUNTRY, following the convention the original 30 already set: the
+# most common *browser* locale, not the politically complete answer (BE is
+# ``fr-BE``, CH is ``de-CH``, IN is ``en-IN``). A reviewer may reasonably
+# disagree with an individual row; that is a row-level correction, not an
+# argument against the invariant.
 _COUNTRY_LOCALE = {
     "US": "en-US", "CA": "en-CA", "GB": "en-GB", "AU": "en-AU", "IE": "en-IE",
     "DE": "de-DE", "AT": "de-AT", "CH": "de-CH", "FR": "fr-FR", "BE": "fr-BE",
@@ -31,11 +52,167 @@ _COUNTRY_LOCALE = {
     "BR": "pt-BR", "PL": "pl-PL", "SE": "sv-SE", "NO": "nb-NO", "DK": "da-DK",
     "FI": "fi-FI", "UA": "uk-UA", "RU": "ru-RU", "TR": "tr-TR", "JP": "ja-JP",
     "KR": "ko-KR", "CN": "zh-CN", "TW": "zh-TW", "IN": "en-IN", "SG": "en-SG",
+    # --- widened shared set (PS-240). Added together with the matching
+    # --- _COUNTRY_TZ rows below; neither table may gain a code alone.
+    "AD": "ca-AD", "AE": "ar-AE", "AF": "fa-AF", "AG": "en-AG",
+    "AI": "en-AI", "AL": "sq-AL", "AM": "hy-AM", "AO": "pt-AO",
+    "AR": "es-AR", "AS": "en-AS", "AW": "nl-AW", "AX": "sv-AX",
+    "AZ": "az-AZ", "BA": "bs-BA", "BB": "en-BB", "BD": "bn-BD",
+    "BF": "fr-BF", "BG": "bg-BG", "BH": "ar-BH", "BI": "fr-BI",
+    "BJ": "fr-BJ", "BL": "fr-BL", "BM": "en-BM", "BN": "ms-BN",
+    "BO": "es-BO", "BQ": "nl-BQ", "BS": "en-BS", "BT": "dz-BT",
+    "BW": "en-BW", "BY": "be-BY", "BZ": "en-BZ", "CC": "en-CC",
+    "CD": "fr-CD", "CF": "fr-CF", "CG": "fr-CG", "CI": "fr-CI",
+    "CK": "en-CK", "CL": "es-CL", "CM": "fr-CM", "CO": "es-CO",
+    "CR": "es-CR", "CU": "es-CU", "CV": "pt-CV", "CW": "nl-CW",
+    "CX": "en-CX", "CY": "el-CY", "CZ": "cs-CZ", "DJ": "fr-DJ",
+    "DM": "en-DM", "DO": "es-DO", "DZ": "ar-DZ", "EC": "es-EC",
+    "EE": "et-EE", "EG": "ar-EG", "EH": "ar-EH", "ER": "ti-ER",
+    "ET": "am-ET", "FJ": "en-FJ", "FK": "en-FK", "FM": "en-FM",
+    "FO": "fo-FO", "GA": "fr-GA", "GD": "en-GD", "GE": "ka-GE",
+    "GF": "fr-GF", "GG": "en-GG", "GH": "en-GH", "GI": "en-GI",
+    "GL": "kl-GL", "GM": "en-GM", "GN": "fr-GN", "GP": "fr-GP",
+    "GQ": "es-GQ", "GR": "el-GR", "GT": "es-GT", "GU": "en-GU",
+    "GW": "pt-GW", "GY": "en-GY", "HK": "zh-HK", "HN": "es-HN",
+    "HR": "hr-HR", "HT": "fr-HT", "HU": "hu-HU", "ID": "id-ID",
+    "IL": "he-IL", "IM": "en-IM", "IO": "en-IO", "IQ": "ar-IQ",
+    "IR": "fa-IR", "IS": "is-IS", "JE": "en-JE", "JM": "en-JM",
+    "JO": "ar-JO", "KE": "sw-KE", "KG": "ky-KG", "KH": "km-KH",
+    "KI": "en-KI", "KM": "ar-KM", "KN": "en-KN", "KP": "ko-KP",
+    "KW": "ar-KW", "KY": "en-KY", "KZ": "kk-KZ", "LA": "lo-LA",
+    "LB": "ar-LB", "LC": "en-LC", "LI": "de-LI", "LK": "si-LK",
+    "LR": "en-LR", "LS": "en-LS", "LT": "lt-LT", "LU": "fr-LU",
+    "LV": "lv-LV", "LY": "ar-LY", "MA": "ar-MA", "MC": "fr-MC",
+    "MD": "ro-MD", "ME": "sr-ME", "MF": "fr-MF", "MG": "fr-MG",
+    "MH": "en-MH", "MK": "mk-MK", "ML": "fr-ML", "MM": "my-MM",
+    "MN": "mn-MN", "MO": "zh-MO", "MP": "en-MP", "MQ": "fr-MQ",
+    "MR": "ar-MR", "MS": "en-MS", "MT": "mt-MT", "MU": "en-MU",
+    "MV": "dv-MV", "MW": "en-MW", "MY": "ms-MY", "MZ": "pt-MZ",
+    "NA": "en-NA", "NC": "fr-NC", "NE": "fr-NE", "NF": "en-NF",
+    "NI": "es-NI", "NP": "ne-NP", "NR": "en-NR", "NU": "en-NU",
+    "NZ": "en-NZ", "OM": "ar-OM", "PA": "es-PA", "PE": "es-PE",
+    "PF": "fr-PF", "PG": "en-PG", "PH": "en-PH", "PK": "ur-PK",
+    "PM": "fr-PM", "PN": "en-PN", "PR": "es-PR", "PS": "ar-PS",
+    "PW": "en-PW", "PY": "es-PY", "QA": "ar-QA", "RE": "fr-RE",
+    "RO": "ro-RO", "RS": "sr-RS", "RW": "fr-RW", "SA": "ar-SA",
+    "SB": "en-SB", "SC": "en-SC", "SD": "ar-SD", "SH": "en-SH",
+    "SI": "sl-SI", "SJ": "nb-SJ", "SK": "sk-SK", "SL": "en-SL",
+    "SM": "it-SM", "SN": "fr-SN", "SO": "so-SO", "SR": "nl-SR",
+    "SS": "en-SS", "ST": "pt-ST", "SV": "es-SV", "SX": "nl-SX",
+    "SY": "ar-SY", "SZ": "en-SZ", "TC": "en-TC", "TD": "fr-TD",
+    "TG": "fr-TG", "TH": "th-TH", "TJ": "tg-TJ", "TK": "en-TK",
+    "TL": "pt-TL", "TM": "tk-TM", "TN": "ar-TN", "TO": "en-TO",
+    "TT": "en-TT", "TV": "en-TV", "TZ": "sw-TZ", "UG": "en-UG",
+    "UY": "es-UY", "UZ": "uz-UZ", "VA": "it-VA", "VC": "en-VC",
+    "VE": "es-VE", "VG": "en-VG", "VI": "en-VI", "VN": "vi-VN",
+    "VU": "fr-VU", "WF": "fr-WF", "WS": "en-WS", "YE": "ar-YE",
+    "YT": "fr-YT", "ZA": "en-ZA", "ZM": "en-ZM",
 }
 
 
+# Codes that mean "NO COUNTRY WAS DETERMINED" rather than naming one. Two alpha
+# characters, so `_validate_geo` (proxy_checker.py) keeps them, but they are not
+# a place and no table will ever hold a row for one however far coverage widens.
+#
+# THIS IS WHY `_locale_for("")` AND `_locale_for("ZZ")` ANSWER IDENTICALLY, and
+# the identity is deliberate rather than incidental. They are the SAME input —
+# "no country" — and that is a DIFFERENT input from "a real country we have no
+# row for". Only the second is the contradiction this module's refusal exists
+# for; answering en-US for the first is the direct path's settled policy (#218).
+#
+# ⚠️ DELIBERATELY NARROW — ``ZZ`` ONLY, not the whole ISO 3166-1 user-assigned
+# space (AA, QM-QZ, XA-XZ). The wider set was tried and is WRONG, for a reason
+# worth recording: ``XK`` lives in that space and is the de facto code for
+# KOSOVO, which real exits genuinely report. Treating it as "no country" would
+# silently answer ``en-US`` for a real Balkan exit — the precise defect this
+# change removes, reintroduced through the exemption meant to preserve AC4.
+# Every user-assigned code except ``ZZ`` therefore takes the ordinary refusal,
+# which is also what ``_timezone_for`` already does for all of them.
+#
+# ``ZZ`` is the one code whose "not a country" reading is unambiguous, and it is
+# the one the shipped suite pins. It is written down here as a fact about the
+# STANDARD, not read from any OS-provided database.
+#
+# THE ONE PLACE THE TWO HALVES DO NOT AGREE, stated plainly rather than hidden:
+# ``_locale_for("ZZ")`` answers while ``_timezone_for("ZZ")`` refuses. That is
+# not the defect — the halves agree about every real COUNTRY, which is what the
+# invariant claims. ``ZZ`` is not a country, and the asymmetry is required by
+# two shipped tests that are both correct (``test_locale.py`` pins the en-US
+# answer; ``test_tz.py`` pins the refusal).
+_NO_COUNTRY_CODES = frozenset({"ZZ"})
+
+
 def _locale_for(country_code: str) -> str:
-    return _COUNTRY_LOCALE.get((country_code or "").upper(), "en-US")
+    """The locale a country implies — or a REFUSAL when this table cannot say.
+
+    This used to be ``_COUNTRY_LOCALE.get(code, "en-US")``, and the removed
+    default is the reason this docstring exists. Its sibling ``_timezone_for``
+    RAISES for a country with no row, so the two halves of one derivation took
+    **opposite positions on the same input**: the locale half invented an
+    answer where the zone half refused to.
+
+    The contradiction that produced is not hypothetical, and it does not need
+    the zone half's refusal to fire — it needs the refusal NOT to fire.
+    ``_proxy_timezone``'s FIRST branch returns the zone the check recorded and
+    never consults ``_timezone_for`` at all, so an ordinary passing check
+    against a Bulgarian exit shipped::
+
+        lang = "en-US"          # this function, inventing
+        tz   = "Europe/Sofia"   # branch 1, correct
+
+    An American-English browser whose clock is in Sofia — ``Accept-Language:
+    en-US`` beside ``Intl.DateTimeFormat().resolvedOptions().timeZone ===
+    "Europe/Sofia"``, a pair checkers compare directly.
+
+    ``"en-US"`` was never an approximation of a Bulgarian locale. It is a
+    LEGITIMATE value in this table (``US`` maps to it), which makes it *worse*
+    than ``_COUNTRY_TZ``'s old ``UTC`` sentinel rather than better: the sentinel
+    was at least distinguishable from every real row, while this one is
+    indistinguishable from a genuine US answer. Nothing downstream could tell
+    "this profile is American" from "we do not know what this profile is".
+
+    So: refuse, mirroring the sibling. Parity between two disagreeing halves is
+    reached by raising the WEAKER side, never by lowering the stricter one —
+    do NOT resolve a future disagreement here by giving ``_timezone_for`` its
+    fallback back.
+
+    THE NO-COUNTRY CASE IS UNCHANGED AND MUST STAY UNCHANGED. ``_locale_for("")``
+    and ``_locale_for("ZZ")`` are two DIFFERENT inputs that happened to share one
+    answer, and only the second is the defect. ``""`` means *no country was
+    supplied* — the direct (no-proxy) path, where ``en-US`` is not a guess but a
+    deliberate policy choice (see ``process.py``'s call sites: persona forces
+    ``en-US`` so it never leaks the host locale, and pins a US zone so the two
+    agree). ``"ZZ"`` means *a country we cannot answer for*, which is exactly
+    what this refusal is. See ``LocaleUnderivableError``.
+
+    ⚠️ USER-VISIBLE. A proxy whose exit is in a country outside the shared table
+    set no longer launches. It is a REFUSAL, not a crash: it lands on the same
+    fail-closed path as its three siblings, and it names the country so the
+    operator can act.
+
+    Raises:
+        LocaleUnderivableError: no row for this country. A subclass of
+            ``GeographyUnknownError``, so every fail-closed handler already
+            written catches it unchanged.
+    """
+    code = (country_code or "").upper()
+    if not code or code in _NO_COUNTRY_CODES:
+        # NOT a lookup miss. No country was DETERMINED — either none was
+        # supplied at all (the direct path's deliberate en-US policy) or the
+        # code is one ISO 3166-1 reserves to mean "not a country". Neither is
+        # the case this refusal is for, which is a REAL country we cannot
+        # answer for. See _NO_COUNTRY_CODES.
+        return "en-US"
+    locale = _COUNTRY_LOCALE.get(code)
+    if locale:
+        return locale
+    raise LocaleUnderivableError(
+        f"no locale is known for country {code!r}: refusing to fall back to "
+        "en-US, which would declare an American-English browser beside the "
+        "exit's own non-US clock and is exactly what scanners flag as a "
+        f"spoofed location. Add a {code!r} row to _COUNTRY_LOCALE and the "
+        "matching _COUNTRY_TZ row (launch_policy.py) to resolve it"
+    )
 
 
 # Default timezone per country, used when the proxy record has no timezone yet,
@@ -62,6 +239,103 @@ _COUNTRY_TZ = {
     # already made, and it makes no new claim. Leaving it out was not neutrality,
     # it was an incoherent profile.
     "TW": "Asia/Taipei",
+    # --- widened shared set (PS-240). The SAME country codes added to
+    # --- _COUNTRY_LOCALE above; neither table may gain a code alone.
+    #
+    # ONE PRIMARY ZONE per country, following the convention the original rows
+    # already set for US / RU / BR / AU. This table is a FALLBACK, consulted
+    # only when the check recorded no zone at all (_proxy_timezone branch 2), so
+    # a primary-zone answer is a degraded-but-COHERENT one — which is what the
+    # table already was before these rows.
+    "AD": "Europe/Andorra", "AE": "Asia/Dubai", "AF": "Asia/Kabul",
+    "AG": "America/Antigua", "AI": "America/Anguilla",
+    "AL": "Europe/Tirane", "AM": "Asia/Yerevan", "AO": "Africa/Luanda",
+    "AR": "America/Argentina/Buenos_Aires", "AS": "Pacific/Pago_Pago",
+    "AW": "America/Aruba", "AX": "Europe/Mariehamn", "AZ": "Asia/Baku",
+    "BA": "Europe/Sarajevo", "BB": "America/Barbados", "BD": "Asia/Dhaka",
+    "BF": "Africa/Ouagadougou", "BG": "Europe/Sofia", "BH": "Asia/Bahrain",
+    "BI": "Africa/Bujumbura", "BJ": "Africa/Porto-Novo",
+    "BL": "America/St_Barthelemy", "BM": "Atlantic/Bermuda",
+    "BN": "Asia/Brunei", "BO": "America/La_Paz",
+    "BQ": "America/Kralendijk", "BS": "America/Nassau",
+    "BT": "Asia/Thimphu", "BW": "Africa/Gaborone", "BY": "Europe/Minsk",
+    "BZ": "America/Belize", "CC": "Indian/Cocos", "CD": "Africa/Kinshasa",
+    "CF": "Africa/Bangui", "CG": "Africa/Brazzaville",
+    "CI": "Africa/Abidjan", "CK": "Pacific/Rarotonga",
+    "CL": "America/Santiago", "CM": "Africa/Douala",
+    "CO": "America/Bogota", "CR": "America/Costa_Rica",
+    "CU": "America/Havana", "CV": "Atlantic/Cape_Verde",
+    "CW": "America/Curacao", "CX": "Indian/Christmas",
+    "CY": "Asia/Nicosia", "CZ": "Europe/Prague", "DJ": "Africa/Djibouti",
+    "DM": "America/Dominica", "DO": "America/Santo_Domingo",
+    "DZ": "Africa/Algiers", "EC": "America/Guayaquil",
+    "EE": "Europe/Tallinn", "EG": "Africa/Cairo", "EH": "Africa/El_Aaiun",
+    "ER": "Africa/Asmara", "ET": "Africa/Addis_Ababa",
+    "FJ": "Pacific/Fiji", "FK": "Atlantic/Stanley",
+    "FM": "Pacific/Pohnpei", "FO": "Atlantic/Faroe",
+    "GA": "Africa/Libreville", "GD": "America/Grenada",
+    "GE": "Asia/Tbilisi", "GF": "America/Cayenne", "GG": "Europe/Guernsey",
+    "GH": "Africa/Accra", "GI": "Europe/Gibraltar", "GL": "America/Nuuk",
+    "GM": "Africa/Banjul", "GN": "Africa/Conakry",
+    "GP": "America/Guadeloupe", "GQ": "Africa/Malabo",
+    "GR": "Europe/Athens", "GT": "America/Guatemala", "GU": "Pacific/Guam",
+    "GW": "Africa/Bissau", "GY": "America/Guyana", "HK": "Asia/Hong_Kong",
+    "HN": "America/Tegucigalpa", "HR": "Europe/Zagreb",
+    "HT": "America/Port-au-Prince", "HU": "Europe/Budapest",
+    "ID": "Asia/Jakarta", "IL": "Asia/Jerusalem",
+    "IM": "Europe/Isle_of_Man", "IO": "Indian/Chagos",
+    "IQ": "Asia/Baghdad", "IR": "Asia/Tehran", "IS": "Atlantic/Reykjavik",
+    "JE": "Europe/Jersey", "JM": "America/Jamaica", "JO": "Asia/Amman",
+    "KE": "Africa/Nairobi", "KG": "Asia/Bishkek", "KH": "Asia/Phnom_Penh",
+    "KI": "Pacific/Tarawa", "KM": "Indian/Comoro",
+    "KN": "America/St_Kitts", "KP": "Asia/Pyongyang", "KW": "Asia/Kuwait",
+    "KY": "America/Cayman", "KZ": "Asia/Almaty", "LA": "Asia/Vientiane",
+    "LB": "Asia/Beirut", "LC": "America/St_Lucia", "LI": "Europe/Vaduz",
+    "LK": "Asia/Colombo", "LR": "Africa/Monrovia", "LS": "Africa/Maseru",
+    "LT": "Europe/Vilnius", "LU": "Europe/Luxembourg", "LV": "Europe/Riga",
+    "LY": "Africa/Tripoli", "MA": "Africa/Casablanca",
+    "MC": "Europe/Monaco", "MD": "Europe/Chisinau",
+    "ME": "Europe/Podgorica", "MF": "America/Marigot",
+    "MG": "Indian/Antananarivo", "MH": "Pacific/Majuro",
+    "MK": "Europe/Skopje", "ML": "Africa/Bamako", "MM": "Asia/Yangon",
+    "MN": "Asia/Ulaanbaatar", "MO": "Asia/Macau", "MP": "Pacific/Saipan",
+    "MQ": "America/Martinique", "MR": "Africa/Nouakchott",
+    "MS": "America/Montserrat", "MT": "Europe/Malta",
+    "MU": "Indian/Mauritius", "MV": "Indian/Maldives",
+    "MW": "Africa/Blantyre", "MY": "Asia/Kuala_Lumpur",
+    "MZ": "Africa/Maputo", "NA": "Africa/Windhoek", "NC": "Pacific/Noumea",
+    "NE": "Africa/Niamey", "NF": "Pacific/Norfolk",
+    "NI": "America/Managua", "NP": "Asia/Kathmandu", "NR": "Pacific/Nauru",
+    "NU": "Pacific/Niue", "NZ": "Pacific/Auckland", "OM": "Asia/Muscat",
+    "PA": "America/Panama", "PE": "America/Lima", "PF": "Pacific/Tahiti",
+    "PG": "Pacific/Port_Moresby", "PH": "Asia/Manila",
+    "PK": "Asia/Karachi", "PM": "America/Miquelon",
+    "PN": "Pacific/Pitcairn", "PR": "America/Puerto_Rico",
+    "PS": "Asia/Gaza", "PW": "Pacific/Palau", "PY": "America/Asuncion",
+    "QA": "Asia/Qatar", "RE": "Indian/Reunion", "RO": "Europe/Bucharest",
+    "RS": "Europe/Belgrade", "RW": "Africa/Kigali", "SA": "Asia/Riyadh",
+    "SB": "Pacific/Guadalcanal", "SC": "Indian/Mahe",
+    "SD": "Africa/Khartoum", "SH": "Atlantic/St_Helena",
+    "SI": "Europe/Ljubljana", "SJ": "Arctic/Longyearbyen",
+    "SK": "Europe/Bratislava", "SL": "Africa/Freetown",
+    "SM": "Europe/San_Marino", "SN": "Africa/Dakar",
+    "SO": "Africa/Mogadishu", "SR": "America/Paramaribo",
+    "SS": "Africa/Juba", "ST": "Africa/Sao_Tome",
+    "SV": "America/El_Salvador", "SX": "America/Lower_Princes",
+    "SY": "Asia/Damascus", "SZ": "Africa/Mbabane",
+    "TC": "America/Grand_Turk", "TD": "Africa/Ndjamena",
+    "TG": "Africa/Lome", "TH": "Asia/Bangkok", "TJ": "Asia/Dushanbe",
+    "TK": "Pacific/Fakaofo", "TL": "Asia/Dili", "TM": "Asia/Ashgabat",
+    "TN": "Africa/Tunis", "TO": "Pacific/Tongatapu",
+    "TT": "America/Port_of_Spain", "TV": "Pacific/Funafuti",
+    "TZ": "Africa/Dar_es_Salaam", "UG": "Africa/Kampala",
+    "UY": "America/Montevideo", "UZ": "Asia/Tashkent",
+    "VA": "Europe/Vatican", "VC": "America/St_Vincent",
+    "VE": "America/Caracas", "VG": "America/Tortola",
+    "VI": "America/St_Thomas", "VN": "Asia/Ho_Chi_Minh",
+    "VU": "Pacific/Efate", "WF": "Pacific/Wallis", "WS": "Pacific/Apia",
+    "YE": "Asia/Aden", "YT": "Indian/Mayotte", "ZA": "Africa/Johannesburg",
+    "ZM": "Africa/Lusaka",
 }
 
 
