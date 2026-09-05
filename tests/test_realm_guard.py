@@ -491,6 +491,12 @@ GUARD_SITES = [
     ("canvas_ctx", "canvas_ctx", 4),
     ("device", "screen", 4),
     ("device", "hw", 4),
+    # PS-320. A THIRD device leaf, and it needs its OWN key for the reason the
+    # note above gives: the guard is per-key, so sharing "hw" would let
+    # applyHwPatch's arrival mark the realm covered for applyDevicesPatch and
+    # skip the devices install entirely — silently, because a skipped guard and
+    # a completed one look identical from outside.
+    ("device", "devices", 4),
     ("geo", "geo", 4),
     ("gpu", "gpu", 4),
     ("locale", "locale", 4),
