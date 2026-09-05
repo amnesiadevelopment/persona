@@ -196,14 +196,40 @@ def _install(eng, upstream, tag):
 
 
 class _ProcessDied(BaseException):
-    """The upgrade's process being KILLED mid-promotion.
+    """The upgrade's process being KILLED the instant promotion begins.
 
-    Deliberately a BaseException and not an Exception: `_install_windows`
-    catches `(OSError, zipfile.BadZipFile)` and `_promote_staging` catches
-    `Exception`, so an ordinary exception here would be handled by production
-    code and turned into a tidy, rolled-back failure. A crash is precisely the
-    thing that does NOT get handled, and modelling it with a catchable
-    exception would model the opposite of the case under test.
+    ⚠️ WHY BaseException — AND AN HONEST NOTE ON HOW FAR THAT ACTUALLY BUYS
+    ANYTHING, because the tempting claim here is measurably too strong.
+
+    The claim worth making: production must not be able to swallow this. The
+    installer catches `(OSError, zipfile.BadZipFile)` and `_promote_staging`
+    catches `Exception` to run its rollback — and a rollback that COMPLETES
+    reports INSTALL_OUTCOME_RESTORED, which is exactly what PS-245 clears the
+    sentinel for. A catchable exception can therefore be turned into a tidy,
+    launchable, sentinel-free outcome, which is the opposite of the state this
+    sequence needs. BaseException cannot be absorbed by either handler.
+
+    The claim NOT worth making, because it is false AT THIS SEAM: that the
+    choice is load-bearing here. It is not. Measured both ways —
+
+        seam ABOVE the promotion (this one, a stubbed _promote_staging):
+          BaseException -> outcome='unknown'   Exception -> outcome='unknown'
+        seam INSIDE the promotion (a kill on a mid-tree shutil.move):
+          BaseException -> outcome='unknown'   Exception -> outcome='restored'
+
+    — so at this seam the two are indistinguishable today, and a probe that
+    swapped the base class here would pass and prove nothing. BaseException is
+    kept as defence against the seam or the handlers moving, not because it is
+    doing work right now, and this note exists so a later reader does not
+    mistake belt for braces.
+
+    The seam is ABOVE the promotion deliberately: it leaves the tree WHOLLY at
+    the reverted-to build, which is what the ticket's step 3 describes ("the
+    promotion never happened") and what lets every downstream test read
+    `installed_marker()` as a clean answer to "was the rejected build
+    installed?". Killing mid-move instead leaves a half-swapped tree, and the
+    NEW bytes that then sit in chrome.exe would be indistinguishable from the
+    silent substitution these tests exist to detect.
     """
 
 
@@ -238,9 +264,12 @@ def _fail_an_upgrade(upstream, tag):
     """
     _marker, digest = upstream.catalogue[tag]
 
+    # THE SEAM IS ABOVE THE PROMOTION — see _ProcessDied for why. The tree is
+    # left wholly at the reverted-to build, which is the state step 3 of the
+    # sequence describes.
     real_promote = updater._promote_staging
 
-    def dying_promote(staging):
+    def dying_promote(_staging):
         raise _ProcessDied("the process was killed the instant promotion began")
 
     updater._promote_staging = dying_promote
@@ -257,10 +286,10 @@ def _fail_an_upgrade(upstream, tag):
         updater._promote_staging = real_promote
 
     # THE FAILURE CONTRACT, asserted where it is ESTABLISHED rather than
-    # inherited. Each of these three says something the others do not, and a
-    # harness that silently stops producing a real failure trips here, naming
-    # the actual cause, instead of reddening every downstream test at an
-    # assertion about the pin.
+    # inherited. Each of these says something the others do not, and a harness
+    # that silently stops producing a real failure trips HERE, naming the
+    # actual cause, instead of reddening every downstream test at an assertion
+    # about the pin.
     assert os.path.exists(updater._installing_file()), (
         "the killed upgrade must LEAVE the .engine-installing sentinel — that "
         "is what makes is_installed() False across a crash"
