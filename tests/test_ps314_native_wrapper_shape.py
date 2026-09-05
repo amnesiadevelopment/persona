@@ -68,7 +68,9 @@ from src.services.browser.audio_ext import (
     firefox_audio_init_script,
 )
 from src.services.browser.device_ext import build_device_extension
+from src.services.browser.engine_version import ChromiumVersion
 from src.services.browser.gpu_ext import build_gpu_extension
+from src.services.browser.mobile_ext import build_mobile_extension
 from src.services.browser.webgl_ext import (
     build_webgl_extension,
     firefox_webgl_init_script,
@@ -500,3 +502,78 @@ def test_matchmedia_is_served_by_the_MINIFIED_nativeWrap_twin_and_is_reshaped():
         f"orig.length at runtime"
     )
     assert got["name"] == "matchMedia"
+
+
+def test_mobile_leaf_runs_in_a_realm_and_reads_in_the_native_shape():
+    """The mobile leaf, read from a realm — the one leaf this file did not reach.
+
+    ⚠️ THIS TEST EXISTS BECAUSE ITS ABSENCE COST A TOTAL SPOOF FAILURE. PS-314's
+    review found `mobile.js` shipping a SyntaxError (a `try {` consumed while
+    re-housing `patchedMM`), and four test files that build the mobile extension
+    all stayed GREEN, because every one of them asserted a source-text SUBSTRING
+    — `"maxTouchPoints" in js` is true of a file that does not parse.
+
+    The probe below cannot make that mistake: `_own_props_probe` EVALUATES the
+    real generated script in a realm and then reads the installed functions back
+    out. A script that does not parse installs nothing, so every target comes
+    back `None` and the assertions fail. That is the property a substring check
+    can never have, and it is why "run the leaf at least once" is worth a test
+    even when a cheaper parse gate (`test_ps314_generated_scripts_parse.py`)
+    also covers it — this one additionally proves the wrappers are SHAPED right.
+
+    `mobile_ext` carries the FOURTH `def()` copy (which had NEITHER `.name` nor
+    `__pnaName` before this ticket) and its own `patchedMM`, so it is a real
+    PS-314 site rather than a bystander.
+    """
+    d = tempfile.mkdtemp()
+    build_mobile_extension(
+        d,
+        is_ios=False,
+        platform="Linux armv81",
+        model="Pixel 7",
+        chromium_version=ChromiumVersion("144.0.7559.132"),
+        css_width=412,
+        css_height=915,
+        dpr=2.625,
+        device_memory=8,
+        hardware_concurrency=8,
+    )
+    script = _extension_js(d, "mobile.js")
+    out = _own_props_probe(
+        script,
+        {
+            "matchMedia": "G.matchMedia",
+            "screen_width_get": (
+                "Object.getOwnPropertyDescriptor(G.screen, 'width').get"
+            ),
+        },
+    )
+
+    mm = out["matchMedia"]
+    assert mm is not None, (
+        "the mobile leaf installed NO matchMedia — the script did not run at "
+        "all, which is what an unparseable mobile.js looks like from a realm"
+    )
+    assert mm["own"] == CHROMIUM_SHAPE, (
+        f"mobile matchMedia owns {mm['own']}; `patchedMM` is still the caller's "
+        f"function expression rather than a re-housed shorthand"
+    )
+    assert mm["length"] == 1, (
+        f"mobile matchMedia arity {mm['length']} != 1 — it must be copied from "
+        f"realMM.length at runtime, never pinned as a literal"
+    )
+    assert mm["name"] == "matchMedia"
+
+    # The fourth `def()` copy: it had NEITHER `.name` nor `__pnaName` before
+    # PS-314, so a native-looking accessor here is the AC3 guarantee on the one
+    # copy the ticket flagged as most easily forgotten.
+    sw = out["screen_width_get"]
+    assert sw is not None, "the mobile leaf installed no screen.width accessor"
+    assert sw["own"] == CHROMIUM_SHAPE, (
+        f"mobile screen.width getter owns {sw['own']} — the fourth def() copy "
+        f"still builds a function expression"
+    )
+    assert sw["name"] == "get width", (
+        f"mobile screen.width getter reads .name={sw['name']!r}; a native "
+        f"accessor reads 'get width', and a persona-internal literal is a tell"
+    )

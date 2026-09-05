@@ -237,6 +237,7 @@ __MOBILE_REALM_GUARD__
           } catch (e) {}
           patchedMM = mmShell;
         } catch (e) {}
+        try {
           Object.defineProperty(patchedMM, 'name', { value: 'matchMedia' });
           Object.defineProperty(patchedMM, '__pnaName', { value: 'matchMedia' });
         } catch (e) {}
