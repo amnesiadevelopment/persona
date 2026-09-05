@@ -45,6 +45,7 @@ from src.services.browser.launch_policy import (
 )
 from src.services.proxy.errors import (
     GeographyUnknownError,
+    LocaleUnderivableError,
     TimezoneUnderivableError,
 )
 from src.services.proxy.store import ProxyStore
@@ -102,6 +103,39 @@ MOVED_ZONE = "Africa/Harare"
 MULTI_ZONE_CC = "RU"
 MULTI_ZONE_COUNTRY = "Russia"
 MULTI_ZONE_DECLARED = "Asia/Vladivostok"
+
+#: THE NOTE THE ROW CARRIES FOR ``UNDERIVABLE_CC``, and it is the UNSUPPORTED
+#: one rather than the ``[ edit ]`` one. This is the round-6 correction and it
+#: is worth stating here, once, because it changes what nearly every render
+#: assertion below is checking.
+#:
+#: ``spawn_browser`` asks TWO geography questions — ``_profile_timezone`` and
+#: ``_profile_locale`` — and the predicate used to model only the first. Since
+#: PS-240 made ``_COUNTRY_TZ`` and ``_COUNTRY_LOCALE`` SET-EQUAL (the
+#: correspondence suite enforces it in both directions), a country with no zone
+#: row has no locale row either, so declaring a zone on an NG exit satisfies the
+#: zone gate and leaves the LOCALE gate refusing. The note therefore CLEARED on
+#: a proxy that still could not launch — this ticket's own headline defect,
+#: reproduced by the feature written to remove it, and worse than silence
+#: because a marker that clears asserts the problem is solved.
+#:
+#: So the row now says the state and names no gesture for this population, and
+#: the ``[ edit ]`` sentence is reserved for the states where declaring
+#: genuinely completes a launch.
+
+
+def _notes():
+    """``(UNLAUNCHABLE_NOTE, UNSUPPORTED_COUNTRY_NOTE)`` from the product.
+
+    Imported through a function so this module still collects in a container
+    without ``flet``, exactly as every other render assertion here does.
+    """
+    from src.ui.components.network_page import (
+        UNLAUNCHABLE_NOTE,
+        UNSUPPORTED_COUNTRY_NOTE,
+    )
+
+    return UNLAUNCHABLE_NOTE, UNSUPPORTED_COUNTRY_NOTE
 
 try:
     import cryptography  # noqa: F401
@@ -791,33 +825,146 @@ def test_the_vendored_list_matches_its_recorded_checksum():
 def test_the_predicate_is_derived_from_the_launch_path_not_reimplemented(
     tmp_path,
 ):
-    """The rule has ONE owner. `proxy_is_checked_but_unlaunchable` calls
-    `_proxy_timezone` and reports whether it refused — so this ticket's own new
-    answer (the declaration) is reflected in the render with no second edit,
-    and so a future refusal branch cannot leave the two surfaces disagreeing.
+    """The rule has ONE owner, and it asks BOTH of the launcher's gates.
+
+    `proxy_unlaunchable_remedy` calls `_proxy_timezone` AND `_locale_for` and
+    reports which refused — so this ticket's own new answer (the declaration) is
+    reflected in the render with no second edit, and so a future refusal branch
+    cannot leave the two surfaces disagreeing.
+
+    ⚠️ THE SECOND CALL IS THE ROUND-6 CORRECTION. `spawn_browser` asks two
+    geography questions (`process.py`'s `_profile_timezone` / `_profile_locale`
+    pair, on both engine arms) and this modelled only the first — see
+    `test_declaring_a_zone_does_not_clear_the_warning_when_the_launch_still_refuses`
+    for what that shipped. Asserted on the SOURCE rather than only on outcomes,
+    because the outcomes agree today by accident of the tables being set-equal:
+    a re-implementation that hard-codes today's table contents would pass every
+    behavioural assertion here and drift the day either table moves.
+
+    `proxy_is_checked_but_unlaunchable` is asserted to be the boolean
+    PROJECTION of that owner rather than a second opinion, so the badge and the
+    sentence cannot disagree about one proxy.
     """
     import inspect
 
-    assert "_proxy_timezone(" in inspect.getsource(
-        proxy_is_checked_but_unlaunchable
+    from src.services.browser.launch_policy import proxy_unlaunchable_remedy
+
+    owner = inspect.getsource(proxy_unlaunchable_remedy)
+    assert "_proxy_timezone(" in owner
+    assert "_locale_for(" in owner, (
+        "the launcher asks the locale gate too; a render that does not model "
+        "it says a declaration solved a launch that is still refused"
     )
+    assert "proxy_unlaunchable_remedy(" in inspect.getsource(
+        proxy_is_checked_but_unlaunchable
+    ), "the boolean must project the owner, not re-decide beside it"
+
+
+def test_declaring_a_zone_does_not_clear_the_warning_when_the_launch_still_refuses(
+    tmp_path,
+):
+    """THE ROUND-6 DEFECT, pinned so it cannot come back.
+
+    The operator follows the row's note, declares a zone, the store accepts it
+    and writes it to disk — and the profile STILL refuses, because
+    `_profile_locale` has no row for that country either. Before this, the row
+    went back to reading like a working proxy: the note cleared, the badge
+    cleared, and nothing on the network page said the proxy was still stuck.
+    That is this ticket's own headline defect reproduced by the feature written
+    to remove it, and it is worse than saying nothing — a marker that CLEARS is
+    an affirmative claim that the problem is solved.
+
+    Asserted end to end through the real store, the real launch gates and the
+    real render, and paired with a healthy proxy so it cannot pass by marking
+    everything.
+    """
+    from src.services.browser.process import _profile_locale
+    from src.ui.components.network_page import build_network_page
+
+    s, name = _ro_proxy(tmp_path)
+    ok, message = s.set_manual_timezone(name, RO_ZONE)
+    assert (ok, message) == (True, ""), "the declaration is accepted"
+    proxy = _store(tmp_path).get(name)
+    assert proxy.manual_timezone == RO_ZONE, "and it reached disk"
+
+    # The ZONE gate now answers...
+    assert _proxy_timezone(proxy) == RO_ZONE
+    # ...and the LOCALE gate still refuses, so no profile using it can launch.
+    class _P:
+        name = "prof"
+        proxy = name
+
+    with pytest.raises(LocaleUnderivableError):
+        _profile_locale(_P(), proxy)
+
+    # So the row must NOT read as healthy.
+    assert proxy_is_checked_but_unlaunchable(proxy) is True
+    fine = Proxy(name="de-exit", url="socks5://9.9.9.9:1080", country_code="DE",
+                 country_name="Germany", checked_at=time.time(), last_check_ok=True)
+    page = build_network_page(
+        [proxy, fine],
+        on_add=lambda _: None, on_edit=lambda n: None, on_delete=lambda n: None,
+        on_check=lambda n: None, on_rotate=lambda n: None,
+    )
+    _note, unsupported = _notes()
+    marked = [t for t in _all_text(page) if unsupported in t]
+    assert len(marked) == 1, _all_text(page)
+    assert UNDERIVABLE_COUNTRY in marked[0]
+
+
+def test_the_note_names_a_gesture_only_where_that_gesture_works(tmp_path):
+    """The two sentences are not interchangeable, and which one a row gets is
+    decided by whether declaring a zone would actually complete the launch.
+
+    A country outside the tables gets a sentence that names NO gesture: sending
+    that operator to `[ edit ]` is the "remedy that LOOPS" this ticket exists to
+    end, one gate further along — the zone is accepted, stored, and the profile
+    still refuses. Their real remedy is a `_COUNTRY_TZ` + `_COUNTRY_LOCALE`
+    pair, which is PS-240's lane and a different person's action.
+    """
+    note, unsupported = _notes()
+    assert "[ edit ]" in note
+    assert "[ edit ]" not in unsupported, (
+        "naming a door that cannot fix this state is the loop again"
+    )
+    # Neither is a re-check prompt: the check PASSED and will keep passing.
+    for sentence in (note, unsupported):
+        assert "re-check" not in sentence.lower()
 
 
 def test_the_predicate_answers_true_only_for_the_state_it_names(tmp_path):
+    from src.services.browser.launch_policy import (
+        UNLAUNCHABLE_DECLARABLE,
+        UNLAUNCHABLE_UNSUPPORTED_COUNTRY,
+        proxy_unlaunchable_remedy,
+    )
+
     now = time.time()
     base = dict(name="p", url="socks5://1.2.3.4:1080")
-    # The state: check passed, country on file, no derivable zone.
-    assert proxy_is_checked_but_unlaunchable(
-        Proxy(**base, country_code=RO, checked_at=now, last_check_ok=True)
-    ) is True
+    # The state: check passed, country on file, no derivable zone. Post-PS-240
+    # this country has no LOCALE row either, so no declaration can fix it and
+    # the row must say so without naming a gesture.
+    stuck = Proxy(**base, country_code=RO, checked_at=now, last_check_ok=True)
+    assert proxy_is_checked_but_unlaunchable(stuck) is True
+    assert proxy_unlaunchable_remedy(stuck) == UNLAUNCHABLE_UNSUPPORTED_COUNTRY
     # A country WITH a table row launches: healthy, and must read healthy.
     assert proxy_is_checked_but_unlaunchable(
         Proxy(**base, country_code="DE", checked_at=now, last_check_ok=True)
     ) is False
-    # Once declared, it launches — so the warning must clear.
+    # ⚠️ DECLARING DOES NOT CLEAR IT HERE, and that is the round-6 correction:
+    # the locale gate still refuses, so the launch still refuses, so the row
+    # must keep saying so. See the end-to-end test above.
+    declared = Proxy(**base, country_code=RO, checked_at=now, last_check_ok=True,
+                     manual_timezone=RO_ZONE, manual_timezone_country=RO)
+    assert proxy_is_checked_but_unlaunchable(declared) is True
+    assert proxy_unlaunchable_remedy(declared) == UNLAUNCHABLE_UNSUPPORTED_COUNTRY
+    # And where declaring DOES complete the launch, it clears — a marker that
+    # never clears trains the operator to ignore it. RU is the case that
+    # survives PS-240: one table row for eleven zones, and a locale row.
     assert proxy_is_checked_but_unlaunchable(
-        Proxy(**base, country_code=RO, checked_at=now, last_check_ok=True,
-              manual_timezone=RO_ZONE, manual_timezone_country=RO)
+        Proxy(**base, country_code=MULTI_ZONE_CC, checked_at=now,
+              last_check_ok=True, manual_timezone=MULTI_ZONE_DECLARED,
+              manual_timezone_country=MULTI_ZONE_CC)
     ) is False
     # A FAILED check and a NEVER-checked proxy already render honestly (a ✕ and
     # a placeholder), so they stay out of this predicate rather than being
@@ -826,6 +973,52 @@ def test_the_predicate_answers_true_only_for_the_state_it_names(tmp_path):
         Proxy(**base, country_code=RO, checked_at=now, last_check_ok=False)
     ) is False
     assert proxy_is_checked_but_unlaunchable(Proxy(**base)) is False
+
+
+def test_the_declarable_reason_is_reachable_and_is_what_drives_the_edit_note(
+    tmp_path,
+):
+    """The `[ edit ]` sentence must be reachable, or it is dead prose that
+    reads as covered.
+
+    Post-PS-240 the two tables are set-equal, so no SHIPPED country reaches
+    `UNLAUNCHABLE_DECLARABLE` today — a country with no zone row has no locale
+    row. That is a fact about the TABLES, not about the rule, and the rule's
+    contract is to mirror the launcher rather than today's table contents. So
+    the reachability is asserted by making the tables disagree the way a future
+    edit could (one row removed from `_COUNTRY_TZ` alone — precisely what
+    `test_country_table_correspondence.py` exists to catch), and the row is
+    asserted to carry the gesture-naming sentence for it.
+
+    This is also what stops the fix being written as "always say unsupported":
+    that would pass every other assertion here.
+    """
+    import src.services.browser.launch_policy as lp
+    from src.services.browser.launch_policy import (
+        UNLAUNCHABLE_DECLARABLE,
+        proxy_unlaunchable_remedy,
+    )
+    from src.ui.components.network_page import build_network_page
+
+    now = time.time()
+    saved = lp._COUNTRY_TZ.pop("DE")
+    try:
+        diverged = Proxy(name="de-exit", url="socks5://1.2.3.4:1080",
+                         country_code="DE", country_name="Germany",
+                         checked_at=now, last_check_ok=True)
+        assert proxy_unlaunchable_remedy(diverged) == UNLAUNCHABLE_DECLARABLE
+        page = build_network_page(
+            [diverged],
+            on_add=lambda _: None, on_edit=lambda n: None,
+            on_delete=lambda n: None, on_check=lambda n: None,
+            on_rotate=lambda n: None,
+        )
+        note, unsupported = _notes()
+        texts = _all_text(page)
+        assert any(note in t for t in texts), texts
+        assert not any(unsupported in t for t in texts), texts
+    finally:
+        lp._COUNTRY_TZ["DE"] = saved
 
 
 def test_a_passing_check_that_carried_no_country_is_not_marked(tmp_path):
@@ -867,11 +1060,9 @@ def test_the_network_row_does_not_mark_a_passing_check_with_no_country(
     pre-PS-274 text: the note is a claim about how to fix the proxy, and
     following it here leads to two refusals and no way out.
     """
-    from src.ui.components.network_page import (
-        UNLAUNCHABLE_NOTE,
-        build_network_page,
-    )
+    from src.ui.components.network_page import build_network_page
 
+    note, unsupported = _notes()
     now = time.time()
     liar = Proxy(name="liar", url="socks5://5.6.7.8:1080", country_code="",
                  country_name="", checked_at=now, last_check_ok=True)
@@ -883,12 +1074,13 @@ def test_the_network_row_does_not_mark_a_passing_check_with_no_country(
         on_check=lambda n: None, on_rotate=lambda n: None,
     )
     texts = _all_text(page)
-    # Paired with the RO row on the same page, so this cannot pass by the note
-    # having stopped rendering everywhere.
-    noted = [t for t in texts if UNLAUNCHABLE_NOTE in t]
+    # Paired with the NG row on the same page, so this cannot pass by the note
+    # having stopped rendering everywhere. NEITHER sentence may appear on the
+    # liar's row.
+    noted = [t for t in texts if note in t or unsupported in t]
     assert len(noted) == 1, texts
     assert UNDERIVABLE_COUNTRY in noted[0]
-    assert any("checked just now" in t and UNLAUNCHABLE_NOTE not in t
+    assert any("checked just now" in t and note not in t and unsupported not in t
                for t in texts), texts
 
 
@@ -937,11 +1129,9 @@ def test_the_network_row_says_so_instead_of_reading_checked_just_now(tmp_path):
     Asserted on the row's own text, and paired with a healthy proxy built the
     same way so this cannot pass by marking everything.
     """
-    from src.ui.components.network_page import (
-        UNLAUNCHABLE_NOTE,
-        build_network_page,
-    )
+    from src.ui.components.network_page import build_network_page
 
+    note, unsupported = _notes()
     now = time.time()
     stuck = Proxy(name="ro-exit", url="socks5://1.2.3.4:1080", country_code=RO,
                   country_name=UNDERIVABLE_COUNTRY, checked_at=now, last_check_ok=True)
@@ -953,29 +1143,57 @@ def test_the_network_row_says_so_instead_of_reading_checked_just_now(tmp_path):
         on_check=lambda n: None, on_rotate=lambda n: None,
     )
     texts = _all_text(page)
-    stuck_lines = [t for t in texts if UNLAUNCHABLE_NOTE in t]
+    stuck_lines = [t for t in texts if note in t or unsupported in t]
     assert len(stuck_lines) == 1, texts
     assert UNDERIVABLE_COUNTRY in stuck_lines[0]
-    assert not any("Germany" in t and UNLAUNCHABLE_NOTE in t for t in texts)
+    assert not any("Germany" in t and (note in t or unsupported in t)
+                   for t in texts)
 
 
-def test_the_network_row_clears_the_warning_once_a_zone_is_declared(tmp_path):
+def test_the_network_row_clears_the_warning_once_the_launch_stops_refusing(
+    tmp_path,
+):
     """The other half of the pair: the indication is a function of the CURRENT
-    state, so declaring a zone removes it. A marker that never clears trains
-    the operator to ignore it."""
-    from src.ui.components.network_page import (
-        UNLAUNCHABLE_NOTE,
-        build_network_page,
-    )
+    state, so it must CLEAR when the proxy becomes launchable. A marker that
+    never clears trains the operator to ignore it.
 
+    ⚠️ THE TRIGGER USED TO BE "declaring a zone", AND THAT WAS WRONG since
+    PS-240 — which is the round-6 finding. The tables are set-equal, so the
+    countries this note fires on have no locale row either and a declaration
+    leaves the launch refused; asserting the note cleared there pinned the
+    defect as expected behaviour. What must clear the note is the LAUNCH
+    becoming possible, so that is what is driven here, on a real shipped path:
+    a later check supplies the measured zone.
+
+    The declaration-clears-it case is asserted where it is genuinely reachable
+    — see `test_the_declarable_reason_is_reachable_and_is_what_drives_the_edit_note`,
+    which diverges the two tables the way a future edit could.
+    """
+    from src.ui.components.network_page import build_network_page
+
+    note, unsupported = _notes()
     s, name = _ro_proxy(tmp_path)
+
+    def _texts():
+        return _all_text(build_network_page(
+            [_store(tmp_path).get(name)],
+            on_add=lambda _: None, on_edit=lambda n: None,
+            on_delete=lambda n: None, on_check=lambda n: None,
+            on_rotate=lambda n: None,
+        ))
+
+    assert any(unsupported in t for t in _texts()), "the state is reproduced"
+    # Declaring does NOT clear it here: the locale gate still refuses. Stated
+    # explicitly rather than left implicit, because it is the finding.
     s.set_manual_timezone(name, RO_ZONE)
-    page = build_network_page(
-        [_store(tmp_path).get(name)],
-        on_add=lambda _: None, on_edit=lambda n: None, on_delete=lambda n: None,
-        on_check=lambda n: None, on_rotate=lambda n: None,
+    assert any(unsupported in t for t in _texts()), (
+        "a declaration that did not unblock the launch must not clear the row"
     )
-    assert not any(UNLAUNCHABLE_NOTE in t for t in _all_text(page))
+    # The exit moves to a country the product fully knows AND the check
+    # measures a zone — the ordinary healthy path. Now it clears.
+    s.mark_checked(name, "DE", "Germany", "9.9.9.9", "Europe/Berlin", None, None)
+    texts = _texts()
+    assert not any(note in t or unsupported in t for t in texts), texts
 
 
 def test_the_unlaunchable_note_is_not_a_re_check_prompt():
@@ -1444,13 +1662,21 @@ def test_the_dialog_box_is_EMPTY_for_a_declaration_the_country_gate_retired(
 def test_the_note_and_the_door_it_names_agree_on_a_moved_exit(tmp_path):
     """AC8's disagreement, on the ticket's OWN headline state.
 
-    The network row tells the operator to set the exit timezone in [ edit ].
-    Both surfaces are read here off the same stored record, so the row's
-    instruction and the box the operator lands in cannot drift apart.
+    Both surfaces are read here off the same stored record, so what the row
+    SAYS and what the box the operator lands in SHOWS cannot drift apart.
+
+    ⚠️ THE ROW'S SENTENCE DEPENDS ON THE COUNTRY IT MOVED TO, which is the
+    round-6 correction: `MOVED_CC` is itself outside the tables (deliberately —
+    see its definition), so no declaration can complete this launch and the row
+    must not name `[ edit ]`. The agreement being asserted is therefore
+    "neither surface claims a zone is in force", which is the property that
+    actually failed in round 5. The gesture-naming variant is asserted at
+    `test_the_declarable_reason_is_reachable_and_is_what_drives_the_edit_note`.
     """
-    from src.ui.components.network_page import UNLAUNCHABLE_NOTE, build_network_page
+    from src.ui.components.network_page import build_network_page
     from src.ui.dialogs.proxy import open_proxy_dialog
 
+    note, unsupported = _notes()
     s, name = _ro_proxy(tmp_path)
     s.set_manual_timezone(name, RO_ZONE)
     s.mark_checked(name, MOVED_CC, MOVED_COUNTRY, "9.9.9.9", "", None, None)
@@ -1461,8 +1687,13 @@ def test_the_note_and_the_door_it_names_agree_on_a_moved_exit(tmp_path):
         on_add=lambda _: None, on_edit=lambda n: None, on_delete=lambda n: None,
         on_check=lambda n: None, on_rotate=lambda n: None,
     )
-    assert any(UNLAUNCHABLE_NOTE in t for t in _all_text(rendered)), (
+    texts = _all_text(rendered)
+    assert any(note in t or unsupported in t for t in texts), (
         "the row must still say the proxy cannot launch"
+    )
+    assert not any(note in t for t in texts), (
+        "declaring cannot fix this country, so the row must not send the "
+        "operator to a door that will not help"
     )
 
     page = _FakePage()
@@ -1470,7 +1701,8 @@ def test_the_note_and_the_door_it_names_agree_on_a_moved_exit(tmp_path):
         page, _FakeCheckService(), on_save=lambda *a: None, proxy=proxy,
     )
     assert _dialog_field(page.shown, TZ_LABEL).value == "", (
-        "the row says the zone is missing; the door it names must not show one"
+        "the row says the proxy cannot launch; the door must not show a zone "
+        "as though one were in force"
     )
 
 
@@ -1643,13 +1875,14 @@ def test_the_network_row_and_the_dialog_agree_after_a_url_edit(tmp_path):
     set the exit timezone in [ edit ]" while [ edit ] showed the field already
     filled in. Both surfaces are read here, off the same stored record.
     """
-    from src.ui.components.network_page import UNLAUNCHABLE_NOTE, build_network_page
+    from src.ui.components.network_page import build_network_page
     from src.ui.dialogs.proxy import open_proxy_dialog
 
+    note, unsupported = _notes()
     s, name = _ro_proxy(tmp_path)
     s.set_manual_timezone(name, RO_ZONE)
     _drive_dialog(s, name, host="5.5.5.5")
-    # A later check finds the new exit is in Romania too — which is what
+    # A later check finds the new exit is in the same country — which is what
     # re-populates the country and brings the note back.
     s.mark_checked(name, RO, UNDERIVABLE_COUNTRY, "5.5.5.5", "", None, None)
 
@@ -1659,7 +1892,7 @@ def test_the_network_row_and_the_dialog_agree_after_a_url_edit(tmp_path):
         on_add=lambda _: None, on_edit=lambda n: None, on_delete=lambda n: None,
         on_check=lambda n: None, on_rotate=lambda n: None,
     )
-    assert any(UNLAUNCHABLE_NOTE in t for t in _all_text(rendered))
+    assert any(note in t or unsupported in t for t in _all_text(rendered))
 
     page = _FakePage()
     open_proxy_dialog(

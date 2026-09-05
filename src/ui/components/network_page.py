@@ -4,7 +4,10 @@ from collections.abc import Callable
 import flet as ft
 
 from ...models.proxy import Proxy
-from ...services.browser.launch_policy import proxy_is_checked_but_unlaunchable
+from ...services.browser.launch_policy import (
+    UNLAUNCHABLE_DECLARABLE,
+    proxy_unlaunchable_remedy,
+)
 from ...utils.proxy_parser import split_proxy_url
 from ...utils.timefmt import humanize_since
 from ..flags import flag_path
@@ -143,15 +146,31 @@ def _flag_widget(proxy: Proxy, is_checking: bool, unlaunchable: bool) -> ft.Cont
     )
 
 
-#: What the row says when a PASSING check still cannot launch a profile. It
-#: names the missing thing and the remedy the operator can actually reach, and
-#: it deliberately does NOT read as an invitation to re-check: the check already
-#: passed and will keep passing (see refusal.py's ``_UNDERIVABLE``, which makes
-#: the same choice for the profile card's label).
+#: What the row says when a PASSING check still cannot launch a profile AND the
+#: operator can fix it here. It names the missing thing and the remedy they can
+#: actually reach, and it deliberately does NOT read as an invitation to
+#: re-check: the check already passed and will keep passing (see refusal.py's
+#: ``_UNDERIVABLE``, which makes the same choice for the profile card's label).
 UNLAUNCHABLE_NOTE = "cannot launch: set the exit timezone in [ edit ]"
 
+#: What the row says when the launch is refused and NO declaration can fix it —
+#: the exit's country is outside the product's geography tables entirely, so
+#: the locale gate refuses whatever zone is typed.
+#:
+#: ⚠️ IT NAMES NO GESTURE, and that is the whole reason it exists as a second
+#: sentence rather than a re-wording of the first. Since PS-240 made
+#: ``_COUNTRY_TZ`` and ``_COUNTRY_LOCALE`` set-equal, this is the population the
+#: unlaunchable indication actually fires on, and showing them
+#: ``set the exit timezone in [ edit ]`` sends them to type a zone that is
+#: accepted, stored, and still does not launch — the "remedy that LOOPS" this
+#: whole ticket exists to end, one gate further along. Their real remedy is a
+#: ``_COUNTRY_TZ`` + ``_COUNTRY_LOCALE`` pair, which is a code change by a
+#: different person (PS-240's lane), so the honest thing the row can do is name
+#: the state and stop. Like its sibling it is not a re-check prompt.
+UNSUPPORTED_COUNTRY_NOTE = "cannot launch: this exit country is not supported yet"
 
-def _meta_line(proxy: Proxy, now: float, unlaunchable: bool) -> str:
+
+def _meta_line(proxy: Proxy, now: float, remedy: str | None) -> str:
     parts = [split_proxy_url(proxy.url)["scheme"]]
     if proxy.country_name:
         code = f"[{proxy.country_code}] " if proxy.country_code else ""
@@ -164,8 +183,13 @@ def _meta_line(proxy: Proxy, now: float, unlaunchable: bool) -> str:
         parts.append(f"checked {humanize_since(proxy.checked_at, now)}")
     else:
         parts.append("not checked yet")
-    if unlaunchable:
+    # THE SENTENCE BRANCHES, THE BADGE DOES NOT. Both reasons mean the profile
+    # will not launch, so both get the badge; only one of them has a gesture
+    # the operator can perform, so only that one names it.
+    if remedy == UNLAUNCHABLE_DECLARABLE:
         parts.append(UNLAUNCHABLE_NOTE)
+    elif remedy is not None:
+        parts.append(UNSUPPORTED_COUNTRY_NOTE)
     return "  ·  ".join(parts)
 
 
@@ -179,10 +203,12 @@ def _proxy_row(
     is_checking: bool,
 ) -> ft.Container:
     check_label = "[ ... ]" if is_checking else "[ check ]"
-    # ONE call to the launch path's own predicate, once per row, feeding both
-    # the badge and the sentence — never two independent opinions about the
-    # same state.
-    unlaunchable = not is_checking and proxy_is_checked_but_unlaunchable(proxy)
+    # ONE call to the launch path's own owner, once per row, feeding both the
+    # badge and the sentence — never two independent opinions about the same
+    # state. It returns WHY rather than merely WHETHER, because the two reasons
+    # need different sentences and the same badge.
+    remedy = None if is_checking else proxy_unlaunchable_remedy(proxy)
+    unlaunchable = remedy is not None
     return ft.Container(
         border_radius=3,
         border=ft.Border.all(1, COLORS["card_border"]),
@@ -208,7 +234,7 @@ def _proxy_row(
                                     font_family=MONO,
                                 ),
                                 ft.Text(
-                                    _meta_line(proxy, now, unlaunchable),
+                                    _meta_line(proxy, now, remedy),
                                     size=11,
                                     color=COLORS["text_sub"],
                                     font_family=MONO,

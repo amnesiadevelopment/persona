@@ -757,39 +757,57 @@ def _proxy_timezone(proxy) -> str:
     )
 
 
-def proxy_is_checked_but_unlaunchable(proxy) -> bool:
-    """A proxy whose check PASSED and whose profiles still cannot launch.
+#: The operator CAN fix this one: the country is known to the product (it has a
+#: locale row), only its zone cannot be derived, so declaring a zone completes
+#: the launch. This is the state the ``[ edit ]`` sentence is for.
+UNLAUNCHABLE_DECLARABLE = "declare_timezone"
+#: The operator CANNOT fix this one from the UI: the country is outside the
+#: product's tables entirely, so the locale gate refuses whatever zone is
+#: declared. The remedy is a ``_COUNTRY_TZ`` + ``_COUNTRY_LOCALE`` pair — a code
+#: change, PS-240's lane — so the row must say the state and NOT name a gesture.
+UNLAUNCHABLE_UNSUPPORTED_COUNTRY = "country_unsupported"
 
-    This is the state PS-274 exists for: a check that succeeded, a country on
-    file, a flag drawn — and every profile using it refused at launch because
-    no zone can be derived for that country. The two surfaces disagreed and
-    neither was wrong alone: the network page said "verified, checked just
-    now", the profile card said "refused". The object that IS the problem, and
-    the only one the operator can act on, rendered as healthy.
 
-    ⚠️ DERIVED FROM THE LAUNCH PATH ITSELF, not re-stated. It CALLS
-    ``_proxy_timezone`` and reports whether it refused, so the renderer cannot
-    drift from the launcher — a new refusal branch, or a new way to answer
-    (this ticket added one), is reflected here the day it lands with no second
-    edit. Re-implementing the rule in the render layer is the specific mistake
-    ``services/proxy/freshness.py`` was created to stop; this follows it.
+def proxy_unlaunchable_remedy(proxy) -> str | None:
+    """WHY a checked proxy cannot launch, in the terms the operator can act in —
+    or ``None`` when this is not that state.
 
-    PURE. ``_proxy_timezone`` reads stored fields and ``time.time()`` and never
-    probes — that is stated and tested at ``proxy_indicator_state`` — so this
-    is safe to call on a render, once per row, with no socket and no disk.
+    THE SINGLE OWNER of the network page's badge AND its sentence, so the two
+    can never become two opinions about one proxy.
+    ``proxy_is_checked_but_unlaunchable`` below is defined in terms of this, not
+    beside it.
 
-    SCOPED TO A PASSING CHECK, deliberately. A proxy that never checked, or
-    whose check failed, ALSO cannot launch, and both already have their own
-    honest rendering (the placeholder and the ✕). Folding them in here would
-    relabel two states the operator already reads correctly and bury the one
-    they cannot currently see at all.
+    ⚠️ IT ASKS BOTH OF THE LAUNCHER'S GEOGRAPHY GATES. ``spawn_browser`` asks
+    the zone question AND the locale question (``process.py``'s chromium arm at
+    the ``_profile_timezone`` / ``_profile_locale`` pair, and the firefox arm
+    the same way), and a render that models only the first states that a
+    declaration solved a launch the locale half is still refusing. See
+    ``proxy_is_checked_but_unlaunchable``'s docstring for what that shipped.
 
-    ⚠️ AND SCOPED TO A COUNTRY BEING ON FILE — see the second guard. This
-    predicate does not merely mark a state, it drives a sentence that names a
-    REMEDY, so it must only answer True where that remedy is reachable.
+    THE TWO ANSWERS ARE NOT INTERCHANGEABLE, which is why this returns a reason
+    rather than a boolean:
+
+    * ``UNLAUNCHABLE_DECLARABLE`` — the zone gate refuses and the locale gate
+      answers. A declaration completes the launch, so the row may name that
+      gesture. Post-PS-240 this is the multi-zone case: a country whose single
+      ``_COUNTRY_TZ`` row cannot be right for the whole country (RU is one row
+      for eleven zones) where the operator's exit needs a different one.
+    * ``UNLAUNCHABLE_UNSUPPORTED_COUNTRY`` — the locale gate refuses too. No
+      declaration can make this launch, so the row must NOT send the operator
+      to ``[ edit ]``: that is the "remedy that loops" this ticket exists to
+      end, one gate further along.
+
+    ``None`` covers BOTH "this launches" and two states that cannot launch but
+    whose remedy is a RE-CHECK rather than anything on this page — no country on
+    file at all, and the ISO "not a country" codes (``_NO_COUNTRY_CODES``).
+    Those keep their pre-PS-274 rendering, unchanged and honest; see the second
+    guard below.
+
+    PURE — no IO, no probe. Both gates read stored fields and module tables.
     """
     if getattr(proxy, "last_check_ok", None) is not True:
-        return False
+        return None
+    code = ((getattr(proxy, "country_code", "") or "")).strip().upper()
     # A PASSING CHECK THAT CARRIED NO COUNTRY IS NOT THIS STATE, and the
     # conjunct is load-bearing rather than defensive: it is what keeps the note
     # this predicate drives from naming a remedy the product then refuses.
@@ -810,17 +828,106 @@ def proxy_is_checked_but_unlaunchable(proxy) -> bool:
     # exists to end, one state over. It also contradicts the profile card,
     # which reads this state as `geography_unknown`.
     #
-    # So this state keeps its pre-PS-274 rendering, unchanged and honest, and
-    # its real remedy (a re-check, which here does NOT loop) stays available.
-    # Giving it its OWN note is defensible but is a wider change than this
-    # ticket: it also needs the profile card's "never checked" label corrected.
-    if not (getattr(proxy, "country_code", "") or ""):
-        return False
+    # `_NO_COUNTRY_CODES` rides the SAME guard rather than a separate one,
+    # because it is the same input: `ZZ` is ISO's way of writing "no country
+    # was determined", and the launcher agrees — `process._profile_locale`
+    # tests exactly this set before its lookup and raises
+    # ExitCountryUnknownError, whose remedy is a check that answers with a
+    # country. Sending that operator to `[ edit ]` would be the loop again,
+    # and `_locale_for` alone cannot see it (handed "ZZ" it answers `en-US`,
+    # which is right for the no-proxy path and wrong here — its own docstring
+    # says so). Modelling the gate means modelling this conjunct with it.
+    #
+    # So these states keep their pre-PS-274 rendering, unchanged and honest,
+    # and their real remedy (a re-check, which here does NOT loop) stays
+    # available. Giving them their OWN note is defensible but is a wider change
+    # than this ticket: it also needs the profile card's "never checked" label
+    # corrected.
+    if not code or code in _NO_COUNTRY_CODES:
+        return None
     try:
         _proxy_timezone(proxy)
     except GeographyUnknownError:
         # The parent — so GeographyDisprovenError and TimezoneUnderivableError
         # are both caught, exactly as every fail-closed handler in the product
         # catches them (errors.py explains why the hierarchy is that shape).
-        return True
-    return False
+        try:
+            _locale_for(code)
+        except GeographyUnknownError:
+            # Both gates refuse. Since PS-240 made the two tables SET-EQUAL
+            # (test_country_table_correspondence.py enforces it in both
+            # directions), this is EVERY country with no zone row — which is
+            # why the distinction is the whole population and not a corner.
+            return UNLAUNCHABLE_UNSUPPORTED_COUNTRY
+        return UNLAUNCHABLE_DECLARABLE
+    # The zone gate answers. The locale gate is asked anyway, because a launch
+    # it refuses is still a launch that does not happen, and a row that says
+    # nothing about it is the silent-healthy render this ticket removes. It is
+    # not reachable through a declaration today (the tables are set-equal, so a
+    # country with a zone has a locale), but this predicate's contract is to
+    # mirror the launcher rather than to mirror today's tables.
+    try:
+        _locale_for(code)
+    except GeographyUnknownError:
+        return UNLAUNCHABLE_UNSUPPORTED_COUNTRY
+    return None
+
+
+def proxy_is_checked_but_unlaunchable(proxy) -> bool:
+    """A proxy whose check PASSED and whose profiles still cannot launch.
+
+    This is the state PS-274 exists for: a check that succeeded, a country on
+    file, a flag drawn — and every profile using it refused at launch because
+    no zone can be derived for that country. The two surfaces disagreed and
+    neither was wrong alone: the network page said "verified, checked just
+    now", the profile card said "refused". The object that IS the problem, and
+    the only one the operator can act on, rendered as healthy.
+
+    ⚠️ DERIVED FROM THE LAUNCH PATH ITSELF, not re-stated. It CALLS the
+    launcher's own gates and reports whether any of them refused, so the
+    renderer cannot drift from the launcher — a new refusal branch, or a new
+    way to answer (this ticket added one), is reflected here the day it lands
+    with no second edit. Re-implementing the rule in the render layer is the
+    specific mistake ``services/proxy/freshness.py`` was created to stop; this
+    follows it.
+
+    ⚠️ AND IT ASKS **BOTH** GATES, which is the correction that closes the
+    defect this predicate itself shipped. ``spawn_browser`` asks two questions
+    of a proxy's geography, not one — ``_profile_timezone`` AND
+    ``_profile_locale`` (``process.py``'s chromium and firefox arms both, in
+    that order) — and this used to model only the first. Since PS-240 widened
+    ``_COUNTRY_TZ`` to match ``_COUNTRY_LOCALE`` exactly, the two tables are
+    SET-EQUAL and ``test_country_table_correspondence.py`` enforces that in
+    both directions, so a country with no zone row has no locale row either.
+    The consequence was total rather than marginal: every country this
+    predicate answered True for was a country where declaring a zone made the
+    ZONE gate answer and left the LOCALE gate refusing — so the note cleared,
+    the row went back to looking healthy, and the profile still could not
+    launch. That is this ticket's own headline defect (a checked proxy drawn
+    as working that can never launch) reproduced by the feature written to
+    remove it, and it is worse than saying nothing: a marker that clears is an
+    affirmative claim that the problem is fixed. Asking both gates is what
+    keeps the promise the paragraph above makes.
+
+    PURE. ``_proxy_timezone`` reads stored fields and ``time.time()`` and never
+    probes — that is stated and tested at ``proxy_indicator_state`` — so this
+    is safe to call on a render, once per row, with no socket and no disk.
+
+    SCOPED TO A PASSING CHECK, deliberately. A proxy that never checked, or
+    whose check failed, ALSO cannot launch, and both already have their own
+    honest rendering (the placeholder and the ✕). Folding them in here would
+    relabel two states the operator already reads correctly and bury the one
+    they cannot currently see at all.
+
+    ⚠️ AND SCOPED TO A COUNTRY BEING ON FILE — see ``proxy_unlaunchable_remedy``'s
+    second guard.
+
+    ⚠️ IT NO LONGER DECIDES ANYTHING. It is the BOOLEAN PROJECTION of
+    ``proxy_unlaunchable_remedy``, which owns the rule, so the badge (this) and
+    the sentence (the reason) cannot disagree about one proxy — the whole point
+    of having one owner. The badge is shown for BOTH reasons: an unlaunchable
+    proxy is unlaunchable whether or not the operator can fix it from here, and
+    hiding the badge on the half they cannot fix would restore exactly the
+    silent-healthy render AC8 exists to remove.
+    """
+    return proxy_unlaunchable_remedy(proxy) is not None

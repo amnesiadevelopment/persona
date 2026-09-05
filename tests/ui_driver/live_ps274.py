@@ -78,8 +78,35 @@ the declaration is retired. That has a second consequence driven here:
     ("clear the field and save") would otherwise name a gesture the operator
     cannot perform, the box being empty already.
 
-THE TRAP THIS SCRIPT AVOIDS, STATED UP FRONT
---------------------------------------------
+AND THE SECOND GATE — a render that mirrors the launcher has to mirror ALL of it
+-------------------------------------------------------------------------------
+Steps 5, 9 and 11 used to assert that declaring a zone CLEARED the row's
+indication. That pinned a defect as expected behaviour, and it is the same
+mistake step 7 made one round earlier, one layer further in.
+
+``spawn_browser`` asks TWO geography questions of a proxy — ``_profile_timezone``
+AND ``_profile_locale`` — and the render's predicate modelled only the first.
+PS-240 then made ``_COUNTRY_TZ`` and ``_COUNTRY_LOCALE`` SET-EQUAL (the
+correspondence suite enforces it both directions), so a country with no zone row
+has no locale row either. The result was total rather than marginal: for EVERY
+country the note fires on, declaring a zone satisfied the zone gate, cleared the
+row — and the profile still refused, on the locale gate. The proxy went back to
+looking exactly like a working one. That is this ticket's own headline defect,
+reproduced by the feature written to remove it, and worse than saying nothing,
+because a marker that CLEARS is an affirmative claim that the problem is solved.
+
+So the row now carries one of TWO sentences, and which one is under test here:
+
+* ``UNLAUNCHABLE_NOTE`` names ``[ edit ]``, and is used only where declaring a
+  zone would genuinely complete the launch.
+* ``UNSUPPORTED_COUNTRY_NOTE`` names NO gesture, because for a country outside
+  the tables there is none — the remedy is a ``_COUNTRY_TZ`` + ``_COUNTRY_LOCALE``
+  pair, a code change by a different person (PS-240's lane).
+
+The badge is shown for both: an unlaunchable proxy is unlaunchable whether or
+not the operator can fix it from here.
+
+
 Every ancestor node's ``innerText`` in Flutter's semantics tree contains every
 descendant's, so the ROOT node matches any needle at all. A bare ``needle in
 page_text`` check for the unlaunchable sentence would therefore be an assertion
@@ -198,10 +225,18 @@ MOVED_CC = "ZW"
 MOVED_COUNTRY = "Zimbabwe"
 MOVED_ZONE = "Africa/Harare"
 
-#: The sentence the row must carry. Imported from the product rather than
+#: The sentences the row can carry. Imported from the product rather than
 #: retyped, so a wording change cannot make this script silently stop checking
 #: anything.
-from src.ui.components.network_page import UNLAUNCHABLE_NOTE  # noqa: E402
+#:
+#: ⚠️ THERE ARE TWO, AND WHICH ONE APPEARS IS ITSELF UNDER TEST. See the
+#: module docstring's "AND THE SECOND GATE" section: a country outside the
+#: product's tables gets a sentence that names NO gesture, because declaring a
+#: zone there is accepted, stored, and still does not launch.
+from src.ui.components.network_page import (  # noqa: E402
+    UNLAUNCHABLE_NOTE,
+    UNSUPPORTED_COUNTRY_NOTE,
+)
 
 #: The field's HINT — how an EMPTY field is addressed (see the module
 #: docstring: the hint is dropped once the field holds a value).
@@ -333,6 +368,25 @@ def _row_text(drv: FletDriver, proxy_name: str) -> str | None:
 
 
 def _row_says_unlaunchable(drv: FletDriver, proxy_name: str) -> bool | None:
+    """Does the row say the proxy CANNOT LAUNCH, by either sentence?
+
+    Either sentence counts, because the claim under test is "the row stopped
+    calling this proxy healthy" — which sentence it uses is a separate question
+    and is checked by ``_row_names_a_gesture`` below.
+    """
+    line = _row_text(drv, proxy_name)
+    if line is None:
+        return None
+    return UNLAUNCHABLE_NOTE in line or UNSUPPORTED_COUNTRY_NOTE in line
+
+
+def _row_names_a_gesture(drv: FletDriver, proxy_name: str) -> bool | None:
+    """Does the row send the operator to ``[ edit ]``?
+
+    A sentence that names a gesture is a CLAIM THAT THE GESTURE WORKS. For a
+    country outside the product's tables it does not — the locale gate refuses
+    whatever zone is typed — so the row must say the state and stop.
+    """
     line = _row_text(drv, proxy_name)
     if line is None:
         return None
@@ -546,7 +600,7 @@ def main() -> int:
             de_warned = _row_says_unlaunchable(drv, DE_NAME)
             results.append(
                 _report(
-                    "AC8 — the checked-but-unlaunchable RO proxy SAYS SO on its row",
+                    "AC8 — the checked-but-unlaunchable NG proxy SAYS SO on its row",
                     ro_warned is True,
                     f"{RO_NAME} meta line: {_row_text(drv, RO_NAME)!r}",
                 )
@@ -557,6 +611,20 @@ def main() -> int:
                     "not decoration)",
                     de_warned is False,
                     f"{DE_NAME} meta line: {_row_text(drv, DE_NAME)!r}",
+                )
+            )
+            # ---- AND WHICH SENTENCE IT USES -------------------------------
+            # NG is outside BOTH geography tables (they are set-equal since
+            # PS-240), so the locale gate refuses whatever zone is declared and
+            # `[ edit ]` cannot fix this proxy. A note that named that door
+            # would be the looping remedy this ticket exists to end, one gate
+            # further along.
+            results.append(
+                _report(
+                    "AC8 — and it does NOT send the operator to [ edit ], because "
+                    "no declaration can make this country launch",
+                    _row_names_a_gesture(drv, RO_NAME) is False,
+                    f"{RO_NAME} meta line: {_row_text(drv, RO_NAME)!r}",
                 )
             )
             drv.screenshot("/tmp/ps274-network-unlaunchable.png")
@@ -642,19 +710,33 @@ def main() -> int:
                 drv.press("[ cancel ]")
                 drv.page.wait_for_timeout(1500)
 
-            # ---- AC8 again: the marker CLEARS -------------------------
+            # ---- AC8 again: the marker does NOT clear -----------------
+            # ⚠️ THIS ASSERTED THE OPPOSITE, AND THAT PINNED A DEFECT AS
+            # EXPECTED BEHAVIOUR. `spawn_browser` asks TWO geography questions
+            # and the render modelled one, so declaring a zone for a country
+            # outside the tables cleared the row while the LOCALE gate went on
+            # refusing — the proxy went back to looking healthy and the profile
+            # still could not launch. That is this ticket's own headline defect,
+            # reproduced by the feature written to remove it, and worse than
+            # silence: a marker that CLEARS is an affirmative claim that the
+            # problem is solved.
+            #
+            # The marker DOES clear where the launch genuinely becomes
+            # possible — driven below on the moved-exit proxy, whose recovery
+            # is asserted against `_stored`, and in the unit suite's
+            # `test_the_network_row_clears_the_warning_once_the_launch_stops_refusing`.
             after = _row_says_unlaunchable(drv, RO_NAME)
             results.append(
                 _report(
-                    "AC8 — the unlaunchable indication CLEARS once a zone is "
-                    "declared (a marker that never clears trains the operator to "
-                    "ignore it)",
-                    after is False,
+                    "AC8 — the indication does NOT clear on a declaration that "
+                    "did not unblock the launch (the locale gate still refuses, "
+                    "so the profile still cannot launch)",
+                    after is True,
                     f"{RO_NAME} meta line now: {_row_text(drv, RO_NAME)!r}",
                 )
             )
-            drv.screenshot("/tmp/ps274-network-cleared.png")
-            print("  screenshot: /tmp/ps274-network-cleared.png")
+            drv.screenshot("/tmp/ps274-network-still-marked.png")
+            print("  screenshot: /tmp/ps274-network-still-marked.png")
 
             # ---- the value is validated at the door -------------------
             if _open_edit_for(drv, DE_NAME):
@@ -793,8 +875,10 @@ def main() -> int:
                 )
                 results.append(
                     _report(
-                        "AC8 — and the row's indication clears for it",
-                        _row_says_unlaunchable(drv, MOVED_NAME) is False,
+                        "AC8 — and the row STILL says unlaunchable: the new "
+                        "declaration satisfied the ZONE gate, and ZW is outside "
+                        "both tables so the LOCALE gate still refuses",
+                        _row_says_unlaunchable(drv, MOVED_NAME) is True,
                         f"{MOVED_NAME} meta line now: {_row_text(drv, MOVED_NAME)!r}",
                     )
                 )
@@ -848,8 +932,10 @@ def main() -> int:
                 )
                 results.append(
                     _report(
-                        "AC8 — and the row's unlaunchable indication clears",
-                        _row_says_unlaunchable(drv, SAME_ZONE_NAME) is False,
+                        "AC8 — and the row still says unlaunchable (the zone is "
+                        "on file for the right country; the LOCALE gate is what "
+                        "is left refusing, and no declaration reaches it)",
+                        _row_says_unlaunchable(drv, SAME_ZONE_NAME) is True,
                         f"{SAME_ZONE_NAME} meta line now: "
                         f"{_row_text(drv, SAME_ZONE_NAME)!r}",
                     )
@@ -1039,9 +1125,10 @@ def main() -> int:
                     drv.page.wait_for_timeout(1500)
                     results.append(
                         _report(
-                            "and the new row is NOT marked unlaunchable — the "
-                            "operator's whole journey ends launchable",
-                            _row_says_unlaunchable(drv, ADD_NAME) is False,
+                            "and the new row still says unlaunchable — the "
+                            "declaration is on disk and correct, and NG's "
+                            "missing locale row is what remains (PS-240's lane)",
+                            _row_says_unlaunchable(drv, ADD_NAME) is True,
                             f"{ADD_NAME} meta line: {_row_text(drv, ADD_NAME)!r}",
                         )
                     )
@@ -1105,6 +1192,19 @@ def main() -> int:
     print("     operator's gestures (check THEN save), which is where the defect")
     print("     lived; whether a provider tells the truth is a different")
     print("     question and is not claimed here.")
+
+    print("  5. THE `[ edit ]` SENTENCE ITSELF. With the SHIPPED tables no")
+    print("     country reaches it: PS-240 made _COUNTRY_TZ and _COUNTRY_LOCALE")
+    print("     set-equal, so every country the note fires on is one where")
+    print("     declaring cannot complete the launch, and the row correctly")
+    print("     uses the no-gesture sentence instead. Driving it would need the")
+    print("     two tables to disagree, which is a state the correspondence")
+    print("     suite exists to forbid — so it is asserted in the unit suite by")
+    print("     removing one _COUNTRY_TZ row in-process")
+    print("     (test_the_declarable_reason_is_reachable_and_is_what_drives_")
+    print("     the_edit_note) rather than faked here with a patched table.")
+    print("     Recorded as NOT COVERED rather than as covered by the")
+    print("     no-gesture sentence standing in for it.")
 
     ok = all(results)
     print(
