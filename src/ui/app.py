@@ -2332,6 +2332,17 @@ class App:
         def on_check_failed(proxy_name: str) -> None:
             self.pstore.mark_check_failed(proxy_name)
 
+        def on_declare_timezone(proxy_name: str, zone: str) -> str | None:
+            # The store owns the validation and the country gate; the dialog
+            # only carries the operator's string and renders whatever sentence
+            # comes back.
+            ok, err = self.pstore.set_manual_timezone(proxy_name, zone)
+            if not ok:
+                return err
+            self._render_active_page()
+            self._safe_update()
+            return None
+
         open_proxy_dialog(
             page,
             self.ps,
@@ -2340,6 +2351,7 @@ class App:
             on_checked=on_checked,
             on_check_failed=on_check_failed,
             ui=self._ui,
+            on_declare_timezone=on_declare_timezone,
         )
 
     def _edit_proxy(self, name: str) -> None:

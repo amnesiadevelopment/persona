@@ -6,6 +6,8 @@ import flet as ft
 from ...core.strings import get_string
 from ...interfaces.protocols import IProxyService
 from ...models.proxy import Proxy
+from ...services.browser.launch_policy import declared_timezone
+from ...services.proxy.tz_names import is_declarable_zone
 from ...utils.proxy_parse import parse_proxy_line
 from ...utils.proxy_parser import build_proxy_url, split_proxy_url
 from ...utils.validation import validate_proxy_format
@@ -53,6 +55,7 @@ def open_proxy_dialog(
     on_checked: Callable[..., None] | None = None,
     on_check_failed: Callable[[str], None] | None = None,
     ui: Callable[[Callable[[], None]], None] | None = None,
+    on_declare_timezone: Callable[[str, str], str | None] | None = None,
 ) -> None:
     is_edit = proxy is not None
     fields = split_proxy_url(proxy.url) if proxy is not None else split_proxy_url("")
@@ -98,10 +101,61 @@ def open_proxy_dialog(
         hint_text="provider endpoint that forces a new exit IP",
         hint_style=_hint, **DLG_INPUT_KWARGS,
     )
+    # THE DOOR PS-274 ADDS. `Proxy.timezone` is what the CHECK measured and is
+    # never edited here; this field is the operator's own declaration, for the
+    # ordinary case where the check reports a country and no usable zone and
+    # the country has no `_COUNTRY_TZ` row — a state whose only previously
+    # documented remedy was editing a python dict inside an installed desktop
+    # app, and whose one available UI action (re-check) loops forever.
+    #
+    # ⚠️ PREFILLED FROM THE COUNTRY-GATED VALUE, NEVER FROM THE RAW STORED
+    # STRING. `manual_timezone` is what is on DISK; `declared_timezone` is what
+    # is IN FORCE, and after the exit moves those two disagree by design — the
+    # gate retires the declaration and the launch refuses again. Showing the
+    # raw string there put the retired zone in the box as though it were live,
+    # which is a lie in the one place the operator goes to fix the problem: the
+    # network row says "cannot launch: set the exit timezone in [ edit ]", they
+    # press [ edit ], the zone is ALREADY SET and looks right, they press
+    # [ save ], the dialog closes with no error — and nothing has changed. A
+    # loop with a success-shaped exit, which is worse than a refusal.
+    #
+    # It also un-deadens the store's own sentence. `set_manual_timezone`
+    # refuses a retired zone re-submitted VERBATIM and says how to re-declare
+    # it, but that fires only when `zone == proxy.manual_timezone`, while the
+    # dialog calls it only when `zone != prefilled`. With prefill == the raw
+    # string those two conditions were mutually exclusive, so the sentence was
+    # unreachable from the product's only caller. Gated prefill makes the box
+    # empty for a retired declaration, so re-typing the same string — legitimate
+    # when one zone serves two countries, e.g. Asia/Bangkok for TH and KH — now
+    # actually reaches the operator.
+    tz_field = ft.TextField(
+        value=declared_timezone(proxy) if proxy is not None else "",
+        hint_text="e.g. Europe/Bucharest  — only needed if launching is refused",
+        hint_style=_hint, **DLG_INPUT_KWARGS,
+    )
+    tz_error = ft.Text("", size=12, color=COLORS["error"], visible=False)
     name_error = ft.Text("", size=12, color=COLORS["error"], visible=False)
     addr_error = ft.Text("", size=12, color=COLORS["error"], visible=False)
 
     flag_holder = ft.Container(content=_initial_status_control(proxy))
+
+    # WHAT A [ check ] RUN *INSIDE THIS DIALOG* LEARNED, keyed by the URL it was
+    # run against. `on_check_result` can only PERSIST a result when the stored
+    # record already carries that URL (audit6 #6, and that gate is correct) — so
+    # on an ADD, where no record exists yet, and on an EDIT whose URL was
+    # changed, the operator watches the flag turn and the store learns nothing.
+    #
+    # That is what made the declaration gate's own remedy unable to clear the
+    # gate it names: the gate reads `proxy.country_code` off a snapshot, the
+    # sentence says "press [ check ] first", and pressing it wrote nowhere the
+    # gate could see. Holding the result here lets the SAVE persist it the
+    # moment the record exists at the checked URL — the same condition
+    # `on_check_result` requires, just satisfied one gesture later.
+    #
+    # Values are `(success, code, country, ip, tz, lat, lon)`; a FAILED check is
+    # recorded too, so the rule is one rule ("the check you ran on the URL you
+    # saved is what gets recorded") rather than a success-only special case.
+    checked_geo: dict[str, tuple] = {}
 
     def on_paste(_: ft.ControlEvent) -> None:
         raw = (paste_field.value or "").strip()
@@ -197,6 +251,12 @@ def open_proxy_dialog(
         # icon still reflects the live check either way; only the DB write is
         # gated.
         persist = proxy is not None and checked_url == proxy.url
+        # Remember it either way. This is NOT a second persist path — nothing is
+        # written here — it is the dialog remembering what it just measured so a
+        # SAVE of that same URL can record it once a record exists to record it
+        # onto. See the `checked_geo` block above.
+        if checked_url:
+            checked_geo[checked_url] = (success, code, country, ip, tz, lat, lon)
         if success:
             flag_holder.content = _flag_control(code)
             if persist and on_checked is not None:
@@ -220,7 +280,7 @@ def open_proxy_dialog(
 
     def on_submit(_: ft.ControlEvent) -> None:
         name = (name_field.value or "").strip()
-        name_error.visible = addr_error.visible = False
+        name_error.visible = addr_error.visible = tz_error.visible = False
 
         if not name:
             name_error.value = "Name cannot be empty"
@@ -241,13 +301,198 @@ def open_proxy_dialog(
             page.update()
             return
 
+        # VALIDATE BEFORE ANYTHING IS WRITTEN. The store validates too — it is
+        # the field's owner and a second caller must not be able to skip it —
+        # but doing it here as well means a typo never half-saves the proxy and
+        # then reports an error about a different field. The oracle is the same
+        # vendored name set in both places, so the two cannot disagree.
+        zone = (tz_field.value or "").strip()
+        # PREFILLED FROM THE COUNTRY-GATED VALUE — the same expression the
+        # field was built with, so this is exactly what "the operator did not
+        # touch the field" looks like on screen. Every test below is scoped to
+        # a CHANGED value: an untouched field must not be able to fail a save
+        # (a legacy record carrying a zone with no country would otherwise
+        # become unrenameable).
+        #
+        # Reading the RAW `manual_timezone` here would disagree with what the
+        # box shows on a retired declaration, and it disagreed in the direction
+        # that mattered: the box read `Europe/Bucharest`, the compare read
+        # `Europe/Bucharest`, `declaring` was False, and a save that the
+        # operator had every reason to believe was doing something did nothing
+        # at all. See the field's own comment block.
+        prefilled = declared_timezone(proxy) if proxy is not None else ""
+        declaring = zone != prefilled
+        if declaring and zone and not is_declarable_zone(zone):
+            tz_error.value = (
+                f"'{zone}' is not a timezone name. Use IANA Region/City form, "
+                "e.g. Europe/Bucharest"
+            )
+            tz_error.visible = True
+            page.update()
+            return
+        # A DECLARATION IS MADE *FOR* A COUNTRY, so it needs one on file. Caught
+        # here, BEFORE on_save, so an add does not create the proxy and then
+        # report an error about a different field — and so the operator is told
+        # rather than handed a silent success that never activates (the store
+        # used to store the zone with an empty country, which no later check
+        # ever re-bound: `mark_checked` writes the six measured fields and is
+        # untouched by this feature).
+        #
+        # A URL CHANGE RETIRES THE *STORED* COUNTRY, because the save is about
+        # to invalidate all six geo fields plus the declaration (`update()`'s
+        # `keep_geo` term) — the exit moved, so nothing measured about the old
+        # one describes the new one.
+        #
+        # ⚠️ BUT THE STORED COUNTRY IS NOT THE ONLY COUNTRY THE DIALOG HAS, and
+        # reading only it is what made this gate's own remedy unable to clear
+        # it. The sentence below says "press [ check ] first"; the dialog HAS a
+        # [ check ] button; and on an ADD (no record yet) or a URL-changed EDIT
+        # (`checked_url != proxy.url`) `on_check_result` deliberately does not
+        # persist, so pressing it turned the flag Romanian and left the gate
+        # reading an empty snapshot. The operator was told to do the thing they
+        # had just done — the same looping remedy this whole ticket exists to
+        # remove (`launch_policy.py:340-347`), reintroduced one layer up. So the
+        # gate consults what a [ check ] run IN THIS DIALOG measured for the URL
+        # actually being saved, and the save persists it below before declaring.
+        moved = proxy is not None and url != proxy.url
+        # A FAILED last check does not count as a country on file either: the
+        # code is the PREVIOUS exit's and nothing currently confirms the proxy
+        # exits there. The store refuses it too (it owns the field), but catching
+        # it here keeps the refusal from arriving AFTER `on_save` has already
+        # landed a rename.
+        stored_country = (
+            proxy.country_code
+            if proxy is not None and not moved and proxy.last_check_ok is not False
+            else ""
+        )
+        pending_check = checked_geo.get(url)
+        checked_country = (
+            pending_check[1] if pending_check and pending_check[0] else ""
+        )
+
+        def _other_edits_pending() -> bool:
+            """Is the operator losing anything BESIDES the declaration?
+
+            Only asked when the gate below is about to refuse, and only to
+            decide whether to say so. On an ADD every field is pending by
+            definition (nothing exists yet); on an EDIT it is the fields
+            `on_save` would have written, compared against the stored record.
+            """
+            if proxy is None:
+                return True
+            return (
+                name != proxy.name
+                or url != proxy.url
+                or (rotate_field.value or "").strip() != proxy.rotate_url
+            )
+        if declaring and zone and not (stored_country or checked_country):
+            # WHICH sentence depends on which state the operator is actually
+            # in, because the remedy differs: "press [ check ]" is useless
+            # advice to someone whose check just failed, and it is exactly the
+            # loop this gate was found to create. A check that RAN and failed —
+            # in this dialog just now, or on the stored record — gets the
+            # fix-the-proxy sentence; only a genuinely unchecked proxy is told
+            # to check.
+            check_failed = (pending_check is not None and not pending_check[0]) or (
+                proxy is not None and not moved and proxy.last_check_ok is False
+            )
+            tz_error.value = (
+                "The check failed for this proxy, so its exit country is not "
+                "known — a timezone is declared for that country. Fix the "
+                "proxy and check it again, then declare the zone."
+                if check_failed
+                else "Press [ check ] first — a timezone is declared for this "
+                "proxy's exit country, and there isn't one on file yet."
+            )
+            # ⚠️ AND SAY WHAT THIS COSTS THE REST OF THE GESTURE. The gate runs
+            # BEFORE `on_save` for a good reason (an add must not create the
+            # proxy and then report an error about a different field), and the
+            # price is that an unrelated edit made in the same gesture — a
+            # rename, a rotate-URL change — is refused along with the
+            # declaration. The fields still hold what was typed, but pressing
+            # [ save ] again just re-refuses, so without this sentence the
+            # operator has no way to tell that the save is being blocked by the
+            # zone box rather than being broken. Clearing it is the escape, and
+            # it works: `declaring` goes False against an empty prefill, and
+            # against a non-empty one the gate's own `zone` term stops matching.
+            if _other_edits_pending():
+                tz_error.value += (
+                    " Your other changes here have NOT been saved — clear the "
+                    "timezone box to save them without a declaration."
+                )
+            tz_error.visible = True
+            page.update()
+            return
+
         error = on_save(name, url, (rotate_field.value or "").strip())
         if error:
             name_error.value = error
             name_error.visible = True
             page.update()
-        else:
-            page.pop_dialog()
+            return
+        # RECORD THE IN-DIALOG CHECK, now that a record exists at this URL.
+        # `on_check_result` could not: on an add there was nothing to write
+        # onto, and on a URL-changed edit writing then would have stamped the
+        # unsaved URL's geography onto the stored record, which cancel would not
+        # undo (audit6 #6). Both objections are about the record, and `on_save`
+        # has just settled it — the SAME condition, satisfied one gesture later.
+        # Only for the URLs that check could not persist itself, so an unchanged
+        # edit is not re-stamped with a fresh `checked_at` for a check that was
+        # already recorded.
+        if pending_check is not None and (proxy is None or moved):
+            ok, code, country, ip, tz, lat, lon = pending_check
+            if ok and on_checked is not None:
+                on_checked(name, code, country, ip, tz, lat, lon)
+            elif not ok and on_check_failed is not None:
+                # A failed check is recorded too. Dropping it would leave a
+                # brand-new proxy looking never-checked when it was checked and
+                # found broken — the network page's own ✕ state.
+                on_check_failed(name)
+        # AFTER the save, and keyed on the SAVED name: on an add there is no
+        # record to hang a declaration off until on_save creates it, and on a
+        # rename the record now lives under the new name. Both paths therefore
+        # declare against `name`, not against `proxy.name`.
+        #
+        # ⚠️ ONLY WHEN THE OPERATOR ACTUALLY TOUCHED THE FIELD. An unconditional
+        # call re-submits a value nobody typed, and that bit two ways: a bare
+        # [ save ] after the exit moved RO->CZ re-armed a declaration the
+        # country gate had deliberately retired (the CZ exit then launched with
+        # a Romanian clock), and a URL edit re-wrote the declaration `update()`
+        # had just invalidated, leaving the half-record the store's docstring
+        # says cannot exist. The store refuses to re-stamp an unchanged zone
+        # too — it owns the field and a second caller must not be able to skip
+        # the rule — but a dialog should not be issuing a write for a field the
+        # operator never touched regardless.
+        if on_declare_timezone is not None and declaring:
+            # ⚠️ AND WHEN THE BOX WAS EMPTY, RETIRE THE STALE RECORD FIRST.
+            # The store refuses a zone re-submitted VERBATIM while its
+            # declaration is retired, and tells the operator to "clear the
+            # field and save, then enter the zone for the current exit". With
+            # the gated prefill above, that instruction names a gesture they
+            # can no longer perform: the box is ALREADY empty, so clearing it
+            # changes nothing and the same refusal comes back — the identical
+            # loop-with-a-success-shaped-exit this ticket exists to remove,
+            # one layer further in.
+            #
+            # The dialog can settle it because it knows something the store
+            # cannot: the box was EMPTY when it opened. The store's rule is a
+            # guard against a re-submitted PREFILL, and there was no prefill to
+            # re-submit, so this is a fresh declaration however familiar the
+            # string looks (one zone legitimately serves two countries —
+            # `Asia/Bangkok` for TH and KH). The store's rule is NOT weakened:
+            # a second caller still cannot re-stamp a retired declaration, and
+            # the two writes here are exactly the two gestures its own sentence
+            # prescribes, issued by the one caller that can prove they are
+            # warranted.
+            if not prefilled and getattr(proxy, "manual_timezone", ""):
+                on_declare_timezone(name, "")
+            tz_err = on_declare_timezone(name, zone)
+            if tz_err:
+                tz_error.value = tz_err
+                tz_error.visible = True
+                page.update()
+                return
+        page.pop_dialog()
 
     dlg = ft.AlertDialog(
         modal=True,
@@ -338,6 +583,12 @@ def open_proxy_dialog(
                         rotate_field,
                         icon=ft.Icons.AUTORENEW,
                     ),
+                    labeled(
+                        "Exit timezone (optional)",
+                        tz_field,
+                        icon=ft.Icons.SCHEDULE,
+                    ),
+                    tz_error,
                     addr_error,
                     ft.Row(spacing=10, controls=[check_btn, copy_btn]),
                 ],
