@@ -1350,6 +1350,85 @@ def test_a_dispatch_that_died_MID_SALVAGE_does_not_strand_what_it_had_carried(tm
 
 
 @requires_posix_shell
+def test_the_mid_salvage_sweep_survives_a_PID_COLLISION_with_the_stranded_dir(tmp_path):
+    """The sweep must not be defeated by the one collision it is guaranteed to meet.
+
+    The staging directory used to be named `.salvage-carried-$$` and the sweep
+    excluded that exact path, on the reasoning that our own in-flight directory
+    must not be swept out from under us. That is correct only while no STRANDED
+    directory shares our PID — and PIDs are REUSED. This is a long-lived
+    self-hosted runner that wraps its PID space many times over between a
+    dropout and the dispatch that would recover it, so the collision is a
+    when, not an if.
+
+    On a collision the sweep skipped the stranded directory by name and the
+    `rm -rf "$carried"` that cleared the staging path then DELETED it: the
+    machinery added to rescue those bytes destroying them instead, silently.
+    Note the inversion this shares with the finding it was added for — the
+    material is lost precisely when an earlier dispatch got far enough to have
+    carried something worth keeping.
+
+    ⚠️ THE PID IS FORCED, NOT WAITED FOR. A test that seeded some arbitrary PID
+    and hoped to collide would pass ~always for the wrong reason, which is the
+    same shape as a fixture that cannot express the dimension it is testing (see
+    `run_journal`'s docstring). Here the seeding runs INSIDE the same process
+    that then execs the script, so `$$` is identical by construction and the
+    collision is certain.
+
+    Asserts the BYTES, for the reason the sibling tests do: the message is
+    satisfied by machinery that ran, and the question is whether the log lived.
+    """
+    ws = tmp_path / "ws"
+    (ws / "record").mkdir(parents=True)
+    journal_root = tmp_path / "journal"
+    journal_root.mkdir()
+
+    shell = find_posix_shell()
+    assert shell, "no POSIX shell on this host"
+
+    # Seed the stranded directory under THIS shell's own PID, then exec the
+    # script in that same process so its `$$` is the colliding one.
+    driver = tmp_path / "collide.sh"
+    driver.write_text(
+        'set -eu\n'
+        'd="${PS289_JOURNAL_ROOT}/.salvage-carried-$$/record-from-run-7700"\n'
+        'mkdir -p "$d"\n'
+        'printf "[49999/50000] LINK ./chrome\\n" > "$d/compile-patched.log"\n'
+        'printf "%s\\n" "$$" > "${PS289_JOURNAL_ROOT}/../seeded-pid.txt"\n'
+        f'exec "{JOURNAL_SH.as_posix()}" salvage\n',
+        encoding="utf-8",
+    )
+
+    env = shell_env(
+        PS289_JOURNAL_ROOT=str(journal_root),
+        GITHUB_RUN_ID="7800",
+        GITHUB_RUN_ATTEMPT="1",
+        HOME=str(ws),
+    )
+    result = subprocess.run(
+        [shell, str(driver)],
+        cwd=str(ws), env=env, capture_output=True, text=True,
+        encoding="utf-8", timeout=120,
+    )
+    assert result.returncode == 0, result.stderr
+
+    seeded_pid = (tmp_path / "seeded-pid.txt").read_text(encoding="utf-8").strip()
+    recovered = (
+        ws / "record" / "salvaged" / "record-from-run-7700" / "compile-patched.log"
+    )
+    assert recovered.is_file(), (
+        "a stranded staging directory sharing the salvaging dispatch's PID "
+        f"(pid {seeded_pid}) was destroyed instead of recovered: the sweep "
+        "excluded it by name and the staging-path clear then deleted it. "
+        f"Salvage said:\n{result.stdout}"
+    )
+    assert "[49999/50000] LINK ./chrome" in recovered.read_text(encoding="utf-8")
+    assert not list(journal_root.glob(".salvage-carried-*")), (
+        "a staging directory was left on disk after the sweep"
+    )
+
+
+@requires_posix_shell
 def test_a_journal_whose_copy_FAILED_is_not_marked_as_carried_out(tmp_path):
     """The sentinel must record a RESULT, not an attempt.
 

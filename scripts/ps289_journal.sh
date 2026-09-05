@@ -400,13 +400,30 @@ case "$CMD" in
     # it. The window is milliseconds against a ten-minute step and a `mv` is the
     # right primitive precisely because it is near-atomic, but a death inside it
     # would strand those bytes on disk forever and leak the disk they sit on.
-    # Recovering them is nearly free here: anything left from a PID that is no
-    # longer us is laid back down under this run's `record/salvaged/` with the
+    # Recovering them is nearly free here: anything left from an EARLIER
+    # dispatch is laid back down under this run's `record/salvaged/` with the
     # rest, by the same code path, further down.
+    #
+    # ⚠️ COLLECTED BEFORE THIS RUN'S OWN STAGING DIRECTORY EXISTS, AND THE NAME
+    # IS NOT A PID. An earlier version named the staging directory
+    # `.salvage-carried-$$` and excluded that one path from this sweep — which
+    # is correct only while no stale directory shares our PID. PIDs are REUSED,
+    # and this runner is a long-lived self-hosted box that wraps its PID space
+    # many times between a dropout and the dispatch that would recover it. On a
+    # collision the exclusion skipped the stranded directory here and the
+    # `rm -rf "$carried"` below then DELETED it — the sweep destroying the exact
+    # bytes it was added to rescue, silently, and with the same inversion as the
+    # last finding: the material is lost precisely when a dispatch got far
+    # enough to have carried something worth keeping.
+    #
+    # So the name is made unique per INVOCATION instead (`mktemp -d`, which
+    # cannot return an existing directory), and this collection runs BEFORE it
+    # is created. Our own directory therefore cannot appear in this glob at all,
+    # rather than being filtered out of it by a name comparison that a PID
+    # collision defeats.
     inherited=()
     for stale in "${JOURNAL_ROOT}"/.salvage-carried-*; do
       [ -d "$stale" ] || continue
-      [ "$stale" = "${JOURNAL_ROOT}/.salvage-carried-$$" ] && continue
       inherited+=("$stale")
     done
     stage=""
@@ -494,9 +511,28 @@ case "$CMD" in
         # down under THIS run's `record/salvaged/` below. The result is exactly
         # one level deep — the nesting nit is still fixed — and the recovery
         # chain survives an arbitrary run of consecutive deaths.
-        carried="${JOURNAL_ROOT}/.salvage-carried-$$"
-        rm -rf "$carried" 2>/dev/null || true
+        # ⚠️ UNIQUE PER INVOCATION, NOT PER PID. See the sweep above: a
+        # PID-named directory collides with a stranded one from a dispatch that
+        # died mid-salvage, and clearing the staging path then destroys it.
+        # `mktemp -d` cannot return a directory that already exists, so there is
+        # nothing to clear and no collision to lose to. It is created beside the
+        # journals so the `mv` below stays a rename rather than a copy, and only
+        # on the path where there is something to carry. The `||` fallback keeps
+        # a `mktemp`-less host on the old behaviour rather than losing the
+        # carry-forward entirely — and the sweep recovers from that path too.
+        carried=""
         if [ -d "${stage}/salvaged" ]; then
+          carried="$(mktemp -d "${JOURNAL_ROOT}/.salvage-carried-XXXXXX" 2>/dev/null || true)"
+          if [ -n "$carried" ]; then
+            # `mktemp` created it, and `mv` into an EXISTING directory nests
+            # (`.salvage-carried-ab12/salvaged/…`). The lay-down copies
+            # `"$carried"/.`, so that would put back the very level the
+            # carry-forward exists to keep flat.
+            rmdir "$carried" 2>/dev/null || true
+          else
+            carried="${JOURNAL_ROOT}/.salvage-carried-$$"
+            rm -rf "$carried" 2>/dev/null || true
+          fi
           mv "${stage}/salvaged" "$carried" 2>/dev/null || true
         fi
         # Belt and braces: if the `mv` could not happen (a cross-device staging
@@ -520,6 +556,17 @@ case "$CMD" in
     # for the same run id still overwrites it with the fresher copy.
     for stale in ${inherited+"${inherited[@]}"}; do
       [ -d "$stale" ] || continue
+      # ⚠️ AN EMPTY STAGING DIRECTORY IS NOT A RECOVERY. `cp -R` of an empty
+      # tree succeeds perfectly, so gating only on the copy's exit status would
+      # announce "recovered a stranded carry-forward" and set `carried_forward`
+      # on a dispatch that recovered nothing — the round-2 false-signal failure
+      # (a notice on the common path teaches a reader to ignore it on the rare
+      # run where it is true). The directory is still removed on that path: it
+      # is genuinely finished with, and leaving it would re-announce forever.
+      if [ -z "$(ls -A "$stale" 2>/dev/null || true)" ]; then
+        rm -rf "$stale" 2>/dev/null || true
+        continue
+      fi
       mkdir -p "${RECORD_DIR}/salvaged" 2>/dev/null || true
       if cp -R "$stale"/. "${RECORD_DIR}/salvaged"/ 2>/dev/null; then
         carried_forward=1
