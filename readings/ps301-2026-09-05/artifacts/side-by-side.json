@@ -1,0 +1,2912 @@
+{
+  "rows": [
+    {
+      "label": "Q1 navigator.hardwareConcurrency",
+      "realms": {
+        "iframe_about_blank": {
+          "layeroff/seed24601": {
+            "control": "8",
+            "product": "18"
+          },
+          "layeroff/seed5150": {
+            "control": "8",
+            "product": "12"
+          },
+          "layeron/seed24601": {
+            "control": "12",
+            "product": "12"
+          },
+          "layeron/seed5150": {
+            "control": "8",
+            "product": "8"
+          }
+        },
+        "iframe_same_origin": {
+          "layeroff/seed24601": {
+            "control": "8",
+            "product": "18"
+          },
+          "layeroff/seed5150": {
+            "control": "8",
+            "product": "12"
+          },
+          "layeron/seed24601": {
+            "control": "12",
+            "product": "12"
+          },
+          "layeron/seed5150": {
+            "control": "8",
+            "product": "8"
+          }
+        },
+        "iframe_srcdoc": {
+          "layeroff/seed24601": {
+            "control": "8",
+            "product": "18"
+          },
+          "layeroff/seed5150": {
+            "control": "8",
+            "product": "12"
+          },
+          "layeron/seed24601": {
+            "control": "12",
+            "product": "12"
+          },
+          "layeron/seed5150": {
+            "control": "8",
+            "product": "8"
+          }
+        },
+        "page": {
+          "layeroff/seed24601": {
+            "control": "8",
+            "product": "18"
+          },
+          "layeroff/seed5150": {
+            "control": "8",
+            "product": "12"
+          },
+          "layeron/seed24601": {
+            "control": "12",
+            "product": "12"
+          },
+          "layeron/seed5150": {
+            "control": "8",
+            "product": "8"
+          }
+        },
+        "worker_blob": {
+          "layeroff/seed24601": {
+            "control": "8",
+            "product": "18"
+          },
+          "layeroff/seed5150": {
+            "control": "8",
+            "product": "12"
+          },
+          "layeron/seed24601": {
+            "control": "12",
+            "product": "12"
+          },
+          "layeron/seed5150": {
+            "control": "8",
+            "product": "8"
+          }
+        },
+        "worker_in_iframe": {
+          "layeroff/seed24601": {
+            "control": "8",
+            "product": "18"
+          },
+          "layeroff/seed5150": {
+            "control": "8",
+            "product": "12"
+          },
+          "layeron/seed24601": {
+            "control": "12",
+            "product": "12"
+          },
+          "layeron/seed5150": {
+            "control": "8",
+            "product": "8"
+          }
+        },
+        "worker_nested": {
+          "layeroff/seed24601": {
+            "control": "8",
+            "product": "18"
+          },
+          "layeroff/seed5150": {
+            "control": "8",
+            "product": "12"
+          },
+          "layeron/seed24601": {
+            "control": "12",
+            "product": "12"
+          },
+          "layeron/seed5150": {
+            "control": "8",
+            "product": "8"
+          }
+        }
+      },
+      "vector": "switches.hardware_concurrency"
+    },
+    {
+      "label": "Q1 navigator.platform",
+      "realms": {
+        "iframe_about_blank": {
+          "layeroff/seed24601": {
+            "control": "\"Linux x86_64\"",
+            "product": "\"Linux x86_64\""
+          },
+          "layeroff/seed5150": {
+            "control": "\"Linux x86_64\"",
+            "product": "\"Linux x86_64\""
+          },
+          "layeron/seed24601": {
+            "control": "\"Linux x86_64\"",
+            "product": "\"Linux x86_64\""
+          },
+          "layeron/seed5150": {
+            "control": "\"Linux x86_64\"",
+            "product": "\"Linux x86_64\""
+          }
+        },
+        "iframe_same_origin": {
+          "layeroff/seed24601": {
+            "control": "\"Linux x86_64\"",
+            "product": "\"Linux x86_64\""
+          },
+          "layeroff/seed5150": {
+            "control": "\"Linux x86_64\"",
+            "product": "\"Linux x86_64\""
+          },
+          "layeron/seed24601": {
+            "control": "\"Linux x86_64\"",
+            "product": "\"Linux x86_64\""
+          },
+          "layeron/seed5150": {
+            "control": "\"Linux x86_64\"",
+            "product": "\"Linux x86_64\""
+          }
+        },
+        "iframe_srcdoc": {
+          "layeroff/seed24601": {
+            "control": "\"Linux x86_64\"",
+            "product": "\"Linux x86_64\""
+          },
+          "layeroff/seed5150": {
+            "control": "\"Linux x86_64\"",
+            "product": "\"Linux x86_64\""
+          },
+          "layeron/seed24601": {
+            "control": "\"Linux x86_64\"",
+            "product": "\"Linux x86_64\""
+          },
+          "layeron/seed5150": {
+            "control": "\"Linux x86_64\"",
+            "product": "\"Linux x86_64\""
+          }
+        },
+        "page": {
+          "layeroff/seed24601": {
+            "control": "\"Linux x86_64\"",
+            "product": "\"Linux x86_64\""
+          },
+          "layeroff/seed5150": {
+            "control": "\"Linux x86_64\"",
+            "product": "\"Linux x86_64\""
+          },
+          "layeron/seed24601": {
+            "control": "\"Linux x86_64\"",
+            "product": "\"Linux x86_64\""
+          },
+          "layeron/seed5150": {
+            "control": "\"Linux x86_64\"",
+            "product": "\"Linux x86_64\""
+          }
+        },
+        "worker_blob": {
+          "layeroff/seed24601": {
+            "control": "\"Linux x86_64\"",
+            "product": "\"Linux x86_64\""
+          },
+          "layeroff/seed5150": {
+            "control": "\"Linux x86_64\"",
+            "product": "\"Linux x86_64\""
+          },
+          "layeron/seed24601": {
+            "control": "\"Linux x86_64\"",
+            "product": "\"Linux x86_64\""
+          },
+          "layeron/seed5150": {
+            "control": "\"Linux x86_64\"",
+            "product": "\"Linux x86_64\""
+          }
+        },
+        "worker_in_iframe": {
+          "layeroff/seed24601": {
+            "control": "\"Linux x86_64\"",
+            "product": "\"Linux x86_64\""
+          },
+          "layeroff/seed5150": {
+            "control": "\"Linux x86_64\"",
+            "product": "\"Linux x86_64\""
+          },
+          "layeron/seed24601": {
+            "control": "\"Linux x86_64\"",
+            "product": "\"Linux x86_64\""
+          },
+          "layeron/seed5150": {
+            "control": "\"Linux x86_64\"",
+            "product": "\"Linux x86_64\""
+          }
+        },
+        "worker_nested": {
+          "layeroff/seed24601": {
+            "control": "\"Linux x86_64\"",
+            "product": "\"Linux x86_64\""
+          },
+          "layeroff/seed5150": {
+            "control": "\"Linux x86_64\"",
+            "product": "\"Linux x86_64\""
+          },
+          "layeron/seed24601": {
+            "control": "\"Linux x86_64\"",
+            "product": "\"Linux x86_64\""
+          },
+          "layeron/seed5150": {
+            "control": "\"Linux x86_64\"",
+            "product": "\"Linux x86_64\""
+          }
+        }
+      },
+      "vector": "switches.platform"
+    },
+    {
+      "label": "Q1 navigator.userAgent",
+      "realms": {
+        "iframe_about_blank": {
+          "layeroff/seed24601": {
+            "control": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\"",
+            "product": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\""
+          },
+          "layeroff/seed5150": {
+            "control": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\"",
+            "product": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\""
+          },
+          "layeron/seed24601": {
+            "control": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\"",
+            "product": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\""
+          },
+          "layeron/seed5150": {
+            "control": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\"",
+            "product": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\""
+          }
+        },
+        "iframe_same_origin": {
+          "layeroff/seed24601": {
+            "control": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\"",
+            "product": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\""
+          },
+          "layeroff/seed5150": {
+            "control": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\"",
+            "product": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\""
+          },
+          "layeron/seed24601": {
+            "control": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\"",
+            "product": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\""
+          },
+          "layeron/seed5150": {
+            "control": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\"",
+            "product": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\""
+          }
+        },
+        "iframe_srcdoc": {
+          "layeroff/seed24601": {
+            "control": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\"",
+            "product": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\""
+          },
+          "layeroff/seed5150": {
+            "control": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\"",
+            "product": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\""
+          },
+          "layeron/seed24601": {
+            "control": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\"",
+            "product": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\""
+          },
+          "layeron/seed5150": {
+            "control": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\"",
+            "product": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\""
+          }
+        },
+        "page": {
+          "layeroff/seed24601": {
+            "control": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\"",
+            "product": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\""
+          },
+          "layeroff/seed5150": {
+            "control": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\"",
+            "product": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\""
+          },
+          "layeron/seed24601": {
+            "control": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\"",
+            "product": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\""
+          },
+          "layeron/seed5150": {
+            "control": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\"",
+            "product": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\""
+          }
+        },
+        "worker_blob": {
+          "layeroff/seed24601": {
+            "control": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\"",
+            "product": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\""
+          },
+          "layeroff/seed5150": {
+            "control": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\"",
+            "product": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\""
+          },
+          "layeron/seed24601": {
+            "control": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\"",
+            "product": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\""
+          },
+          "layeron/seed5150": {
+            "control": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\"",
+            "product": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\""
+          }
+        },
+        "worker_in_iframe": {
+          "layeroff/seed24601": {
+            "control": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\"",
+            "product": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\""
+          },
+          "layeroff/seed5150": {
+            "control": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\"",
+            "product": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\""
+          },
+          "layeron/seed24601": {
+            "control": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\"",
+            "product": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\""
+          },
+          "layeron/seed5150": {
+            "control": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\"",
+            "product": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\""
+          }
+        },
+        "worker_nested": {
+          "layeroff/seed24601": {
+            "control": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\"",
+            "product": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\""
+          },
+          "layeroff/seed5150": {
+            "control": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\"",
+            "product": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\""
+          },
+          "layeron/seed24601": {
+            "control": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\"",
+            "product": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\""
+          },
+          "layeron/seed5150": {
+            "control": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\"",
+            "product": "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\""
+          }
+        }
+      },
+      "vector": "switches.user_agent"
+    },
+    {
+      "label": "Q1 userAgentData.platform",
+      "realms": {
+        "iframe_about_blank": {
+          "layeroff/seed24601": {
+            "control": "\"Linux\"",
+            "product": "\"Linux\""
+          },
+          "layeroff/seed5150": {
+            "control": "\"Linux\"",
+            "product": "\"Linux\""
+          },
+          "layeron/seed24601": {
+            "control": "\"Linux\"",
+            "product": "\"Linux\""
+          },
+          "layeron/seed5150": {
+            "control": "\"Linux\"",
+            "product": "\"Linux\""
+          }
+        },
+        "iframe_same_origin": {
+          "layeroff/seed24601": {
+            "control": "\"Linux\"",
+            "product": "\"Linux\""
+          },
+          "layeroff/seed5150": {
+            "control": "\"Linux\"",
+            "product": "\"Linux\""
+          },
+          "layeron/seed24601": {
+            "control": "\"Linux\"",
+            "product": "\"Linux\""
+          },
+          "layeron/seed5150": {
+            "control": "\"Linux\"",
+            "product": "\"Linux\""
+          }
+        },
+        "iframe_srcdoc": {
+          "layeroff/seed24601": {
+            "control": "\"Linux\"",
+            "product": "\"Linux\""
+          },
+          "layeroff/seed5150": {
+            "control": "\"Linux\"",
+            "product": "\"Linux\""
+          },
+          "layeron/seed24601": {
+            "control": "\"Linux\"",
+            "product": "\"Linux\""
+          },
+          "layeron/seed5150": {
+            "control": "\"Linux\"",
+            "product": "\"Linux\""
+          }
+        },
+        "page": {
+          "layeroff/seed24601": {
+            "control": "\"Linux\"",
+            "product": "\"Linux\""
+          },
+          "layeroff/seed5150": {
+            "control": "\"Linux\"",
+            "product": "\"Linux\""
+          },
+          "layeron/seed24601": {
+            "control": "\"Linux\"",
+            "product": "\"Linux\""
+          },
+          "layeron/seed5150": {
+            "control": "\"Linux\"",
+            "product": "\"Linux\""
+          }
+        },
+        "worker_blob": {
+          "layeroff/seed24601": {
+            "control": "\"Linux\"",
+            "product": "\"Linux\""
+          },
+          "layeroff/seed5150": {
+            "control": "\"Linux\"",
+            "product": "\"Linux\""
+          },
+          "layeron/seed24601": {
+            "control": "\"Linux\"",
+            "product": "\"Linux\""
+          },
+          "layeron/seed5150": {
+            "control": "\"Linux\"",
+            "product": "\"Linux\""
+          }
+        },
+        "worker_in_iframe": {
+          "layeroff/seed24601": {
+            "control": "\"Linux\"",
+            "product": "\"Linux\""
+          },
+          "layeroff/seed5150": {
+            "control": "\"Linux\"",
+            "product": "\"Linux\""
+          },
+          "layeron/seed24601": {
+            "control": "\"Linux\"",
+            "product": "\"Linux\""
+          },
+          "layeron/seed5150": {
+            "control": "\"Linux\"",
+            "product": "\"Linux\""
+          }
+        },
+        "worker_nested": {
+          "layeroff/seed24601": {
+            "control": "\"Linux\"",
+            "product": "\"Linux\""
+          },
+          "layeroff/seed5150": {
+            "control": "\"Linux\"",
+            "product": "\"Linux\""
+          },
+          "layeron/seed24601": {
+            "control": "\"Linux\"",
+            "product": "\"Linux\""
+          },
+          "layeron/seed5150": {
+            "control": "\"Linux\"",
+            "product": "\"Linux\""
+          }
+        }
+      },
+      "vector": "switches.uad_platform"
+    },
+    {
+      "label": "Q1 screen.width",
+      "realms": {
+        "iframe_about_blank": {
+          "layeroff/seed24601": {
+            "control": "1920",
+            "product": "1920"
+          },
+          "layeroff/seed5150": {
+            "control": "1920",
+            "product": "1920"
+          },
+          "layeron/seed24601": {
+            "control": "1920",
+            "product": "1920"
+          },
+          "layeron/seed5150": {
+            "control": "1920",
+            "product": "1920"
+          }
+        },
+        "iframe_same_origin": {
+          "layeroff/seed24601": {
+            "control": "1920",
+            "product": "1920"
+          },
+          "layeroff/seed5150": {
+            "control": "1920",
+            "product": "1920"
+          },
+          "layeron/seed24601": {
+            "control": "1920",
+            "product": "1920"
+          },
+          "layeron/seed5150": {
+            "control": "1920",
+            "product": "1920"
+          }
+        },
+        "iframe_srcdoc": {
+          "layeroff/seed24601": {
+            "control": "1920",
+            "product": "1920"
+          },
+          "layeroff/seed5150": {
+            "control": "1920",
+            "product": "1920"
+          },
+          "layeron/seed24601": {
+            "control": "1920",
+            "product": "1920"
+          },
+          "layeron/seed5150": {
+            "control": "1920",
+            "product": "1920"
+          }
+        },
+        "page": {
+          "layeroff/seed24601": {
+            "control": "1920",
+            "product": "1920"
+          },
+          "layeroff/seed5150": {
+            "control": "1920",
+            "product": "1920"
+          },
+          "layeron/seed24601": {
+            "control": "1920",
+            "product": "1920"
+          },
+          "layeron/seed5150": {
+            "control": "1920",
+            "product": "1920"
+          }
+        },
+        "worker_blob": {
+          "layeroff/seed24601": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeroff/seed5150": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeron/seed24601": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeron/seed5150": {
+            "control": "<absent>",
+            "product": "<absent>"
+          }
+        },
+        "worker_in_iframe": {
+          "layeroff/seed24601": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeroff/seed5150": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeron/seed24601": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeron/seed5150": {
+            "control": "<absent>",
+            "product": "<absent>"
+          }
+        },
+        "worker_nested": {
+          "layeroff/seed24601": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeroff/seed5150": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeron/seed24601": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeron/seed5150": {
+            "control": "<absent>",
+            "product": "<absent>"
+          }
+        }
+      },
+      "vector": "switches.screen_width"
+    },
+    {
+      "label": "Q1 screen.height",
+      "realms": {
+        "iframe_about_blank": {
+          "layeroff/seed24601": {
+            "control": "1080",
+            "product": "1080"
+          },
+          "layeroff/seed5150": {
+            "control": "1080",
+            "product": "1080"
+          },
+          "layeron/seed24601": {
+            "control": "1200",
+            "product": "1200"
+          },
+          "layeron/seed5150": {
+            "control": "1200",
+            "product": "1200"
+          }
+        },
+        "iframe_same_origin": {
+          "layeroff/seed24601": {
+            "control": "1080",
+            "product": "1080"
+          },
+          "layeroff/seed5150": {
+            "control": "1080",
+            "product": "1080"
+          },
+          "layeron/seed24601": {
+            "control": "1200",
+            "product": "1200"
+          },
+          "layeron/seed5150": {
+            "control": "1200",
+            "product": "1200"
+          }
+        },
+        "iframe_srcdoc": {
+          "layeroff/seed24601": {
+            "control": "1080",
+            "product": "1080"
+          },
+          "layeroff/seed5150": {
+            "control": "1080",
+            "product": "1080"
+          },
+          "layeron/seed24601": {
+            "control": "1200",
+            "product": "1200"
+          },
+          "layeron/seed5150": {
+            "control": "1200",
+            "product": "1200"
+          }
+        },
+        "page": {
+          "layeroff/seed24601": {
+            "control": "1080",
+            "product": "1080"
+          },
+          "layeroff/seed5150": {
+            "control": "1080",
+            "product": "1080"
+          },
+          "layeron/seed24601": {
+            "control": "1200",
+            "product": "1200"
+          },
+          "layeron/seed5150": {
+            "control": "1200",
+            "product": "1200"
+          }
+        },
+        "worker_blob": {
+          "layeroff/seed24601": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeroff/seed5150": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeron/seed24601": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeron/seed5150": {
+            "control": "<absent>",
+            "product": "<absent>"
+          }
+        },
+        "worker_in_iframe": {
+          "layeroff/seed24601": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeroff/seed5150": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeron/seed24601": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeron/seed5150": {
+            "control": "<absent>",
+            "product": "<absent>"
+          }
+        },
+        "worker_nested": {
+          "layeroff/seed24601": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeroff/seed5150": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeron/seed24601": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeron/seed5150": {
+            "control": "<absent>",
+            "product": "<absent>"
+          }
+        }
+      },
+      "vector": "switches.screen_height"
+    },
+    {
+      "label": "Q1 devicePixelRatio",
+      "realms": {
+        "iframe_about_blank": {
+          "layeroff/seed24601": {
+            "control": "1",
+            "product": "1"
+          },
+          "layeroff/seed5150": {
+            "control": "1",
+            "product": "1"
+          },
+          "layeron/seed24601": {
+            "control": "1",
+            "product": "1"
+          },
+          "layeron/seed5150": {
+            "control": "1",
+            "product": "1"
+          }
+        },
+        "iframe_same_origin": {
+          "layeroff/seed24601": {
+            "control": "1",
+            "product": "1"
+          },
+          "layeroff/seed5150": {
+            "control": "1",
+            "product": "1"
+          },
+          "layeron/seed24601": {
+            "control": "1",
+            "product": "1"
+          },
+          "layeron/seed5150": {
+            "control": "1",
+            "product": "1"
+          }
+        },
+        "iframe_srcdoc": {
+          "layeroff/seed24601": {
+            "control": "1",
+            "product": "1"
+          },
+          "layeroff/seed5150": {
+            "control": "1",
+            "product": "1"
+          },
+          "layeron/seed24601": {
+            "control": "1",
+            "product": "1"
+          },
+          "layeron/seed5150": {
+            "control": "1",
+            "product": "1"
+          }
+        },
+        "page": {
+          "layeroff/seed24601": {
+            "control": "1",
+            "product": "1"
+          },
+          "layeroff/seed5150": {
+            "control": "1",
+            "product": "1"
+          },
+          "layeron/seed24601": {
+            "control": "1",
+            "product": "1"
+          },
+          "layeron/seed5150": {
+            "control": "1",
+            "product": "1"
+          }
+        },
+        "worker_blob": {
+          "layeroff/seed24601": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeroff/seed5150": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeron/seed24601": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeron/seed5150": {
+            "control": "<absent>",
+            "product": "<absent>"
+          }
+        },
+        "worker_in_iframe": {
+          "layeroff/seed24601": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeroff/seed5150": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeron/seed24601": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeron/seed5150": {
+            "control": "<absent>",
+            "product": "<absent>"
+          }
+        },
+        "worker_nested": {
+          "layeroff/seed24601": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeroff/seed5150": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeron/seed24601": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeron/seed5150": {
+            "control": "<absent>",
+            "product": "<absent>"
+          }
+        }
+      },
+      "vector": "switches.device_pixel_ratio"
+    },
+    {
+      "label": "Q1 Intl timeZone (patch 018)",
+      "realms": {
+        "iframe_about_blank": {
+          "layeroff/seed24601": {
+            "control": "\"UTC\"",
+            "product": "\"America/Chicago\""
+          },
+          "layeroff/seed5150": {
+            "control": "\"UTC\"",
+            "product": "\"America/Chicago\""
+          },
+          "layeron/seed24601": {
+            "control": "\"UTC\"",
+            "product": "\"America/Chicago\""
+          },
+          "layeron/seed5150": {
+            "control": "\"UTC\"",
+            "product": "\"America/Chicago\""
+          }
+        },
+        "iframe_same_origin": {
+          "layeroff/seed24601": {
+            "control": "\"UTC\"",
+            "product": "\"America/Chicago\""
+          },
+          "layeroff/seed5150": {
+            "control": "\"UTC\"",
+            "product": "\"America/Chicago\""
+          },
+          "layeron/seed24601": {
+            "control": "\"UTC\"",
+            "product": "\"America/Chicago\""
+          },
+          "layeron/seed5150": {
+            "control": "\"UTC\"",
+            "product": "\"America/Chicago\""
+          }
+        },
+        "iframe_srcdoc": {
+          "layeroff/seed24601": {
+            "control": "\"UTC\"",
+            "product": "\"America/Chicago\""
+          },
+          "layeroff/seed5150": {
+            "control": "\"UTC\"",
+            "product": "\"America/Chicago\""
+          },
+          "layeron/seed24601": {
+            "control": "\"UTC\"",
+            "product": "\"America/Chicago\""
+          },
+          "layeron/seed5150": {
+            "control": "\"UTC\"",
+            "product": "\"America/Chicago\""
+          }
+        },
+        "page": {
+          "layeroff/seed24601": {
+            "control": "\"UTC\"",
+            "product": "\"America/Chicago\""
+          },
+          "layeroff/seed5150": {
+            "control": "\"UTC\"",
+            "product": "\"America/Chicago\""
+          },
+          "layeron/seed24601": {
+            "control": "\"UTC\"",
+            "product": "\"America/Chicago\""
+          },
+          "layeron/seed5150": {
+            "control": "\"UTC\"",
+            "product": "\"America/Chicago\""
+          }
+        },
+        "worker_blob": {
+          "layeroff/seed24601": {
+            "control": "\"UTC\"",
+            "product": "\"America/Chicago\""
+          },
+          "layeroff/seed5150": {
+            "control": "\"UTC\"",
+            "product": "\"America/Chicago\""
+          },
+          "layeron/seed24601": {
+            "control": "\"UTC\"",
+            "product": "\"America/Chicago\""
+          },
+          "layeron/seed5150": {
+            "control": "\"UTC\"",
+            "product": "\"America/Chicago\""
+          }
+        },
+        "worker_in_iframe": {
+          "layeroff/seed24601": {
+            "control": "\"UTC\"",
+            "product": "\"America/Chicago\""
+          },
+          "layeroff/seed5150": {
+            "control": "\"UTC\"",
+            "product": "\"America/Chicago\""
+          },
+          "layeron/seed24601": {
+            "control": "\"UTC\"",
+            "product": "\"America/Chicago\""
+          },
+          "layeron/seed5150": {
+            "control": "\"UTC\"",
+            "product": "\"America/Chicago\""
+          }
+        },
+        "worker_nested": {
+          "layeroff/seed24601": {
+            "control": "\"UTC\"",
+            "product": "\"America/Chicago\""
+          },
+          "layeroff/seed5150": {
+            "control": "\"UTC\"",
+            "product": "\"America/Chicago\""
+          },
+          "layeron/seed24601": {
+            "control": "\"UTC\"",
+            "product": "\"America/Chicago\""
+          },
+          "layeron/seed5150": {
+            "control": "\"UTC\"",
+            "product": "\"America/Chicago\""
+          }
+        }
+      },
+      "vector": "switches.timezone"
+    },
+    {
+      "label": "Q1 Date offset (patch 018)",
+      "realms": {
+        "iframe_about_blank": {
+          "layeroff/seed24601": {
+            "control": "0",
+            "product": "300"
+          },
+          "layeroff/seed5150": {
+            "control": "0",
+            "product": "300"
+          },
+          "layeron/seed24601": {
+            "control": "0",
+            "product": "300"
+          },
+          "layeron/seed5150": {
+            "control": "0",
+            "product": "300"
+          }
+        },
+        "iframe_same_origin": {
+          "layeroff/seed24601": {
+            "control": "0",
+            "product": "300"
+          },
+          "layeroff/seed5150": {
+            "control": "0",
+            "product": "300"
+          },
+          "layeron/seed24601": {
+            "control": "0",
+            "product": "300"
+          },
+          "layeron/seed5150": {
+            "control": "0",
+            "product": "300"
+          }
+        },
+        "iframe_srcdoc": {
+          "layeroff/seed24601": {
+            "control": "0",
+            "product": "300"
+          },
+          "layeroff/seed5150": {
+            "control": "0",
+            "product": "300"
+          },
+          "layeron/seed24601": {
+            "control": "0",
+            "product": "300"
+          },
+          "layeron/seed5150": {
+            "control": "0",
+            "product": "300"
+          }
+        },
+        "page": {
+          "layeroff/seed24601": {
+            "control": "0",
+            "product": "300"
+          },
+          "layeroff/seed5150": {
+            "control": "0",
+            "product": "300"
+          },
+          "layeron/seed24601": {
+            "control": "0",
+            "product": "300"
+          },
+          "layeron/seed5150": {
+            "control": "0",
+            "product": "300"
+          }
+        },
+        "worker_blob": {
+          "layeroff/seed24601": {
+            "control": "0",
+            "product": "300"
+          },
+          "layeroff/seed5150": {
+            "control": "0",
+            "product": "300"
+          },
+          "layeron/seed24601": {
+            "control": "0",
+            "product": "300"
+          },
+          "layeron/seed5150": {
+            "control": "0",
+            "product": "300"
+          }
+        },
+        "worker_in_iframe": {
+          "layeroff/seed24601": {
+            "control": "0",
+            "product": "300"
+          },
+          "layeroff/seed5150": {
+            "control": "0",
+            "product": "300"
+          },
+          "layeron/seed24601": {
+            "control": "0",
+            "product": "300"
+          },
+          "layeron/seed5150": {
+            "control": "0",
+            "product": "300"
+          }
+        },
+        "worker_nested": {
+          "layeroff/seed24601": {
+            "control": "0",
+            "product": "300"
+          },
+          "layeroff/seed5150": {
+            "control": "0",
+            "product": "300"
+          },
+          "layeron/seed24601": {
+            "control": "0",
+            "product": "300"
+          },
+          "layeron/seed5150": {
+            "control": "0",
+            "product": "300"
+          }
+        }
+      },
+      "vector": "switches.tz_offset_minutes"
+    },
+    {
+      "label": "Q1 navigator.webdriver (patch 009)",
+      "realms": {
+        "iframe_about_blank": {
+          "layeroff/seed24601": {
+            "control": "true",
+            "product": "false"
+          },
+          "layeroff/seed5150": {
+            "control": "true",
+            "product": "false"
+          },
+          "layeron/seed24601": {
+            "control": "true",
+            "product": "false"
+          },
+          "layeron/seed5150": {
+            "control": "true",
+            "product": "false"
+          }
+        },
+        "iframe_same_origin": {
+          "layeroff/seed24601": {
+            "control": "true",
+            "product": "false"
+          },
+          "layeroff/seed5150": {
+            "control": "true",
+            "product": "false"
+          },
+          "layeron/seed24601": {
+            "control": "true",
+            "product": "false"
+          },
+          "layeron/seed5150": {
+            "control": "true",
+            "product": "false"
+          }
+        },
+        "iframe_srcdoc": {
+          "layeroff/seed24601": {
+            "control": "true",
+            "product": "false"
+          },
+          "layeroff/seed5150": {
+            "control": "true",
+            "product": "false"
+          },
+          "layeron/seed24601": {
+            "control": "true",
+            "product": "false"
+          },
+          "layeron/seed5150": {
+            "control": "true",
+            "product": "false"
+          }
+        },
+        "page": {
+          "layeroff/seed24601": {
+            "control": "true",
+            "product": "false"
+          },
+          "layeroff/seed5150": {
+            "control": "true",
+            "product": "false"
+          },
+          "layeron/seed24601": {
+            "control": "true",
+            "product": "false"
+          },
+          "layeron/seed5150": {
+            "control": "true",
+            "product": "false"
+          }
+        },
+        "worker_blob": {
+          "layeroff/seed24601": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeroff/seed5150": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeron/seed24601": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeron/seed5150": {
+            "control": "<absent>",
+            "product": "<absent>"
+          }
+        },
+        "worker_in_iframe": {
+          "layeroff/seed24601": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeroff/seed5150": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeron/seed24601": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeron/seed5150": {
+            "control": "<absent>",
+            "product": "<absent>"
+          }
+        },
+        "worker_nested": {
+          "layeroff/seed24601": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeroff/seed5150": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeron/seed24601": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeron/seed5150": {
+            "control": "<absent>",
+            "product": "<absent>"
+          }
+        }
+      },
+      "vector": "switches.webdriver"
+    },
+    {
+      "label": "Q2 WebGL UNMASKED_VENDOR (patch 011)",
+      "realms": {
+        "iframe_about_blank": {
+          "layeroff/seed24601": {
+            "control": "\"Google Inc. (Google)\"",
+            "product": "\"Google Inc. (NVIDIA Corporation)\""
+          },
+          "layeroff/seed5150": {
+            "control": "\"Google Inc. (Google)\"",
+            "product": "\"Google Inc. (NVIDIA Corporation)\""
+          },
+          "layeron/seed24601": {
+            "control": "\"Google Inc. (Intel)\"",
+            "product": "\"Google Inc. (Intel)\""
+          },
+          "layeron/seed5150": {
+            "control": "\"Google Inc. (Intel)\"",
+            "product": "\"Google Inc. (Intel)\""
+          }
+        },
+        "iframe_same_origin": {
+          "layeroff/seed24601": {
+            "control": "\"Google Inc. (Google)\"",
+            "product": "\"Google Inc. (NVIDIA Corporation)\""
+          },
+          "layeroff/seed5150": {
+            "control": "\"Google Inc. (Google)\"",
+            "product": "\"Google Inc. (NVIDIA Corporation)\""
+          },
+          "layeron/seed24601": {
+            "control": "\"Google Inc. (Intel)\"",
+            "product": "\"Google Inc. (Intel)\""
+          },
+          "layeron/seed5150": {
+            "control": "\"Google Inc. (Intel)\"",
+            "product": "\"Google Inc. (Intel)\""
+          }
+        },
+        "iframe_srcdoc": {
+          "layeroff/seed24601": {
+            "control": "\"Google Inc. (Google)\"",
+            "product": "\"Google Inc. (NVIDIA Corporation)\""
+          },
+          "layeroff/seed5150": {
+            "control": "\"Google Inc. (Google)\"",
+            "product": "\"Google Inc. (NVIDIA Corporation)\""
+          },
+          "layeron/seed24601": {
+            "control": "\"Google Inc. (Intel)\"",
+            "product": "\"Google Inc. (Intel)\""
+          },
+          "layeron/seed5150": {
+            "control": "\"Google Inc. (Intel)\"",
+            "product": "\"Google Inc. (Intel)\""
+          }
+        },
+        "page": {
+          "layeroff/seed24601": {
+            "control": "\"Google Inc. (Google)\"",
+            "product": "\"Google Inc. (NVIDIA Corporation)\""
+          },
+          "layeroff/seed5150": {
+            "control": "\"Google Inc. (Google)\"",
+            "product": "\"Google Inc. (NVIDIA Corporation)\""
+          },
+          "layeron/seed24601": {
+            "control": "\"Google Inc. (Intel)\"",
+            "product": "\"Google Inc. (Intel)\""
+          },
+          "layeron/seed5150": {
+            "control": "\"Google Inc. (Intel)\"",
+            "product": "\"Google Inc. (Intel)\""
+          }
+        },
+        "worker_blob": {
+          "layeroff/seed24601": {
+            "control": "\"Google Inc. (Google)\"",
+            "product": "\"Google Inc. (NVIDIA Corporation)\""
+          },
+          "layeroff/seed5150": {
+            "control": "\"Google Inc. (Google)\"",
+            "product": "\"Google Inc. (NVIDIA Corporation)\""
+          },
+          "layeron/seed24601": {
+            "control": "\"Google Inc. (Intel)\"",
+            "product": "\"Google Inc. (Intel)\""
+          },
+          "layeron/seed5150": {
+            "control": "\"Google Inc. (Intel)\"",
+            "product": "\"Google Inc. (Intel)\""
+          }
+        },
+        "worker_in_iframe": {
+          "layeroff/seed24601": {
+            "control": "\"Google Inc. (Google)\"",
+            "product": "\"Google Inc. (NVIDIA Corporation)\""
+          },
+          "layeroff/seed5150": {
+            "control": "\"Google Inc. (Google)\"",
+            "product": "\"Google Inc. (NVIDIA Corporation)\""
+          },
+          "layeron/seed24601": {
+            "control": "\"Google Inc. (Intel)\"",
+            "product": "\"Google Inc. (Intel)\""
+          },
+          "layeron/seed5150": {
+            "control": "\"Google Inc. (Intel)\"",
+            "product": "\"Google Inc. (Intel)\""
+          }
+        },
+        "worker_nested": {
+          "layeroff/seed24601": {
+            "control": "\"Google Inc. (Google)\"",
+            "product": "\"Google Inc. (NVIDIA Corporation)\""
+          },
+          "layeroff/seed5150": {
+            "control": "\"Google Inc. (Google)\"",
+            "product": "\"Google Inc. (NVIDIA Corporation)\""
+          },
+          "layeron/seed24601": {
+            "control": "\"Google Inc. (Intel)\"",
+            "product": "\"Google Inc. (Intel)\""
+          },
+          "layeron/seed5150": {
+            "control": "\"Google Inc. (Intel)\"",
+            "product": "\"Google Inc. (Intel)\""
+          }
+        }
+      },
+      "vector": "webgl.unmasked_vendor"
+    },
+    {
+      "label": "Q2 WebGL UNMASKED_RENDERER (patch 011)",
+      "realms": {
+        "iframe_about_blank": {
+          "layeroff/seed24601": {
+            "control": "\"ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)\"",
+            "product": "\"ANGLE (NVIDIA Corporation, NVIDIA GeForce RTX 4070/PCIe/SSE2, OpenGL 4.5.0)\""
+          },
+          "layeroff/seed5150": {
+            "control": "\"ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)\"",
+            "product": "\"ANGLE (NVIDIA Corporation, NVIDIA GeForce RTX 3080 Laptop GPU/PCIe/SSE2, OpenGL 4.5.0)\""
+          },
+          "layeron/seed24601": {
+            "control": "\"ANGLE (Intel, Mesa Intel(R) UHD Graphics 630 (CFL GT2), OpenGL 4.6)\"",
+            "product": "\"ANGLE (Intel, Mesa Intel(R) UHD Graphics 630 (CFL GT2), OpenGL 4.6)\""
+          },
+          "layeron/seed5150": {
+            "control": "\"ANGLE (Intel, Mesa Intel(R) Iris(R) Xe Graphics (ADL GT2), OpenGL 4.6)\"",
+            "product": "\"ANGLE (Intel, Mesa Intel(R) Iris(R) Xe Graphics (ADL GT2), OpenGL 4.6)\""
+          }
+        },
+        "iframe_same_origin": {
+          "layeroff/seed24601": {
+            "control": "\"ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)\"",
+            "product": "\"ANGLE (NVIDIA Corporation, NVIDIA GeForce RTX 4070/PCIe/SSE2, OpenGL 4.5.0)\""
+          },
+          "layeroff/seed5150": {
+            "control": "\"ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)\"",
+            "product": "\"ANGLE (NVIDIA Corporation, NVIDIA GeForce RTX 3080 Laptop GPU/PCIe/SSE2, OpenGL 4.5.0)\""
+          },
+          "layeron/seed24601": {
+            "control": "\"ANGLE (Intel, Mesa Intel(R) UHD Graphics 630 (CFL GT2), OpenGL 4.6)\"",
+            "product": "\"ANGLE (Intel, Mesa Intel(R) UHD Graphics 630 (CFL GT2), OpenGL 4.6)\""
+          },
+          "layeron/seed5150": {
+            "control": "\"ANGLE (Intel, Mesa Intel(R) Iris(R) Xe Graphics (ADL GT2), OpenGL 4.6)\"",
+            "product": "\"ANGLE (Intel, Mesa Intel(R) Iris(R) Xe Graphics (ADL GT2), OpenGL 4.6)\""
+          }
+        },
+        "iframe_srcdoc": {
+          "layeroff/seed24601": {
+            "control": "\"ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)\"",
+            "product": "\"ANGLE (NVIDIA Corporation, NVIDIA GeForce RTX 4070/PCIe/SSE2, OpenGL 4.5.0)\""
+          },
+          "layeroff/seed5150": {
+            "control": "\"ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)\"",
+            "product": "\"ANGLE (NVIDIA Corporation, NVIDIA GeForce RTX 3080 Laptop GPU/PCIe/SSE2, OpenGL 4.5.0)\""
+          },
+          "layeron/seed24601": {
+            "control": "\"ANGLE (Intel, Mesa Intel(R) UHD Graphics 630 (CFL GT2), OpenGL 4.6)\"",
+            "product": "\"ANGLE (Intel, Mesa Intel(R) UHD Graphics 630 (CFL GT2), OpenGL 4.6)\""
+          },
+          "layeron/seed5150": {
+            "control": "\"ANGLE (Intel, Mesa Intel(R) Iris(R) Xe Graphics (ADL GT2), OpenGL 4.6)\"",
+            "product": "\"ANGLE (Intel, Mesa Intel(R) Iris(R) Xe Graphics (ADL GT2), OpenGL 4.6)\""
+          }
+        },
+        "page": {
+          "layeroff/seed24601": {
+            "control": "\"ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)\"",
+            "product": "\"ANGLE (NVIDIA Corporation, NVIDIA GeForce RTX 4070/PCIe/SSE2, OpenGL 4.5.0)\""
+          },
+          "layeroff/seed5150": {
+            "control": "\"ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)\"",
+            "product": "\"ANGLE (NVIDIA Corporation, NVIDIA GeForce RTX 3080 Laptop GPU/PCIe/SSE2, OpenGL 4.5.0)\""
+          },
+          "layeron/seed24601": {
+            "control": "\"ANGLE (Intel, Mesa Intel(R) UHD Graphics 630 (CFL GT2), OpenGL 4.6)\"",
+            "product": "\"ANGLE (Intel, Mesa Intel(R) UHD Graphics 630 (CFL GT2), OpenGL 4.6)\""
+          },
+          "layeron/seed5150": {
+            "control": "\"ANGLE (Intel, Mesa Intel(R) Iris(R) Xe Graphics (ADL GT2), OpenGL 4.6)\"",
+            "product": "\"ANGLE (Intel, Mesa Intel(R) Iris(R) Xe Graphics (ADL GT2), OpenGL 4.6)\""
+          }
+        },
+        "worker_blob": {
+          "layeroff/seed24601": {
+            "control": "\"ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)\"",
+            "product": "\"ANGLE (NVIDIA Corporation, NVIDIA GeForce RTX 4070/PCIe/SSE2, OpenGL 4.5.0)\""
+          },
+          "layeroff/seed5150": {
+            "control": "\"ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)\"",
+            "product": "\"ANGLE (NVIDIA Corporation, NVIDIA GeForce RTX 3080 Laptop GPU/PCIe/SSE2, OpenGL 4.5.0)\""
+          },
+          "layeron/seed24601": {
+            "control": "\"ANGLE (Intel, Mesa Intel(R) UHD Graphics 630 (CFL GT2), OpenGL 4.6)\"",
+            "product": "\"ANGLE (Intel, Mesa Intel(R) UHD Graphics 630 (CFL GT2), OpenGL 4.6)\""
+          },
+          "layeron/seed5150": {
+            "control": "\"ANGLE (Intel, Mesa Intel(R) Iris(R) Xe Graphics (ADL GT2), OpenGL 4.6)\"",
+            "product": "\"ANGLE (Intel, Mesa Intel(R) Iris(R) Xe Graphics (ADL GT2), OpenGL 4.6)\""
+          }
+        },
+        "worker_in_iframe": {
+          "layeroff/seed24601": {
+            "control": "\"ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)\"",
+            "product": "\"ANGLE (NVIDIA Corporation, NVIDIA GeForce RTX 4070/PCIe/SSE2, OpenGL 4.5.0)\""
+          },
+          "layeroff/seed5150": {
+            "control": "\"ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)\"",
+            "product": "\"ANGLE (NVIDIA Corporation, NVIDIA GeForce RTX 3080 Laptop GPU/PCIe/SSE2, OpenGL 4.5.0)\""
+          },
+          "layeron/seed24601": {
+            "control": "\"ANGLE (Intel, Mesa Intel(R) UHD Graphics 630 (CFL GT2), OpenGL 4.6)\"",
+            "product": "\"ANGLE (Intel, Mesa Intel(R) UHD Graphics 630 (CFL GT2), OpenGL 4.6)\""
+          },
+          "layeron/seed5150": {
+            "control": "\"ANGLE (Intel, Mesa Intel(R) Iris(R) Xe Graphics (ADL GT2), OpenGL 4.6)\"",
+            "product": "\"ANGLE (Intel, Mesa Intel(R) Iris(R) Xe Graphics (ADL GT2), OpenGL 4.6)\""
+          }
+        },
+        "worker_nested": {
+          "layeroff/seed24601": {
+            "control": "\"ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)\"",
+            "product": "\"ANGLE (NVIDIA Corporation, NVIDIA GeForce RTX 4070/PCIe/SSE2, OpenGL 4.5.0)\""
+          },
+          "layeroff/seed5150": {
+            "control": "\"ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)\"",
+            "product": "\"ANGLE (NVIDIA Corporation, NVIDIA GeForce RTX 3080 Laptop GPU/PCIe/SSE2, OpenGL 4.5.0)\""
+          },
+          "layeron/seed24601": {
+            "control": "\"ANGLE (Intel, Mesa Intel(R) UHD Graphics 630 (CFL GT2), OpenGL 4.6)\"",
+            "product": "\"ANGLE (Intel, Mesa Intel(R) UHD Graphics 630 (CFL GT2), OpenGL 4.6)\""
+          },
+          "layeron/seed5150": {
+            "control": "\"ANGLE (Intel, Mesa Intel(R) Iris(R) Xe Graphics (ADL GT2), OpenGL 4.6)\"",
+            "product": "\"ANGLE (Intel, Mesa Intel(R) Iris(R) Xe Graphics (ADL GT2), OpenGL 4.6)\""
+          }
+        }
+      },
+      "vector": "webgl.unmasked_renderer"
+    },
+    {
+      "label": "Q2 WebGL VENDOR",
+      "realms": {
+        "iframe_about_blank": {
+          "layeroff/seed24601": {
+            "control": "\"WebKit\"",
+            "product": "\"WebKit\""
+          },
+          "layeroff/seed5150": {
+            "control": "\"WebKit\"",
+            "product": "\"WebKit\""
+          },
+          "layeron/seed24601": {
+            "control": "\"WebKit\"",
+            "product": "\"WebKit\""
+          },
+          "layeron/seed5150": {
+            "control": "\"WebKit\"",
+            "product": "\"WebKit\""
+          }
+        },
+        "iframe_same_origin": {
+          "layeroff/seed24601": {
+            "control": "\"WebKit\"",
+            "product": "\"WebKit\""
+          },
+          "layeroff/seed5150": {
+            "control": "\"WebKit\"",
+            "product": "\"WebKit\""
+          },
+          "layeron/seed24601": {
+            "control": "\"WebKit\"",
+            "product": "\"WebKit\""
+          },
+          "layeron/seed5150": {
+            "control": "\"WebKit\"",
+            "product": "\"WebKit\""
+          }
+        },
+        "iframe_srcdoc": {
+          "layeroff/seed24601": {
+            "control": "\"WebKit\"",
+            "product": "\"WebKit\""
+          },
+          "layeroff/seed5150": {
+            "control": "\"WebKit\"",
+            "product": "\"WebKit\""
+          },
+          "layeron/seed24601": {
+            "control": "\"WebKit\"",
+            "product": "\"WebKit\""
+          },
+          "layeron/seed5150": {
+            "control": "\"WebKit\"",
+            "product": "\"WebKit\""
+          }
+        },
+        "page": {
+          "layeroff/seed24601": {
+            "control": "\"WebKit\"",
+            "product": "\"WebKit\""
+          },
+          "layeroff/seed5150": {
+            "control": "\"WebKit\"",
+            "product": "\"WebKit\""
+          },
+          "layeron/seed24601": {
+            "control": "\"WebKit\"",
+            "product": "\"WebKit\""
+          },
+          "layeron/seed5150": {
+            "control": "\"WebKit\"",
+            "product": "\"WebKit\""
+          }
+        },
+        "worker_blob": {
+          "layeroff/seed24601": {
+            "control": "\"WebKit\"",
+            "product": "\"WebKit\""
+          },
+          "layeroff/seed5150": {
+            "control": "\"WebKit\"",
+            "product": "\"WebKit\""
+          },
+          "layeron/seed24601": {
+            "control": "\"WebKit\"",
+            "product": "\"WebKit\""
+          },
+          "layeron/seed5150": {
+            "control": "\"WebKit\"",
+            "product": "\"WebKit\""
+          }
+        },
+        "worker_in_iframe": {
+          "layeroff/seed24601": {
+            "control": "\"WebKit\"",
+            "product": "\"WebKit\""
+          },
+          "layeroff/seed5150": {
+            "control": "\"WebKit\"",
+            "product": "\"WebKit\""
+          },
+          "layeron/seed24601": {
+            "control": "\"WebKit\"",
+            "product": "\"WebKit\""
+          },
+          "layeron/seed5150": {
+            "control": "\"WebKit\"",
+            "product": "\"WebKit\""
+          }
+        },
+        "worker_nested": {
+          "layeroff/seed24601": {
+            "control": "\"WebKit\"",
+            "product": "\"WebKit\""
+          },
+          "layeroff/seed5150": {
+            "control": "\"WebKit\"",
+            "product": "\"WebKit\""
+          },
+          "layeron/seed24601": {
+            "control": "\"WebKit\"",
+            "product": "\"WebKit\""
+          },
+          "layeron/seed5150": {
+            "control": "\"WebKit\"",
+            "product": "\"WebKit\""
+          }
+        }
+      },
+      "vector": "webgl.masked_vendor"
+    },
+    {
+      "label": "Q2 WebGL RENDERER",
+      "realms": {
+        "iframe_about_blank": {
+          "layeroff/seed24601": {
+            "control": "\"WebKit WebGL\"",
+            "product": "\"WebKit WebGL\""
+          },
+          "layeroff/seed5150": {
+            "control": "\"WebKit WebGL\"",
+            "product": "\"WebKit WebGL\""
+          },
+          "layeron/seed24601": {
+            "control": "\"WebKit WebGL\"",
+            "product": "\"WebKit WebGL\""
+          },
+          "layeron/seed5150": {
+            "control": "\"WebKit WebGL\"",
+            "product": "\"WebKit WebGL\""
+          }
+        },
+        "iframe_same_origin": {
+          "layeroff/seed24601": {
+            "control": "\"WebKit WebGL\"",
+            "product": "\"WebKit WebGL\""
+          },
+          "layeroff/seed5150": {
+            "control": "\"WebKit WebGL\"",
+            "product": "\"WebKit WebGL\""
+          },
+          "layeron/seed24601": {
+            "control": "\"WebKit WebGL\"",
+            "product": "\"WebKit WebGL\""
+          },
+          "layeron/seed5150": {
+            "control": "\"WebKit WebGL\"",
+            "product": "\"WebKit WebGL\""
+          }
+        },
+        "iframe_srcdoc": {
+          "layeroff/seed24601": {
+            "control": "\"WebKit WebGL\"",
+            "product": "\"WebKit WebGL\""
+          },
+          "layeroff/seed5150": {
+            "control": "\"WebKit WebGL\"",
+            "product": "\"WebKit WebGL\""
+          },
+          "layeron/seed24601": {
+            "control": "\"WebKit WebGL\"",
+            "product": "\"WebKit WebGL\""
+          },
+          "layeron/seed5150": {
+            "control": "\"WebKit WebGL\"",
+            "product": "\"WebKit WebGL\""
+          }
+        },
+        "page": {
+          "layeroff/seed24601": {
+            "control": "\"WebKit WebGL\"",
+            "product": "\"WebKit WebGL\""
+          },
+          "layeroff/seed5150": {
+            "control": "\"WebKit WebGL\"",
+            "product": "\"WebKit WebGL\""
+          },
+          "layeron/seed24601": {
+            "control": "\"WebKit WebGL\"",
+            "product": "\"WebKit WebGL\""
+          },
+          "layeron/seed5150": {
+            "control": "\"WebKit WebGL\"",
+            "product": "\"WebKit WebGL\""
+          }
+        },
+        "worker_blob": {
+          "layeroff/seed24601": {
+            "control": "\"WebKit WebGL\"",
+            "product": "\"WebKit WebGL\""
+          },
+          "layeroff/seed5150": {
+            "control": "\"WebKit WebGL\"",
+            "product": "\"WebKit WebGL\""
+          },
+          "layeron/seed24601": {
+            "control": "\"WebKit WebGL\"",
+            "product": "\"WebKit WebGL\""
+          },
+          "layeron/seed5150": {
+            "control": "\"WebKit WebGL\"",
+            "product": "\"WebKit WebGL\""
+          }
+        },
+        "worker_in_iframe": {
+          "layeroff/seed24601": {
+            "control": "\"WebKit WebGL\"",
+            "product": "\"WebKit WebGL\""
+          },
+          "layeroff/seed5150": {
+            "control": "\"WebKit WebGL\"",
+            "product": "\"WebKit WebGL\""
+          },
+          "layeron/seed24601": {
+            "control": "\"WebKit WebGL\"",
+            "product": "\"WebKit WebGL\""
+          },
+          "layeron/seed5150": {
+            "control": "\"WebKit WebGL\"",
+            "product": "\"WebKit WebGL\""
+          }
+        },
+        "worker_nested": {
+          "layeroff/seed24601": {
+            "control": "\"WebKit WebGL\"",
+            "product": "\"WebKit WebGL\""
+          },
+          "layeroff/seed5150": {
+            "control": "\"WebKit WebGL\"",
+            "product": "\"WebKit WebGL\""
+          },
+          "layeron/seed24601": {
+            "control": "\"WebKit WebGL\"",
+            "product": "\"WebKit WebGL\""
+          },
+          "layeron/seed5150": {
+            "control": "\"WebKit WebGL\"",
+            "product": "\"WebKit WebGL\""
+          }
+        }
+      },
+      "vector": "webgl.masked_renderer"
+    },
+    {
+      "label": "Q3 WebGL readPixels (patch 016)",
+      "realms": {
+        "iframe_about_blank": {
+          "layeroff/seed24601": {
+            "control": "1412431872",
+            "product": "3803232679"
+          },
+          "layeroff/seed5150": {
+            "control": "1412431872",
+            "product": "1153635684"
+          },
+          "layeron/seed24601": {
+            "control": "2290752568",
+            "product": "386586079"
+          },
+          "layeron/seed5150": {
+            "control": "107925726",
+            "product": "4144096834"
+          }
+        },
+        "iframe_same_origin": {
+          "layeroff/seed24601": {
+            "control": "1412431872",
+            "product": "3803232679"
+          },
+          "layeroff/seed5150": {
+            "control": "1412431872",
+            "product": "1153635684"
+          },
+          "layeron/seed24601": {
+            "control": "2290752568",
+            "product": "386586079"
+          },
+          "layeron/seed5150": {
+            "control": "107925726",
+            "product": "4144096834"
+          }
+        },
+        "iframe_srcdoc": {
+          "layeroff/seed24601": {
+            "control": "1412431872",
+            "product": "3803232679"
+          },
+          "layeroff/seed5150": {
+            "control": "1412431872",
+            "product": "1153635684"
+          },
+          "layeron/seed24601": {
+            "control": "2290752568",
+            "product": "386586079"
+          },
+          "layeron/seed5150": {
+            "control": "107925726",
+            "product": "4144096834"
+          }
+        },
+        "page": {
+          "layeroff/seed24601": {
+            "control": "1412431872",
+            "product": "3803232679"
+          },
+          "layeroff/seed5150": {
+            "control": "1412431872",
+            "product": "1153635684"
+          },
+          "layeron/seed24601": {
+            "control": "2290752568",
+            "product": "386586079"
+          },
+          "layeron/seed5150": {
+            "control": "107925726",
+            "product": "4144096834"
+          }
+        },
+        "worker_blob": {
+          "layeroff/seed24601": {
+            "control": "1412431872",
+            "product": "3803232679"
+          },
+          "layeroff/seed5150": {
+            "control": "1412431872",
+            "product": "1153635684"
+          },
+          "layeron/seed24601": {
+            "control": "2290752568",
+            "product": "386586079"
+          },
+          "layeron/seed5150": {
+            "control": "107925726",
+            "product": "4144096834"
+          }
+        },
+        "worker_in_iframe": {
+          "layeroff/seed24601": {
+            "control": "1412431872",
+            "product": "3803232679"
+          },
+          "layeroff/seed5150": {
+            "control": "1412431872",
+            "product": "1153635684"
+          },
+          "layeron/seed24601": {
+            "control": "2290752568",
+            "product": "386586079"
+          },
+          "layeron/seed5150": {
+            "control": "107925726",
+            "product": "4144096834"
+          }
+        },
+        "worker_nested": {
+          "layeroff/seed24601": {
+            "control": "1412431872",
+            "product": "3803232679"
+          },
+          "layeroff/seed5150": {
+            "control": "1412431872",
+            "product": "1153635684"
+          },
+          "layeron/seed24601": {
+            "control": "2290752568",
+            "product": "386586079"
+          },
+          "layeron/seed5150": {
+            "control": "107925726",
+            "product": "4144096834"
+          }
+        }
+      },
+      "vector": "webgl.readpixels_hash"
+    },
+    {
+      "label": "Q3 canvas getImageData (patch 012)",
+      "realms": {
+        "iframe_about_blank": {
+          "layeroff/seed24601": {
+            "control": "507247862",
+            "product": "234950365"
+          },
+          "layeroff/seed5150": {
+            "control": "507247862",
+            "product": "3740682202"
+          },
+          "layeron/seed24601": {
+            "control": "507247862",
+            "product": "234950365"
+          },
+          "layeron/seed5150": {
+            "control": "507247862",
+            "product": "3740682202"
+          }
+        },
+        "iframe_same_origin": {
+          "layeroff/seed24601": {
+            "control": "507247862",
+            "product": "234950365"
+          },
+          "layeroff/seed5150": {
+            "control": "507247862",
+            "product": "3740682202"
+          },
+          "layeron/seed24601": {
+            "control": "507247862",
+            "product": "234950365"
+          },
+          "layeron/seed5150": {
+            "control": "507247862",
+            "product": "3740682202"
+          }
+        },
+        "iframe_srcdoc": {
+          "layeroff/seed24601": {
+            "control": "507247862",
+            "product": "234950365"
+          },
+          "layeroff/seed5150": {
+            "control": "507247862",
+            "product": "3740682202"
+          },
+          "layeron/seed24601": {
+            "control": "507247862",
+            "product": "234950365"
+          },
+          "layeron/seed5150": {
+            "control": "507247862",
+            "product": "3740682202"
+          }
+        },
+        "page": {
+          "layeroff/seed24601": {
+            "control": "507247862",
+            "product": "234950365"
+          },
+          "layeroff/seed5150": {
+            "control": "507247862",
+            "product": "3740682202"
+          },
+          "layeron/seed24601": {
+            "control": "507247862",
+            "product": "234950365"
+          },
+          "layeron/seed5150": {
+            "control": "507247862",
+            "product": "3740682202"
+          }
+        },
+        "worker_blob": {
+          "layeroff/seed24601": {
+            "control": "507247862",
+            "product": "234950365"
+          },
+          "layeroff/seed5150": {
+            "control": "507247862",
+            "product": "3740682202"
+          },
+          "layeron/seed24601": {
+            "control": "507247862",
+            "product": "234950365"
+          },
+          "layeron/seed5150": {
+            "control": "507247862",
+            "product": "3740682202"
+          }
+        },
+        "worker_in_iframe": {
+          "layeroff/seed24601": {
+            "control": "507247862",
+            "product": "234950365"
+          },
+          "layeroff/seed5150": {
+            "control": "507247862",
+            "product": "3740682202"
+          },
+          "layeron/seed24601": {
+            "control": "507247862",
+            "product": "234950365"
+          },
+          "layeron/seed5150": {
+            "control": "507247862",
+            "product": "3740682202"
+          }
+        },
+        "worker_nested": {
+          "layeroff/seed24601": {
+            "control": "507247862",
+            "product": "234950365"
+          },
+          "layeroff/seed5150": {
+            "control": "507247862",
+            "product": "3740682202"
+          },
+          "layeron/seed24601": {
+            "control": "507247862",
+            "product": "234950365"
+          },
+          "layeron/seed5150": {
+            "control": "507247862",
+            "product": "3740682202"
+          }
+        }
+      },
+      "vector": "canvas.getimagedata_hash"
+    },
+    {
+      "label": "Q3 canvas toDataURL (patch 013)",
+      "realms": {
+        "iframe_about_blank": {
+          "layeroff/seed24601": {
+            "control": "294442885",
+            "product": "3391877372"
+          },
+          "layeroff/seed5150": {
+            "control": "294442885",
+            "product": "2280707950"
+          },
+          "layeron/seed24601": {
+            "control": "294442885",
+            "product": "3391877372"
+          },
+          "layeron/seed5150": {
+            "control": "294442885",
+            "product": "2280707950"
+          }
+        },
+        "iframe_same_origin": {
+          "layeroff/seed24601": {
+            "control": "294442885",
+            "product": "3391877372"
+          },
+          "layeroff/seed5150": {
+            "control": "294442885",
+            "product": "2280707950"
+          },
+          "layeron/seed24601": {
+            "control": "294442885",
+            "product": "3391877372"
+          },
+          "layeron/seed5150": {
+            "control": "294442885",
+            "product": "2280707950"
+          }
+        },
+        "iframe_srcdoc": {
+          "layeroff/seed24601": {
+            "control": "294442885",
+            "product": "3391877372"
+          },
+          "layeroff/seed5150": {
+            "control": "294442885",
+            "product": "2280707950"
+          },
+          "layeron/seed24601": {
+            "control": "294442885",
+            "product": "3391877372"
+          },
+          "layeron/seed5150": {
+            "control": "294442885",
+            "product": "2280707950"
+          }
+        },
+        "page": {
+          "layeroff/seed24601": {
+            "control": "294442885",
+            "product": "3391877372"
+          },
+          "layeroff/seed5150": {
+            "control": "294442885",
+            "product": "2280707950"
+          },
+          "layeron/seed24601": {
+            "control": "294442885",
+            "product": "3391877372"
+          },
+          "layeron/seed5150": {
+            "control": "294442885",
+            "product": "2280707950"
+          }
+        },
+        "worker_blob": {
+          "layeroff/seed24601": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeroff/seed5150": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeron/seed24601": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeron/seed5150": {
+            "control": "<absent>",
+            "product": "<absent>"
+          }
+        },
+        "worker_in_iframe": {
+          "layeroff/seed24601": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeroff/seed5150": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeron/seed24601": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeron/seed5150": {
+            "control": "<absent>",
+            "product": "<absent>"
+          }
+        },
+        "worker_nested": {
+          "layeroff/seed24601": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeroff/seed5150": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeron/seed24601": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeron/seed5150": {
+            "control": "<absent>",
+            "product": "<absent>"
+          }
+        }
+      },
+      "vector": "canvas.todataurl_hash"
+    },
+    {
+      "label": "Q3 measureText width (patch 015)",
+      "realms": {
+        "iframe_about_blank": {
+          "layeroff/seed24601": {
+            "control": "172.1083984375",
+            "product": "-9.913113367801893e-05"
+          },
+          "layeroff/seed5150": {
+            "control": "172.1083984375",
+            "product": "-0.0006666202070680776"
+          },
+          "layeron/seed24601": {
+            "control": "172.1083984375",
+            "product": "172.109375"
+          },
+          "layeron/seed5150": {
+            "control": "172.1083984375",
+            "product": "172.10937500000003"
+          }
+        },
+        "iframe_same_origin": {
+          "layeroff/seed24601": {
+            "control": "172.1083984375",
+            "product": "-9.913113367801893e-05"
+          },
+          "layeroff/seed5150": {
+            "control": "172.1083984375",
+            "product": "-0.0006666202070680776"
+          },
+          "layeron/seed24601": {
+            "control": "172.1083984375",
+            "product": "172.109375"
+          },
+          "layeron/seed5150": {
+            "control": "172.1083984375",
+            "product": "172.10937500000003"
+          }
+        },
+        "iframe_srcdoc": {
+          "layeroff/seed24601": {
+            "control": "172.1083984375",
+            "product": "-9.913113367801893e-05"
+          },
+          "layeroff/seed5150": {
+            "control": "172.1083984375",
+            "product": "-0.0006666202070680776"
+          },
+          "layeron/seed24601": {
+            "control": "172.1083984375",
+            "product": "172.109375"
+          },
+          "layeron/seed5150": {
+            "control": "172.1083984375",
+            "product": "172.10937500000003"
+          }
+        },
+        "page": {
+          "layeroff/seed24601": {
+            "control": "172.1083984375",
+            "product": "-9.913113367801893e-05"
+          },
+          "layeroff/seed5150": {
+            "control": "172.1083984375",
+            "product": "-0.0006666202070680776"
+          },
+          "layeron/seed24601": {
+            "control": "172.1083984375",
+            "product": "172.109375"
+          },
+          "layeron/seed5150": {
+            "control": "172.1083984375",
+            "product": "172.10937500000003"
+          }
+        },
+        "worker_blob": {
+          "layeroff/seed24601": {
+            "control": "172.1083984375",
+            "product": "172.1083984375"
+          },
+          "layeroff/seed5150": {
+            "control": "172.1083984375",
+            "product": "172.1083984375"
+          },
+          "layeron/seed24601": {
+            "control": "172.1083984375",
+            "product": "172.1083984375"
+          },
+          "layeron/seed5150": {
+            "control": "172.1083984375",
+            "product": "172.1083984375"
+          }
+        },
+        "worker_in_iframe": {
+          "layeroff/seed24601": {
+            "control": "172.1083984375",
+            "product": "172.1083984375"
+          },
+          "layeroff/seed5150": {
+            "control": "172.1083984375",
+            "product": "172.1083984375"
+          },
+          "layeron/seed24601": {
+            "control": "172.1083984375",
+            "product": "172.1083984375"
+          },
+          "layeron/seed5150": {
+            "control": "172.1083984375",
+            "product": "172.1083984375"
+          }
+        },
+        "worker_nested": {
+          "layeroff/seed24601": {
+            "control": "172.1083984375",
+            "product": "172.1083984375"
+          },
+          "layeroff/seed5150": {
+            "control": "172.1083984375",
+            "product": "172.1083984375"
+          },
+          "layeron/seed24601": {
+            "control": "172.1083984375",
+            "product": "172.1083984375"
+          },
+          "layeron/seed5150": {
+            "control": "172.1083984375",
+            "product": "172.1083984375"
+          }
+        }
+      },
+      "vector": "canvas.measuretext_width"
+    },
+    {
+      "label": "Q3 getBoundingClientRect.x (patch 014, ELIGIBLE elem)",
+      "realms": {
+        "iframe_about_blank": {
+          "layeroff/seed24601": {
+            "control": "8",
+            "product": "7.999754428863525"
+          },
+          "layeroff/seed5150": {
+            "control": "8",
+            "product": "7.999577522277832"
+          },
+          "layeron/seed24601": {
+            "control": "8",
+            "product": "7.999754428863525"
+          },
+          "layeron/seed5150": {
+            "control": "8",
+            "product": "7.999577522277832"
+          }
+        },
+        "iframe_same_origin": {
+          "layeroff/seed24601": {
+            "control": "8",
+            "product": "7.999754428863525"
+          },
+          "layeroff/seed5150": {
+            "control": "8",
+            "product": "7.999577522277832"
+          },
+          "layeron/seed24601": {
+            "control": "8",
+            "product": "7.999754428863525"
+          },
+          "layeron/seed5150": {
+            "control": "8",
+            "product": "7.999577522277832"
+          }
+        },
+        "iframe_srcdoc": {
+          "layeroff/seed24601": {
+            "control": "60.109375",
+            "product": "60.109130859375"
+          },
+          "layeroff/seed5150": {
+            "control": "60.109375",
+            "product": "60.108951568603516"
+          },
+          "layeron/seed24601": {
+            "control": "60.109375",
+            "product": "60.109130859375"
+          },
+          "layeron/seed5150": {
+            "control": "60.109375",
+            "product": "60.108951568603516"
+          }
+        },
+        "page": {
+          "layeroff/seed24601": {
+            "control": "8",
+            "product": "7.999754428863525"
+          },
+          "layeroff/seed5150": {
+            "control": "8",
+            "product": "7.999577522277832"
+          },
+          "layeron/seed24601": {
+            "control": "8",
+            "product": "7.999754428863525"
+          },
+          "layeron/seed5150": {
+            "control": "8",
+            "product": "7.999577522277832"
+          }
+        },
+        "worker_blob": {
+          "layeroff/seed24601": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeroff/seed5150": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeron/seed24601": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeron/seed5150": {
+            "control": "<absent>",
+            "product": "<absent>"
+          }
+        },
+        "worker_in_iframe": {
+          "layeroff/seed24601": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeroff/seed5150": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeron/seed24601": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeron/seed5150": {
+            "control": "<absent>",
+            "product": "<absent>"
+          }
+        },
+        "worker_nested": {
+          "layeroff/seed24601": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeroff/seed5150": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeron/seed24601": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeron/seed5150": {
+            "control": "<absent>",
+            "product": "<absent>"
+          }
+        }
+      },
+      "vector": "client_rects.x"
+    },
+    {
+      "label": "Q3 getBoundingClientRect.y (patch 014, ELIGIBLE elem)",
+      "realms": {
+        "iframe_about_blank": {
+          "layeroff/seed24601": {
+            "control": "8",
+            "product": "7.9999613761901855"
+          },
+          "layeroff/seed5150": {
+            "control": "8",
+            "product": "8.00051498413086"
+          },
+          "layeron/seed24601": {
+            "control": "8",
+            "product": "7.9999613761901855"
+          },
+          "layeron/seed5150": {
+            "control": "8",
+            "product": "8.00051498413086"
+          }
+        },
+        "iframe_same_origin": {
+          "layeroff/seed24601": {
+            "control": "8",
+            "product": "7.9999613761901855"
+          },
+          "layeroff/seed5150": {
+            "control": "8",
+            "product": "8.00051498413086"
+          },
+          "layeron/seed24601": {
+            "control": "8",
+            "product": "7.9999613761901855"
+          },
+          "layeron/seed5150": {
+            "control": "8",
+            "product": "8.00051498413086"
+          }
+        },
+        "iframe_srcdoc": {
+          "layeroff/seed24601": {
+            "control": "8",
+            "product": "7.9999613761901855"
+          },
+          "layeroff/seed5150": {
+            "control": "8",
+            "product": "8.00051498413086"
+          },
+          "layeron/seed24601": {
+            "control": "8",
+            "product": "7.9999613761901855"
+          },
+          "layeron/seed5150": {
+            "control": "8",
+            "product": "8.00051498413086"
+          }
+        },
+        "page": {
+          "layeroff/seed24601": {
+            "control": "41",
+            "product": "40.999961853027344"
+          },
+          "layeroff/seed5150": {
+            "control": "41",
+            "product": "41.00051498413086"
+          },
+          "layeron/seed24601": {
+            "control": "41",
+            "product": "40.999961853027344"
+          },
+          "layeron/seed5150": {
+            "control": "41",
+            "product": "41.00051498413086"
+          }
+        },
+        "worker_blob": {
+          "layeroff/seed24601": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeroff/seed5150": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeron/seed24601": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeron/seed5150": {
+            "control": "<absent>",
+            "product": "<absent>"
+          }
+        },
+        "worker_in_iframe": {
+          "layeroff/seed24601": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeroff/seed5150": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeron/seed24601": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeron/seed5150": {
+            "control": "<absent>",
+            "product": "<absent>"
+          }
+        },
+        "worker_nested": {
+          "layeroff/seed24601": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeroff/seed5150": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeron/seed24601": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeron/seed5150": {
+            "control": "<absent>",
+            "product": "<absent>"
+          }
+        }
+      },
+      "vector": "client_rects.y"
+    },
+    {
+      "label": "Q3 getBoundingClientRect.width (Offset \u21d2 must NOT move)",
+      "realms": {
+        "iframe_about_blank": {
+          "layeroff/seed24601": {
+            "control": "135.375",
+            "product": "135.375"
+          },
+          "layeroff/seed5150": {
+            "control": "135.375",
+            "product": "135.375"
+          },
+          "layeron/seed24601": {
+            "control": "135.375",
+            "product": "135.375"
+          },
+          "layeron/seed5150": {
+            "control": "135.375",
+            "product": "135.375"
+          }
+        },
+        "iframe_same_origin": {
+          "layeroff/seed24601": {
+            "control": "135.375",
+            "product": "135.375"
+          },
+          "layeroff/seed5150": {
+            "control": "135.375",
+            "product": "135.375"
+          },
+          "layeron/seed24601": {
+            "control": "135.375",
+            "product": "135.375"
+          },
+          "layeron/seed5150": {
+            "control": "135.375",
+            "product": "135.375"
+          }
+        },
+        "iframe_srcdoc": {
+          "layeroff/seed24601": {
+            "control": "135.375",
+            "product": "135.375"
+          },
+          "layeroff/seed5150": {
+            "control": "135.375",
+            "product": "135.375"
+          },
+          "layeron/seed24601": {
+            "control": "135.375",
+            "product": "135.375"
+          },
+          "layeron/seed5150": {
+            "control": "135.375",
+            "product": "135.375"
+          }
+        },
+        "page": {
+          "layeroff/seed24601": {
+            "control": "135.375",
+            "product": "135.375"
+          },
+          "layeroff/seed5150": {
+            "control": "135.375",
+            "product": "135.375"
+          },
+          "layeron/seed24601": {
+            "control": "135.375",
+            "product": "135.375"
+          },
+          "layeron/seed5150": {
+            "control": "135.375",
+            "product": "135.375"
+          }
+        },
+        "worker_blob": {
+          "layeroff/seed24601": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeroff/seed5150": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeron/seed24601": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeron/seed5150": {
+            "control": "<absent>",
+            "product": "<absent>"
+          }
+        },
+        "worker_in_iframe": {
+          "layeroff/seed24601": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeroff/seed5150": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeron/seed24601": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeron/seed5150": {
+            "control": "<absent>",
+            "product": "<absent>"
+          }
+        },
+        "worker_nested": {
+          "layeroff/seed24601": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeroff/seed5150": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeron/seed24601": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeron/seed5150": {
+            "control": "<absent>",
+            "product": "<absent>"
+          }
+        }
+      },
+      "vector": "client_rects.width"
+    },
+    {
+      "label": "Q3 clientRects x on the EXEMPT shape (must NOT move)",
+      "realms": {
+        "iframe_about_blank": {
+          "layeroff/seed24601": {
+            "control": "13.296875",
+            "product": "13.296875"
+          },
+          "layeroff/seed5150": {
+            "control": "13.296875",
+            "product": "13.296875"
+          },
+          "layeron/seed24601": {
+            "control": "13.296875",
+            "product": "13.296875"
+          },
+          "layeron/seed5150": {
+            "control": "13.296875",
+            "product": "13.296875"
+          }
+        },
+        "iframe_same_origin": {
+          "layeroff/seed24601": {
+            "control": "13.296875",
+            "product": "13.296875"
+          },
+          "layeroff/seed5150": {
+            "control": "13.296875",
+            "product": "13.296875"
+          },
+          "layeron/seed24601": {
+            "control": "13.296875",
+            "product": "13.296875"
+          },
+          "layeron/seed5150": {
+            "control": "13.296875",
+            "product": "13.296875"
+          }
+        },
+        "iframe_srcdoc": {
+          "layeroff/seed24601": {
+            "control": "13.296875",
+            "product": "13.296875"
+          },
+          "layeroff/seed5150": {
+            "control": "13.296875",
+            "product": "13.296875"
+          },
+          "layeron/seed24601": {
+            "control": "13.296875",
+            "product": "13.296875"
+          },
+          "layeron/seed5150": {
+            "control": "13.296875",
+            "product": "13.296875"
+          }
+        },
+        "page": {
+          "layeroff/seed24601": {
+            "control": "13.296875",
+            "product": "13.296875"
+          },
+          "layeroff/seed5150": {
+            "control": "13.296875",
+            "product": "13.296875"
+          },
+          "layeron/seed24601": {
+            "control": "13.296875",
+            "product": "13.296875"
+          },
+          "layeron/seed5150": {
+            "control": "13.296875",
+            "product": "13.296875"
+          }
+        },
+        "worker_blob": {
+          "layeroff/seed24601": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeroff/seed5150": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeron/seed24601": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeron/seed5150": {
+            "control": "<absent>",
+            "product": "<absent>"
+          }
+        },
+        "worker_in_iframe": {
+          "layeroff/seed24601": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeroff/seed5150": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeron/seed24601": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeron/seed5150": {
+            "control": "<absent>",
+            "product": "<absent>"
+          }
+        },
+        "worker_nested": {
+          "layeroff/seed24601": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeroff/seed5150": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeron/seed24601": {
+            "control": "<absent>",
+            "product": "<absent>"
+          },
+          "layeron/seed5150": {
+            "control": "<absent>",
+            "product": "<absent>"
+          }
+        }
+      },
+      "vector": "client_rects_exempt.x"
+    }
+  ],
+  "seeds": [
+    5150,
+    24601
+  ]
+}
