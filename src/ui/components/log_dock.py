@@ -12,8 +12,11 @@ Four behaviours, and the last one is the original complaint:
    34px strip that still carries the newest line, a severity-coloured pulse and
    a count of what arrived while it was shut. Collapsing costs height, not
    awareness.
-2. **A resizable top edge.** A real ``on_pan_update`` grip, clamped 120-520px,
-   with the chosen height surviving a collapse/expand round trip.
+2. **A resizable top edge.** A real ``on_pan_update`` grip that FOLLOWS THE
+   CURSOR — the panel takes a continuous height while the pointer is down and
+   settles onto a whole row on release — bounded by whatever height the
+   sidebar rail can spare, with the chosen height surviving a collapse/expand
+   round trip.
 3. **A scannable row.** Delegated to :func:`..log_console.event_row`: severity
    dot, profile ruler, message, right-aligned timestamp, all at a fixed height.
 4. **Scroll that behaves.** Follow the tail while the operator is at the
@@ -187,15 +190,38 @@ def rows_for_height(height: float) -> int:
 
 
 def quantize(height: float) -> int:
-    """Snap a height to the nearest whole number of rows, within the clamps.
+    """Snap a height DOWN to a whole number of rows, within the clamps.
 
-    EVERY height the console can hold passes through here — the opening
-    default, a drag, and a window resize alike — so the console's bottom edge
-    always lands where a row ends. That is what removes the "пустое место" he
-    reported: a console sized in pixels shows five rows and a sliver of a
-    sixth, and the sliver reads as the panel being taller than its content.
+    EVERY height the console comes to REST at passes through here — the
+    opening default, the end of a drag, and a window resize alike — so the
+    console's bottom edge always lands where a row ends. That is what removes
+    the "пустое место" he reported: a console sized in pixels shows five rows
+    and a sliver of a sixth, and the sliver reads as the panel being taller
+    than its content.
+
+    A LIVE DRAG DELIBERATELY DOES NOT PASS THROUGH HERE — see
+    :meth:`LogDock.drag_by`. Snapping every frame is what made the panel step
+    22px at a time while the pointer moved continuously.
     """
     return height_for_rows(rows_for_height(height))
+
+
+def settle_rows(height: float) -> int:
+    """The row count a released drag should come to rest on: the NEAREST one.
+
+    :func:`rows_for_height` FLOORS, because it answers "how many whole rows
+    can this height actually show" — that is the honest readout question, and
+    a height 21px into a row is still showing only the rows below it.
+
+    Settling is a different question. A drag released 21px into row 8 was a
+    drag AT row 8: flooring it would drop the panel almost a full row away
+    from where the pointer was let go, which reads as the console rejecting
+    the gesture. So the release rounds to the nearest boundary while the
+    readout keeps flooring, and the two disagreeing is the point rather than
+    an inconsistency.
+    """
+    usable = float(height) - CHROME_HEIGHT - LIST_PADDING
+    return max(MIN_ROWS, min(MAX_ROWS_VISIBLE, int(round(usable / ROW_HEIGHT))))
 
 
 def default_height(window_height: float | None) -> int:
@@ -224,7 +250,12 @@ class LogDock:
         self.profiles: frozenset = frozenset()
         # Sized against the window rather than a constant, so a short window
         # does not cost the sidebar its bottom cluster — see default_height.
-        self.height = default_height(window_height)
+        # ANNOTATED float, not inferred int: between press and release the
+        # console's height genuinely IS fractional — that is the smoothness
+        # fix, not a rounding accident — and every height that comes to REST
+        # here is snapped by set_height regardless. The narrower inferred type
+        # would have made _apply_height's honest float assignment a type error.
+        self.height: float = default_height(window_height)
         #: The UNSNAPPED height the drag is accumulating into.
         #:
         #: THE BUG THIS EXISTS TO FIX, measured on the running app: a drag
@@ -261,7 +292,11 @@ class LogDock:
         #: afford), so a window that shrinks takes height away and a window
         #: that grows back HANDS IT BACK — without a resize ever overwriting a
         #: deliberate drag. See apply_window_height.
-        self._desired_height = OPEN_HEIGHT
+        #:
+        #: A float for the same reason ``height`` is: ``_apply_height`` writes
+        #: the applied height straight into it, and a live drag frame's height
+        #: is not a whole row.
+        self._desired_height: float = OPEN_HEIGHT
 
         #: How many lines the app has EVER produced, as of the last paint. The
         #: dock appends the difference rather than diffing text, so repeated
@@ -445,22 +480,102 @@ class LogDock:
         case a pan-only detector never fires. Registering both means the grip
         responds to the gesture the user actually makes rather than to the one
         the arena happened to pick.
-        """
 
-        def on_drag(e) -> None:
-            delta = _drag_delta_y(e)
-            if delta is None:
-                return
-            # Dragging UP (negative delta) grows the console. Through
-            # drag_by, NOT set_height: a single frame is smaller than a row,
-            # so the delta has to accumulate before it is snapped — see
-            # drag_by and _raw_height.
-            self.drag_by(delta)
+        EACH RECOGNIZER SETTLES ONLY THE DRAG IT ITSELF OWNED — that is what
+        ``live`` below is for, and it is not defensive tidiness. Registering
+        four terminators is what makes "a gesture that terminated without ever
+        moving the panel" a reachable code path, and on that path a settle is
+        not a no-op:
+
+        * A PLAIN CLICK on the grip fires ``*_end`` with no frames. The settle
+          routes through :meth:`set_height` -> :meth:`_apply_height`, which
+          writes the APPLIED height into ``_desired_height``. While the console
+          is yielding height to a short window those two differ, so the click
+          overwrites the operator's remembered height with the borrowed one and
+          :meth:`apply_window_height` can never hand it back. That loss is
+          permanent — it is AC8 destroyed by a click that moved nothing.
+
+        * AN ARENA LOSS IS NOT AN ABORT. ``on_pan_cancel`` means "the pointer
+          that triggered on_pan_down will not cause a pan" — which is exactly
+          what the arena tells the LOSING recognizer when a clean vertical drag
+          is awarded to the vertical one. So on an ordinary drag it fires while
+          the pointer is STILL DOWN, and an ungated settle snaps the panel
+          mid-gesture: measured travel 9.0, 9.0, **4.0**, 9.0. A jerk in the
+          middle of the gesture is the precise artefact this direction exists
+          to remove.
+
+        A guard inside :meth:`drag_end` ("if the target equals the current
+        height, return") would have fixed the click and NOT the arena loss,
+        where the heights genuinely differ. The liveness gate fixes both,
+        because it asks the question that actually distinguishes them: did THIS
+        recognizer own a drag? It also cooperates with
+        :meth:`apply_window_height`, which keeps ``_raw_height`` in step with
+        the applied height — so a terminator that does fire always settles from
+        a current accumulator, and one that does not fire leaves nothing stale
+        behind.
+        """
+        live = {"pan": False, "vertical": False}
+
+        def on_drag(which: str):
+            def go(e) -> None:
+                delta = _drag_delta_y(e)
+                if delta is None:
+                    return
+                # This recognizer is now the one holding the drag, so its own
+                # terminator — and only its own — has something to settle.
+                live[which] = True
+                # Dragging UP (negative delta) grows the console. Through
+                # drag_by, NOT set_height: a frame is smaller than a row, and
+                # drag_by applies the RAW height so the panel follows the
+                # cursor instead of stepping a row at a time — see drag_by and
+                # _raw_height.
+                self.drag_by(delta)
+
+            return go
+
+        def on_drag_end(which: str):
+            def go(e=None) -> None:
+                if not live[which]:
+                    # This recognizer never owned a drag: there is no
+                    # fractional height to settle, and nothing the operator
+                    # asked for to remember. See the docstring — settling here
+                    # erases a deliberate height on a click, and snaps the
+                    # panel mid-gesture on an arena loss.
+                    return
+                live[which] = False
+                # The snap the frames no longer do, done once on release, so
+                # the console follows the pointer and still comes to rest on a
+                # whole row. See drag_end.
+                self.drag_end(e)
+
+            return go
 
         return ft.GestureDetector(
             mouse_cursor=ft.MouseCursor.RESIZE_UP_DOWN,
-            on_pan_update=on_drag,
-            on_vertical_drag_update=on_drag,
+            on_pan_update=on_drag("pan"),
+            on_vertical_drag_update=on_drag("vertical"),
+            # EVERY terminator, for the same reason both updates are
+            # registered: the arena awards the gesture to one recognizer, and a
+            # settle that only listens to the others never fires — leaving the
+            # console parked mid-row, which is the very artefact the snap
+            # exists to remove.
+            #
+            # AND A GESTURE CAN END WITHOUT ENDING. flet 0.85 exposes FOUR
+            # terminators for these two recognizers, not two: a drag that the
+            # arena takes away, or that the pointer loses, terminates through
+            # *_cancel and NEVER through *_end. Registering only the end pair
+            # left that path delivering frames, applying raw heights, and never
+            # settling — and because _apply_height writes the float into
+            # _desired_height, the un-snapped height became the REMEMBERED one:
+            # a shrink-and-restore round trip handed the fractional height back
+            # rather than correcting it. The invariant is "however the gesture
+            # ends, the console rests on a row boundary", so all four route to
+            # the same settle — each through the liveness gate above, so a
+            # recognizer only settles the drag IT owned.
+            on_pan_end=on_drag_end("pan"),
+            on_vertical_drag_end=on_drag_end("vertical"),
+            on_pan_cancel=on_drag_end("pan"),
+            on_vertical_drag_cancel=on_drag_end("vertical"),
             content=ft.Container(
                 height=GRIP_HIT_HEIGHT,
                 bgcolor=COLORS["log_bg"],
@@ -534,21 +649,57 @@ class LogDock:
         they move the console in the same unit they report, so "smaller" always
         means exactly one row less rather than an arbitrary pixel step that
         may or may not change what is visible.
+
+        THE RAIL'S BUDGET IS INHERITED, NOT RE-IMPLEMENTED — see
+        :meth:`set_height`, which is where the clamp lives. So holding ``+``
+        down on a 680px window stops where the drag stops, and the returned row
+        count is what the console ACTUALLY took: a caller asking for 20 rows on
+        a window that affords 3 is told 3, rather than being told 20 while the
+        rail is starved by 374px.
         """
         target = max(MIN_ROWS, min(MAX_ROWS_VISIBLE, int(rows)))
         self.set_height(height_for_rows(target))
         return self.rows
 
-    def drag_by(self, delta: float) -> int:
-        """Grow (or shrink) the console by one drag frame's worth of movement.
+    def ceiling_height(self) -> int:
+        """The tallest height this console may take RIGHT NOW.
 
-        THE ACCUMULATOR IS THE WHOLE POINT — see :attr:`_raw_height`. A drag
-        arrives as ~10px frames, and a row is 22px, so no single frame is a
-        whole row. Feeding each frame through the snap independently made
-        growing impossible (10px up floors straight back to the row it started
-        in) while shrinking worked, which is precisely the "the grip does
-        nothing" report. Accumulating first and snapping the RESULT means every
-        frame counts, and the console still only ever rests on whole rows.
+        ONE function, consulted by every path that can change the height —
+        which is the whole of the second half of PS-291. ``affordable_height``
+        existed and was correct; it was simply not called from the button
+        path, so ``drag_by`` was bounded by the rail's budget and
+        ``set_height``/``set_rows`` were bounded by nothing but MAX_HEIGHT.
+        Reaching the same starvation through a different control is not a
+        different bug, so it must not have a different code path.
+
+        Never below one row: a window too short to afford even that still owes
+        the operator a usable console, and shrinking is never what starves the
+        rail.
+        """
+        return max(MIN_HEIGHT, affordable_height(self._window_height))
+
+    def drag_by(self, delta: float) -> float:
+        """Move the console by one drag frame's worth of movement.
+
+        THE PANEL FOLLOWS THE CURSOR — that is what changed in PS-291, and it
+        is the owner's "сделать плавным лучше". The accumulator was already
+        here (a ~10px frame is not a whole 22px row, so a per-frame snap made
+        growing impossible while shrinking worked — "the grip does nothing"),
+        but the ACCUMULATOR'S RESULT was still snapped on every frame. That
+        left the panel able to occupy only 76/98/120/142..., so one frame moved
+        nothing and the next jumped a whole row: the pointer travelled
+        continuously and the panel stepped, lagging by up to a row.
+
+        So a LIVE drag applies the raw height directly and the list simply
+        clips its last row, exactly as a console mid-resize should look. The
+        snap has not been abandoned, it has been MOVED to the release — see
+        :meth:`drag_end` — so the console still comes to rest on a whole row
+        and never sits at a permanent "five rows and a sliver".
+
+        THE READOUT STAYS HONEST while this happens, and that is deliberate:
+        :meth:`_paint_size` floors, so a console 21px into row 8 reads "7 rows"
+        because seven is what it is actually showing. The number never claims a
+        row the operator cannot see.
 
         THE RAIL'S BUDGET BOUNDS THE DRAG, AND THAT IS A DELIBERATE OWNER
         DECISION rather than an implementation detail. Two paths could change
@@ -565,7 +716,8 @@ class LogDock:
         was reported as "the ACTIVITY panel wrecks the layout generally"
         rather than as a reproducible step. It is also the whole of Mars's
         animation report: elements animate inside a rail whose height is being
-        rewritten underneath them mid-gesture.
+        rewritten underneath them mid-gesture. That budget now lives in
+        :meth:`ceiling_height` and every path consults it.
 
         THE TRADE, AND WHO MADE IT. Respecting the budget here bounds the
         owner's own "the size is his, continuously" requirement — on a 680px
@@ -577,44 +729,101 @@ class LogDock:
         window affords". The cap is NOT a defect to work around and NOT a
         number to quietly raise.
 
-        Returns the row count now displayed, so a caller can assert on it.
+        Returns the height now applied, so a caller can assert on the travel
+        rather than only on the row count — the row count is exactly the
+        quantity that could not see this defect.
         """
-        # The SAME budget the resize path uses, from the same function — the
-        # fault was never that the budget was wrong, only that this call site
-        # did not consult it. Never below one row: a window too short to
-        # afford even that still owes the operator a usable console.
-        ceiling = float(max(MIN_HEIGHT, affordable_height(self._window_height)))
+        ceiling = float(self.ceiling_height())
         self._raw_height = max(
             float(MIN_HEIGHT),
             min(ceiling, self._raw_height - float(delta)),
         )
-        self._apply_height(quantize(self._raw_height))
+        self._apply_height(self._raw_height)
+        return self.height
+
+    def drag_end(self, e=None) -> int:
+        """The pointer was released: come to rest on a whole row.
+
+        THE OTHER HALF OF THE SMOOTHNESS FIX. Dropping the per-frame snap is
+        what lets the panel follow the cursor; without a settle it would also
+        let the console sit permanently at "five rows and a two-pixel sliver
+        of a sixth", which is the "пустое место" the row unit exists to
+        remove. The snap is not gone, it happens once, where it costs nothing
+        and where the operator reads it as the panel clicking into place.
+
+        Settling rounds to the NEAREST row rather than flooring — see
+        :func:`settle_rows`. A release 21px into a row was a release AT that
+        row, and dropping almost a full row away from the pointer reads as the
+        console rejecting the gesture.
+
+        Registered on all FOUR gesture terminators — both ``*_end`` events and
+        both ``*_cancel`` events — so it fires whichever recognizer Flutter's
+        arena awarded the drag to AND however that gesture finished. A
+        cancelled drag is still a finished drag as far as the console is
+        concerned; the only path that must never leave a fractional height is
+        "all of them".
+
+        THIS IS NOT IDEMPOTENT, and the caller is what makes that safe. An
+        earlier revision of this docstring claimed it was "safe to call when no
+        drag happened"; it is not. It routes through :meth:`set_height` ->
+        :meth:`_apply_height`, which writes the applied height into
+        ``_desired_height`` — so calling it after a gesture that moved nothing
+        overwrites the operator's REMEMBERED height with whatever is currently
+        applied, and while the console is yielding to a short window those are
+        different numbers. :meth:`_grip` therefore gates each terminator on
+        whether its own recognizer actually owned a drag; see its docstring for
+        the two ways an ungated call is reached.
+        """
+        target = height_for_rows(settle_rows(self._raw_height))
+        self.set_height(target)
         return self.rows
 
     def set_height(self, height: float) -> None:
-        """Apply a new open height, SNAPPED to whole rows and clamped.
+        """Apply a new resting height, SNAPPED to whole rows and clamped.
 
-        The size controls' and the default's path. A DRAG does not come through
-        here — it goes through :meth:`drag_by`, which accumulates — because
-        snapping a per-frame delta is what broke the gesture.
+        The size controls' and the default's path, and the end of a drag. A
+        LIVE drag frame does not come through here — it goes through
+        :meth:`drag_by`, which applies the raw height so the panel can follow
+        the cursor.
 
-        THE SNAP IS THE DIRECTION'S ARGUMENT. A console sized in pixels lands
-        mid-row, showing five rows and a two-pixel sliver of a sixth; that
-        sliver is exactly the "пустое место" he reported, and it reappears on
-        every drag no matter how good the default is. Quantizing means the
-        bottom edge always falls where a row ends, so the console is full of
-        log at every size he can put it in — and a drag reads out as "8 rows"
+        THE SNAP IS THE DIRECTION'S ARGUMENT. A console at REST sized in pixels
+        lands mid-row, showing five rows and a two-pixel sliver of a sixth;
+        that sliver is exactly the "пустое место" he reported. Quantizing means
+        the bottom edge always falls where a row ends, so the console is full
+        of log at every size it comes to rest in — and it reads out as "8 rows"
         rather than as 289 pixels.
+
+        THE BUDGET CLAMP LIVES HERE, NOT IN :meth:`set_rows`, and that is a
+        decision worth stating. The starvation PS-291 fixes was reached through
+        the ``+`` stepper, so clamping ``set_rows`` alone would have closed the
+        reported route; it would also have left the rail starvable by the next
+        caller that sets a height in pixels, which is precisely how this bug
+        was born (``drag_by`` was fixed, ``set_height`` was not, and the defect
+        walked to the button path). "The sidebar must never compress below what
+        its items need" is a property of the CONSOLE'S HEIGHT, not of one
+        control, so it is enforced at the one place every height passes
+        through and every caller inherits it. ``set_rows`` therefore needs no
+        clamp of its own.
+
+        SHRINKING IS NEVER CLAMPED: the ceiling floors at MIN_HEIGHT, so
+        MINIMIZE reaches one row on any window. A short window takes height
+        away from the console; it can never deny the operator a smaller one.
         """
-        snapped = quantize(height)
+        snapped = min(quantize(height), self.ceiling_height())
         # Keep the accumulator in step, so a click on "smaller" followed by a
         # drag continues from where the button left the console rather than
         # from wherever the last drag happened to end.
         self._raw_height = float(snapped)
         self._apply_height(snapped)
 
-    def _apply_height(self, height: int) -> None:
-        """Put an already-snapped height on screen."""
+    def _apply_height(self, height: float) -> None:
+        """Put a height on screen.
+
+        Takes a FLOAT because a live drag frame is not a whole row — see
+        :meth:`drag_by`. Heights that come to REST here are already snapped by
+        :meth:`set_height`, so a resting console is still an integer number of
+        whole rows; only the frames between press and release are continuous.
+        """
         self.height = height
         # A height the operator chose HIMSELF is what he wants back when the
         # window has room again — so the grip moves the desire, not just the
@@ -670,6 +879,18 @@ class LogDock:
         target = min(self._desired_height, allowed)
         desired = self._desired_height
         self.height = max(MIN_HEIGHT, min(MAX_HEIGHT, int(target)))
+        # The accumulator follows the applied height, so a drag started AFTER a
+        # resize begins from what is on screen rather than from the taller
+        # height the operator last dragged to. Without this the first frames of
+        # that drag are spent burning off a height the window no longer
+        # affords, and the grip reads as unresponsive.
+        #
+        # It also cooperates with the grip's liveness gate: a terminator that
+        # DOES fire always settles from an accumulator that matches the screen,
+        # and one that does not fire (a click, or a losing recognizer's cancel)
+        # leaves nothing stale behind — which is why the gate needs no
+        # _raw_height reset of its own. See _grip.
+        self._raw_height = float(self.height)
         # Deliberately NOT through set_height: this is the window speaking, not
         # the operator, and it must not overwrite what he asked for.
         self._desired_height = desired

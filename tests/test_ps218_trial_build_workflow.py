@@ -15,6 +15,16 @@ a reviewer cannot see by reading the YAML quickly, and both are pinned here.
    workflow that was never triggered. That is a silent failure, so it gets a
    test rather than a comment.
 
+2b. A label is not a machine. `persona-build` is a custom label and a SECOND
+   runner was registered carrying it — `persona-mac-builder`, arm64 Darwin with
+   no docker, which cannot build Chromium at all. Dispatches then went to
+   whichever runner grabbed them first, and two did land there (runs
+   33920732173 and 33920892080, both confirmed by `runner_name` on the jobs
+   API). This is worse than (2) because it does NOT hang: it fails in ~20
+   seconds with an error that reads like a build problem. Pinned by requiring
+   GitHub's automatic `Linux`/`X64` labels, which the WSL builder carries and an
+   arm64 Mac cannot.
+
 The third assertion is about blast radius rather than the machine: this workflow
 must stay OUT of ci.yml, so the owner closing his laptop cannot fail the checks
 that gate every other ticket in the project.
@@ -105,6 +115,41 @@ def test_every_job_targets_the_label_the_owner_registered(workflow):
             "job would queue FOREVER WITH NO ERROR, which looks exactly like a "
             "workflow that was never triggered."
         )
+
+
+def test_every_job_excludes_a_runner_that_cannot_build_chromium(workflow):
+    """A LABEL IS NOT A MACHINE — and on 2026-09-04 a second machine answered ours.
+
+    `persona-build` is a custom label, and nothing stops a second runner being
+    registered with it. One was: `persona-mac-builder`, Darwin arm64 (T8112),
+    8 cores, no docker. Dispatches then went to whichever runner picked up
+    first, and two landed on the Mac — run 33920732173 (`trees=patched`, refused
+    by the PS-244 borrowed-control guard on the host mismatch) and run
+    33920892080 (`trees=both`, dead at the instrument check with
+    `docker: command not found`). Both were confirmed by reading
+    `runner_name` off the jobs API, not inferred from the symptom.
+
+    That failure mode is WORSE than the wrong-label one the test above pins,
+    because it does not hang: it fails in ~20 seconds with an error that reads
+    like a build problem, so the reader goes looking for a defect in the tree.
+
+    GitHub gives every self-hosted runner automatic OS/arch labels, so the fix
+    lives in this repo and needs no runner re-registration: requiring `Linux`
+    and `X64` matches the WSL builder and cannot match an arm64 Mac. This test
+    exists so that "simplifying" `runs-on` back to two labels fails here rather
+    than silently on the next dispatch.
+    """
+    for name, job in workflow["jobs"].items():
+        runs_on = job["runs-on"]
+        for required in ("Linux", "X64"):
+            assert required in runs_on, (
+                f"job {name!r}: runs-on must require {required!r} so the job can only be "
+                f"scheduled onto a Linux x64 self-hosted runner. Without it a machine "
+                f"carrying {RUNNER_LABEL!r} but incapable of building Chromium "
+                f"(persona-mac-builder: arm64, no docker) can take the dispatch and fail "
+                f"in ~20 seconds with an error that looks like a build problem. "
+                f"Found: {runs_on!r}"
+            )
 
 
 def test_patched_build_cannot_run_before_its_own_control(workflow):
@@ -418,3 +463,177 @@ def test_a_real_source_diagnostic_is_still_attributed(tmp_path):
     )
     assert "of which attributable (name a source file): 1" in out
     assert "toolchain/driver (name no source file, not attributed): 0" in out
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# The runner-capability preflight (PS-299).
+#
+# `runs-on:` narrows SCHEDULING, and that is genuinely the right first line of
+# defence — but a label is a SELF-DECLARED STRING chosen at registration, so it
+# is a hint about a machine, never a measurement of one. The tests above pin the
+# labels; these pin the step that checks the machine itself, by EXTRACTING THE
+# REAL SCRIPT OUT OF THE WORKFLOW AND RUNNING IT against a stubbed `uname` /
+# `docker`. Asserting on the YAML text alone would assert that a check exists
+# without ever establishing that it works — the vacuity this file's own
+# docstring warns about.
+# ─────────────────────────────────────────────────────────────────────────────
+
+PREFLIGHT_STEP_NAME = "Verify this runner can actually build Chromium"
+
+
+def _preflight_script(workflow: dict, job: str) -> str:
+    steps = workflow["jobs"][job]["steps"]
+    for step in steps:
+        if step.get("name") == PREFLIGHT_STEP_NAME:
+            return step["run"]
+    raise AssertionError(
+        f"job {job!r} has no {PREFLIGHT_STEP_NAME!r} step. Without it the only thing "
+        f"keeping a dispatch off a machine that cannot build Chromium is a label the "
+        f"machine chose for itself."
+    )
+
+
+def _drive_preflight(script: str, tmp_path, *, uname_s: str, uname_m: str, docker: bool):
+    """Run the workflow's own preflight with `uname`/`docker` shimmed.
+
+    The shims are SHELL FUNCTIONS prepended to the script, not executables
+    dropped on `PATH`. That is a portability fix, not a style preference: the
+    PATH approach passed on Linux and FAILED on `windows-latest`, where Git Bash
+    did not pick up the extension-less stubs and the script read the REAL
+    `uname` (`MINGW64_NT-10.0-26100 x86_64`). Two of the refusal assertions
+    still "passed" there for the wrong reason — MINGW is not Linux either — and
+    an accidental green is exactly what this file exists to prevent.
+
+    A POSIX shell resolves functions BEFORE `PATH`, on every platform, with no
+    executable bit and no path translation involved. The script under test is
+    still the verbatim body extracted from the workflow; only its environment is
+    controlled, which is all the PATH stubs were ever doing.
+    """
+    import subprocess
+
+    shim = (
+        'uname() { case "$1" in '
+        f"-s) echo {uname_s};; -m) echo {uname_m};; *) echo {uname_s};; esac; }}\n"
+    )
+    if docker:
+        shim += 'docker() { echo "Docker version 29.7.2, build stub"; }\n'
+    # With docker False no shim is defined, so `command -v docker` has only
+    # `PATH` to consult — and `shell_env()` pins that to one known toolchain
+    # directory set, which carries no docker on any of the three CI platforms.
+
+    script_path = tmp_path / "preflight.sh"
+    script_path.write_text(shim + script, encoding="utf-8")
+
+    shell = find_posix_shell()
+    assert shell is not None, "no POSIX shell could be resolved on this host"
+
+    proc = subprocess.run(
+        [shell, str(script_path)],
+        cwd=tmp_path,
+        env=shell_env(),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=60,
+    )
+
+    # Guard the FIXTURE, not the script under test. If a shim is ever bypassed
+    # again the tests must SAY SO, rather than quietly asserting against
+    # whatever the host happens to be — the Windows failure described above
+    # satisfied two refusal assertions by accident precisely because nothing
+    # checked this.
+    assert f"os/arch: {uname_s} {uname_m}" in proc.stdout, (
+        f"the uname shim did not take effect — the script read the HOST instead of the "
+        f"fixture, so this test is not measuring {uname_s} {uname_m} at all:\n"
+        f"{proc.stdout}\n{proc.stderr}"
+    )
+    return proc
+
+
+@pytest.mark.parametrize("job", ["unmodified", "patched"])
+def test_preflight_refuses_the_machine_that_took_the_dispatch(workflow, tmp_path, job):
+    """An arm64 Mac with no docker must be refused BY NAME, before any build work.
+
+    This is run 33920892080 reproduced offline. That dispatch reached
+    `scripts/docker-build.sh` and died on `docker: command not found` ~20 seconds
+    in — an error that reads like a build problem, which is why it cost two
+    reviewers real time before `runner_name` settled it. The preflight turns the
+    same situation into a message that names the machine's actual defect.
+    """
+    proc = _drive_preflight(
+        _preflight_script(workflow, job), tmp_path,
+        uname_s="Darwin", uname_m="arm64", docker=False,
+    )
+    out = proc.stdout + proc.stderr
+
+    assert proc.returncode != 0, (
+        f"the preflight PASSED on a Darwin/arm64 host with no docker. That is the exact "
+        f"machine that ate two dispatches on PS-299:\n{out}"
+    )
+    assert "not Linux" in out, f"the refusal must name the OS:\n{out}"
+    assert "WRONG ARCHITECTURE" in out, (
+        f"the refusal must name the arch, and say why an arm64 build is worse than no "
+        f"build — installing docker on that host is the tempting wrong fix:\n{out}"
+    )
+    assert "docker is not installed" in out, f"the refusal must name the missing docker:\n{out}"
+
+
+@pytest.mark.parametrize("job", ["unmodified", "patched"])
+def test_preflight_passes_on_the_machine_that_can_build(workflow, tmp_path, job):
+    """The no-false-positive half — without it the check above could be `exit 1`.
+
+    `persona-wsl-builder` is Linux x86_64 with Docker 29.7.2. A preflight that
+    refused it would turn a scheduling bug into a total outage, so this asserts
+    the good machine is admitted rather than only that the bad one is refused.
+    """
+    proc = _drive_preflight(
+        _preflight_script(workflow, job), tmp_path,
+        uname_s="Linux", uname_m="x86_64", docker=True,
+    )
+    out = proc.stdout + proc.stderr
+
+    assert proc.returncode == 0, (
+        f"the preflight REFUSED a Linux x86_64 host with docker — that is "
+        f"persona-wsl-builder, the machine the build is supposed to run on:\n{out}"
+    )
+    assert "OK" in out
+
+
+@pytest.mark.parametrize(
+    "uname_m", ["aarch64", "arm64"], ids=["linux-aarch64", "linux-arm64"]
+)
+def test_preflight_refuses_a_linux_host_of_the_wrong_architecture(workflow, tmp_path, uname_m):
+    """Linux is not sufficient — the arch check must stand on its own.
+
+    A Linux arm64 runner with docker installed would satisfy every other
+    condition and still produce a binary for an architecture we do not ship. It
+    is also the state the Mac reaches the moment someone "fixes" it by installing
+    docker, which the refusal text explicitly warns against.
+    """
+    proc = _drive_preflight(
+        _preflight_script(workflow, "patched"), tmp_path,
+        uname_s="Linux", uname_m=uname_m, docker=True,
+    )
+    out = proc.stdout + proc.stderr
+
+    assert proc.returncode != 0, (
+        f"a Linux {uname_m} host with docker PASSED the preflight. It would compile a "
+        f"binary for the wrong architecture — a green run that ships the wrong thing:\n{out}"
+    )
+    assert "WRONG ARCHITECTURE" in out
+
+
+def test_preflight_runs_before_anything_touches_the_tree(workflow):
+    """It must be step ONE, or it is not a preflight.
+
+    Ordering is the whole value: the point is failing in a second with a message
+    that names the machine, instead of failing later inside the build with an
+    error that reads like a defect in the tree. A capability check placed after
+    checkout still lets a doomed dispatch do work first.
+    """
+    for job in ("unmodified", "patched"):
+        first = workflow["jobs"][job]["steps"][0]
+        assert first.get("name") == PREFLIGHT_STEP_NAME, (
+            f"job {job!r} runs {first.get('name')!r} before the capability check. The "
+            f"preflight must be the FIRST step so a wrong machine fails immediately."
+        )

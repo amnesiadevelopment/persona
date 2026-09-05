@@ -3,9 +3,11 @@ through on_save; the check flow must hand geo (incl. lat/lon) to on_checked."""
 import time
 
 import flet as ft
+import pytest
 
 from src.models.proxy import Proxy
 from src.ui.dialogs.proxy import open_proxy_dialog
+from src.utils.validation import PROXY_SCHEMES
 
 
 class _FakePage:
@@ -248,3 +250,78 @@ def test_preflight_invalid_input_does_not_flag_stored_proxy():
     _check_btn(dlg).on_click(None)
     time.sleep(0.05)
     assert failed == [], "a pre-flight input error must not flag the stored proxy"
+
+
+def test_type_dropdown_offers_every_accepted_scheme():
+    """The Type dropdown must offer exactly the schemes validation ACCEPTS.
+
+    validation.PROXY_SCHEMES is the single source of truth for what persona
+    takes, and its own comment forbids a second list. This dialog carried one
+    anyway and it had drifted to three of the six, so socks4/socks4h/socks5h
+    could be stored and launched but never picked here.
+    """
+    page = _FakePage()
+    open_proxy_dialog(page, _FakeService(), on_save=lambda *a: None)
+    dd = _control_under_label(page.shown, "Type", ft.Dropdown)
+    assert [o.key for o in dd.options] == list(PROXY_SCHEMES)
+
+
+def test_new_proxy_dialog_still_defaults_to_socks5():
+    """Widening the list must not move the default for a brand-new proxy."""
+    page = _FakePage()
+    open_proxy_dialog(page, _FakeService(), on_save=lambda *a: None)
+    assert _control_under_label(page.shown, "Type", ft.Dropdown).value == "socks5"
+
+
+@pytest.mark.parametrize("scheme", sorted(PROXY_SCHEMES))
+def test_editing_a_stored_proxy_never_rewrites_its_scheme(scheme):
+    """Opening a stored proxy to edit one field must not change its transport.
+
+    The dropdown could not represent socks4/socks4h/socks5h, so it fell to its
+    "socks5" default and current_url() rebuilt — and SAVED — the downgrade on
+    any edit, e.g. a rename. For socks4 that is a proxy that can no longer
+    connect; for socks5h it silently changes who resolves the hostname
+    (verify.exit_guard reads the credential back in socks5h form). This asserts
+    the round trip through save, not merely that the dropdown displays it.
+    """
+    page = _FakePage()
+    saved = []
+    px = Proxy("dc", f"{scheme}://u:p@1.2.3.4:1080")
+    open_proxy_dialog(
+        page,
+        _FakeService(),
+        on_save=lambda name, url, rot: saved.append((name, url, rot)) or None,
+        proxy=px,
+    )
+    dlg = page.shown
+    assert _control_under_label(dlg, "Type", ft.Dropdown).value == scheme
+    # Rename it — an edit that has nothing to do with the scheme.
+    _field(dlg, "Name").value = "dc-renamed"
+    dlg.actions[1].on_click(None)
+    assert saved == [("dc-renamed", f"{scheme}://u:p@1.2.3.4:1080", "")]
+
+
+@pytest.mark.parametrize("scheme", sorted(PROXY_SCHEMES))
+def test_pasted_provider_line_saves_the_scheme_it_declared(scheme):
+    """A pasted line's scheme must survive the paste path into what is SAVED.
+
+    parse_proxy_line understands all six, but the dialog's membership test then
+    discarded anything outside its three — leaving the dropdown on its socks5
+    default while host/port/creds were applied, so the paste looked like it had
+    worked and the proxy was stored with a transport nobody chose.
+    """
+    page = _FakePage()
+    saved = []
+    open_proxy_dialog(
+        page,
+        _FakeService(),
+        on_save=lambda name, url, rot: saved.append((name, url, rot)) or None,
+    )
+    dlg = page.shown
+    paste = _field(dlg, "Paste proxy string")
+    paste.value = f"{scheme}://198.51.100.7:1080"
+    paste.on_change(None)
+    assert _control_under_label(dlg, "Type", ft.Dropdown).value == scheme
+    _field(dlg, "Name").value = "pasted"
+    dlg.actions[1].on_click(None)
+    assert saved == [("pasted", f"{scheme}://198.51.100.7:1080", "")]
