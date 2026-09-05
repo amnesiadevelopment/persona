@@ -131,6 +131,35 @@ def resolve(proxy: str | None = None) -> tuple[str, str]:
     return PROXIED, value
 
 
+def validate_for_save(value: str) -> tuple[bool, str]:
+    """Would `resolve()` be able to honour `value`? (ok, reason-if-not).
+
+    THE SAVE-TIME GATE, and it is deliberately not a validator: it holds no
+    rule of its own, it ASKS `resolve()` above and reports what it said. That
+    is the whole point. A saved-but-unparseable value is a silent update
+    outage — REFUSE means all nine consumers stop sending, the security-update
+    poll included, and the operator's only notice is a log line — so a control
+    that writes this setting must refuse at SAVE time exactly what the
+    transport would refuse at SEND time. Any second opinion here (a re-typed
+    scheme list, a regex of its own) is a rule that can disagree with the one
+    that actually governs the request, which is the drift this module exists
+    to prevent; `proxy_checker.SOCKS_SCHEMES` derives from
+    `validation.PROXY_SCHEMES` for the same reason rather than restating it.
+
+    `""` is VALID and means DIRECT — clearing the setting must always be
+    possible, and the unset case is the default every existing install has.
+
+    Returns (True, "") when the value is usable (DIRECT or PROXIED), and
+    (False, reason) when `resolve()` would REFUSE it. The reason is
+    `resolve()`'s own refusal string, not a second wording of it, so the
+    sentence the operator reads at save time is the sentence the transport
+    would have logged. The value itself is NEVER put in the reason: it can
+    embed credentials and a caller may well log or surface what it gets back.
+    """
+    verdict, detail = resolve(value)
+    return (False, detail) if verdict == REFUSE else (True, "")
+
+
 #: Trap-2 throttle state, for the CURL arm only. `fetch_json`'s callers poll
 #: hourly, so a warning per refusal is 24 lines a day; `app_update`'s poll runs
 #: every 60 SECONDS for the life of the process, so the identical line would be

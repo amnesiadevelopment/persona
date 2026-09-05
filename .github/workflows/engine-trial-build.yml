@@ -118,6 +118,57 @@
 #    is what makes that separation structural rather than editorial. Conflating
 #    them is the error this ticket exists to correct.
 #
+# ─────────────────────────────────────────────────────────────────────────────
+# PS-307 — THE PREPARED TREE IS REUSED BETWEEN DISPATCHES, AND THAT IS GUARDED
+# ─────────────────────────────────────────────────────────────────────────────
+# The ucpl checkouts set `clean: false`, so the ~8 GB prepared Chromium tree
+# survives between runs instead of being re-downloaded, re-unpacked and
+# re-patched every time. On the rebase loop — where a dispatch can die minutes
+# in for reasons unrelated to the tree — that preparation was the repeated cost
+# the operator asked to stop paying.
+#
+# IT IS ALSO THE MOST DANGEROUS CHANGE IN THIS FILE, so read this before
+# touching it. Upstream's `scripts/shared.sh` skips each preparation phase when
+# a stamp file is present INSIDE the source tree, and `apply_patches()` is:
+#
+#     if [ ! -f "${_src_dir}/.patched.stamp" ]; then
+#         patches.py apply "${_src_dir}" "${_main_repo}/patches" "${_root}/patches"
+#         touch "${_src_dir}/.patched.stamp"
+#     fi
+#
+# That stamp records THAT patching happened, never WHICH series. Our 16 are
+# appended to `patches/series`, which lives OUTSIDE the tree the stamp guards.
+# So a preserved, already-stamped tree makes `apply_patches()` a COMPLETE no-op:
+# our patches never enter the tree, the compile succeeds, and the artifact is
+# labelled as carrying 16 fingerprint patches while carrying none. That is the
+# failure the section below forbids in as many words, and it is exactly the
+# PS-192 shape — a confident green from an instrument nobody re-zeroed.
+#
+# Two steps make it safe, and NEITHER MAY BE REMOVED OR MADE `continue-on-error`:
+#
+#   ps307_tree_state.sh          A tree is reused only when its sealed identity
+#                                matches this job's exactly — same ungoogled tag,
+#                                same role (unmodified/patched), same fingerprint
+#                                patch digest. Anything else is DESTROYED. The
+#                                seal is broken before prepare and rewritten only
+#                                after it succeeds, so an interrupted run leaves
+#                                a tree the next dispatch rebuilds. Same posture
+#                                as PS-244's borrowed control: VERIFY, never
+#                                trust, and refuse rather than degrade.
+#
+#   ps307_verify_patches_in_tree.sh  Reads the SOURCE FILES and proves our 16 are
+#                                in the tree about to be compiled. It reads NO
+#                                stamp and NO series file, deliberately: those are
+#                                the artefacts that say "patched" in precisely the
+#                                scenario that drops all 16. The patched compile
+#                                is GATED on it, and the control job runs the
+#                                inverse (`absent`) as the negative control that
+#                                makes the positive result mean anything.
+#
+# `build/download_cache` is a SIBLING of `build/src`, so even a destroyed tree
+# keeps the ~1.7 GB tarball. Deleting a tree is cheap; compiling the wrong one
+# is not.
+#
 # 3. Extend the GPU patch to the ServiceWorker realm — only once 1 and 2 have
 #    produced a working binary. That step is NOT in this workflow; it is a patch
 #    plus a verification harness, and it does not happen if there is no binary.
@@ -283,19 +334,6 @@ jobs:
     outputs:
       compiled: ${{ steps.compile.outputs.compiled }}
     steps:
-      # ── ZERO THE INSTRUMENT BEFORE USING IT ──────────────────────────────
-      # `record/` lives in $GITHUB_WORKSPACE, OUTSIDE both checkouts (persona/
-      # and ucpl/), so `actions/checkout` never cleans it and a self-hosted
-      # runner does not wipe _work between runs. Left alone, a control log from
-      # an EARLIER dispatch — different tag, different day — is still on disk
-      # and is therefore *present*, which is the only condition
-      # ps218_attribute.sh's "CONTROL UNKNOWN" safety tests. A stale control
-      # would be silently treated as this run's and errors billed
-      # "PRE-EXISTING — NOT ours" against a tree that was never built here.
-      #
-      # That is the PS-192 shape this ticket cites: a confident reading from an
-      # instrument nobody re-zeroed. The guard fired on absence; staleness needs
-      # this.
       # ── THE MACHINE MUST BE ABLE TO BUILD, NOT MERELY CLAIM TO ──────────
       # `runs-on:` above narrows scheduling to a Linux x64 self-hosted runner,
       # which excludes `persona-mac-builder`. But a LABEL IS A SELF-DECLARED
@@ -337,15 +375,49 @@ jobs:
           fi
           echo "OK — Linux x86_64 with docker $(docker --version 2>/dev/null | head -1)"
 
-      - name: Zero record/ from any previous dispatch
-        run: |
-          rm -rf record
-          mkdir -p record
-
+      # THE CHECKOUT COMES FIRST NOW, and that reordering is required rather
+      # than cosmetic: the salvage below is a script that lives in this
+      # repository, so it cannot run before this step exists. It is safe —
+      # `record/` sits outside both checkout paths, so `actions/checkout`
+      # cleans neither it nor the material about to be salvaged from it.
       - name: Check out persona (for the recording scripts)
         uses: actions/checkout@v4
         with:
           path: persona
+
+      # ── PS-289: SALVAGE FIRST, THEN ZERO ────────────────────────────────
+      # The zeroing itself is unchanged in effect and is still required for the
+      # reason below. What changed is that the previous dispatch's bytes are
+      # now CARRIED OUT before being removed instead of being deleted unread.
+      #
+      # This is the half of PS-289 that makes a dead run readable FROM GITHUB.
+      # A runner that dies mid-step never reaches an upload step and GitHub
+      # never flushes its job log, so that run's `record/` is stranded on the
+      # owner's disk — present, and unreachable. This step copies it into
+      # `record/salvaged/`, from where the existing `if: always()` upload ships
+      # it as an ordinary artifact of the NEXT dispatch.
+      #
+      # Salvaged material is quarantined under `salvaged/` and never placed at
+      # the top level, because ps218_attribute.sh and ps218_verify_control.sh
+      # read exact top-level paths — a salvaged control sitting beside a live
+      # one would be the stale-control false attribution the zeroing exists to
+      # prevent. Durability must not be bought with that guarantee.
+      #
+      # ── AND THE ORIGINAL REASON THE ZEROING EXISTS, UNCHANGED ────────────
+      # `record/` lives in $GITHUB_WORKSPACE, OUTSIDE both checkouts (persona/
+      # and ucpl/), so `actions/checkout` never cleans it and a self-hosted
+      # runner does not wipe _work between runs. Left alone, a control log from
+      # an EARLIER dispatch — different tag, different day — is still on disk
+      # and is therefore *present*, which is the only condition
+      # ps218_attribute.sh's "CONTROL UNKNOWN" safety tests. A stale control
+      # would be silently treated as this run's and errors billed
+      # "PRE-EXISTING — NOT ours" against a tree that was never built here.
+      #
+      # That is the PS-192 shape this ticket cites: a confident reading from an
+      # instrument nobody re-zeroed. The guard fired on absence; staleness needs
+      # this.
+      - name: Salvage the previous dispatch's evidence, then zero record/
+        run: persona/scripts/ps289_journal.sh salvage
 
       - name: Check out ungoogled-chromium-portablelinux
         uses: actions/checkout@v4
@@ -357,6 +429,57 @@ jobs:
           # cannot fetch or patch anything at all.
           submodules: recursive
           path: ucpl
+          # ── PS-307: PRESERVE THE PREPARED TREE BETWEEN DISPATCHES ───────────
+          # `actions/checkout` defaults to running `git clean -ffdx`, which
+          # deletes `build/` — the ~8 GB Chromium tree, its toolchains, and the
+          # download cache. That is why every dispatch has been paying the full
+          # ~1.7 GB download, unpack, toolchain fetch and 111-patch application
+          # from nothing, including on runs that die minutes later for reasons
+          # having nothing to do with the tree.
+          #
+          # `build/` is gitignored upstream and therefore UNTRACKED, so leaving
+          # it alone costs the checkout nothing: the tracked files are still
+          # reset to the tag by `git checkout --force`, and the per-run repairs
+          # (ps306_harden_toolchain.sh, ps218_stage_patches.sh) are re-applied to
+          # a freshly-reset `scripts/shared.sh` and `patches/series` exactly as
+          # before. Only the untracked build tree survives.
+          #
+          # It also removes the stall that killed runs 33825514074 and
+          # 33828273063: both died inside `git clean -ffdx` on a leftover
+          # `build/`. `git clean` no longer runs at all.
+          #
+          # ⚠️ THIS IS THE UNSAFE HALF OF THE FEATURE ON ITS OWN. A preserved
+          # tree keeps upstream's `.patched.stamp`, which makes `apply_patches()`
+          # a no-op — and that stamp records only THAT patching happened, never
+          # WHICH series. Our 16 go into `patches/series`, which lives OUTSIDE
+          # the tree. So `clean: false` unaccompanied would let the patched job
+          # compile a tree carrying none of our patches and report it as
+          # carrying 16. The two steps below are what make it safe, and neither
+          # is optional: `ps307_tree_state.sh` refuses to reuse a tree whose
+          # identity is not this job's, and `ps307_verify_patches_in_tree.sh`
+          # reads the SOURCE FILES to prove what the tree actually contains.
+          clean: false
+
+      # ── PS-307: MAY THE TREE ON DISK BE REUSED? ─────────────────────────────
+      # Runs BEFORE prepare, because it may DESTROY the tree — deciding
+      # afterwards would be deciding about a tree already used. A tree is reused
+      # only when its sealed identity matches this job's exactly: same ungoogled
+      # tag, same role (unmodified/patched), same fingerprint patch digest.
+      # Anything else is wiped, on the same posture PS-244 established for the
+      # borrowed control — an input from a previous run is VERIFIED, not trusted.
+      #
+      # `build/download_cache` is a SIBLING of `build/src`, so a wipe keeps it
+      # and even a cold rebuild skips the ~1.7 GB download.
+      #
+      # For the control tree the fingerprint digest is `none`; PATCH_DIR is
+      # passed anyway so the identity's schema is identical in both jobs.
+      - name: Decide whether the prepared tree can be reused
+        id: tree
+        run: persona/scripts/ps307_tree_state.sh plan unmodified
+        env:
+          UCPL_DIR: ucpl
+          UNGOOGLED_TAG: ${{ inputs.ungoogled_tag }}
+          PATCH_DIR: persona/engine/patches/fingerprint
 
       - name: Record the build environment as the CONTAINER sees it
         id: env
@@ -421,6 +544,47 @@ jobs:
         env:
           UCPL_DIR: ucpl
 
+      # ── PS-307: SEAL THE TREE, ONLY AFTER A PREPARE THAT SUCCEEDED ──────────
+      # The seal is what lets the NEXT dispatch identify this tree. It is written
+      # here and nowhere else, so a run killed inside prepare — the OOM, the
+      # segfault, the operator closing the laptop — leaves an UNSEALED tree that
+      # the next dispatch rebuilds rather than inherits. That is the ticket's
+      # "stale tree left by an interrupted run", made unreusable by construction
+      # instead of by anyone noticing.
+      - name: Seal the prepared tree so the next dispatch can identify it
+        if: steps.prepare.outcome == 'success'
+        run: persona/scripts/ps307_tree_state.sh seal unmodified
+        env:
+          UCPL_DIR: ucpl
+          UNGOOGLED_TAG: ${{ inputs.ungoogled_tag }}
+          PATCH_DIR: persona/engine/patches/fingerprint
+
+      # ── PS-307: THE NEGATIVE CONTROL, AND THE CONTAMINATION CHECK ───────────
+      # Two jobs in one step, and both matter.
+      #
+      # 1. IT IS WHAT MAKES THE PATCHED JOB'S CHECK MEAN SOMETHING. That job
+      #    asserts our 16 patches are PRESENT. A checker with a broken matcher —
+      #    a grep whose pattern always hits, an evidence file that came out empty
+      #    — would report all 16 found on every tree forever and satisfy that
+      #    assertion permanently. Running the INVERSE against a tree known to
+      #    carry none of them is what would catch it. "A check that could not
+      #    have failed is not coverage" is the standing directive here.
+      #
+      # 2. IT STANDS ON ITS OWN. If our patches turn up in the CONTROL tree the
+      #    control is contaminated, and every "the unmodified tree had this error
+      #    too" attribution built on it in ps218_attribute.sh is false. With the
+      #    tree now PRESERVED between dispatches, a control that inherited a
+      #    patched tree is a newly reachable state rather than a hypothetical.
+      #
+      # Deliberately NOT `continue-on-error`: a contaminated control cannot
+      # attribute anything, so there is nothing worth compiling from it.
+      - name: Verify our patches are ABSENT from the control tree
+        if: steps.prepare.outcome == 'success'
+        run: persona/scripts/ps307_verify_patches_in_tree.sh absent unmodified
+        env:
+          UCPL_DIR: ucpl
+          PATCH_DIR: persona/engine/patches/fingerprint
+
       # Reached ONLY when the de-googling patches applied. Without this guard a
       # failed `prepare` still ran the compile against a half-patched tree, and
       # `COMPILE_RESULT` arrived as `failure` rather than `skipped` — at which
@@ -452,6 +616,10 @@ jobs:
           NINJA_JOBS: ${{ inputs.ninja_jobs }}
           PREPARE_RESULT: ${{ steps.prepare.outcome }}
           COMPILE_RESULT: ${{ steps.compile.outcome }}
+          # PS-307 — a reused tree changes what the prepare wall-clock MEANS, and
+          # that figure is one of this workflow's deliverables. A reader must be
+          # able to tell a cold prepare from a warm one without opening the log.
+          TREE_REUSED: ${{ steps.tree.outputs.reused }}
 
       # Logs and the manifest are uploaded WHETHER OR NOT the build succeeded.
       # A failed build is a result this ticket is paying for, and a result whose
@@ -548,11 +716,6 @@ jobs:
     runs-on: [self-hosted, Linux, X64, persona-build]
     timeout-minutes: 900
     steps:
-      # Same zeroing as the control job, and for the same reason: `record/` is
-      # outside both checkouts, so nothing else cleans it between dispatches.
-      # This job additionally READS a control log copied in from the artifact,
-      # so a leftover from an earlier run is the exact input that would poison
-      # attribution.
       # ── THE MACHINE MUST BE ABLE TO BUILD, NOT MERELY CLAIM TO ──────────
       # `runs-on:` above narrows scheduling to a Linux x64 self-hosted runner,
       # which excludes `persona-mac-builder`. But a LABEL IS A SELF-DECLARED
@@ -594,15 +757,22 @@ jobs:
           fi
           echo "OK — Linux x86_64 with docker $(docker --version 2>/dev/null | head -1)"
 
-      - name: Zero record/ from any previous dispatch
-        run: |
-          rm -rf record
-          mkdir -p record
-
+      # Checkout first — the salvage script lives in this repository. `record/`
+      # is outside both checkout paths, so nothing here disturbs the material
+      # about to be salvaged.
       - name: Check out persona (patches + recording scripts)
         uses: actions/checkout@v4
         with:
           path: persona
+
+      # PS-289 salvage + the same zeroing as the control job, for the same
+      # reason: `record/` is outside both checkouts, so nothing else cleans it
+      # between dispatches. This job additionally READS a control log copied in
+      # from the artifact, so a leftover from an earlier run is the exact input
+      # that would poison attribution — which is why the salvage quarantines
+      # what it recovers under `record/salvaged/` and never at the top level.
+      - name: Salvage the previous dispatch's evidence, then zero record/
+        run: persona/scripts/ps289_journal.sh salvage
 
       - name: Check out ungoogled-chromium-portablelinux
         uses: actions/checkout@v4
@@ -611,6 +781,42 @@ jobs:
           ref: ${{ inputs.ungoogled_tag }}
           submodules: recursive
           path: ucpl
+          # PS-307 — see the long note on the identical key in `unmodified`.
+          # `build/` is untracked and gitignored upstream, so skipping
+          # `git clean -ffdx` preserves the prepared tree while the tracked files
+          # are still reset to the tag. `patches/series` is one of those tracked
+          # files, so ps218_stage_patches.sh still appends our 16 to a clean
+          # series every run rather than to a growing one.
+          clean: false
+
+      # ── PS-307: MAY THE TREE ON DISK BE REUSED? ─────────────────────────────
+      # THIS IS THE JOB THE HAZARD LIVES IN, and the ordering below is what
+      # contains it.
+      #
+      # On a `trees=both` dispatch the control job has just sealed an
+      # `unmodified` tree in this same preserved workspace. Reusing it here would
+      # be catastrophic and SILENT: `.patched.stamp` is present, so upstream's
+      # `apply_patches()` skips itself entirely, our 16 never enter the tree, the
+      # compile succeeds, and the artifact is labelled as carrying 16 fingerprint
+      # patches while carrying none. The identity check refuses it — a tree
+      # sealed `unmodified` is not the `patched` tree — and the tree is destroyed
+      # and rebuilt. The DOWNLOAD is still reused, which is the bulk of the
+      # saving on that path.
+      #
+      # On the `trees=patched` rebase loop, the case the operator actually asked
+      # for, the previous dispatch's patched tree matches on all three fields and
+      # the whole prepare collapses to almost nothing.
+      #
+      # It runs BEFORE staging on purpose: a wipe here must not discard a tree
+      # that staging has already been told about, and `plan` reads only the
+      # identity file, never `patches/series`.
+      - name: Decide whether the prepared tree can be reused
+        id: tree
+        run: persona/scripts/ps307_tree_state.sh plan patched
+        env:
+          UCPL_DIR: ucpl
+          UNGOOGLED_TAG: ${{ inputs.ungoogled_tag }}
+          PATCH_DIR: persona/engine/patches/fingerprint
 
       - name: Record the build environment as the CONTAINER sees it
         run: persona/scripts/ps218_record_env.sh patched pre-prepare
@@ -720,13 +926,69 @@ jobs:
         env:
           UCPL_DIR: ucpl
 
+      # ── PS-307: PROVE OUR 16 PATCHES ARE IN THE TREE. THE GATE. ─────────────
+      # THE STEP THIS WHOLE TICKET EXISTS FOR, and its placement is the design.
+      # It sits between prepare and compile so a tree missing our patches costs
+      # SECONDS rather than the ~4–5.5 h compile — and, more importantly, never
+      # becomes a binary. A check after the compile would refuse a result already
+      # paid for, and would refuse it only after producing the mislabelled
+      # artifact it exists to prevent.
+      #
+      # ⚠️ IT READS THE SOURCE FILES. NOT `.patched.stamp`, NOT `patches/series`,
+      # NOT the staging step's exit code. Every one of those says "patched" in
+      # precisely the scenario that drops all 16, because the stamp records only
+      # THAT patching happened and the series lives outside the tree the stamp
+      # guards. The evidence has to come from the tree, so the tree is what is
+      # read: each patch's added lines, deleted lines and created files, looked
+      # for in the Chromium sources themselves.
+      #
+      # ⚠️ NO `continue-on-error`. The compile steps carry it deliberately, so a
+      # failed compile still yields its diagnostics. This is the opposite: if
+      # this fails there is nothing worth compiling, and a build that carried on
+      # would produce exactly the artifact the header forbids — "A build made to
+      # succeed by quietly dropping a patch measures nothing."
+      #
+      # The tree-reuse identity check in `ps307_tree_state.sh` already makes the
+      # silent-skip sequence unreachable. This step is here because "unreachable
+      # by argument" and "verified in the tree" are different claims, and the
+      # ticket asks for the second one.
+      - name: Verify our 16 fingerprint patches are IN the tree about to compile
+        id: verify_patches
+        if: steps.prepare.outcome == 'success'
+        run: persona/scripts/ps307_verify_patches_in_tree.sh present patched
+        env:
+          UCPL_DIR: ucpl
+          PATCH_DIR: persona/engine/patches/fingerprint
+
+      # ── PS-307: SEAL, ONLY AFTER PREPARE *AND* VERIFICATION BOTH PASSED ─────
+      # Stricter than the control job's seal, and deliberately so. This seal is
+      # what licenses a FUTURE dispatch to skip patch application entirely, so it
+      # may only be written over a tree that has been PROVEN to carry our
+      # patches. Sealing on prepare alone would let an unverified tree become the
+      # next run's trusted input — the hazard laundered one dispatch forward.
+      - name: Seal the prepared tree so the next dispatch can identify it
+        if: steps.prepare.outcome == 'success' && steps.verify_patches.outcome == 'success'
+        run: persona/scripts/ps307_tree_state.sh seal patched
+        env:
+          UCPL_DIR: ucpl
+          UNGOOGLED_TAG: ${{ inputs.ungoogled_tag }}
+          PATCH_DIR: persona/engine/patches/fingerprint
+
       # THE SECOND RESULT, AND THE ONE THIS TICKET EXISTS TO PRODUCE. Whether
       # the tree our patches produced actually COMPILES. Reached only when the
       # patches applied — a compile attempt on a half-patched tree would
       # manufacture failures belonging to neither result.
+      #
+      # PS-307 ADDED THE SECOND CONDITION, and it is not redundant with the
+      # first. `prepare` succeeding says the patch pipeline RAN without error; on
+      # a preserved tree it also succeeds when `apply_patches()` skipped itself
+      # entirely and applied nothing. Only `verify_patches` says our 16 are in
+      # the tree. Ordering alone would not gate this — a later step with its own
+      # `if:` still runs after an earlier failure — so the dependency is written
+      # into the condition.
       - name: Compile — THE NUMBER THIS TICKET EXISTS TO PRODUCE
         id: compile
-        if: steps.prepare.outcome == 'success'
+        if: steps.prepare.outcome == 'success' && steps.verify_patches.outcome == 'success'
         continue-on-error: true
         run: persona/scripts/ps218_build.sh compile patched
         env:
@@ -783,6 +1045,13 @@ jobs:
           NINJA_JOBS: ${{ inputs.ninja_jobs }}
           PREPARE_RESULT: ${{ steps.prepare.outcome }}
           COMPILE_RESULT: ${{ steps.compile.outcome }}
+          # PS-307 — a reused tree changes what the prepare wall-clock MEANS.
+          TREE_REUSED: ${{ steps.tree.outputs.reused }}
+          # PS-307 — the manifest's "16 fingerprint patches" row is a CLAIM about
+          # the artifact, and this is what backs it. Without it the row rests on
+          # the staging step having run, which on a preserved tree is exactly the
+          # thing that can be true while the patches are absent.
+          PATCHES_VERIFIED: ${{ steps.verify_patches.outcome }}
           # Empty on the `both` path, which is what makes the manifest say
           # IN-RUN there and name the borrowed run here.
           CONTROL_RUN_ID: ${{ inputs.trees == 'patched' && inputs.control_run_id || '' }}
@@ -815,8 +1084,14 @@ jobs:
           retention-days: 7
 
       - name: Re-raise a failure now that the evidence is collected
-        if: steps.prepare.outcome == 'failure' || steps.compile.outcome == 'failure'
+        if: steps.prepare.outcome == 'failure' || steps.verify_patches.outcome == 'failure' || steps.compile.outcome == 'failure'
         run: |
+          if [ "${{ steps.verify_patches.outcome }}" = "failure" ]; then
+            echo "::error::PS-307: the tree does NOT carry our full fingerprint patch layer, so nothing was compiled from it."
+            echo "::error::PS-307: this is the failure tree reuse makes possible — a preserved, already-stamped tree lets upstream's apply_patches() skip itself, and the build would then be labelled as carrying 16 patches while carrying fewer."
+            echo "::error::PS-307: see record/patch-presence-patched.txt for which patches were missing and which evidence failed. The tree has NOT been sealed, so the next dispatch rebuilds it."
+            exit 1
+          fi
           echo "::error::PATCHED tree did not build (prepare=${{ steps.prepare.outcome }}, compile=${{ steps.compile.outcome }})."
           echo "::error::The unmodified control DID build, so this failure is attributable to our 16 patches. See record/attribution.txt for the per-patch breakdown."
           echo "::error::Per PS-218 this is a SUCCESSFUL OUTCOME for the ticket: it is the number the ticket exists to produce. Do NOT drop a patch to make this go green."
