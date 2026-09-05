@@ -1,5 +1,5 @@
 {
-  "app_version": "3.0.1",
+  "app_version": "3.0.2",
   "engine": "firefox",
   "engine_build": "firefox-20",
   "probes": {
@@ -95,6 +95,29 @@
       },
       "masking.measureText": {
         "value": "function measureText() {\n    [native code]\n}"
+      },
+      "masking.shapeGetChannelData": {
+        "value": {
+          "length": 1,
+          "name": "getChannelData",
+          "own": [
+            "length",
+            "name"
+          ]
+        }
+      },
+      "masking.shapeScreenWidthAccessor": {
+        "value": "absent:undefined"
+      },
+      "masking.shapeWebglGetParameter": {
+        "value": {
+          "length": 1,
+          "name": "getParameter",
+          "own": [
+            "length",
+            "name"
+          ]
+        }
       },
       "masking.webglGetParameter": {
         "value": "function getParameter() {\n    [native code]\n}"
@@ -212,7 +235,7 @@
           "OffscreenCanvas": "function",
           "PaymentRequest": "undefined",
           "Scheduler": "function",
-          "Serial": "undefined",
+          "Serial": "function",
           "ServiceWorkerRegistration": "function",
           "SharedWorker": "function",
           "SpeechSynthesis": "function",
@@ -232,7 +255,7 @@
           "navigator.permissions": "object",
           "navigator.presentation": "undefined",
           "navigator.scheduling": "undefined",
-          "navigator.serial": "undefined",
+          "navigator.serial": "object",
           "navigator.serviceWorker": "object",
           "navigator.share": "undefined",
           "navigator.storage": "object",
@@ -413,6 +436,19 @@
       "masking.measureText": {
         "value": "absent:undefined"
       },
+      "masking.shapeGetChannelData": {
+        "value": "absent:undefined"
+      },
+      "masking.shapeWebglGetParameter": {
+        "value": {
+          "length": 1,
+          "name": "getParameter",
+          "own": [
+            "length",
+            "name"
+          ]
+        }
+      },
       "masking.webglGetParameter": {
         "value": "function getParameter() {\n    [native code]\n}"
       },
@@ -498,7 +534,7 @@
           "OffscreenCanvas": "function",
           "PaymentRequest": "undefined",
           "Scheduler": "function",
-          "Serial": "undefined",
+          "Serial": "function",
           "ServiceWorkerRegistration": "function",
           "SharedWorker": "undefined",
           "SpeechSynthesis": "undefined",
@@ -518,7 +554,7 @@
           "navigator.permissions": "object",
           "navigator.presentation": "undefined",
           "navigator.scheduling": "undefined",
-          "navigator.serial": "undefined",
+          "navigator.serial": "object",
           "navigator.serviceWorker": "object",
           "navigator.share": "undefined",
           "navigator.storage": "object",
