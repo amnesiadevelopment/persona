@@ -1020,6 +1020,247 @@ def test_no_self_hosted_runner_is_introduced(ci_yaml) -> None:
 
 
 # --------------------------------------------------------------------------
+# PS-313: the gate is now TWO jobs, and the thing that makes that safe is that
+# they PARTITION the suite rather than narrow it.
+#
+# The `tests` matrix runs `-m "not ui_driver"`; `ui-driver-tests` runs
+# `-m ui_driver`. Every test is collected by exactly one of them and both gate,
+# so nothing was removed from the merge gate — it was redistributed.
+#
+# That property is the entire licence for the split, and it is also exactly the
+# kind of thing that decays silently. A third marker, a typo'd expression, a
+# `-k` bolted onto one side, or a job quietly dropped would each leave two
+# green checks that together verify LESS than the suite — which is the
+# invisible-green failure this file exists to refuse, and which is strictly
+# worse than the visible cancellation the split was fixing. So the arithmetic
+# is re-derived from the workflow on every run rather than trusted.
+# --------------------------------------------------------------------------
+
+#: The two jobs that between them must run the whole suite, and the marker
+#: expression each one gates on. Read from ci.yml rather than restated, so a
+#: change to either expression is caught here rather than assumed away.
+PARTITION_JOBS = ("tests", "ui-driver-tests")
+
+
+def _pytest_invocation(job: dict) -> str:
+    """The one `python -m pytest` command line a test job runs.
+
+    Asserting there is EXACTLY one matters as much as finding it: a job that
+    grew a second pytest call could satisfy every check below on its first
+    line while the second one narrowed the run.
+    """
+    lines = [
+        line.strip()
+        for step in job.get("steps", [])
+        for line in str(step.get("run", "")).splitlines()
+        if "python -m pytest" in line and not line.strip().startswith("#")
+    ]
+    assert len(lines) == 1, (
+        f"expected exactly one `python -m pytest` invocation in this job, "
+        f"found {len(lines)}: {lines!r}"
+    )
+    return lines[0]
+
+
+def _marker_expression(invocation: str) -> str:
+    """The `-m EXPR` this invocation gates on.
+
+    Searched from AFTER the `python -m pytest` prefix, deliberately: that
+    prefix contains its own `-m`, and a naive scan reads the module name
+    "pytest" as the marker expression. It then collects the whole suite,
+    reports a plausible number, and the partition check passes while measuring
+    nothing — a green test that verifies the opposite of its name.
+    """
+    _, _, tail = invocation.partition("-m pytest")
+    assert tail or "-m pytest" in invocation, (
+        f"no `python -m pytest` invocation to read a marker from: {invocation!r}"
+    )
+    match = re.search(r"""-m\s+("([^"]*)"|'([^']*)'|(\S+))""", tail)
+    assert match, (
+        f"no -m marker expression in {invocation!r} — the two jobs are only a "
+        "partition if each states which portion it runs"
+    )
+    return match.group(2) or match.group(3) or match.group(4)
+
+
+def test_both_halves_of_the_split_gate_are_present(ci_yaml) -> None:
+    """Neither job may simply disappear.
+
+    Deleting `ui-driver-tests` would leave a green `tests` check that no longer
+    runs the ui_driver tier at all — 15 tests silently outside the gate, and
+    nothing else in this file would notice.
+    """
+    for name in PARTITION_JOBS:
+        assert name in ci_yaml["jobs"], (
+            f"the {name!r} job is gone, so the half of the suite it runs is no "
+            "longer gated by anything — the remaining check would be green "
+            "while verifying less than it claims"
+        )
+
+
+def test_the_two_test_jobs_state_complementary_portions(ci_yaml) -> None:
+    """The expressions must be exact complements, read from the workflow.
+
+    Pinned as a RELATIONSHIP rather than as two hardcoded strings: renaming the
+    marker is fine, running two overlapping or two disjoint-but-incomplete
+    selections is not.
+    """
+    expressions = {
+        name: _marker_expression(_pytest_invocation(ci_yaml["jobs"][name]))
+        for name in PARTITION_JOBS
+    }
+    positive = expressions["ui-driver-tests"].strip()
+    negative = expressions["tests"].strip()
+    assert not positive.startswith("not "), (
+        f"the ui-driver job selects {positive!r}, which is a negation — the two "
+        "jobs would then both exclude something and nothing would run it"
+    )
+    assert negative == f"not {positive}", (
+        f"the two jobs run {negative!r} and {positive!r}, which are not "
+        "complements — a test matching neither is collected by NO job and has "
+        "silently left the merge gate"
+    )
+
+
+def test_the_two_test_jobs_partition_the_suite(ci_yaml) -> None:
+    """THE LOAD-BEARING TEST OF THE SPLIT: run both selections, sum them, and
+    require the total to be the whole suite.
+
+    This is what makes the split a partition rather than a narrowing, and it is
+    deliberately a MEASUREMENT — it re-collects both expressions against the
+    real tree instead of trusting the arithmetic someone wrote down once. A
+    test that fell into the gap between the two jobs is exactly the defect that
+    would turn this change from a fix into a worse version of the bug it fixed,
+    and the only way to see it is to count.
+
+    Collection only: this costs a few seconds and runs nothing, so the gate can
+    afford to re-derive the property on every run rather than on request.
+    """
+    import subprocess
+    import sys as _sys
+
+    def _collected(*args: str) -> int:
+        proc = subprocess.run(
+            [_sys.executable, "-m", "pytest", "--collect-only", "-q", "-p", "no:cacheprovider", *args],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=600,
+            encoding="utf-8",
+        )
+        out = (proc.stdout or "") + (proc.stderr or "")
+        # pytest prints "N/M tests collected (K deselected)" when a -m filter
+        # is in play and a bare "N tests collected" when it is not — but a
+        # selection matching NOTHING prints "no tests collected" with no digit
+        # at all. That case must read as a measured ZERO rather than as an
+        # unparseable run: it is the most likely real failure here (a marker
+        # renamed in the harness and updated in only one of the two jobs), and
+        # reporting it as "could not read a count" would send the next reader
+        # looking for a broken test instead of the empty job it actually is.
+        if re.search(r"\bno tests? (?:ran|collected)\b", out):
+            return 0
+        match = re.search(r"(\d+)(?:/\d+)? tests? collected", out)
+        assert match, f"could not read a collected count from:\n{out[-4000:]}"
+        return int(match.group(1))
+
+    expressions = {
+        name: _marker_expression(_pytest_invocation(ci_yaml["jobs"][name]))
+        for name in PARTITION_JOBS
+    }
+    whole = _collected()
+    portions = {
+        name: _collected("-m", expression)
+        for name, expression in expressions.items()
+    }
+    total = sum(portions.values())
+    assert total == whole, (
+        f"the two CI jobs collect {portions} = {total} tests between them, but "
+        f"the suite has {whole}. The split is only safe because it is a "
+        "PARTITION: every test must be run by exactly one job. A shortfall "
+        "means tests are in NO job and have silently left the merge gate; an "
+        "excess means one is being run and paid for twice."
+    )
+    for name, count in portions.items():
+        assert count > 0, (
+            f"the {name!r} job collects no tests at all — it is a green check "
+            "that verifies nothing, which is worse than an absent one"
+        )
+
+
+def test_neither_half_of_the_split_narrows_its_own_portion(ci_yaml) -> None:
+    """`-m` is a partition; `-k`/`--deselect` are not.
+
+    The whole-file ban already scans the workflow text, but it is worth
+    asserting on the two invocations THEMSELVES: this is precisely where a
+    "just skip the slow one for now" edit would land, and here the offending
+    flag would sit next to a legitimate `-m` and look like more of the same.
+    """
+    for name in PARTITION_JOBS:
+        invocation = _pytest_invocation(ci_yaml["jobs"][name])
+        for banned in ("--deselect", "--ignore=", " -k ", "--lf", "--exitfirst", "|| true"):
+            assert banned not in invocation, (
+                f"the {name!r} job narrows its own portion with {banned!r} "
+                f"({invocation!r}) — tests removed here are removed from the "
+                "gate entirely, not moved to the sibling job"
+            )
+
+
+def test_the_ui_driver_job_declares_the_capability_it_provisions(ci_yaml) -> None:
+    """The split must not weaken the tier it isolates — it strengthens it.
+
+    Before the split these tests ran on the ubuntu leg under a `browser`
+    declaration that says nothing about them: had /usr/bin/chromium vanished
+    from the runner image, all 15 would have skipped with a reason nobody reads
+    and the leg would still have gone green. Declaring `ui_driver` on the job
+    that provisions chromium turns that silence into a failure, which is the
+    one thing that makes moving them off the other two platforms honest.
+    """
+    steps = ci_yaml["jobs"]["ui-driver-tests"]["steps"]
+    declaring = [
+        s for s in steps
+        if "ui_driver" in str(s.get("env", {}).get("PERSONA_REQUIRED_CAPABILITIES", ""))
+    ]
+    assert declaring, (
+        "the ui-driver job does not declare the 'ui_driver' capability, so a "
+        "missing chromium would make all 15 tests skip and the job would go "
+        "green having driven nothing"
+    )
+    for step in declaring:
+        assert "pytest" in str(step.get("run", "")), (
+            "the capability is declared on a step that does not run the suite, "
+            "so nothing enforces it"
+        )
+
+
+def test_the_ui_driver_job_provisions_the_binary_the_driver_actually_launches(ci_yaml) -> None:
+    """The driver launches an explicit path, not whatever is on PATH.
+
+    tests/ui_driver/driver.py launches `executable_path=SYSTEM_CHROMIUM`, which
+    is the literal string "/usr/bin/chromium". A step that installed a chromium
+    somewhere else, or that ran `playwright install chromium` (which populates
+    a cache the driver never consults), would look like provisioning and
+    provide nothing.
+    """
+    driver = (REPO_ROOT / "tests" / "ui_driver" / "driver.py").read_text(encoding="utf-8")
+    match = re.search(r'SYSTEM_CHROMIUM\s*=\s*"([^"]+)"', driver)
+    assert match, "the ui driver no longer defines SYSTEM_CHROMIUM as a literal path"
+    path = match.group(1)
+    runs = "\n".join(
+        str(step.get("run", ""))
+        for step in ci_yaml["jobs"]["ui-driver-tests"]["steps"]
+    )
+    assert path in runs, (
+        f"the ui-driver job never mentions {path!r}, which is the exact binary "
+        "the driver launches — whatever it provisions, it is not that"
+    )
+    assert f"test -x {path}" in runs, (
+        f"the job does not verify {path!r} is executable before running the "
+        "tier, so a provisioning failure would surface as 15 skips rather than "
+        "as the missing binary it actually is"
+    )
+
+
+# --------------------------------------------------------------------------
 # PS-158: the check runs under the interpreter the BUNDLE was frozen for.
 #
 # These tests exist because this gate's first ever release run blocked v3.0.0 by
