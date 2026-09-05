@@ -153,22 +153,78 @@ jobs:
           echo "advisory: mypy exit status ${status} (this step cannot fail the build)"
 
   tests:
-    name: tests (${{ matrix.os }})
+    name: tests (${{ matrix.os }}, ${{ matrix.shard.name }})
     strategy:
       # Never cancel the other platforms because one went red. The whole point
       # of the matrix is the COMPARISON between platforms, and fail-fast throws
-      # away exactly the rows that make a divergence legible.
+      # away exactly the rows that make a divergence legible. The same argument
+      # now applies across SHARDS: a ui-driver failure must not cancel the main
+      # shard that would have told you whether anything else broke.
       fail-fast: false
       matrix:
         os: [ubuntu-24.04, windows-latest, macos-latest]
+        # ── THE SPLIT (PS-313) — TWO GATING PORTIONS, NOT A FAST SUBSET ─────
+        # Read `marker` as a PARTITION of the suite, not as a filter on it.
+        # Both shards run on every platform and BOTH must pass, so their union
+        # is exactly the suite that ran before this split. Verified by
+        # collection, not asserted:
+        #
+        #   pytest --collect-only                     -> 5566
+        #   pytest --collect-only -m ui_driver        ->   15   (5551 deselected)
+        #   pytest --collect-only -m "not ui_driver"  -> 5551   (  15 deselected)
+        #   15 + 5551 == 5566  ✅
+        #
+        # That arithmetic is the whole safety argument, so it is PINNED by
+        # tests/test_ci_shard_partition.py rather than left to this comment. A
+        # test that matched NEITHER marker expression would vanish from the
+        # gate silently while both jobs stayed green — which is the exact
+        # "invisibly-false green" this file's own rule below forbids, and it is
+        # the only way this change could go wrong.
+        shard:
+          - name: main
+            marker: "not ui_driver"
+          - name: ui-driver
+            marker: "ui_driver"
     runs-on: ${{ matrix.os }}
-    # Measured per platform (see the floor table below): ubuntu 107s,
-    # macOS 110s, Windows 225-245s. Windows is ~2x the others and is the reason
-    # this is 30 rather than 20. All three are inside the window where people
-    # wait for a check rather than learning to merge past it, so the gate runs
-    # the WHOLE suite: no -k narrowing, no --deselect, no "fast subset". If it
-    # ever grows slow enough to tempt someone, split it by measuring again and
-    # gating on a stated portion — do not quietly start skipping tests here.
+    # ⚠️ THE CAP IS STILL 30. THIS SPLIT DELIBERATELY DID NOT RAISE IT.
+    #
+    # The figures this cap was originally set from (ubuntu 107s, macOS 110s,
+    # Windows 225-245s — see the floor table below) are from the FIRST-EVER
+    # measurement of this suite and are now historical: they describe a suite
+    # roughly a sixth of the current size. Re-measured 2026-09-05 on `main`
+    # @ 62e0b91, and this is what the split is sized against:
+    #
+    #   whole suite, locally, as CI runs it   2037s (33m57s)  <- OVER the wall
+    #   last GREEN ubuntu leg (8fbc38b)       1656s (27m36s)  <- 83s of margin
+    #     same run, macOS                      825s (13m44s)
+    #     same run, Windows                   1110s (18m30s)
+    #
+    # WHY ONE PLATFORM AND NOT THREE: `/usr/bin/chromium` exists only on the
+    # ubuntu runner, so the ui_driver tier RUNS on Linux and SKIPS on the other
+    # two ("chromium not runnable here" in their skip reasons). Windows
+    # finishing in 18m was never evidence that Linux was misbehaving — it is
+    # evidence that Windows was not running this tier at all.
+    #
+    # Measured composition of the 2037s (`--durations`), which is what makes
+    # the seam the right one:
+    #
+    #   ui_driver tier (15 tests, 3 files)     813s   39.9%   -> the ui-driver shard
+    #   test_ps185_patch_provenance.py         567s   27.8%   -> stays in main
+    #   everything else                        657s   32.3%
+    #
+    # So after the split the worst shard on the worst platform is ~14m against
+    # a 30m cap — better than 2x margin, where the combined job had 1.09x and
+    # then lost it. RAISING the cap instead would have been the wrong move:
+    # margin across 41 green runs fell 439s -> 12s in two days (PS-13), so a
+    # cap fitted to today's suite gets eaten by the same trend that ate this
+    # one. Splitting buys headroom that a growing suite consumes half as fast;
+    # a bigger number buys time until the next ticket.
+    #
+    # THE RULE BELOW IS UNCHANGED AND STILL BINDING. Each shard runs its whole
+    # portion: no -k narrowing, no --deselect of individual tests, no "fast
+    # subset", and NEITHER shard is optional. If this needs splitting again,
+    # split it by measuring again and gating on a stated portion — do not
+    # quietly start skipping tests here.
     timeout-minutes: 30
     steps:
       - name: Check out the code
@@ -468,7 +524,11 @@ jobs:
         shell: bash
         env:
           PERSONA_REQUIRED_CAPABILITIES: browser
-        run: python -m pytest -q
+        # `-m` here SELECTS THIS SHARD'S PORTION — it is not the `-k` narrowing
+        # forbidden above. The two shards partition the suite (15 + 5551 ==
+        # 5566, pinned by tests/test_ci_shard_partition.py) and both gate, so
+        # the union of what runs is unchanged.
+        run: python -m pytest -q -m "${{ matrix.shard.marker }}"
 
       - name: GPU reading (known-environmental, never a pass)
         # A hosted runner has no GPU, so WebGL renders in software. A persona
