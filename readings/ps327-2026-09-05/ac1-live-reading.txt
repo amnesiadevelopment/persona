@@ -1,0 +1,74 @@
+PS-327 AC1 — chromium:outer-size established BY MEASUREMENT
+===========================================================
+Base: origin/main d658c81. Container: /usr/bin/chromium 152.0.7977.75
+Venue: HEADFUL chromium under Xvfb (1920x1080x24), read over CDP
+       Runtime.evaluate. NOT chromium_tier (see FINDING A: it passes no
+       resolution= and so can only ever reach the AUTO branch).
+
+WHY HEADFUL. --headless=new reports outerWidth/outerHeight == 0, which would
+have produced a FALSE NEGATIVE ("no mismatch") on the exact vector under test.
+The extension WAS live in that run (screen.width read 1280 vs 2560 across the
+two branches), so the headless reading is a venue artifact, not evidence.
+
+SETUP. Real window 1920x1080; operator-picked resolution 1280x720, i.e.
+SMALLER than the live window, which is the stated reachability bound.
+Both branches use the SAME seed (12345), generation 0, os_type=windows.
+The ONLY difference is resolution= passed to build_device_extension.
+
+READING
+-------
+FORCED (resolution=(1280,720)) — the subject:
+  innerWidth 1919  innerHeight 936
+  outerWidth 1919  outerHeight 1079
+  screen     1280 x 720     avail 1280 x 680
+  outer_gt_screen = TRUE          <-- IMPOSSIBLE PAIR
+
+AUTO (resolution=None) — the POSITIVE CONTROL:
+  innerWidth 1919  innerHeight 936
+  outerWidth 1919  outerHeight 1079
+  screen     2560 x 1440    avail 2560 x 1400
+  outer_gt_screen = FALSE         <-- coherent, floored at the window
+
+VERDICT: the mismatch the Firefox override exists to remove DOES occur on
+desktop Chromium, on the FORCED branch only. The cell moves off
+NOT_ESTABLISHED, and a spoof is warranted (AC3).
+
+BOTH AXES FAIL, not just width:
+  outerWidth  1919 > 1280 screen.width
+  outerHeight 1079 >  720 screen.height
+A fix pinning only width would leave the pair impossible on height.
+
+NOTE FOR HONEST BOUND 2 (raised WITH the reading, as the ticket requires).
+The pair does not merely look impossible — the window's TRUE extent is
+readable from it. A page that sees outerWidth 1919 while screen.width claims
+1280 learns the real window is 1919 CSS px, i.e. the host window size the
+FORCED branch was meant to conceal. That is a stronger statement than
+"incoherent", and it is why capping/pinning is worth doing rather than
+tolerating. It is still MASKING INVISIBILITY, not an Invariant #0 host-fact
+leak: no GPU, OS, locale or IP escapes, and outerWidth is the host WINDOW,
+which the operator controls. Recorded here rather than silently upgraded.
+
+1919 not 1920: chromium's own window chrome under this WM. Immaterial —
+the comparison under test is outer vs screen, and 1919 > 1280 either way.
+
+
+AC3/AC4 — AFTER THE FIX, same venue, same seed, same window
+============================================================
+FORCED (resolution=(1280,720)):
+  inner 1919 x 936   outer 1280 x 680   screen 1280 x 720
+  outer_gt_screen = FALSE        <-- coherent; window now fits its screen
+  screen.width is STILL EXACTLY THE OPERATOR'S PICK (1280) -> #167 not re-opened
+
+AUTO (resolution=None) — the AC4 negative assertion:
+  inner 1919 x 936   outer 1919 x 1079  screen 2560 x 1440
+  BYTE-IDENTICAL to the pre-fix AUTO reading. The control is untouched.
+
+A HARNESS CORRECTION, recorded rather than smoothed over. The first post-fix
+run reported screen 1920x1080 / availHeight 1080 on the FORCED leg — i.e. the
+operator's pick apparently lost, which is exactly #167's failure shape and
+would have been a serious regression. It was NOT: a direct descriptor probe on
+the same build returned screen 1280 / outer 1280 / availH 680, and a re-run on
+fresh debug ports reproduced that. The bad reading came from a contaminated
+CDP session (stale profile / reused port), not from the build. Distrust a
+reading that changes a value your diff never touches - availHeight 1080 is not
+even reachable through `H - INSET` for any pool entry, which is the tell.
