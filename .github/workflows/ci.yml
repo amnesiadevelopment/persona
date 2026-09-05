@@ -326,6 +326,63 @@ jobs:
         shell: bash
         run: python -m playwright install firefox
 
+      - name: Behavioural checks, no-launch lane (gating)
+        # THE INSTRUMENT THIS PROJECT ALREADY OWNED AND NEVER RAN.
+        #
+        # `src/services/verify/behaviour_cli.py` observes what the product
+        # DOES — a proxy assignment surviving unrelated edits, a launch
+        # refusing a disproven geography, certificate key material not
+        # outliving the session. It worked. Nothing executed it: before this
+        # step, `grep -rn behaviour_cli .github/` returned ZERO hits, against a
+        # same-shape positive control that returns three files for
+        # `engine_gate`. So the probe discriminates and the zero was real.
+        #
+        # WHY THAT MATTERED, MEASURED RATHER THAN ASSERTED: planting
+        # `raise AssertionError("MUT")` at the head of each `_run_*` body
+        # leaves `tests/test_behaviour_checks.py` at 38 passed for SIX of the
+        # seven bodies. Only `_run_launch_refuses_broken_geography` is killed
+        # (4 failed, 34 passed) — the covered-body control that makes the six
+        # greens interpretable rather than a broken experiment. That file tests
+        # the RULES deciding whether a verdict may be published, deliberately
+        # never the checks, and nothing else covered them either. The bodies
+        # could rot silently while the suite stayed green; this step is the
+        # venue where that stops being invisible.
+        #
+        # ⚠️ PLACED BEFORE `Run the test suite`, DELIBERATELY, AND THAT IS NOT
+        # COSMETIC. The step below carries NO `if: always()` and the Windows
+        # leg is RED AT ITS MEASURED FLOOR (see the floor table there: ubuntu
+        # 0+1, macos 0+1, windows 22+1). A behavioural step appended AFTER it
+        # would therefore be silently skipped on 1 of 3 platforms forever —
+        # which is this step's own defect, a gate that never executes,
+        # re-created one level up. Running FIRST is preferred over `if:
+        # always()` because this lane costs ~0.8s and is a genuine gate: it
+        # should be able to fail the job on its own terms, not merely leave a
+        # reading behind like the GPU step does.
+        #
+        # IT MUST STAY AFTER `Install deps`. The lane is NOT dependency-free —
+        # an import census after `run_checks(None, skip_launch=True)` shows it
+        # loads `cryptography` (a first-class dep, pyproject.toml). Run without
+        # the project installed it does not fail cleanly, it DEGRADES: two of
+        # the three checks report CANNOT RUN with ModuleNotFoundError and the
+        # command exits 2. That is why this is here and not in the cheaper
+        # `types` job, which installs requirements-dev.txt only and never
+        # installs the project — a step there would be permanently red saying
+        # "nothing was measured", which is precisely the failure this step
+        # exists to remove.
+        #
+        # THE EXIT CODE GATES THE JOB, AND ALL THREE CODES STAY DISTINCT:
+        # 0 held, 1 a FINDING about the product, 2 nothing was measured. Exit 2
+        # fails the job on purpose — "could not look" is not a pass, and a
+        # permanently-green check that quietly stopped looking is the whole
+        # thing this instrument was built to catch. The script owns that
+        # mapping and explains it; do not collapse it to "non-zero" here.
+        #
+        # NOT the launch lane: `--skip-launch` runs the three checks needing no
+        # browser, no display and no exit. The four launch-backed checks and
+        # any display provisioning are separate work.
+        shell: bash
+        run: python .github/scripts/run_behaviour_checks.py
+
       - name: Run the test suite
         # THE ENVIRONMENT DECLARES WHAT IT SUPPLIES — IT IS NEVER INFERRED.
         #
