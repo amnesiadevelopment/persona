@@ -251,16 +251,29 @@ def test_each_twin_pair_shares_one_expression_so_they_cannot_drift(
 def test_the_window_and_worker_inventories_did_not_move():
     """AC3. The two realms the committed baseline records are untouched.
 
-    This is precisely why the baseline artifact needs no re-record: the
-    baseline guard compares the probe-ID SET per realm for ``window`` and
-    ``worker`` only (``BASELINE_REALMS``), and neither set moves. It is also
-    the reason both new records declare ``CHILD_FRAME_ONLY`` rather than
-    ``(WINDOW, CHILD_FRAME)`` — the latter would add their ids to
-    ``probes_for_realm("window")`` and trip that guard for readings the window
-    realm already has under the pre-existing ids.
+    The COUNTS guard child-realm additions from leaking into window/worker; the
+    LOOP below is the assertion that actually names AC3, and it is unaffected by
+    anything outside the child realm. It is also the reason both new records
+    declare ``CHILD_FRAME_ONLY`` rather than ``(WINDOW, CHILD_FRAME)`` — the
+    latter would add their ids to ``probes_for_realm("window")`` and trip that
+    guard for readings the window realm already has under the pre-existing ids.
+
+    PS-314 re-points the counts (49 -> 52, 36 -> 38) and that is this guard
+    working rather than being worked around. The distinction is the DIRECTION of
+    the addition: PS-247's twins are child-realm records that must NOT touch
+    window/worker, whereas PS-314 deliberately adds window/worker probes (the
+    own-property SHAPE axis, which no existing probe could read) — so unlike a
+    child-realm slice it re-records the committed baseline in the same change.
+    The sentence above about needing no re-record is therefore specific to a
+    CHILD-REALM addition; it was never a claim that this file's numbers are
+    frozen. Window gains three (``masking.shapeWebglGetParameter``,
+    ``masking.shapeGetChannelData``, ``masking.shapeScreenWidthAccessor``) and
+    worker two — the accessor probe is WINDOW_ONLY, a worker having no
+    ``screen``. The identical counts live in
+    ``tests/test_ps232_child_frame_unlinkability.py`` and move together.
     """
-    assert len(probes.probes_for_realm(probes.WINDOW)) == 49
-    assert len(probes.probes_for_realm(probes.WORKER)) == 36
+    assert len(probes.probes_for_realm(probes.WINDOW)) == 52
+    assert len(probes.probes_for_realm(probes.WORKER)) == 38
 
     for _window_id, child_id, _constant in _TWINS:
         for realm in (probes.WINDOW, probes.WORKER):

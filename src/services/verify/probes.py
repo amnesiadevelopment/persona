@@ -343,6 +343,35 @@ _JS_FNSRC = (
     "})"
 )
 
+# The SHAPE of a function, which `_JS_FNSRC` cannot see (PS-314).
+#
+# `toString` is one read out of at least four, and it is the only one the probes
+# above take. The others are cheaper for a detector to run and were, until
+# PS-314, entirely uncloaked on these leaves:
+#
+#     Object.getOwnPropertyNames(fn)   the FORM the author happened to type
+#     fn.length                        arity
+#     fn.name                          the identifier
+#
+# A sloppy-mode function EXPRESSION owns ["arguments","caller","length","name",
+# "prototype"]; a native method owns exactly ["length","name"]. So a wrapper
+# built as an expression is identifiable WITHOUT calling it and WITHOUT reading
+# its source, however perfect its `toString` cloak is. `own` is returned sorted
+# so a reading is comparable across runs and engines.
+#
+# `__pnaName` is EXPECTED in this set on the Chromium path: native_ext's
+# toString patch reads the marker as an own property (`this.__pnaName`), so a
+# wrapper the cloak can serve necessarily owns it. Its presence is a fact to
+# record, not a defect to hide — the recorded baseline is what makes a CHANGE
+# in the set visible, which is the point of the probe.
+_JS_FNSHAPE = (
+    "(function(f){"
+    "if(typeof f!=='function')return 'absent:'+(typeof f);"
+    "try{return {own:Object.getOwnPropertyNames(f).sort(),"
+    "name:f.name,length:f.length};}catch(e){return 'throws:'+e;}"
+    "})"
+)
+
 
 # --- the two RESIDUE expressions --------------------------------------------
 #
@@ -876,6 +905,36 @@ PROBES: tuple[Probe, ...] = (
         BOTH,
         "(function(){var P=self.AudioBuffer&&self.AudioBuffer.prototype;"
         "return " + _JS_FNSRC + "(P&&P.getChannelData);})()",
+    ),
+    # PS-314 — the SHAPE axis, on one leaf per family. `masking.functionToString`
+    # is the in-file precedent for a probe carrying more than `src`; these carry
+    # the own-property set, which no existing probe could see.
+    #
+    # ⚠️ THIS WIDENS THE RECORDED BASELINE. Each of these emits a NEW key whose
+    # value is a dict, so the first run after this lands will show these as
+    # additions rather than as changes. That is expected and is the point: a
+    # recorded shape is what makes a future regression to a function expression
+    # visible as a DIFF instead of being invisible, as it was until now.
+    Probe(
+        "masking.shapeWebglGetParameter",
+        BOTH,
+        "(function(){var P=self.WebGLRenderingContext&&self.WebGLRenderingContext.prototype;"
+        "return " + _JS_FNSHAPE + "(P&&P.getParameter);})()",
+    ),
+    Probe(
+        "masking.shapeGetChannelData",
+        BOTH,
+        "(function(){var P=self.AudioBuffer&&self.AudioBuffer.prototype;"
+        "return " + _JS_FNSHAPE + "(P&&P.getChannelData);})()",
+    ),
+    Probe(
+        "masking.shapeScreenWidthAccessor",
+        WINDOW_ONLY,
+        # An ACCESSOR, not a method: def()'s getters are the other half of the
+        # defect, and they leaked a persona-internal `.name === "getter"` that
+        # no toString read could reach. Native reads "get width".
+        "(function(){try{var d=Object.getOwnPropertyDescriptor(self.screen,'width');"
+        "return " + _JS_FNSHAPE + "(d&&d.get);}catch(e){return 'throws:'+e;}})()",
     ),
     Probe(
         "masking.getVoices",
