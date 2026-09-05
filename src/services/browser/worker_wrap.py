@@ -1299,15 +1299,43 @@ _FIREFOX_NATIVE_WRAP = r"""  var __nm = (typeof WeakMap === 'function') ? new We
   } catch (e) {}
 
   function nativeWrap(orig, replacement) {
+    // RE-HOUSE the caller's function EXPRESSION inside a real method shorthand.
+    // A sloppy-mode expression owns `prototype`, `arguments` and `caller`; a
+    // native method owns exactly ["length","name"]. `delete fn.prototype` cannot
+    // repair it (non-configurable), so the form must be right AT CREATION.
+    //
+    // THIS COPY SERVES THE FIREFOX **WebGL** LEAF (`webgl_ext.firefox_webgl_
+    // init_script` splices it via `firefox_native_wrap_js()`), where audio_ext's
+    // own `_FIREFOX_NATIVE_WRAP` serves the Firefox **audio** leaf. Two copies,
+    // two leaves, one engine — fixing one and not the other leaves `readPixels`
+    // reading ["arguments","caller","length","name","prototype"] while
+    // `getChannelData` reads the native set. Measured, not reasoned.
+    //
+    // Like the audio copy this reaches the EXACT native set where the Chromium
+    // helper cannot, and the reason is the marker rather than the engine: the
+    // cloak above reads its name out of the `__nm` WeakMap rather than off the
+    // function, so nothing persona-shaped is an own property here.
+    var shell;
     try {
+      shell = ({ m() { return replacement.apply(this, arguments); } }).m;
+    } catch (e) {
+      // A correctly-spoofing wrapper with a wrong shape beats no wrapper.
+      shell = replacement;
+    }
+    try {
+      // Arity is a second axis: copy it from the ORIGINAL at runtime. Never pin
+      // a literal — a shape fix that moves `length` swaps one tell for another,
+      // and `readPixels` (7) is the widest arity in the set.
+      Object.defineProperty(shell, 'length',
+                            { value: orig.length, configurable: true });
       // configurable: true is the descriptor a native function's own `name`
       // carries; the Chromium form omits it because its marker property, not
       // `name`, is what its extension-side cloak reads.
-      Object.defineProperty(replacement, 'name',
+      Object.defineProperty(shell, 'name',
                             { value: orig.name, configurable: true });
-      if (__nm) { __nm.set(replacement, orig.name); }
+      if (__nm) { __nm.set(shell, orig.name); }
     } catch (e) {}
-    return replacement;
+    return shell;
   }"""
 
 

@@ -69,7 +69,10 @@ from src.services.browser.audio_ext import (
 )
 from src.services.browser.device_ext import build_device_extension
 from src.services.browser.gpu_ext import build_gpu_extension
-from src.services.browser.webgl_ext import build_webgl_extension
+from src.services.browser.webgl_ext import (
+    build_webgl_extension,
+    firefox_webgl_init_script,
+)
 
 NODE = shutil.which("node")
 pytestmark = pytest.mark.skipif(
@@ -354,6 +357,52 @@ def test_firefox_audio_leaves_read_in_the_EXACT_native_shape():
         assert got["name"] == label
 
 
+def test_firefox_webgl_readpixels_reads_in_the_EXACT_native_shape():
+    """The Firefox WEBGL leaf, whose helper is a SECOND copy one file over.
+
+    There are two `_FIREFOX_NATIVE_WRAP` definitions in the tree and they serve
+    different leaves:
+
+        audio_ext.py           -> the Firefox AUDIO leaf (_audio_patch_js)
+        worker_wrap.py         -> the Firefox WEBGL leaf, spliced by
+        (firefox_native_wrap_js)  webgl_ext.firefox_webgl_init_script
+
+    The first round of this ticket fixed the audio copy and missed the WebGL
+    one, and nothing went red: the Firefox coverage above is the three audio
+    methods, and `test_ff_audio_seed.py` drives `audio_ext`'s helper. Nothing
+    enumerated a Firefox WEBGL wrapper's own-property set — the exact "only
+    own-props test on this engine" gap AC10 exists to close, surviving one file
+    over. Measured at that point: readPixels owned
+    ["arguments","caller","length","name","prototype"].
+
+    `readPixels` is enumerated by name in AC1's site list, so this is not a
+    widening — it is the Firefox half of a site the ticket already required.
+    """
+    script = firefox_webgl_init_script(24601)
+    out = _own_props_probe(
+        script,
+        {
+            "readPixels": "WebGLRenderingContext.prototype.readPixels",
+            "getParameter": "WebGLRenderingContext.prototype.getParameter",
+        },
+    )
+    expected_arity = {"readPixels": 7, "getParameter": 1}
+    for label, arity in expected_arity.items():
+        got = out[label]
+        assert got is not None, f"{label} was not installed by the Firefox script"
+        assert got["own"] == NATIVE_SHAPE, (
+            f"Firefox webgl {label} owns {got['own']}, not the EXACT native set "
+            f"{NATIVE_SHAPE}. This helper's marker lives in a WeakMap, so there "
+            f"is no reason for any third own property here — those three names "
+            f"are what a function EXPRESSION owns, i.e. the un-re-housed form."
+        )
+        assert got["length"] == arity, (
+            f"Firefox webgl {label} arity {got['length']} != {arity}; it must be "
+            f"copied from orig.length at runtime, never pinned as a literal"
+        )
+        assert got["name"] == label
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # AC3 — the def() accessors: `.name` pinned as a PAIR with `__pnaName`
 # ─────────────────────────────────────────────────────────────────────────────
@@ -419,3 +468,35 @@ def test_device_accessors_are_real_accessors_and_pin_their_name():
         f"only {seen} def()-served accessors were reachable in this realm; the "
         f"test must span BOTH minified copies or it cannot see a revert of either"
     )
+
+
+def test_matchmedia_is_served_by_the_MINIFIED_nativeWrap_twin_and_is_reshaped():
+    """`device_ext` has TWO `nativeWrap` bodies, and only one serves matchMedia.
+
+    The readable `nativeWrap` (module scope) and the minified `nw` inside the
+    screen seam are separate bodies, exactly as the three `def()` copies are.
+    `G.matchMedia` is wrapped by the MINIFIED one, so re-housing the readable
+    copy alone left matchMedia reading
+    ["__pnaName","arguments","caller","length","name","prototype"] — measured
+    from a realm at the first round's HEAD, with every other Chromium site
+    already green.
+
+    This is the same shape of miss as the readable-`def()`-is-dead-code finding
+    and as the second Firefox helper: a per-file fix on a defect that lives per
+    COPY. `matchMedia` is enumerated in AC1's site list, so it is not optional.
+    """
+    d = tempfile.mkdtemp()
+    build_device_extension(4242, str(pathlib.Path(d) / "ext"), 1, resolution=(1920, 1080))
+    script = _extension_js(str(pathlib.Path(d) / "ext"), "device.js")
+    out = _own_props_probe(script, {"matchMedia": "G.matchMedia"})
+    got = out["matchMedia"]
+    assert got is not None, "matchMedia was not installed by the real script"
+    assert got["own"] == CHROMIUM_SHAPE, (
+        f"matchMedia owns {got['own']} — the minified `nw` twin still returns "
+        f"the caller's function expression un-re-housed"
+    )
+    assert got["length"] == 1, (
+        f"matchMedia arity {got['length']} != 1 (native); it must be copied from "
+        f"orig.length at runtime"
+    )
+    assert got["name"] == "matchMedia"

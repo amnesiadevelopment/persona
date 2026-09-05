@@ -340,7 +340,13 @@ __SCREEN_REALM_SLOT__
     var DPR = IS_MAC ? 2 : 1;
     function h(x){var v=SEED^(x|0);v=Math.imul(v^(v>>>16),0x85ebca6b);v=Math.imul(v^(v>>>13),0xc2b2ae35);return (v^(v>>>16))>>>0;}
     var def=function(o,k,val){try{var g=Object.getOwnPropertyDescriptor({get m(){return val;}},'m').get;try{Object.defineProperty(g,'name',{value:'get '+k});Object.defineProperty(g,'__pnaName',{value:'get '+k});}catch(e){}Object.defineProperty(o,k,{get:g,configurable:true,enumerable:true});}catch(e){}};
-    var nw=function(orig,rep){try{Object.defineProperty(rep,'name',{value:orig.name});Object.defineProperty(rep,'__pnaName',{value:orig.name});}catch(e){}return rep;};
+    // The MINIFIED twin of the readable `nativeWrap` above, and the copy that
+    // actually serves `G.matchMedia` — the readable one has no callsite in this
+    // seam. Re-housed identically: shorthand shell, arity copied from `orig` at
+    // runtime, marker pinned last. Fixing the readable copy alone left
+    // matchMedia reading ["__pnaName","arguments","caller","length","name",
+    // "prototype"]; measured from a realm, not reasoned.
+    var nw=function(orig,rep){var s;try{s=({m(){return rep.apply(this,arguments);}}).m;}catch(e){s=rep;}try{Object.defineProperty(s,'length',{value:orig.length});Object.defineProperty(s,'name',{value:orig.name});Object.defineProperty(s,'__pnaName',{value:orig.name});}catch(e){}return s;};
 
     // Logical (CSS-px) resolutions from a real-world distribution for the OS.
     // Third element is the hardware GENERATION the entry was added in (absent =
