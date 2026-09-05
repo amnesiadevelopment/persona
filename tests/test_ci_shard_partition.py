@@ -49,6 +49,12 @@ yaml = pytest.importorskip("yaml", reason="PyYAML is needed to parse the workflo
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 
+# The pytest INVOCATION prefix, matched so the marker expression can be read from
+# what FOLLOWS it. `python -m pytest` contains its own `-m`, so a naive scan of
+# the whole line reads "pytest" as the marker expression and then happily
+# collects the entire suite — an assertion that passes while measuring nothing.
+_INVOKES_PYTEST = re.compile(r"(?:\S*python\S*|\S*py\b)\s+-m\s+pytest\b")
+
 
 @pytest.fixture(scope="module")
 def workflow() -> dict:
@@ -182,6 +188,56 @@ def test_the_matrix_still_runs_every_platform_and_never_cancels_siblings(workflo
     assert set(strategy["matrix"]["os"]) == {"ubuntu-24.04", "windows-latest", "macos-latest"}, (
         "the platform axis changed. Dropping a platform to save time is the "
         "'fast subset' ci.yml forbids, wearing a different hat."
+    )
+
+
+def test_the_suite_step_runs_exactly_the_shard_marker(workflow):
+    """The guards above read `matrix.shard[].marker`. The runner reads THIS line.
+
+    Every other assertion in this file derives the partition from the matrix
+    DATA and then infers that the property holds of the COMMAND LINE. Those are
+    the same thing only for as long as nothing is appended to the pytest
+    invocation, and nothing else here pins that.
+
+    The gap is not theoretical and it is not caught by
+    `test_no_shard_narrows_with_k_or_deselect`, which scans for three literal
+    flags and nothing else. Two mutations slip straight through it:
+
+        -m "${{ matrix.shard.marker }} and not slow"
+        -m "${{ matrix.shard.marker }}" tests/test_ui_driven.py
+
+    Under either one BOTH shards still collect tests, both still pass, both
+    still report green — and thousands of tests have silently left the gate,
+    while the matrix (and therefore every partition assertion above) still
+    reads as complete. That is precisely the invisibly-false green this file's
+    docstring names as strictly worse than the outage the split repairs.
+
+    So: the executed line must be the shard marker VERBATIM and nothing more.
+    """
+    steps = workflow["jobs"]["tests"]["steps"]
+    suite_steps = [s for s in steps if _INVOKES_PYTEST.search(str(s.get("run", "")))]
+    assert len(suite_steps) == 1, (
+        f"expected exactly one pytest invocation in the `tests` job, found "
+        f"{len(suite_steps)}: {[s.get('name') for s in suite_steps]!r}. A second "
+        f"invocation would run some other portion of the suite under this job's "
+        f"name, and the partition assertions above would not see it."
+    )
+
+    run = str(suite_steps[0]["run"]).strip()
+    # `python -m pytest` carries its own `-m`, so split on the INVOCATION prefix
+    # and read only what follows it. Scanning the whole line for `-m` reads
+    # "pytest" as the marker expression — a green assertion measuring nothing.
+    tail = _INVOKES_PYTEST.split(run, maxsplit=1)[-1]
+    assert re.fullmatch(
+        r'\s*-q\s+-m\s+"\$\{\{\s*matrix\.shard\.marker\s*\}\}"\s*', tail
+    ), (
+        f"the suite step does not run the shard marker verbatim: {tail!r}\n"
+        f"Anything appended here narrows what ACTUALLY runs while the matrix — and "
+        f"so every partition test above — still reads as complete. An extra "
+        f"`and not ...` clause, a positional test path, `--lf`, or any other "
+        f"selector all have that effect. If this shard genuinely needs a different "
+        f"invocation, change the MARKER in the matrix (where the partition tests "
+        f"can see it), not this line."
     )
 
 
