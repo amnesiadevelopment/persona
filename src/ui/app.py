@@ -2074,7 +2074,8 @@ class App:
             # class and an operator must not see them classified differently.
             self._log(
                 declare(
-                    f"Chromium engine: couldn't read the rollback state ({e})",
+                    f"{CHROMIUM_ENGINE_NAME} engine: couldn't read the "
+                    f"rollback state ({e})",
                     SEV_FAIL,
                 )
             )
@@ -2104,7 +2105,7 @@ class App:
                 cost="auto-update held off",
                 tooltip=(
                     f"Clear the pin (currently held at {pin}) and let the "
-                    "Chromium engine update again"
+                    f"{CHROMIUM_ENGINE_NAME} engine update again"
                 ),
                 on_click=self._on_engine_resume,
             )
@@ -2150,7 +2151,8 @@ class App:
                 cost="downloads the engine",
                 cost_color=COLORS["warning"],
                 tooltip=(
-                    f"Go back to {target}. Chromium keeps one engine build at "
+                    f"Go back to {target}. {CHROMIUM_ENGINE_NAME} keeps one "
+                    "engine build at "
                     "a time, so the previous build's files are gone and this "
                     "re-downloads the whole engine, over Tor, and replaces "
                     "the engine you have now."
@@ -2177,7 +2179,8 @@ class App:
             # filter, chosen by a word the author never wrote.
             self._log(
                 declare(
-                    f"Chromium engine: couldn't read the build record ({e})",
+                    f"{CHROMIUM_ENGINE_NAME} engine: couldn't read the "
+                    f"build record ({e})",
                     SEV_FAIL,
                 )
             )
@@ -2226,14 +2229,16 @@ class App:
         if recorded:
             label = "rollback available after the next engine update"
             tip = (
-                "Chromium keeps one engine build at a time, so going back needs "
+                f"{CHROMIUM_ENGINE_NAME} keeps one engine build at a time, so "
+                "going back needs "
                 "the build it replaced to be recorded first. The build you have "
                 "now is recorded, so the next update leaves you a way back to it."
             )
         else:
             label = "rollback available after the next two engine updates"
             tip = (
-                "Chromium keeps one engine build at a time, so going back needs "
+                f"{CHROMIUM_ENGINE_NAME} keeps one engine build at a time, so "
+                "going back needs "
                 "the build it replaced to be recorded first. This engine was "
                 "installed before that record existed, so the next update has "
                 "nothing to record — the one after it does, and from then on "
@@ -2318,7 +2323,9 @@ class App:
                         else "nothing to go back to"
                     )
             except Exception as e:
-                self._log(f"Chromium engine: going back failed ({e})")
+                self._log(
+                    f"{CHROMIUM_ENGINE_NAME} engine: going back failed ({e})"
+                )
                 self._engine_status = "couldn't go back — see the log"
             finally:
                 # Clear the detail line here, mirroring _update_engine_async's
@@ -2348,7 +2355,9 @@ class App:
         try:
             engine.resume_engine_updates(log=self._log)
         except Exception as e:
-            self._log(f"Chromium engine: couldn't resume updates ({e})")
+            self._log(
+                f"{CHROMIUM_ENGINE_NAME} engine: couldn't resume updates ({e})"
+            )
             return
         self._engine_status = ""
         self._refresh_engine_text()
@@ -2811,7 +2820,7 @@ class App:
         self._engine_latest = tag
         if self._engine_update_available():
             self._engine_status = ""
-            return f"Chromium engine update available ({tag})"
+            return f"{CHROMIUM_ENGINE_NAME} engine update available ({tag})"
         # A build refused as unverifiable keeps its refusal on the row (PS-49).
         # Checked BEFORE engine_policy.check below, because that call answers OK
         # for a digest-less build — so the bottom of this method would fall
@@ -3313,7 +3322,9 @@ class App:
                     if line:
                         self._log(line)
                 except Exception as e:
-                    self._log(f"Chromium engine check failed: {e}")
+                    self._log(
+                        f"{CHROMIUM_ENGINE_NAME} engine check failed: {e}"
+                    )
                 finally:
                     self._engine_checking = False
                     self._refresh_engine_text()
@@ -3499,7 +3510,9 @@ class App:
                 lambda: len(self.bl.running_profile_names()) > 0
             )
         except Exception:
-            logger.exception("Could not wire the Chromium engine in-use guard")
+            logger.exception(
+                f"Could not wire the {CHROMIUM_ENGINE_NAME} engine in-use guard"
+            )
 
     def _auto_update_engine2_async(self) -> None:
         """On startup: check the engine repo and, if a newer AND compatible
@@ -4758,12 +4771,14 @@ class App:
             if self._engine_deferred_tag != self._engine_latest:
                 self._engine_deferred_tag = self._engine_latest
                 self._log(
-                    f"Chromium engine {self._engine_latest} ready — waiting for "
+                    f"{CHROMIUM_ENGINE_NAME} engine {self._engine_latest} ready "
+                    "— waiting for "
                     "running profiles to close before updating"
                 )
             return
         self._log(
-            f"Chromium engine {engine.current_version() or 'unknown'} is out of "
+            f"{CHROMIUM_ENGINE_NAME} engine "
+            f"{engine.current_version() or 'unknown'} is out of "
             f"date — fetching {self._engine_latest}"
         )
         self._update_engine_async(unattended=True)
@@ -4960,10 +4975,13 @@ class App:
                         self._log(self._engine_unverifiable_msg)
                     else:
                         self._log(
-                            f"Chromium engine is up to date ({engine.current_version()})"
+                            f"{CHROMIUM_ENGINE_NAME} engine is up to date "
+                            f"({engine.current_version()})"
                         )
                 except Exception as e:
-                    self._log(f"Chromium engine check failed: {e}")
+                    self._log(
+                        f"{CHROMIUM_ENGINE_NAME} engine check failed: {e}"
+                    )
                 finally:
                     self._engine_checking = False
                     self._refresh_engine_text()
@@ -5155,7 +5173,8 @@ class App:
                 if self._engine_deferred_tag != (tag or self._engine_latest):
                     self._engine_deferred_tag = tag or self._engine_latest
                     self._log(
-                        f"Chromium engine {tag or self._engine_latest} downloaded "
+                        f"{CHROMIUM_ENGINE_NAME} engine "
+                        f"{tag or self._engine_latest} downloaded "
                         "— installing once running profiles close"
                     )
             except Exception as e:
