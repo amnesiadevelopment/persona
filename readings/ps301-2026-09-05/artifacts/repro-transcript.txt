@@ -1,0 +1,61 @@
+############################################################
+# PS-301 direct reproductions
+# self-built: /tmp/ps301/run144/chrome
+#   Chromium 144.0.7559.132 
+# stock:      /tmp/ps301/run144/chrome.stock-cft
+#   Google Chrome for Testing 144.0.7559.133 
+# date: 2026-09-05T20:28:37Z
+############################################################
+
+=== 1. IT LAUNCHES AND RENDERS ===============================
+<html><head></head><body><h1>HELLO-PS301</h1></body></html>
+
+=== 2. patch 015 measureText — the DEFECT ====================
+--- self-built, --fingerprint=24601 (string / width / actualBoundingBoxLeft)
+A | w=-0.000006698308010171917 | abbL=0  
+hello | w=-0.000023661617660485952 | abbL=5.759808038305448e-7  
+persona-PS301 | w=-0.00007390609937276053 | abbL=5.759808038305448e-7  
+The quick brown fox jumps | w=-0.00013180032613590952 | abbL=-5.759808038305448e-7
+--- self-built, --fingerprint=5150
+A | w=-0.00004504364377844973 | abbL=0  
+hello | w=-0.0001591156267377214 | abbL=0.000003873257860279004  
+persona-PS301 | w=-0.0004969911816754288 | abbL=0.000003873257860279004  
+The quick brown fox jumps | w=-0.0008863084425699669 | abbL=-0.000003873257860279004
+--- self-built, NO --fingerprint (the patch stands down)
+A | w=11.62939453125 | abbL=0  
+hello | w=41.08056640625 | abbL=-1  
+persona-PS301 | w=128.3134765625 | abbL=-1  
+The quick brown fox jumps | w=228.82763671875 | abbL=1
+--- STOCK control, --fingerprint=24601 (switch is inert in stock)
+A | w=11.62939453125 | abbL=0  
+hello | w=41.08056640625 | abbL=-1  
+persona-PS301 | w=128.3134765625 | abbL=-1  
+The quick brown fox jumps | w=228.82763671875 | abbL=1
+
+READ: with a seed, every width is NEGATIVE and the observed/stock ratio is
+      IDENTICAL across all four strings — i.e. the width was MULTIPLIED by
+      the noise factor, not perturbed by it. The constant ratio equals the
+      actualBoundingBoxLeft value printed beside it. A negative width is
+      impossible per spec, so this is trivially detectable.
+
+=== 3. patch 002 platform — WORKS across all three arms ======
+  self-built --fingerprint-platform=linux    "plat":"Linux x86_64","ua":"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36"
+  self-built --fingerprint-platform=windows  "plat":"Win32","ua":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36"
+  self-built --fingerprint-platform=macos    "plat":"MacIntel","ua":"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36"
+  STOCK      --fingerprint-platform=windows  "plat":"Linux x86_64","ua":"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/144.0.0.0 Safari/537.36"
+
+=== 4. the DEAD switches — declared, forwarded, never read ===
+  (screen-width/height and device-scale-factor are accepted and ignored)
+  self-built --fingerprint-screen-width=2560 --fingerprint-screen-height=1440 -> "sw":800,"sh":600
+  self-built --fingerprint-device-scale-factor=2                             -> "dpr":1
+  self-built --fingerprint-hardware-concurrency=6  (a LIVE switch, contrast) -> "hc":6
+
+=== 5. patch 014 client rects — WORKS, and its exemption holds =
+  self-built seed=24601  {"eligible_x":-0.000245685747358948,"eligible_y":6.9999613761901855,"eligible_w":100.296875,"exempt_x":13.296875,"exempt_w":111.6875}
+  self-built seed=5150   {"eligible_x":-0.00042232716805301607,"eligible_y":7.000515460968018,"eligible_w":100.296875,"exempt_x":13.296875,"exempt_w":111.6875}
+  self-built seed=none   {"eligible_x":0,"eligible_y":7,"eligible_w":100.296875,"exempt_x":13.296875,"exempt_w":111.6875}
+  STOCK      seed=24601  {"eligible_x":0,"eligible_y":7,"eligible_w":100.296875,"exempt_x":13.296875,"exempt_w":111.6875}
+
+READ: eligible_x/y move per seed; eligible_w does NOT (the patch calls
+      Offset, not Scale); exempt_x does NOT (ShouldSkipClientRectsOffset
+      deliberately exempts position:absolute with fixed top+left).
