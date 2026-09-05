@@ -34,6 +34,7 @@ from ...utils.atomic import atomic_write_json
 from ...utils import httpdl
 from ...utils.httpdl import atomic_replace, resumable_download
 from . import policy
+from ..engine_naming import engine_display_name
 
 ENGINE_BINARY = os.path.join(ENGINE_DIR, _platform.fingerprint_chromium_filename())
 VERSION_FILE = os.path.join(ENGINE_DIR, "version.txt")
@@ -306,8 +307,9 @@ def _engine_in_use(log=None) -> bool:
     if fn is None:
         if log:
             log(
-                "Chromium engine: no in-use oracle wired — deferring the "
-                "unattended install rather than risking a live session"
+                f"{engine_display_name()} engine: no in-use oracle wired — "
+                "deferring the unattended install rather than risking a live "
+                "session"
             )
         return True
     try:
@@ -315,8 +317,8 @@ def _engine_in_use(log=None) -> bool:
     except Exception as e:
         if log:
             log(
-                f"Chromium engine: in-use check failed ({e!r}) — deferring the "
-                "unattended install"
+                f"{engine_display_name()} engine: in-use check failed ({e!r}) "
+                "— deferring the unattended install"
             )
         return True
 
@@ -1971,8 +1973,8 @@ def revert_to_previous_build(
     tag, digest = rollback_target()
     if not tag:
         message = (
-            "Chromium engine: nothing to go back to — no previous build is "
-            "recorded on this machine"
+            f"{engine_display_name()} engine: nothing to go back to — no "
+            "previous build is recorded on this machine"
         )
         if log:
             log(message)
@@ -1984,8 +1986,8 @@ def revert_to_previous_build(
     # the operator rather than being swallowed behind the message below.
     if _engine_in_use(log=log):
         message = (
-            "Chromium engine: close your running profiles before going back to "
-            f"{tag}"
+            f"{engine_display_name()} engine: close your running profiles "
+            f"before going back to {tag}"
         )
         if log:
             log(message)
@@ -1995,9 +1997,9 @@ def revert_to_previous_build(
     if not url:
         # The stated limit, reported plainly rather than papered over.
         message = (
-            f"Chromium engine: {tag} is no longer available from upstream, so "
-            "persona cannot go back to it. Nothing has been changed — the "
-            "engine you have is still installed."
+            f"{engine_display_name()} engine: {tag} is no longer available "
+            "from upstream, so persona cannot go back to it. Nothing has been "
+            "changed — the engine you have is still installed."
         )
         if log:
             log(message)
@@ -2027,14 +2029,18 @@ def revert_to_previous_build(
         return False, message
     except InstallDeferred:
         message = (
-            "Chromium engine: a profile started while the download was running "
-            f"— {tag} is on disk and going back will finish on the next try"
+            f"{engine_display_name()} engine: a profile started while the "
+            f"download was running — {tag} is on disk and going back will "
+            "finish on the next try"
         )
         if log:
             log(message)
         return False, message
     if not ok:
-        message = f"Chromium engine: going back to {tag} failed — download failed"
+        message = (
+            f"{engine_display_name()} engine: going back to {tag} failed "
+            "— download failed"
+        )
         if log:
             log(message)
         return False, message
@@ -2056,8 +2062,8 @@ def revert_to_previous_build(
     write_version(tag)
     _set_pin(tag, log=log)
     message = (
-        f"Chromium engine: went back to {tag} — automatic updates are paused "
-        "until you resume them"
+        f"{engine_display_name()} engine: went back to {tag} — automatic "
+        "updates are paused until you resume them"
     )
     if log:
         log(message)
@@ -2078,8 +2084,9 @@ def _set_pin(tag: str, log=None) -> None:
     except Exception as e:
         if log:
             log(
-                f"Chromium engine: couldn't record the revert ({e}) — the "
-                "automatic update may put you back on the newer build"
+                f"{engine_display_name()} engine: couldn't record the revert "
+                f"({e}) — the automatic update may put you back on the newer "
+                "build"
             )
 
 
@@ -2109,7 +2116,7 @@ def resume_engine_updates(log=None) -> None:
         settings.set_chromium_build_pin("")
     except Exception as e:
         if log:
-            log(f"Chromium engine: couldn't clear the pin ({e})")
+            log(f"{engine_display_name()} engine: couldn't clear the pin ({e})")
         return
     if log:
-        log("Chromium engine: automatic updates resumed")
+        log(f"{engine_display_name()} engine: automatic updates resumed")

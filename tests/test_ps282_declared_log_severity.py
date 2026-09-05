@@ -24,6 +24,8 @@ from __future__ import annotations
 import flet as ft
 import pytest
 
+from src.core.strings import CHROMIUM_ENGINE_NAME
+
 from src.ui.components.log_dock import LogDock
 from src.ui.log_console import (
     SEV_COLOR,
@@ -329,7 +331,10 @@ def test_the_interpolated_exception_no_longer_decides_the_colour():
     measured against the shipped classifier rather than taken from the ticket.
     """
     def _raw(exc):
-        return f"Chromium engine: couldn't read the build record ({exc})"
+        return (
+            f"{CHROMIUM_ENGINE_NAME} engine: couldn't read the build "
+            f"record ({exc})"
+        )
 
     # THE PREMISE, measured. Two ways the SAME read fails, classified opposite.
     assert severity(_raw(ValueError("build record is missing a version field"))) == (
@@ -360,7 +365,10 @@ def test_the_two_lines_the_code_CALLS_SIBLINGS_now_classify_the_same():
     update line carries "update" (`info`), its named sibling carries "error"
     only when the interpolated text happens to. Both declare `fail` now."""
     hold = "Update: couldn't read the update-hold state"
-    rollback = "Chromium engine: couldn't read the rollback state (disk full)"
+    rollback = (
+        f"{CHROMIUM_ENGINE_NAME} engine: couldn't read the rollback state "
+        "(disk full)"
+    )
     assert severity(hold) == SEV_INFO  # the premise
     assert severity(rollback) == SEV_IDLE  # ...and it disagreed
     for raw in (hold, rollback):

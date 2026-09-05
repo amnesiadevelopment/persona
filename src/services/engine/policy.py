@@ -93,6 +93,7 @@ import json
 import os
 
 from ...core.config import PERSONA_HOME
+from ..engine_naming import engine_display_name
 
 # --------------------------------------------------------------------------
 # Committed defaults — what THIS persona build ships knowing.
@@ -240,16 +241,18 @@ def check(tag: str) -> tuple[str, str]:
     if tag in known_bad_versions():
         return (
             KNOWN_BAD,
-            f"Chromium engine {tag} is on persona's known-bad list — not installing it.",
+            f"{engine_display_name()} engine {tag} is on persona's known-bad "
+            "list — not installing it.",
         )
     ceiling = max_tested_major()
     num = major(tag)
     if num > ceiling:
         return (
             ABOVE_CEILING,
-            f"Chromium engine {tag} is above the maximum Chromium major set in "
-            f"your engine policy file (Chromium {ceiling:g}) — raise or remove "
-            f"max_tested_major in {POLICY_FILE} to install it.",
+            f"{engine_display_name()} engine {tag} is above the maximum "
+            f"Chromium major set in your engine policy file "
+            f"(Chromium {ceiling:g}) — raise or remove max_tested_major in "
+            f"{POLICY_FILE} to install it.",
         )
     return OK, ""
 
