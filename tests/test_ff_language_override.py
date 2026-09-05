@@ -643,7 +643,7 @@ def test_override_scripts_cloak_every_installed_function():
     assert "oTS.name" in js and "oTTS.name" in js
     assert "oTS.length" in js and "oTTS.length" in js
     assert "l===undefined?L:l,opt);},o.name,undefined," in js
-    assert "return __cloak(W,Orig.name);" in js
+    assert "return __cloak(W,Orig.name,undefined,Orig.length);" in js
     # worker realm: Intl ctors, supportedLocalesOf, Number/BigInt
     assert "__cloak(W,C.name,undefined,C.length);" in js
     assert "__cloak(C.supportedLocalesOf.bind(C)" in js

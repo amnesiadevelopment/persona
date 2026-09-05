@@ -409,7 +409,15 @@ CHROMIUM_WORKER_CLOAK = WorkerCloak(
     setup=_CHROMIUM_HOOK_CLOAK_SETUP,
     apply=(
         '        try { Object.defineProperty(W, "__pnaName", { value: Orig.name }); } catch (e) {}\n'
-        '        try { Object.defineProperty(W, "name", { value: Orig.name }); } catch (e) {}'
+        '        try { Object.defineProperty(W, "name", { value: Orig.name }); } catch (e) {}\n'
+        # ARITY IS AN OWN PROPERTY TOO, and `name` alone is half the pin: the
+        # wrapper is written `function (url, options)` and so reports 2, where
+        # the engine's own `Worker(scriptURL, options?)` reports 1. One property
+        # read, no stringification — the same class of tell PS-119 measured on
+        # Intl and `__markHook` closes on the DOM inserters. Copied from the
+        # ORIGINAL rather than hard-coded, so an engine whose arity differs from
+        # the spec still matches itself.
+        '        try { Object.defineProperty(W, "length", { value: Orig.length, configurable: true }); } catch (e) {}'
     ),
     frame_open="",
     frame_close="",
@@ -1030,10 +1038,19 @@ _FIREFOX_WORKER_CLOAK_SETUP = r"""
         },
       }).m;
       // `f` gets `.name` = n; its SOURCE TEXT reports `s` (an accessor's name
-      // carries a `get ` prefix that its source text does not).
-      var __bcloak = function (f, n, s) {
+      // carries a `get ` prefix that its source text does not). `l` pins
+      // `.length` and is a TRAILING OPTIONAL, mirroring `__cloak`'s semantics
+      // exactly (invisible_launch.py:365-368): OMITTED LEAVES `.length` ALONE,
+      // which is right for the arrow/frame accessors below — they already
+      // report 0, like the native getters they replace. Callers that wrap a
+      // page-reachable CONSTRUCTOR pass the ORIGINAL's length, so the pin
+      // cannot drift from what it is imitating.
+      var __bcloak = function (f, n, s, l) {
         try {
           Object.defineProperty(f, "name", { value: n, configurable: true });
+          if (l !== undefined) {
+            Object.defineProperty(f, "length", { value: l, configurable: true });
+          }
           if (__bnm) { __bnm.set(f, s === undefined ? n : s); }
         } catch (e) {}
         return f;
@@ -1167,8 +1184,10 @@ def firefox_worker_cloak() -> WorkerCloak:
 
     Cloaks the bootstrap's own ``Worker``/``SharedWorker`` wrappers and its two
     ``HTMLIFrameElement`` accessors through a closure WeakMap, adding NO own
-    property — the standard already set in tree by the locale spoof's Firefox
-    worker wrapper (``invisible_launch.py:511``, ``return __cloak(W,Orig.name)``,
+    property beyond the ones a native function already carries (``name`` and,
+    for the constructors, ``length``) — the standard already set in tree by the
+    locale spoof's Firefox worker wrapper
+    (``invisible_launch.py:601``, ``return __cloak(W,Orig.name,undefined,Orig.length)``,
     whose marker-absence ``tests/test_ff_language_override.py:166`` pins).
 
     The Chromium default is not merely unnecessary on this engine, it is a tell:
@@ -1185,7 +1204,7 @@ def firefox_worker_cloak() -> WorkerCloak:
     """
     return WorkerCloak(
         setup=_FIREFOX_WORKER_CLOAK_SETUP,
-        apply="        __bcloak(W, Orig.name);",
+        apply="        __bcloak(W, Orig.name, undefined, Orig.length);",
         # An accessor's `.name` is "get contentWindow" while its source text
         # stringifies as "function contentWindow() { [native code] }" — hence the
         # two names. Wrapped AROUND the function expression because that is an

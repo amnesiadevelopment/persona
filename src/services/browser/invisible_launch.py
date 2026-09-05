@@ -593,7 +593,14 @@ def _worker_wrap_js(payload: str) -> str:
         "return Reflect.construct(Orig,[url,opt],W);}"
         "return Reflect.construct(Orig,[url,opt],W);"
         "}catch(e){return Reflect.construct(Orig,[url,opt],W);}};"
-        "W.prototype=Orig.prototype;return __cloak(W,Orig.name);};"
+        # `Orig.length`, not a literal: this wrapper's `(url, opt)` signature
+        # reports 2 where the engine's own `Worker(scriptURL, options?)` reports
+        # 1 — the same one-read arity tell PS-119 measured on Intl, on a
+        # constructor a page can read directly. PS-119 widened `__cloak` with
+        # `l` and retrofitted the Intl and worker-realm ctor call sites; this
+        # one has the identical `function(a,b)`-wrapping-a-native shape and was
+        # missed (PS-255).
+        "W.prototype=Orig.prototype;return __cloak(W,Orig.name,undefined,Orig.length);};"
         "if(self.Worker)self.Worker=wrapW(self.Worker);"
         "if(self.SharedWorker)self.SharedWorker=wrapW(self.SharedWorker);"
     )
