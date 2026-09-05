@@ -340,14 +340,28 @@ MATRIX = {
     # simply "Firefox is missing things".
     "outer-size": {
         "chromium": (
-            NOT_ESTABLISHED,
-            "No desktop Chromium builder addresses window.outerWidth/"
-            "outerHeight. The two in-tree references are not this vector: "
-            "mobile_ext pins outer to the device's CSS viewport (a mobile "
-            "concern), and device_ext READS outerWidth to size its spoofed "
-            "screen. Whether the inner<outer==screen mismatch the Firefox "
-            "override exists to remove can occur on Chromium is NOT RECORDED — "
-            "establishing it is work, not an assumption this file may make.",
+            COVERED_ELSEWHERE,
+            "COVERED, but NOT by a builder of its own — window.outerWidth/"
+            "outerHeight are pinned inside build_device_extension's "
+            "applyScreenPatch, in the same realm and the same pass that pins "
+            "screen.*, clamped so the reported window fits the reported "
+            "screen. So the route is the DEVICE builder and there is no "
+            "`outer_size` census key; the position is COVERED_ELSEWHERE "
+            "rather than COVERED for exactly the reason that status exists — "
+            "it names a different route. #327 ESTABLISHED the cell by "
+            "measurement before any spoof was written: a real headful "
+            "chromium under Xvfb at 1920x1080 with an operator-picked "
+            "1280x720 read outer 1919x1079 against screen 1280x720 (an "
+            "impossible pair, BOTH axes), while the AUTO branch on the same "
+            "seed and window read outer 1919x1079 against screen 2560x1440 "
+            "and was already coherent — AUTO being the positive control that "
+            "makes the FORCED reading a finding rather than a category. "
+            "After the pin, FORCED reads outer 1280x680 against screen "
+            "1280x720 and AUTO is byte-identical to before. The pin cannot "
+            "re-open #167 (the render-scale leak that made FORCED "
+            "unconditional): that leak was FORCED falling through to the "
+            "auto-pick and reporting ~4K, and this code never participates "
+            "in choosing W/H — it runs after they are fixed and reads them.",
         ),
         "firefox": (
             COVERED,
@@ -852,12 +866,22 @@ def test_firefox_device_screen_half_is_pinned_at_the_engine_layer():
 
 def test_outer_size_runs_the_other_direction():
     # AC5's second half. The matrix is not "Firefox is missing nine things": at
-    # least one cell has Firefox covered and CHROMIUM unstated. Pinned so a
-    # Chromium outer-size builder cannot be added without answering the cell.
+    # least one cell has Firefox covered and CHROMIUM answered from the other
+    # direction. #327 ESTABLISHED it by measurement and pinned outer inside the
+    # DEVICE builder, so the cell is COVERED_ELSEWHERE — the route exists but is
+    # not a builder of its own.
     spoofs, _ = _firefox_spoof_census()
     assert "outer-size" in spoofs
     assert MATRIX["outer-size"]["firefox"][0] == COVERED
-    assert MATRIX["outer-size"]["chromium"][0] == NOT_ESTABLISHED
+    assert MATRIX["outer-size"]["chromium"][0] == COVERED_ELSEWHERE
+    # STILL ASSERTED, and it is the half that keeps its teeth: the census key is
+    # derived from a `build_<vector>_extension` NAME, so a future
+    # `build_outer_size_extension` would arrive as `outer_size` (UNDERSCORE)
+    # while this matrix key is `outer-size` (HYPHEN) — B4's subtraction would
+    # drop the hyphen and the underscore would show up as an unexplained extra.
+    # Keeping this assertion means that builder cannot appear without someone
+    # reconciling the two spellings deliberately. #327 did NOT add one: the pin
+    # ships inside build_device_extension, so the census is unchanged.
     assert "outer_size" not in _builder_census()
 
 
@@ -1050,7 +1074,6 @@ def test_the_open_cells_are_the_deliverable_and_are_named():
         "firefox:measuretext",
         "firefox:device",
         "firefox:geo",
-        "chromium:outer-size",
     }
 
 
