@@ -62,13 +62,21 @@ THE TRAPS THIS SCRIPT AVOIDS, STATED UP FRONT
 2. **A field's ``aria-label`` is its HINT and vanishes once it holds a value**
    (recorded on ``driver.TextField``). So the egress field is addressed by its
    hint while empty and BY INDEX once filled — never by a label that is gone.
-3. **A password field's DOM ``value`` holds the real text even when masked.**
-   Masking is a RENDER property, so "the credential is not in ``field.value``"
-   would be the wrong question — it would go green on a field that paints in
-   plain sight. AC6 is therefore read from the SEMANTICS TREE (what is painted
-   and exposed), and the DOM value is used only to prove the field really
-   holds what we typed.
-4. **The file is read from the PARENT, not asked of the child.** The served app
+3. **A masked field's DOM ``value`` is EMPTY until it is FOCUSED** (measured
+   here; the first draft asserted the opposite and went red against a build
+   that masks correctly). The value lives in the Flutter widget and reaches
+   the ``<input>`` only while it is being edited. So masking is read from the
+   SEMANTICS TREE — what is painted and exposed — and the field is proven to
+   still HOLD the value by clicking into it, the operator's own gesture.
+4. **A field's ``aria-label`` is its HINT and vanishes once it holds a value**
+   (recorded on ``driver.TextField``), and a password field's value cannot
+   stand in as a fallback address for the reason above. So the field is
+   addressed by hint while empty and by its sole-field index once filled.
+5. **The message node is NOT a leaf.** Flutter wraps the ``ft.Text`` in a node
+   with one child, so a ``n.leaf`` filter finds nothing and reports "the page
+   said nothing" against a build that says it clearly (measured; it is why the
+   first run of this script called AC3 red while the file was correct).
+6. **The file is read from the PARENT, not asked of the child.** The served app
    is a subprocess; asking it what it thinks it saved is asking the object.
 
 WHAT IS NOT COVERED BY DRIVING, recorded rather than smoothed over
@@ -238,11 +246,19 @@ def _verdict_on_screen(drv: FletDriver) -> str | None:
 
 
 def _messages(drv: FletDriver) -> list[str]:
-    """The card's own feedback lines, as painted."""
+    """The card's own feedback lines, as painted.
+
+    ⚠️ MEASURED, and the first draft of this file got it wrong: the message
+    node is **NOT a leaf** — Flutter wraps this ``ft.Text`` in a node carrying
+    one child — so filtering on ``n.leaf`` finds nothing and reports "the page
+    said nothing" against a build that says it perfectly clearly. The lines are
+    matched by EXACT prefix/equality instead, which no ancestor satisfies (an
+    ancestor's innerText is the whole card concatenated).
+    """
     out = []
     for n in drv.nodes():
         t = (n.text or "").strip()
-        if n.box[0] < RAIL_WIDTH or not n.leaf:
+        if n.box[0] < RAIL_WIDTH or not t:
             continue
         if t.startswith("not saved —") or t in ("saved", "cleared — sending directly"):
             out.append(t)
@@ -252,16 +268,26 @@ def _messages(drv: FletDriver) -> list[str]:
 def _egress_field_index(drv: FletDriver) -> int | None:
     """The egress field's DOM-order index.
 
-    Addressed by its HINT while empty — and the hint is DROPPED once the field
-    holds a value, which is a measured property of Flutter, so once it is
-    filled the index found here is what keeps working. The connect page's only
-    other fields belong to the SSH section below, so a hint match is
-    unambiguous on a fresh page.
+    ⚠️ TWO MEASURED FACTS, and the first draft of this file knew only one.
+
+    * A field's ``aria-label`` is its HINT, and Flutter DROPS the hint once the
+      field holds a value (recorded on ``driver.TextField``). So on a home that
+      already carries a proxy the hint address matches NOTHING — which is not
+      "the control is missing", the reading a bare hint lookup would report.
+    * A ``password`` field's ``<input>`` is EMPTY until it is focused, so its
+      VALUE cannot be used as a fallback address either.
+
+    So: prefer the hint (unambiguous on a fresh page), and fall back to the
+    connect page's single text field when the hint is gone. The fallback is
+    guarded on there being exactly ONE — the SSH section below contributes
+    fields only from inside its dialog — because silently typing into the
+    wrong field is the failure this harness exists to prevent.
     """
-    for i, f in enumerate(drv.fields()):
+    found = drv.fields()
+    for i, f in enumerate(found):
         if (f.label or "") == _HINT:
             return i
-    return None
+    return 0 if len(found) == 1 else None
 
 
 def _type_and_save(drv: FletDriver, index: int, value: str) -> str:
@@ -269,15 +295,16 @@ def _type_and_save(drv: FletDriver, index: int, value: str) -> str:
     field holds afterwards. Real gestures — a click, a select-all, keystrokes."""
     field = drv.page.locator("input, textarea").nth(index)
     field.click()
-    drv.page.wait_for_timeout(300)
+    drv.page.wait_for_timeout(400)
     field.press("Control+a")
     field.press("Delete")
     if value:
         drv.page.keyboard.type(value)
     drv.page.wait_for_timeout(800)
+    held = field.input_value()
     drv.press("[ save ]")
-    drv.page.wait_for_timeout(1200)
-    return field.input_value()
+    drv.page.wait_for_timeout(1400)
+    return held
 
 
 # --- the passes ------------------------------------------------------------
@@ -370,10 +397,40 @@ def _drive_refuse_state(home: str, shot: str) -> dict:
     return out
 
 
+def _paints_secret(drv: FletDriver) -> bool:
+    """Does the credential appear ANYWHERE the page exposes as text?
+
+    Both ``text`` and ``label`` across the whole semantics tree, and the
+    PASSWORD substring rather than the whole URL: a render that masked only the
+    host would still be leaking the credential, which is the part that matters.
+    """
+    painted = " ".join(
+        (n.text or "") + " " + (n.label or "") for n in drv.nodes()
+    )
+    return "hunter2" in painted or _SECRET in painted
+
+
 def _drive_masking(home: str, shot: str) -> dict:
     """Boot against a home holding a CREDENTIALLED value and check nothing
-    paints the credential."""
-    out = {"in_tree": None, "in_dom": None, "verdict": None}
+    paints the credential.
+
+    ⚠️ MEASURED, and it inverts the check the first draft of this file made.
+    A flet ``password`` field's backing ``<input>`` is EMPTY until the field is
+    FOCUSED — the value lives in the Flutter widget and is handed to the DOM
+    element only while it is being edited. So "the DOM value holds the secret"
+    is FALSE on an unfocused masked field, and a check that required it would
+    go red against a build that masks perfectly.
+
+    The pair that IS meaningful, and it is a stronger claim than the original:
+
+    * NOTHING PAINTS IT — the credential appears nowhere in the semantics tree,
+      unfocused OR focused. That is AC6.
+    * AND THE FIELD REALLY HOLDS IT — proven by CLICKING into it, which is the
+      operator's own gesture, and reading the input back. A field that had lost
+      the value would "mask" it trivially, and that is not the claim.
+    """
+    out = {"painted_idle": None, "painted_focused": None, "held": None,
+           "verdict": None}
     with serve_app(REPO_ROOT, home=home) as app:
         print(f"\n4. A HOME HOLDING A CREDENTIALLED VALUE\n  served: {app.url}")
         with FletDriver(app.url, width=1280, height=900) as drv:
@@ -382,16 +439,20 @@ def _drive_masking(home: str, shot: str) -> dict:
             if not _open_connect(drv):
                 return out
             _scroll_to_card(drv)
-            painted = " ".join((n.text or "") + " " + (n.label or "")
-                               for n in drv.nodes())
-            out["in_tree"] = "hunter2" in painted
+            idx = _egress_field_index(drv)
+            if idx is None:
+                return out
+            out["painted_idle"] = _paints_secret(drv)
             out["verdict"] = _verdict_on_screen(drv)
-            # The DOM value is checked only to prove the field really HOLDS the
-            # value — a field that lost it would "mask" it trivially.
-            out["in_dom"] = any("hunter2" in (f.value or "") for f in drv.fields())
+            field = drv.page.locator("input, textarea").nth(idx)
+            field.click()
+            drv.page.wait_for_timeout(700)
+            out["held"] = field.input_value() == _SECRET
+            out["painted_focused"] = _paints_secret(drv)
             drv.screenshot(shot)
-            print(f"  credential painted in the semantics tree: {out['in_tree']}; "
-                  f"held in the field: {out['in_dom']}; screenshot: {shot}")
+            print(f"  credential painted (idle): {out['painted_idle']}; "
+                  f"painted (focused): {out['painted_focused']}; "
+                  f"field holds it: {out['held']}; screenshot: {shot}")
     return out
 
 
@@ -492,11 +553,13 @@ def main() -> int:
     mask = _drive_masking(secret_home, "/tmp/ps311-masked.png")
     results.append(
         _report(
-            "AC6 — a credentialled value is MASKED by default",
-            mask["in_dom"] is True and mask["in_tree"] is False,
-            f"the field holds it (dom={mask['in_dom']}) and nothing paints it "
-            f"(tree={mask['in_tree']}) — a False dom would mean the field lost "
-            f"the value, which masks it trivially and is not the claim",
+            "AC6 — a credentialled value is MASKED by default, idle AND focused",
+            mask["painted_idle"] is False and mask["painted_focused"] is False
+            and mask["held"] is True,
+            f"nothing paints it (idle={mask['painted_idle']}, "
+            f"focused={mask['painted_focused']}) and the field genuinely holds "
+            f"it (held={mask['held']}) — a False 'held' would mean the field "
+            f"lost the value, which masks it trivially and is not the claim"
         )
     )
 
