@@ -180,11 +180,24 @@ jobs:
         # gate silently while both jobs stayed green — which is the exact
         # "invisibly-false green" this file's own rule below forbids, and it is
         # the only way this change could go wrong.
+        # `capabilities` is the PERSONA_REQUIRED_CAPABILITIES declaration for
+        # this shard. It rides the matrix beside `marker` because the two are
+        # the same decision seen twice: the marker says WHICH tests this shard
+        # runs, and the declaration says which of their skips this shard
+        # REFUSES TO ACCEPT SILENTLY.
+        #
+        # ⚠️ NOT the same value on both shards, and not `ui_driver` alone:
+        # `expand_capabilities(["ui_driver"])` is `["ui_driver"]` — it does NOT
+        # cover `browser`. Declaring it on the MAIN shard would stop policing
+        # browser skips across all ~5,555 of its tests, which is the exact
+        # silent-green this split exists to prevent, one axis over.
         shard:
           - name: main
             marker: "not ui_driver"
+            capabilities: browser
           - name: ui-driver
             marker: "ui_driver"
+            capabilities: browser,ui_driver
     runs-on: ${{ matrix.os }}
     # ⚠️ THE CAP IS STILL 30. THIS SPLIT DELIBERATELY DID NOT RAISE IT.
     #
@@ -523,7 +536,15 @@ jobs:
         # whatever the last run produced is not a measurement.
         shell: bash
         env:
-          PERSONA_REQUIRED_CAPABILITIES: browser
+          # ⚠️ THE ubuntu-24.04 CONDITION IS LOAD-BEARING, NOT A TIDINESS.
+          # `/usr/bin/chromium` exists ONLY on the ubuntu runner, so the 15
+          # ui_driver tests legitimately SKIP on macOS and Windows. Declaring
+          # `ui_driver` on those platforms would convert an honest, expected
+          # skip into a red job — a gate failing for a reason that is true of
+          # the runner rather than of the code. So the shard's declaration is
+          # applied where the tier actually executes, and every other job keeps
+          # the `browser` declaration it had before this split.
+          PERSONA_REQUIRED_CAPABILITIES: ${{ matrix.os == 'ubuntu-24.04' && matrix.shard.capabilities || 'browser' }}
         # `-m` here SELECTS THIS SHARD'S PORTION — it is not the `-k` narrowing
         # forbidden above. The two shards partition the suite (15 + 5551 ==
         # 5566, pinned by tests/test_ci_shard_partition.py) and both gate, so
