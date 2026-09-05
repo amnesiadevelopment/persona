@@ -35,12 +35,22 @@ tests/test_engine_rollback_redownload.py does) because ``_force_os`` plus a real
 zipfile make that reachable in ANY container. macOS shells out to
 hdiutil/ditto, which are absent here.
 
+STEP 2'S FAILURE IS A CRASH, NOT A CORRUPT ASSET, and the distinction is
+load-bearing rather than incidental — see ``_fail_an_upgrade`` for the full
+reasoning. Since PS-245 an install that fails BEFORE promotion is a CONFIRMED
+rollback and its sentinel is CLEARED, so a corrupt asset no longer leaves the
+engine not-installed and cannot express step 2 at all. The failure this file
+needs is the one PS-245 deliberately does not forgive: a process killed
+mid-promotion, whose outcome is UNKNOWN and whose sentinel therefore survives.
+
 THE CHOSEN BRANCH (see the PR body for the full argument): ``ensure_engine``
 installs the PINNED tag rather than refusing. When the pinned tag is no longer
 served upstream it FALLS THROUGH to the newest build, says so, and CLEARS the
 pin — because a pin that could not be honoured must not keep claiming on screen
 that the engine is held at a build that is not installed.
 """
+
+import os
 
 import pytest
 
@@ -137,15 +147,10 @@ class _Upstream:
     """Stands GitHub up: `catalogue` maps tag -> (marker, digest). A tag absent
     from it is a YANKED release — fetch_release_full answers ('','',''), which
     is exactly what the real function does for a deleted release.
-
-    `broken` names tags whose asset arrives CORRUPT, so the install genuinely
-    fails through the real _install_windows and leaves the sentinel behind. That
-    is step 2 of the sequence, driven rather than simulated.
     """
 
-    def __init__(self, monkeypatch, tmp_path, catalogue, broken=()):
+    def __init__(self, monkeypatch, tmp_path, catalogue):
         self.catalogue = dict(catalogue)
-        self.broken = set(broken)
         self.tmp_path = tmp_path
         self.downloads = []  # (tag, digest_presented_to_the_transfer)
         monkeypatch.setattr(updater, "fetch_release_full", self._fetch_release_full)
@@ -169,12 +174,6 @@ class _Upstream:
 
         tag = url.rsplit("/", 1)[-1][: -len(".zip")]
         self.downloads.append((tag, digest))
-        if tag in self.broken:
-            # A truncated/corrupt asset: the real _install_windows raises
-            # BadZipFile on it and returns False, so the sentinel survives.
-            with open(path, "wb") as f:
-                f.write(b"not a zip at all")
-            return True
         marker, _digest = self.catalogue[tag]
         zip_path = self.tmp_path / f"serve-{tag}.zip"
         _build_zip(zip_path, marker)
@@ -196,12 +195,82 @@ def _install(eng, upstream, tag):
     updater.write_version(tag)
 
 
+class _ProcessDied(BaseException):
+    """The upgrade's process being KILLED mid-promotion.
+
+    Deliberately a BaseException and not an Exception: `_install_windows`
+    catches `(OSError, zipfile.BadZipFile)` and `_promote_staging` catches
+    `Exception`, so an ordinary exception here would be handled by production
+    code and turned into a tidy, rolled-back failure. A crash is precisely the
+    thing that does NOT get handled, and modelling it with a catchable
+    exception would model the opposite of the case under test.
+    """
+
+
 def _fail_an_upgrade(upstream, tag):
-    """Step 2, driven: a real download_engine whose install fails, leaving the
-    .engine-installing sentinel behind exactly as a crashed upgrade does."""
+    """Step 2, driven: a real ``download_engine`` whose install is KILLED part
+    way through the promotion, leaving the ``.engine-installing`` sentinel.
+
+    ⚠️ WHY A CRASH AND NOT A CORRUPT ASSET — this is the whole reason the file
+    once went red on CI while passing locally, so it is recorded here rather
+    than in a commit message nobody will read again.
+
+    This helper used to manufacture the failure by serving a corrupt zip and
+    letting the real ``_install_windows`` raise ``BadZipFile``. That failure
+    happens BEFORE promotion begins, and PS-245 (``06305ce``, landed on main
+    after this branch was cut) gave exactly that arm a new meaning: an install
+    that provably wrote nothing outside its staging dir now reports
+    ``INSTALL_OUTCOME_RESTORED``, and ``download_engine`` CLEARS the sentinel
+    for it. So the corrupt asset stopped producing a failed install and started
+    producing a *cleanly rolled back* one — ``is_installed()`` answered True and
+    the premise of this whole sequence evaporated.
+
+    That was correct behaviour in PS-245 and a broken premise here. The fix is
+    to manufacture the failure PS-245 deliberately does not forgive, which is
+    also the one the sequence is actually about: a genuine crash mid-promotion,
+    where the tree is left part-old/part-new and the outcome is UNKNOWN. Unknown
+    keeps the sentinel, by that slice's own fail-closed rule.
+
+    The assertions below pin that as a CONTRACT at the step that establishes it,
+    rather than letting a later test die at an assertion that names something
+    else — a harness that stops manufacturing a real failure must fail loudly
+    HERE.
+    """
     _marker, digest = upstream.catalogue[tag]
-    ok = updater.download_engine(f"http://x/{tag}.zip", digest=digest, tag=tag)
-    assert ok is False, "the upgrade was supposed to FAIL"
+
+    real_promote = updater._promote_staging
+
+    def dying_promote(staging):
+        raise _ProcessDied("the process was killed the instant promotion began")
+
+    updater._promote_staging = dying_promote
+    try:
+        updater.download_engine(f"http://x/{tag}.zip", digest=digest, tag=tag)
+    except _ProcessDied:
+        pass  # the crash escaping IS the manufactured failure
+    else:  # pragma: no cover - a guard, not a path
+        raise AssertionError(
+            "the upgrade was supposed to be KILLED mid-promotion, but "
+            "download_engine returned normally — the crash seam has moved"
+        )
+    finally:
+        updater._promote_staging = real_promote
+
+    # THE FAILURE CONTRACT, asserted where it is ESTABLISHED rather than
+    # inherited. Each of these three says something the others do not, and a
+    # harness that silently stops producing a real failure trips here, naming
+    # the actual cause, instead of reddening every downstream test at an
+    # assertion about the pin.
+    assert os.path.exists(updater._installing_file()), (
+        "the killed upgrade must LEAVE the .engine-installing sentinel — that "
+        "is what makes is_installed() False across a crash"
+    )
+    assert not updater._previous_build_restored(), (
+        "the install outcome must be UNKNOWN after a crash: a crash cannot "
+        "confirm its own rollback, and PS-245 clears the sentinel for a "
+        "CONFIRMED restore. If this reads restored, the failure being "
+        "manufactured is a tidy rollback and not a crash"
+    )
 
 
 class _RowOnly:
@@ -289,10 +358,8 @@ def _revert_and_fail_an_upgrade(eng, monkeypatch, tmp_path):
     assert rec_tag == OLD
     assert normalize_digest(rec_digest) == normalize_digest(OLD_DIGEST)
 
-    # 2-3. a later upgrade to NEW fails, leaving the sentinel
-    upstream.broken.add(NEW)
+    # 2-3. a later upgrade to NEW is KILLED mid-promotion, leaving the sentinel
     _fail_an_upgrade(upstream, NEW)
-    upstream.broken.discard(NEW)
 
     assert updater.is_installed() is False, (
         "the failed upgrade must leave is_installed() False — that is the "
