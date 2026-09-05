@@ -172,6 +172,18 @@ class IBrowserLauncher(Protocol):
 
     def running_profile_names(self) -> set[str]: ...
 
+    # PS-221: the NARROWING oracle the engine prune consults. Declared here
+    # because it is reached through a protocol-typed reference — ui/app.py's
+    # `_wire_engine_prune_guard` holds `self.bl: IBrowserLauncher` and calls
+    # `self.bl.running_session_builds` — so by this file's own stated test (is
+    # it reached through the protocol?) it belongs on it. Keyed WIDER than
+    # `running_profile_names` (it adds survivors and indeterminates, mapped to
+    # None) on purpose; the asymmetry is deliberate and reasoned on
+    # BrowserLauncher.running_session_builds.
+    def running_session_builds(
+        self,
+    ) -> "dict[str, tuple[str, str | None] | None]": ...
+
     def running_count(self) -> int: ...
 
     def is_running(self, profile_name: str) -> bool: ...
