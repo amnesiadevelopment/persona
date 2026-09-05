@@ -39,6 +39,23 @@ NINJA_JOBS="${NINJA_JOBS:-}"
 REC="$(pwd)/record"
 mkdir -p "$REC"
 
+# ── PS-289: the durable journal ──────────────────────────────────────────────
+# Everything else this script writes lands in `record/`, which is only readable
+# afterwards if an upload step runs. A runner that DIES mid-phase never reaches
+# one — measured twice (runs 33170172175 and 33748889046: artifacts
+# total_count = 0, and `gh run view --log` → `log not found`). The journal is
+# written line-by-line and fsynced OUTSIDE the workspace, so a phase that never
+# finishes still says how far it got.
+#
+# Resolved as an absolute path BEFORE the `cd "$UCPL_DIR"` below, and guarded on
+# existence: journaling must never be the reason a build fails.
+JOURNAL_SH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/ps289_journal.sh"
+journal() {
+  [ -x "$JOURNAL_SH" ] || return 0
+  RECORD_DIR="$REC" "$JOURNAL_SH" "$@" >/dev/null 2>&1 || true
+  return 0
+}
+
 LOG="${REC}/${PHASE}-${TREE}.log"
 MEMLOG="${REC}/${PHASE}-${TREE}-memory.tsv"
 TIMING="${REC}/${PHASE}-${TREE}-timing.txt"
@@ -86,9 +103,53 @@ start_mem_sampler() {
   MEM_PID=$!
 }
 
+# Written as an `if`, not `[ … ] && kill …`. A trailing AND-list whose test is
+# false makes the whole statement non-zero, so under `set -e` an unset MEM_PID
+# would kill the script at the exact point it is trying to shut down cleanly and
+# write its evidence. Safe today only because start_mem_sampler always assigns
+# it; the `if` removes the dependence on that.
 stop_mem_sampler() {
-  [ -n "${MEM_PID:-}" ] && kill "$MEM_PID" 2>/dev/null || true
-  wait "${MEM_PID:-}" 2>/dev/null || true
+  if [ -n "${MEM_PID:-}" ]; then
+    kill "$MEM_PID" 2>/dev/null || true
+    wait "$MEM_PID" 2>/dev/null || true
+  fi
+  return 0
+}
+
+# ── PS-289 heartbeat ─────────────────────────────────────────────────────────
+# The memory sampler above writes into `record/`, which a dead run cannot ship.
+# This one writes a fsynced ALIVE line into the durable journal, carrying the
+# phase's elapsed time, the log's size, and its last line. That is what turns
+# "it died somewhere inside a ten-minute step" into "it was 9m40s in, the log
+# was 3.1 MB, and the last thing it printed was <X>".
+#
+# 30 s, not the sampler's 5 s: this fsyncs on every write, so the interval is
+# the cost it imposes on a build that survives. At 30 s a five-hour compile
+# writes 600 short lines and 600 fsyncs of a file measured in kilobytes — far
+# below the noise floor of a Chromium build — while bounding what a death can
+# lose to half a minute.
+HEARTBEAT_SECONDS="${PS289_HEARTBEAT_SECONDS:-30}"
+start_heartbeat() {
+  hb_phase_start="$1"
+  (
+    while true; do
+      sleep "$HEARTBEAT_SECONDS"
+      journal alive "$TREE" "$PHASE" "$(( $(date +%s) - hb_phase_start ))" "$LOG"
+    done
+  ) &
+  HB_PID=$!
+}
+
+# Same `if` shape as stop_mem_sampler above, and for the same reason: a
+# trailing AND-list is non-zero when its test fails, which under `set -e` would
+# abort the script during teardown — the one moment the journal's END line still
+# has to be written.
+stop_heartbeat() {
+  if [ -n "${HB_PID:-}" ]; then
+    kill "$HB_PID" 2>/dev/null || true
+    wait "$HB_PID" 2>/dev/null || true
+  fi
+  return 0
 }
 
 # ── ninja parallelism ────────────────────────────────────────────────────────
@@ -111,7 +172,13 @@ cd "$UCPL_DIR"
 phase_start="$(date +%s)"
 echo "== PS-218 ${PHASE} / ${TREE} — started $(date -Is) ==" | tee "$LOG"
 
+# PS-289: BEGIN is written before any work starts, so a run that dies in the
+# first seconds of a phase is still distinguishable from one that never reached
+# the phase at all.
+journal begin "$TREE" "$PHASE"
+
 start_mem_sampler
+start_heartbeat "$phase_start"
 set +e
 
 case "$PHASE" in
@@ -187,9 +254,15 @@ esac
 
 set -e
 stop_mem_sampler
+stop_heartbeat
 
 phase_end="$(date +%s)"
 elapsed=$((phase_end - phase_start))
+
+# PS-289: END, with the exit code, written durably. A BEGIN without a matching
+# END is the signature of a runner death; a BEGIN followed by `END rc=1` is an
+# ordinary build failure. The two used to be indistinguishable from outside.
+journal end "$TREE" "$PHASE" "$rc"
 
 # Peak memory across the whole phase, derived from the samples.
 peak_used_kb="$(awk 'NR>1 && $2>m {m=$2} END {print m+0}' "$MEMLOG")"

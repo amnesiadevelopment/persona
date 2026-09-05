@@ -283,19 +283,6 @@ jobs:
     outputs:
       compiled: ${{ steps.compile.outputs.compiled }}
     steps:
-      # ── ZERO THE INSTRUMENT BEFORE USING IT ──────────────────────────────
-      # `record/` lives in $GITHUB_WORKSPACE, OUTSIDE both checkouts (persona/
-      # and ucpl/), so `actions/checkout` never cleans it and a self-hosted
-      # runner does not wipe _work between runs. Left alone, a control log from
-      # an EARLIER dispatch — different tag, different day — is still on disk
-      # and is therefore *present*, which is the only condition
-      # ps218_attribute.sh's "CONTROL UNKNOWN" safety tests. A stale control
-      # would be silently treated as this run's and errors billed
-      # "PRE-EXISTING — NOT ours" against a tree that was never built here.
-      #
-      # That is the PS-192 shape this ticket cites: a confident reading from an
-      # instrument nobody re-zeroed. The guard fired on absence; staleness needs
-      # this.
       # ── THE MACHINE MUST BE ABLE TO BUILD, NOT MERELY CLAIM TO ──────────
       # `runs-on:` above narrows scheduling to a Linux x64 self-hosted runner,
       # which excludes `persona-mac-builder`. But a LABEL IS A SELF-DECLARED
@@ -337,15 +324,49 @@ jobs:
           fi
           echo "OK — Linux x86_64 with docker $(docker --version 2>/dev/null | head -1)"
 
-      - name: Zero record/ from any previous dispatch
-        run: |
-          rm -rf record
-          mkdir -p record
-
+      # THE CHECKOUT COMES FIRST NOW, and that reordering is required rather
+      # than cosmetic: the salvage below is a script that lives in this
+      # repository, so it cannot run before this step exists. It is safe —
+      # `record/` sits outside both checkout paths, so `actions/checkout`
+      # cleans neither it nor the material about to be salvaged from it.
       - name: Check out persona (for the recording scripts)
         uses: actions/checkout@v4
         with:
           path: persona
+
+      # ── PS-289: SALVAGE FIRST, THEN ZERO ────────────────────────────────
+      # The zeroing itself is unchanged in effect and is still required for the
+      # reason below. What changed is that the previous dispatch's bytes are
+      # now CARRIED OUT before being removed instead of being deleted unread.
+      #
+      # This is the half of PS-289 that makes a dead run readable FROM GITHUB.
+      # A runner that dies mid-step never reaches an upload step and GitHub
+      # never flushes its job log, so that run's `record/` is stranded on the
+      # owner's disk — present, and unreachable. This step copies it into
+      # `record/salvaged/`, from where the existing `if: always()` upload ships
+      # it as an ordinary artifact of the NEXT dispatch.
+      #
+      # Salvaged material is quarantined under `salvaged/` and never placed at
+      # the top level, because ps218_attribute.sh and ps218_verify_control.sh
+      # read exact top-level paths — a salvaged control sitting beside a live
+      # one would be the stale-control false attribution the zeroing exists to
+      # prevent. Durability must not be bought with that guarantee.
+      #
+      # ── AND THE ORIGINAL REASON THE ZEROING EXISTS, UNCHANGED ────────────
+      # `record/` lives in $GITHUB_WORKSPACE, OUTSIDE both checkouts (persona/
+      # and ucpl/), so `actions/checkout` never cleans it and a self-hosted
+      # runner does not wipe _work between runs. Left alone, a control log from
+      # an EARLIER dispatch — different tag, different day — is still on disk
+      # and is therefore *present*, which is the only condition
+      # ps218_attribute.sh's "CONTROL UNKNOWN" safety tests. A stale control
+      # would be silently treated as this run's and errors billed
+      # "PRE-EXISTING — NOT ours" against a tree that was never built here.
+      #
+      # That is the PS-192 shape this ticket cites: a confident reading from an
+      # instrument nobody re-zeroed. The guard fired on absence; staleness needs
+      # this.
+      - name: Salvage the previous dispatch's evidence, then zero record/
+        run: persona/scripts/ps289_journal.sh salvage
 
       - name: Check out ungoogled-chromium-portablelinux
         uses: actions/checkout@v4
@@ -548,11 +569,6 @@ jobs:
     runs-on: [self-hosted, Linux, X64, persona-build]
     timeout-minutes: 900
     steps:
-      # Same zeroing as the control job, and for the same reason: `record/` is
-      # outside both checkouts, so nothing else cleans it between dispatches.
-      # This job additionally READS a control log copied in from the artifact,
-      # so a leftover from an earlier run is the exact input that would poison
-      # attribution.
       # ── THE MACHINE MUST BE ABLE TO BUILD, NOT MERELY CLAIM TO ──────────
       # `runs-on:` above narrows scheduling to a Linux x64 self-hosted runner,
       # which excludes `persona-mac-builder`. But a LABEL IS A SELF-DECLARED
@@ -594,15 +610,22 @@ jobs:
           fi
           echo "OK — Linux x86_64 with docker $(docker --version 2>/dev/null | head -1)"
 
-      - name: Zero record/ from any previous dispatch
-        run: |
-          rm -rf record
-          mkdir -p record
-
+      # Checkout first — the salvage script lives in this repository. `record/`
+      # is outside both checkout paths, so nothing here disturbs the material
+      # about to be salvaged.
       - name: Check out persona (patches + recording scripts)
         uses: actions/checkout@v4
         with:
           path: persona
+
+      # PS-289 salvage + the same zeroing as the control job, for the same
+      # reason: `record/` is outside both checkouts, so nothing else cleans it
+      # between dispatches. This job additionally READS a control log copied in
+      # from the artifact, so a leftover from an earlier run is the exact input
+      # that would poison attribution — which is why the salvage quarantines
+      # what it recovers under `record/salvaged/` and never at the top level.
+      - name: Salvage the previous dispatch's evidence, then zero record/
+        run: persona/scripts/ps289_journal.sh salvage
 
       - name: Check out ungoogled-chromium-portablelinux
         uses: actions/checkout@v4

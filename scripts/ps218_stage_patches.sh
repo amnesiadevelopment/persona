@@ -72,3 +72,12 @@ fi
 } | tee record/patches-staged.txt
 
 echo "recorded staged patch set -> record/patches-staged.txt"
+
+# PS-289 — durable milestone. "Were our 16 staged before it died?" is one of the
+# specific questions a dead run must still answer, and a `record/` file cannot
+# answer it: nothing uploads that file when the runner never reaches an upload
+# step. Guarded and never fatal.
+JOURNAL_SH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/ps289_journal.sh"
+if [ -x "$JOURNAL_SH" ]; then
+  "$JOURNAL_SH" mark patched "staged ${count} fingerprint patches into ungoogled's series" >/dev/null 2>&1 || true
+fi
