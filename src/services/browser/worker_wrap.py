@@ -1187,7 +1187,7 @@ def firefox_worker_cloak() -> WorkerCloak:
     property beyond the ones a native function already carries (``name`` and,
     for the constructors, ``length``) — the standard already set in tree by the
     locale spoof's Firefox worker wrapper
-    (``invisible_launch.py:594``, ``return __cloak(W,Orig.name,undefined,Orig.length)``,
+    (``invisible_launch.py:601``, ``return __cloak(W,Orig.name,undefined,Orig.length)``,
     whose marker-absence ``tests/test_ff_language_override.py:166`` pins).
 
     The Chromium default is not merely unnecessary on this engine, it is a tell:
