@@ -374,10 +374,20 @@ case "$CMD" in
   # untouched — but the bytes are carried into a quarantined subdirectory first
   # instead of being deleted unread.
   salvage)
+    # ⚠️ THE PRUNE RUNS FIRST, AND THAT IS A RETENTION DECISION WITH A COST.
+    # A journal whose run died is carried out by the orphan sweep below — but
+    # only if a dispatch happens within `JOURNAL_RETENTION_DAYS` of the death.
+    # A self-hosted runner can sit idle for weeks, so a dropout followed by a
+    # long quiet period loses its journal to the prune before any dispatch
+    # carries it out. That is deliberate (the durable copy expires with the
+    # artifact it mirrors) but it means the durable copy does NOT always outlive
+    # the incident: it outlives it for 30 days.
     _prune
     stage=""
+    carried=""
     prev_run="none"
     salvaged_record=0
+    carried_forward=0
 
     if [ -d "$RECORD_DIR" ] && [ -n "$(ls -A "$RECORD_DIR" 2>/dev/null || true)" ]; then
       prev_run="$(_owning_run_of_record)"
@@ -395,15 +405,42 @@ case "$CMD" in
         rm -rf "$stage" 2>/dev/null || true
         mkdir -p "$stage" 2>/dev/null || true
         cp -R "$RECORD_DIR"/. "$stage"/ 2>/dev/null || true
-        # ⚠️ DO NOT CARRY A PREVIOUS SALVAGE INTO THIS ONE. `record/salvaged/`
-        # is itself part of `record/`, so a dispatch whose predecessor also
-        # salvaged something would nest the recovered tree one level deeper
-        # every time — `salvaged/record-from-run-unknown/salvaged/record-from-
-        # run-unknown/…`. That is not exotic: the PS-244 borrowed-control
-        # refusal exits before any provenance stamp is written, so consecutive
-        # refusals each leave an unprovenanced `record/` behind. The earlier
-        # material is not lost by this — it already rode out on the artifact of
-        # the dispatch that recovered it.
+        # ── the previous dispatch's OWN salvaged/ — LIFTED ASIDE, NOT DROPPED ──
+        # `record/salvaged/` is itself part of `record/`, so copying `record/.`
+        # wholesale nests the recovered tree one level deeper on every dispatch
+        # — `salvaged/record-from-run-unknown/salvaged/record-from-run-unknown/…`
+        # — until it is unreadable. That is not exotic: the PS-244 borrowed-
+        # control refusal exits before any provenance stamp is written, so
+        # consecutive refusals each leave an unprovenanced `record/` behind.
+        #
+        # ⚠️ BUT IT MUST NOT SIMPLY BE DELETED, AND AN EARLIER VERSION DELETED
+        # IT. The comment justifying that read "the earlier material already
+        # rode out on the artifact of the dispatch that recovered it" — which is
+        # true only when the RECOVERING dispatch survived to reach its upload
+        # step. This script exists for dispatches that do not. Chain it: A dies;
+        # B salvages A into `record/salvaged/` and then B ALSO dies, so B never
+        # uploads and A's bytes now exist in exactly ONE place on disk — inside
+        # B's `record/salvaged/`. A dispatch C that dropped that directory as
+        # "already shipped" would destroy A's environment record, staged patch
+        # set and verified borrowed control, and would then post a recovery
+        # notice naming only B. Two deaths in a row is the CURRENT normal on
+        # this project's `persona-build` label (two heterogeneous machines
+        # answer it; the dockerless macOS host kills `prepare` in ~20s), not a
+        # tail case.
+        #
+        # So the tree is flattened by CARRYING FORWARD, not by discarding: the
+        # previous salvage is moved out of the staging copy here, and laid back
+        # down under THIS run's `record/salvaged/` below. The result is exactly
+        # one level deep — the nesting nit is still fixed — and the recovery
+        # chain survives an arbitrary run of consecutive deaths.
+        carried="${JOURNAL_ROOT}/.salvage-carried-$$"
+        rm -rf "$carried" 2>/dev/null || true
+        if [ -d "${stage}/salvaged" ]; then
+          mv "${stage}/salvaged" "$carried" 2>/dev/null || true
+        fi
+        # Belt and braces: if the `mv` could not happen (a cross-device staging
+        # root, a permission problem) the directory must still not nest, so it
+        # is removed only on the path where carrying it forward was impossible.
         rm -rf "${stage}/salvaged" 2>/dev/null || true
       fi
     fi
@@ -411,6 +448,25 @@ case "$CMD" in
     # The zeroing, unchanged in effect.
     rm -rf "$RECORD_DIR"
     mkdir -p "$RECORD_DIR"
+
+    # ── lay the carried-forward salvage back down, exactly one level deep ─────
+    # Placed BEFORE this run's own copy so that on the (unlikely) collision of
+    # two dispatches recovering the same run id, THIS dispatch's fresher bytes
+    # win rather than the inherited ones.
+    if [ -n "$carried" ] && [ -d "$carried" ]; then
+      mkdir -p "${RECORD_DIR}/salvaged" 2>/dev/null || true
+      cp -R "$carried"/. "${RECORD_DIR}/salvaged"/ 2>/dev/null || true
+      # The inherited SALVAGE.md names the EARLIER dispatch's run id and
+      # timestamp. It is regenerated below from this run's values, but drop it
+      # first: if that write ever fails, no legend is a better answer than a
+      # legend attributing this artifact to the wrong run.
+      rm -f "${RECORD_DIR}/salvaged/SALVAGE.md" 2>/dev/null || true
+      if [ -n "$(ls -A "${RECORD_DIR}/salvaged" 2>/dev/null || true)" ]; then
+        carried_forward=1
+        echo "carried forward an earlier dispatch's salvaged evidence (it was never uploaded — its recoverer died too)"
+      fi
+    fi
+    rm -rf "$carried" 2>/dev/null || true
 
     if [ -n "$stage" ] && [ -n "$(ls -A "$stage" 2>/dev/null || true)" ]; then
       dest="${RECORD_DIR}/salvaged/record-from-run-${prev_run}"
@@ -456,10 +512,21 @@ case "$CMD" in
         [ -f "${d}.salvaged" ] && continue
         _journal_is_unfinished "$j" || continue
         mkdir -p "${RECORD_DIR}/salvaged/journals"
-        cp "$j" "${RECORD_DIR}/salvaged/journals/journal-${name}.txt" 2>/dev/null || true
-        : > "${d}.salvaged" 2>/dev/null || true
-        orphans=$((orphans + 1))
-        orphan_names="${orphan_names}${orphan_names:+, }${name}"
+        # ⚠️ THE SENTINEL IS GATED ON THE COPY, NOT ON THE ATTEMPT. The `cp` is
+        # deliberately non-fatal — journaling must never fail a build — but an
+        # unconditional `: > .salvaged` afterwards burns the journal's ONE
+        # chance to be carried out even when nothing was copied (an unreadable
+        # journal passes `[ -f ]` and then fails `cp`). It would also count into
+        # `orphans`, so the log line and the run summary would both claim a
+        # recovery that did not happen. The sentinel must record a RESULT, which
+        # is the same lesson as the carry-forward above: this script's
+        # bookkeeping is only sound when it is conditioned on the bytes having
+        # actually moved.
+        if cp "$j" "${RECORD_DIR}/salvaged/journals/journal-${name}.txt" 2>/dev/null; then
+          : > "${d}.salvaged" 2>/dev/null || true
+          orphans=$((orphans + 1))
+          orphan_names="${orphan_names}${orphan_names:+, }${name}"
+        fi
       done
     fi
     # Written as an `if` and not `[ … ] && echo …`: under `set -e` a trailing
@@ -502,12 +569,18 @@ case "$CMD" in
         echo "  that BEGAN and never ENDED, or a run that died before any phase began"
         echo "  at all. Read the last \`ALIVE\` line: it bounds where the run stopped."
         echo
+        echo "This directory may hold evidence from MORE THAN ONE earlier dispatch."
+        echo "When a dispatch recovers a dead run and then dies itself, it never"
+        echo "reaches its upload step, so what it recovered exists only on disk; the"
+        echo "next dispatch carries that material FORWARD rather than dropping it as"
+        echo "\"already shipped\". The tree stays exactly one level deep either way."
+        echo
         echo "Large logs are truncated head+tail with the drop stated in-line."
       } > "${RECORD_DIR}/salvaged/SALVAGE.md" 2>/dev/null || true
     fi
 
     _header_if_new
-    _append "$(now)  MARK   job  workspace zeroed; salvage from previous dispatch: run=${prev_run} orphan_journals=${orphans}"
+    _append "$(now)  MARK   job  workspace zeroed; salvage from previous dispatch: run=${prev_run} orphan_journals=${orphans} carried_forward=${carried_forward}"
 
     # ── SAY IT WHERE A READER WILL ACTUALLY SEE IT ───────────────────────────
     # An artifact somebody has to know to download is only half a remedy. When a
@@ -540,6 +613,13 @@ case "$CMD" in
           echo "| unfinished journals recovered | ${orphans} (\`${orphan_names}\`) |"
         else
           echo "| unfinished journals recovered | 0 |"
+        fi
+        # A dispatch that recovered a dead run and then died itself never
+        # uploaded what it recovered, so this run inherits it. Say so — a
+        # reader who is told only about the LATEST death would otherwise never
+        # learn that older material is in the same artifact.
+        if [ "$carried_forward" -eq 1 ]; then
+          echo "| earlier dispatch's salvage carried forward | yes (its recoverer died before uploading) |"
         fi
         echo
         if [ -d "${RECORD_DIR}/salvaged/journals" ]; then
