@@ -993,6 +993,14 @@ class BrowserLauncher:
         gone, or when the user has been asked and chose to leave it running —
         in the last case the block is released because the user has made an
         informed decision, which is the opposite of silently adopting it.
+
+        Drops ``_survivors`` only, NOT ``_indeterminate`` (PS-221) — deliberate,
+        and the direction it errs in is the safe one. A name left on
+        ``_indeterminate`` after its process dies keeps reading as UNKNOWN to
+        ``running_session_builds``, which costs a prune cycle (a lost reclaim),
+        never a deletion under a live browser. It cannot accumulate either:
+        ``scan_survivors`` is startup-only and REASSIGNS that dict wholesale
+        rather than mutating it, so the map never outlives one scan.
         """
         with self._lock:
             self._survivors.pop(profile_name, None)
