@@ -550,6 +550,86 @@ def _capture_launch_argv() -> list[str]:
 
 _UI = os.path.join(SRC, "ui")
 
+#: ⚠️ THE SCOPE BUG THIS TUPLE EXISTS TO CLOSE, recorded because it cost a
+#: review round and because the NEXT rename will re-create it if nobody knows.
+#:
+#: Round 1 of PS-318 scanned ``src/ui`` ONLY, and the "19 operator-facing
+#: strings" it was scoped to came from a census that was ALSO ``src/ui``-only.
+#: Guard and census therefore shared one blind spot and neither could see the
+#: other's, so the sweep looked complete while 15 operator-facing strings in
+#: ``src/services`` still said "Chromium". The result was visible to an
+#: operator: the Activity Log printed BOTH names in the same scroll, because
+#: ``App._log`` is handed straight into the service layer
+#: (``engine.revert_to_previous_build(log=self._log)``).
+#:
+#: So the scan is now rooted at ``src`` — the whole tree — and the genuine
+#: non-operator uses are named ONE BY ONE below. An allow-list makes every
+#: exclusion a decision somebody recorded and can be argued with; a narrower
+#: root makes it a directory nobody looked in.
+_SCAN_ROOT = SRC
+
+#: Files whose "Chromium" literals are NOT our engine's operator-facing name.
+#: Each entry is a decision with a reason, not a convenience.
+#:
+#: THE ORGANISING DISTINCTION, and the one to apply when adding an entry: our
+#: engine's BRAND is "Personium", but the upstream PROJECT, its VERSION NUMBER,
+#: and its ON-DISK ARTEFACTS are all still legitimately called "Chromium".
+#: Renaming any of the latter would either break an install or put a
+#: product-specific marker somewhere a page can read it.
+_NOT_OUR_ENGINE_NAME = {
+    # ON-DISK PATHS. The macOS bundle really is named Chromium.app; these are
+    # filesystem coordinates the updater resolves, not text an operator reads.
+    # The ticket names this exclusion explicitly.
+    "core/platform.py",
+    # THE DEFINITION ITSELF. core/strings.py is where the name is declared.
+    "core/strings.py",
+    # WIRE / UA CONCEPTS — the Chromium VERSION a page observes. Renaming any of
+    # these would either change what a site sees or make the refusal message
+    # describe a thing that does not exist. `engine_version.py:158` is the one
+    # borderline case and is deliberately left: it names the upstream TAG, and
+    # it sits in the module most tightly bound to UA derivation, which is
+    # exactly where the PS-224 fence is strictest.
+    "services/browser/engine_version.py",
+    "services/browser/device_presets.py",
+    "services/browser/process.py",
+    "services/browser/mobile_ext.py",
+    # INJECTED EXTENSION PAYLOADS. These are JavaScript that runs IN THE PAGE;
+    # "Chromium" appears in cloaking comments. Our name must NEVER reach here —
+    # `test_the_name_is_absent_from_every_extension_the_launch_injects` asserts
+    # the opposite direction on the real launch.
+    "services/browser/audio_ext.py",
+    "services/browser/canvas_ctx_ext.py",
+    "services/browser/device_ext.py",
+    "services/browser/gpu_ext.py",
+    "services/browser/voice_ext.py",
+    "services/browser/worker_wrap.py",
+    # MEASUREMENT PROVENANCE, explicitly deferred by the PS-318 ticket: these
+    # values are written into committed reading artifacts, and changing one
+    # makes a new reading incomparable with 36 recorded ones without saying so.
+    # `test_the_verification_engine_identifier_is_unchanged` pins this.
+    "services/verify/checker_cli.py",
+    "services/verify/chromium_tier.py",
+    "services/verify/baseline.py",
+    "services/verify/behaviour.py",
+    "services/verify/local_probe.py",
+    "services/verify/probes.py",
+}
+
+#: Individual (file, substring) pairs allowed inside files that are OTHERWISE
+#: scanned. Narrower than excluding a whole file, and used where one literal in
+#: a converted file is a genuine non-brand use.
+_ALLOWED_FRAGMENTS = (
+    # The macOS bundle path and its staging/backup siblings, inside the updater
+    # — a file whose operator-facing strings ARE scanned. Excluding the whole
+    # file would have hidden the 11 strings this round had to fix.
+    ("services/engine/updater.py", "Chromium.app"),
+    # The upstream MAJOR VERSION in the policy refusal. The sentence now reads
+    # "Personium engine <tag> is above the maximum Chromium major …" — the
+    # brand is ours, the version number is upstream's, and both are correct.
+    ("services/engine/policy.py", "maximum Chromium major"),
+    ("services/engine/policy.py", "(Chromium "),
+)
+
 #: Spellings of our Chromium engine that must never be TYPED into an
 #: operator-facing string literal. "Chromium" alone is the one that matters
 #: most: it is what 19 literals said before PS-318, and it is a word a future
@@ -616,45 +696,136 @@ def _operator_string_literals(root):
                     yield path, node.lineno, node.value
 
 
-def test_no_ui_string_literal_TYPES_the_engine_name_instead_of_SOURCING_it():
-    """AC1 + AC2. The 19 literals PS-318 converted, pinned as a property.
+def _is_allowed(rel, value):
+    """True when this literal is a recorded non-brand use of "Chromium".
+
+    `rel` is the repo-relative path with forward slashes, so the allow-list
+    entries read the same on every platform.
+    """
+    if any(rel.endswith(f) or rel == f"src/{f}" for f in _NOT_OUR_ENGINE_NAME):
+        return True
+    return any(
+        rel.endswith(f) and frag in value for f, frag in _ALLOWED_FRAGMENTS
+    )
+
+
+def test_no_operator_string_literal_TYPES_the_engine_name_instead_of_SOURCING_it():
+    """AC1 + AC2, scanned over ALL of `src` — not just `src/ui`.
 
     ⚠️ SCOPED TO LITERALS, NOT TO THE FILE. See the note above this test: the
     same sweep expressed as a grep counts comments and docstrings and is
     unfixable by construction.
 
-    MUTATION-CHECKED, and this is not a claim — it was run. Re-introducing one
-    hardcoded string (`f"Chromium engine check failed: {e}"` in `app.py`) turns
-    this test RED naming that exact file and line; removing it turns it green
-    again. A guard nobody has watched fail is not a guard.
+    ⚠️ AND SCOPED TO THE TREE, NOT TO A DIRECTORY — this is the round-2 fix and
+    the more important of the two scopings. See `_SCAN_ROOT`: the first version
+    of this guard watched `src/ui` only, which is exactly why 15 operator-facing
+    strings in `src/services` survived a sweep that looked complete and put two
+    different engine names in the same Activity Log.
+
+    MUTATION-CHECKED IN BOTH TERRITORIES, and this is not a claim — it was run.
+    Re-introducing `f"Chromium engine check failed: {e}"` in `app.py` turns this
+    RED at that line; so does re-hardcoding `"Chromium engine: automatic updates
+    resumed"` in `services/engine/updater.py`, which is the NEW territory and
+    would have passed round 1's guard. Removing each turns it green again.
     """
     offenders = []
-    for path, lineno, value in _operator_string_literals(_UI):
+    for path, lineno, value in _operator_string_literals(_SCAN_ROOT):
+        rel = os.path.relpath(path, REPO_ROOT).replace(os.sep, "/")
+        if _is_allowed(rel, value):
+            continue
         for typed in _TYPED_ENGINE_NAMES:
             if typed in value:
-                rel = os.path.relpath(path, REPO_ROOT)
                 offenders.append(f"{rel}:{lineno}: {value[:80]!r}")
 
     assert not offenders, (
         "an operator-facing string literal TYPES our Chromium engine's name "
         f"instead of interpolating {CHROMIUM_ENGINE_NAME!r} from "
-        "core.strings.CHROMIUM_ENGINE_NAME. Sourcing it is what makes the "
-        "next rename ONE edit instead of a sweep:\n  " + "\n  ".join(offenders)
+        "core.strings.CHROMIUM_ENGINE_NAME (in the service layer, via "
+        "services.engine_naming.engine_display_name). Sourcing it is what "
+        "makes the next rename ONE edit instead of a sweep:\n  "
+        + "\n  ".join(offenders)
     )
 
 
+def test_the_allow_list_is_honest_and_not_a_place_to_hide_a_defect():
+    """The allow-list must EARN each entry, or it becomes a silent opt-out.
+
+    An allow-list is only better than a narrow scan root if its entries are
+    real. Two ways it could rot, both checked here:
+
+    * a STALE entry — a file that no longer contains any matching literal, left
+      behind to excuse a defect somebody might add later;
+    * an OVER-BROAD entry — a fragment allowance that would swallow the plain
+      "Chromium engine:" brand string this ticket exists to eliminate.
+    """
+    seen = {}
+    for path, _lineno, value in _operator_string_literals(_SCAN_ROOT):
+        rel = os.path.relpath(path, REPO_ROOT).replace(os.sep, "/")
+        if any(typed in value for typed in _TYPED_ENGINE_NAMES):
+            seen.setdefault(rel, []).append(value)
+
+    stale = [
+        f
+        for f in _NOT_OUR_ENGINE_NAME
+        if not any(r.endswith(f) for r in seen)
+    ]
+    assert not stale, (
+        "these allow-list entries no longer match any literal — remove them "
+        f"rather than leaving a standing excuse: {sorted(stale)}"
+    )
+
+    stale_frags = [
+        (f, frag)
+        for f, frag in _ALLOWED_FRAGMENTS
+        if not any(r.endswith(f) and frag in v for r, vs in seen.items() for v in vs)
+    ]
+    assert not stale_frags, (
+        f"these fragment allowances match nothing any more: {stale_frags}"
+    )
+
+    # No fragment allowance may excuse the brand string itself.
+    for _f, frag in _ALLOWED_FRAGMENTS:
+        assert "Chromium engine:" not in frag, (
+            f"the fragment allowance {frag!r} would excuse the very string "
+            "this guard exists to catch"
+        )
+
+
 def test_the_guard_above_is_not_vacuous():
-    """The scan must actually be READING src/ui, and reading a lot of it.
+    """The scan must actually be READING the tree, and reading a lot of it.
 
     Without this, a broken walk (wrong path, a parse that silently yields
     nothing) makes the guard pass by finding no literals at all — the classic
     way a sweep test goes green by testing nothing. The floor is deliberately
     well below the real count so ordinary edits never trip it.
+
+    BOTH ROOTS ARE PINNED. `src/ui` is checked on its own as well as the whole
+    tree, because an allow-list bug that accidentally excluded the entire UI
+    directory would still leave the tree-wide count comfortably above its floor
+    — and `src/ui` is where the operator strings this ticket started from live.
     """
-    literals = list(_operator_string_literals(_UI))
-    assert len(literals) > 500, (
-        f"the literal scan found only {len(literals)} strings in src/ui — it "
+    literals = list(_operator_string_literals(_SCAN_ROOT))
+    assert len(literals) > 2000, (
+        f"the literal scan found only {len(literals)} strings in src — it "
         "is not reading the tree, so the guard above proves nothing"
+    )
+
+    ui_literals = list(_operator_string_literals(_UI))
+    assert len(ui_literals) > 500, (
+        f"the literal scan found only {len(ui_literals)} strings in src/ui — "
+        "the UI subtree is not being read"
+    )
+
+    # ...and the SERVICE layer, the territory round 1's guard could not see, is
+    # genuinely in scope now rather than nominally.
+    service_literals = [
+        v
+        for p, _l, v in literals
+        if "services/engine" in p.replace(os.sep, "/")
+    ]
+    assert len(service_literals) > 100, (
+        "the scan is not reaching src/services/engine — the exact blind spot "
+        "that let 15 operator strings survive round 1"
     )
 
     # ...and it must be finding the CONVERTED sites, not merely some strings:
