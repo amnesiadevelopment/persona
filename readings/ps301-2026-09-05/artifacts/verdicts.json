@@ -1,0 +1,4686 @@
+{
+  "control_binary": {
+    "engine_dir": "/tmp/ps301/engine-stock",
+    "real_path": "/tmp/ps301/run144/chrome.stock-cft",
+    "resolved_path": "/tmp/ps301/engine-stock/fpchrome.AppImage",
+    "sha256": "b582e32f779af0760705e093b10eb0a12524b55cd7cb62ee02b1c0fcf963c353",
+    "size_bytes": 267058392,
+    "version_string": "Google Chrome for Testing 144.0.7559.133"
+  },
+  "control_engine": "STOCK Chrome-for-Testing 144.0.7559.133 (CONTROL \u2014 NOT the product)",
+  "product_binary": {
+    "engine_dir": "/tmp/ps301/engine-144",
+    "real_path": "/tmp/ps301/run144/chrome",
+    "resolved_path": "/tmp/ps301/engine-144/fpchrome.AppImage",
+    "sha256": "3b403afbdd6e6847d394a630a27e097831701123fad738de25e8e0d71c3c0fe4",
+    "size_bytes": 456688328,
+    "version_string": "Chromium 144.0.7559.132"
+  },
+  "product_engine": "self-built patched 144.0.7559.132 (CI artifact ps218-patched-binary-144.0.7559.132-1, run 9895111731)",
+  "verdicts": [
+    {
+      "all_realms_differ": true,
+      "any_realm_differs": true,
+      "distinct_product_values_across_realms": [
+        "12",
+        "18"
+      ],
+      "label": "Q1 navigator.hardwareConcurrency",
+      "layer": "off",
+      "moves_with_seed": true,
+      "per_realm": {
+        "iframe_about_blank": {
+          "control": [
+            "8",
+            "8"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "12",
+            "18"
+          ],
+          "product_moves_with_seed": true
+        },
+        "iframe_same_origin": {
+          "control": [
+            "8",
+            "8"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "12",
+            "18"
+          ],
+          "product_moves_with_seed": true
+        },
+        "iframe_srcdoc": {
+          "control": [
+            "8",
+            "8"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "12",
+            "18"
+          ],
+          "product_moves_with_seed": true
+        },
+        "page": {
+          "control": [
+            "8",
+            "8"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "12",
+            "18"
+          ],
+          "product_moves_with_seed": true
+        },
+        "worker_blob": {
+          "control": [
+            "8",
+            "8"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "12",
+            "18"
+          ],
+          "product_moves_with_seed": true
+        },
+        "worker_in_iframe": {
+          "control": [
+            "8",
+            "8"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "12",
+            "18"
+          ],
+          "product_moves_with_seed": true
+        },
+        "worker_nested": {
+          "control": [
+            "8",
+            "8"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "12",
+            "18"
+          ],
+          "product_moves_with_seed": true
+        }
+      },
+      "realm_coherent": true,
+      "vector": "switches.hardware_concurrency"
+    },
+    {
+      "all_realms_differ": false,
+      "any_realm_differs": false,
+      "distinct_product_values_across_realms": [
+        "12",
+        "8"
+      ],
+      "label": "Q1 navigator.hardwareConcurrency",
+      "layer": "on",
+      "moves_with_seed": true,
+      "per_realm": {
+        "iframe_about_blank": {
+          "control": [
+            "8",
+            "12"
+          ],
+          "control_moves_with_seed": true,
+          "differs_from_control": false,
+          "product": [
+            "8",
+            "12"
+          ],
+          "product_moves_with_seed": true
+        },
+        "iframe_same_origin": {
+          "control": [
+            "8",
+            "12"
+          ],
+          "control_moves_with_seed": true,
+          "differs_from_control": false,
+          "product": [
+            "8",
+            "12"
+          ],
+          "product_moves_with_seed": true
+        },
+        "iframe_srcdoc": {
+          "control": [
+            "8",
+            "12"
+          ],
+          "control_moves_with_seed": true,
+          "differs_from_control": false,
+          "product": [
+            "8",
+            "12"
+          ],
+          "product_moves_with_seed": true
+        },
+        "page": {
+          "control": [
+            "8",
+            "12"
+          ],
+          "control_moves_with_seed": true,
+          "differs_from_control": false,
+          "product": [
+            "8",
+            "12"
+          ],
+          "product_moves_with_seed": true
+        },
+        "worker_blob": {
+          "control": [
+            "8",
+            "12"
+          ],
+          "control_moves_with_seed": true,
+          "differs_from_control": false,
+          "product": [
+            "8",
+            "12"
+          ],
+          "product_moves_with_seed": true
+        },
+        "worker_in_iframe": {
+          "control": [
+            "8",
+            "12"
+          ],
+          "control_moves_with_seed": true,
+          "differs_from_control": false,
+          "product": [
+            "8",
+            "12"
+          ],
+          "product_moves_with_seed": true
+        },
+        "worker_nested": {
+          "control": [
+            "8",
+            "12"
+          ],
+          "control_moves_with_seed": true,
+          "differs_from_control": false,
+          "product": [
+            "8",
+            "12"
+          ],
+          "product_moves_with_seed": true
+        }
+      },
+      "realm_coherent": true,
+      "vector": "switches.hardware_concurrency"
+    },
+    {
+      "all_realms_differ": false,
+      "any_realm_differs": false,
+      "distinct_product_values_across_realms": [
+        "\"Linux x86_64\""
+      ],
+      "label": "Q1 navigator.platform",
+      "layer": "off",
+      "moves_with_seed": false,
+      "per_realm": {
+        "iframe_about_blank": {
+          "control": [
+            "\"Linux x86_64\"",
+            "\"Linux x86_64\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "\"Linux x86_64\"",
+            "\"Linux x86_64\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "iframe_same_origin": {
+          "control": [
+            "\"Linux x86_64\"",
+            "\"Linux x86_64\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "\"Linux x86_64\"",
+            "\"Linux x86_64\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "iframe_srcdoc": {
+          "control": [
+            "\"Linux x86_64\"",
+            "\"Linux x86_64\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "\"Linux x86_64\"",
+            "\"Linux x86_64\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "page": {
+          "control": [
+            "\"Linux x86_64\"",
+            "\"Linux x86_64\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "\"Linux x86_64\"",
+            "\"Linux x86_64\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_blob": {
+          "control": [
+            "\"Linux x86_64\"",
+            "\"Linux x86_64\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "\"Linux x86_64\"",
+            "\"Linux x86_64\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_in_iframe": {
+          "control": [
+            "\"Linux x86_64\"",
+            "\"Linux x86_64\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "\"Linux x86_64\"",
+            "\"Linux x86_64\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_nested": {
+          "control": [
+            "\"Linux x86_64\"",
+            "\"Linux x86_64\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "\"Linux x86_64\"",
+            "\"Linux x86_64\""
+          ],
+          "product_moves_with_seed": false
+        }
+      },
+      "realm_coherent": true,
+      "vector": "switches.platform"
+    },
+    {
+      "all_realms_differ": false,
+      "any_realm_differs": false,
+      "distinct_product_values_across_realms": [
+        "\"Linux x86_64\""
+      ],
+      "label": "Q1 navigator.platform",
+      "layer": "on",
+      "moves_with_seed": false,
+      "per_realm": {
+        "iframe_about_blank": {
+          "control": [
+            "\"Linux x86_64\"",
+            "\"Linux x86_64\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "\"Linux x86_64\"",
+            "\"Linux x86_64\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "iframe_same_origin": {
+          "control": [
+            "\"Linux x86_64\"",
+            "\"Linux x86_64\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "\"Linux x86_64\"",
+            "\"Linux x86_64\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "iframe_srcdoc": {
+          "control": [
+            "\"Linux x86_64\"",
+            "\"Linux x86_64\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "\"Linux x86_64\"",
+            "\"Linux x86_64\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "page": {
+          "control": [
+            "\"Linux x86_64\"",
+            "\"Linux x86_64\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "\"Linux x86_64\"",
+            "\"Linux x86_64\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_blob": {
+          "control": [
+            "\"Linux x86_64\"",
+            "\"Linux x86_64\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "\"Linux x86_64\"",
+            "\"Linux x86_64\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_in_iframe": {
+          "control": [
+            "\"Linux x86_64\"",
+            "\"Linux x86_64\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "\"Linux x86_64\"",
+            "\"Linux x86_64\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_nested": {
+          "control": [
+            "\"Linux x86_64\"",
+            "\"Linux x86_64\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "\"Linux x86_64\"",
+            "\"Linux x86_64\""
+          ],
+          "product_moves_with_seed": false
+        }
+      },
+      "realm_coherent": true,
+      "vector": "switches.platform"
+    },
+    {
+      "all_realms_differ": false,
+      "any_realm_differs": false,
+      "distinct_product_values_across_realms": [
+        "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\""
+      ],
+      "label": "Q1 navigator.userAgent",
+      "layer": "off",
+      "moves_with_seed": false,
+      "per_realm": {
+        "iframe_about_blank": {
+          "control": [
+            "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\"",
+            "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\"",
+            "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "iframe_same_origin": {
+          "control": [
+            "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\"",
+            "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\"",
+            "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "iframe_srcdoc": {
+          "control": [
+            "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\"",
+            "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\"",
+            "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "page": {
+          "control": [
+            "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\"",
+            "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\"",
+            "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_blob": {
+          "control": [
+            "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\"",
+            "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\"",
+            "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_in_iframe": {
+          "control": [
+            "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\"",
+            "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\"",
+            "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_nested": {
+          "control": [
+            "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\"",
+            "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\"",
+            "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\""
+          ],
+          "product_moves_with_seed": false
+        }
+      },
+      "realm_coherent": true,
+      "vector": "switches.user_agent"
+    },
+    {
+      "all_realms_differ": false,
+      "any_realm_differs": false,
+      "distinct_product_values_across_realms": [
+        "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\""
+      ],
+      "label": "Q1 navigator.userAgent",
+      "layer": "on",
+      "moves_with_seed": false,
+      "per_realm": {
+        "iframe_about_blank": {
+          "control": [
+            "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\"",
+            "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\"",
+            "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "iframe_same_origin": {
+          "control": [
+            "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\"",
+            "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\"",
+            "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "iframe_srcdoc": {
+          "control": [
+            "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\"",
+            "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\"",
+            "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "page": {
+          "control": [
+            "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\"",
+            "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\"",
+            "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_blob": {
+          "control": [
+            "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\"",
+            "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\"",
+            "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_in_iframe": {
+          "control": [
+            "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\"",
+            "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\"",
+            "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_nested": {
+          "control": [
+            "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\"",
+            "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\"",
+            "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36\""
+          ],
+          "product_moves_with_seed": false
+        }
+      },
+      "realm_coherent": true,
+      "vector": "switches.user_agent"
+    },
+    {
+      "all_realms_differ": false,
+      "any_realm_differs": false,
+      "distinct_product_values_across_realms": [
+        "\"Linux\""
+      ],
+      "label": "Q1 userAgentData.platform",
+      "layer": "off",
+      "moves_with_seed": false,
+      "per_realm": {
+        "iframe_about_blank": {
+          "control": [
+            "\"Linux\"",
+            "\"Linux\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "\"Linux\"",
+            "\"Linux\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "iframe_same_origin": {
+          "control": [
+            "\"Linux\"",
+            "\"Linux\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "\"Linux\"",
+            "\"Linux\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "iframe_srcdoc": {
+          "control": [
+            "\"Linux\"",
+            "\"Linux\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "\"Linux\"",
+            "\"Linux\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "page": {
+          "control": [
+            "\"Linux\"",
+            "\"Linux\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "\"Linux\"",
+            "\"Linux\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_blob": {
+          "control": [
+            "\"Linux\"",
+            "\"Linux\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "\"Linux\"",
+            "\"Linux\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_in_iframe": {
+          "control": [
+            "\"Linux\"",
+            "\"Linux\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "\"Linux\"",
+            "\"Linux\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_nested": {
+          "control": [
+            "\"Linux\"",
+            "\"Linux\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "\"Linux\"",
+            "\"Linux\""
+          ],
+          "product_moves_with_seed": false
+        }
+      },
+      "realm_coherent": true,
+      "vector": "switches.uad_platform"
+    },
+    {
+      "all_realms_differ": false,
+      "any_realm_differs": false,
+      "distinct_product_values_across_realms": [
+        "\"Linux\""
+      ],
+      "label": "Q1 userAgentData.platform",
+      "layer": "on",
+      "moves_with_seed": false,
+      "per_realm": {
+        "iframe_about_blank": {
+          "control": [
+            "\"Linux\"",
+            "\"Linux\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "\"Linux\"",
+            "\"Linux\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "iframe_same_origin": {
+          "control": [
+            "\"Linux\"",
+            "\"Linux\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "\"Linux\"",
+            "\"Linux\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "iframe_srcdoc": {
+          "control": [
+            "\"Linux\"",
+            "\"Linux\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "\"Linux\"",
+            "\"Linux\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "page": {
+          "control": [
+            "\"Linux\"",
+            "\"Linux\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "\"Linux\"",
+            "\"Linux\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_blob": {
+          "control": [
+            "\"Linux\"",
+            "\"Linux\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "\"Linux\"",
+            "\"Linux\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_in_iframe": {
+          "control": [
+            "\"Linux\"",
+            "\"Linux\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "\"Linux\"",
+            "\"Linux\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_nested": {
+          "control": [
+            "\"Linux\"",
+            "\"Linux\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "\"Linux\"",
+            "\"Linux\""
+          ],
+          "product_moves_with_seed": false
+        }
+      },
+      "realm_coherent": true,
+      "vector": "switches.uad_platform"
+    },
+    {
+      "all_realms_differ": false,
+      "any_realm_differs": false,
+      "distinct_product_values_across_realms": [
+        "1920",
+        "<absent>"
+      ],
+      "label": "Q1 screen.width",
+      "layer": "off",
+      "moves_with_seed": false,
+      "per_realm": {
+        "iframe_about_blank": {
+          "control": [
+            "1920",
+            "1920"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "1920",
+            "1920"
+          ],
+          "product_moves_with_seed": false
+        },
+        "iframe_same_origin": {
+          "control": [
+            "1920",
+            "1920"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "1920",
+            "1920"
+          ],
+          "product_moves_with_seed": false
+        },
+        "iframe_srcdoc": {
+          "control": [
+            "1920",
+            "1920"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "1920",
+            "1920"
+          ],
+          "product_moves_with_seed": false
+        },
+        "page": {
+          "control": [
+            "1920",
+            "1920"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "1920",
+            "1920"
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_blob": {
+          "control": [
+            "<absent>",
+            "<absent>"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "<absent>",
+            "<absent>"
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_in_iframe": {
+          "control": [
+            "<absent>",
+            "<absent>"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "<absent>",
+            "<absent>"
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_nested": {
+          "control": [
+            "<absent>",
+            "<absent>"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "<absent>",
+            "<absent>"
+          ],
+          "product_moves_with_seed": false
+        }
+      },
+      "realm_coherent": true,
+      "vector": "switches.screen_width"
+    },
+    {
+      "all_realms_differ": false,
+      "any_realm_differs": false,
+      "distinct_product_values_across_realms": [
+        "1920",
+        "<absent>"
+      ],
+      "label": "Q1 screen.width",
+      "layer": "on",
+      "moves_with_seed": false,
+      "per_realm": {
+        "iframe_about_blank": {
+          "control": [
+            "1920",
+            "1920"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "1920",
+            "1920"
+          ],
+          "product_moves_with_seed": false
+        },
+        "iframe_same_origin": {
+          "control": [
+            "1920",
+            "1920"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "1920",
+            "1920"
+          ],
+          "product_moves_with_seed": false
+        },
+        "iframe_srcdoc": {
+          "control": [
+            "1920",
+            "1920"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "1920",
+            "1920"
+          ],
+          "product_moves_with_seed": false
+        },
+        "page": {
+          "control": [
+            "1920",
+            "1920"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "1920",
+            "1920"
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_blob": {
+          "control": [
+            "<absent>",
+            "<absent>"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "<absent>",
+            "<absent>"
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_in_iframe": {
+          "control": [
+            "<absent>",
+            "<absent>"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "<absent>",
+            "<absent>"
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_nested": {
+          "control": [
+            "<absent>",
+            "<absent>"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "<absent>",
+            "<absent>"
+          ],
+          "product_moves_with_seed": false
+        }
+      },
+      "realm_coherent": true,
+      "vector": "switches.screen_width"
+    },
+    {
+      "all_realms_differ": false,
+      "any_realm_differs": false,
+      "distinct_product_values_across_realms": [
+        "1080",
+        "<absent>"
+      ],
+      "label": "Q1 screen.height",
+      "layer": "off",
+      "moves_with_seed": false,
+      "per_realm": {
+        "iframe_about_blank": {
+          "control": [
+            "1080",
+            "1080"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "1080",
+            "1080"
+          ],
+          "product_moves_with_seed": false
+        },
+        "iframe_same_origin": {
+          "control": [
+            "1080",
+            "1080"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "1080",
+            "1080"
+          ],
+          "product_moves_with_seed": false
+        },
+        "iframe_srcdoc": {
+          "control": [
+            "1080",
+            "1080"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "1080",
+            "1080"
+          ],
+          "product_moves_with_seed": false
+        },
+        "page": {
+          "control": [
+            "1080",
+            "1080"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "1080",
+            "1080"
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_blob": {
+          "control": [
+            "<absent>",
+            "<absent>"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "<absent>",
+            "<absent>"
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_in_iframe": {
+          "control": [
+            "<absent>",
+            "<absent>"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "<absent>",
+            "<absent>"
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_nested": {
+          "control": [
+            "<absent>",
+            "<absent>"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "<absent>",
+            "<absent>"
+          ],
+          "product_moves_with_seed": false
+        }
+      },
+      "realm_coherent": true,
+      "vector": "switches.screen_height"
+    },
+    {
+      "all_realms_differ": false,
+      "any_realm_differs": false,
+      "distinct_product_values_across_realms": [
+        "1200",
+        "<absent>"
+      ],
+      "label": "Q1 screen.height",
+      "layer": "on",
+      "moves_with_seed": false,
+      "per_realm": {
+        "iframe_about_blank": {
+          "control": [
+            "1200",
+            "1200"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "1200",
+            "1200"
+          ],
+          "product_moves_with_seed": false
+        },
+        "iframe_same_origin": {
+          "control": [
+            "1200",
+            "1200"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "1200",
+            "1200"
+          ],
+          "product_moves_with_seed": false
+        },
+        "iframe_srcdoc": {
+          "control": [
+            "1200",
+            "1200"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "1200",
+            "1200"
+          ],
+          "product_moves_with_seed": false
+        },
+        "page": {
+          "control": [
+            "1200",
+            "1200"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "1200",
+            "1200"
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_blob": {
+          "control": [
+            "<absent>",
+            "<absent>"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "<absent>",
+            "<absent>"
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_in_iframe": {
+          "control": [
+            "<absent>",
+            "<absent>"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "<absent>",
+            "<absent>"
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_nested": {
+          "control": [
+            "<absent>",
+            "<absent>"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "<absent>",
+            "<absent>"
+          ],
+          "product_moves_with_seed": false
+        }
+      },
+      "realm_coherent": true,
+      "vector": "switches.screen_height"
+    },
+    {
+      "all_realms_differ": false,
+      "any_realm_differs": false,
+      "distinct_product_values_across_realms": [
+        "1",
+        "<absent>"
+      ],
+      "label": "Q1 devicePixelRatio",
+      "layer": "off",
+      "moves_with_seed": false,
+      "per_realm": {
+        "iframe_about_blank": {
+          "control": [
+            "1",
+            "1"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "1",
+            "1"
+          ],
+          "product_moves_with_seed": false
+        },
+        "iframe_same_origin": {
+          "control": [
+            "1",
+            "1"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "1",
+            "1"
+          ],
+          "product_moves_with_seed": false
+        },
+        "iframe_srcdoc": {
+          "control": [
+            "1",
+            "1"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "1",
+            "1"
+          ],
+          "product_moves_with_seed": false
+        },
+        "page": {
+          "control": [
+            "1",
+            "1"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "1",
+            "1"
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_blob": {
+          "control": [
+            "<absent>",
+            "<absent>"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "<absent>",
+            "<absent>"
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_in_iframe": {
+          "control": [
+            "<absent>",
+            "<absent>"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "<absent>",
+            "<absent>"
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_nested": {
+          "control": [
+            "<absent>",
+            "<absent>"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "<absent>",
+            "<absent>"
+          ],
+          "product_moves_with_seed": false
+        }
+      },
+      "realm_coherent": true,
+      "vector": "switches.device_pixel_ratio"
+    },
+    {
+      "all_realms_differ": false,
+      "any_realm_differs": false,
+      "distinct_product_values_across_realms": [
+        "1",
+        "<absent>"
+      ],
+      "label": "Q1 devicePixelRatio",
+      "layer": "on",
+      "moves_with_seed": false,
+      "per_realm": {
+        "iframe_about_blank": {
+          "control": [
+            "1",
+            "1"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "1",
+            "1"
+          ],
+          "product_moves_with_seed": false
+        },
+        "iframe_same_origin": {
+          "control": [
+            "1",
+            "1"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "1",
+            "1"
+          ],
+          "product_moves_with_seed": false
+        },
+        "iframe_srcdoc": {
+          "control": [
+            "1",
+            "1"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "1",
+            "1"
+          ],
+          "product_moves_with_seed": false
+        },
+        "page": {
+          "control": [
+            "1",
+            "1"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "1",
+            "1"
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_blob": {
+          "control": [
+            "<absent>",
+            "<absent>"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "<absent>",
+            "<absent>"
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_in_iframe": {
+          "control": [
+            "<absent>",
+            "<absent>"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "<absent>",
+            "<absent>"
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_nested": {
+          "control": [
+            "<absent>",
+            "<absent>"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "<absent>",
+            "<absent>"
+          ],
+          "product_moves_with_seed": false
+        }
+      },
+      "realm_coherent": true,
+      "vector": "switches.device_pixel_ratio"
+    },
+    {
+      "all_realms_differ": true,
+      "any_realm_differs": true,
+      "distinct_product_values_across_realms": [
+        "\"America/Chicago\""
+      ],
+      "label": "Q1 Intl timeZone (patch 018)",
+      "layer": "off",
+      "moves_with_seed": false,
+      "per_realm": {
+        "iframe_about_blank": {
+          "control": [
+            "\"UTC\"",
+            "\"UTC\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "\"America/Chicago\"",
+            "\"America/Chicago\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "iframe_same_origin": {
+          "control": [
+            "\"UTC\"",
+            "\"UTC\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "\"America/Chicago\"",
+            "\"America/Chicago\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "iframe_srcdoc": {
+          "control": [
+            "\"UTC\"",
+            "\"UTC\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "\"America/Chicago\"",
+            "\"America/Chicago\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "page": {
+          "control": [
+            "\"UTC\"",
+            "\"UTC\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "\"America/Chicago\"",
+            "\"America/Chicago\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_blob": {
+          "control": [
+            "\"UTC\"",
+            "\"UTC\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "\"America/Chicago\"",
+            "\"America/Chicago\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_in_iframe": {
+          "control": [
+            "\"UTC\"",
+            "\"UTC\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "\"America/Chicago\"",
+            "\"America/Chicago\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_nested": {
+          "control": [
+            "\"UTC\"",
+            "\"UTC\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "\"America/Chicago\"",
+            "\"America/Chicago\""
+          ],
+          "product_moves_with_seed": false
+        }
+      },
+      "realm_coherent": true,
+      "vector": "switches.timezone"
+    },
+    {
+      "all_realms_differ": true,
+      "any_realm_differs": true,
+      "distinct_product_values_across_realms": [
+        "\"America/Chicago\""
+      ],
+      "label": "Q1 Intl timeZone (patch 018)",
+      "layer": "on",
+      "moves_with_seed": false,
+      "per_realm": {
+        "iframe_about_blank": {
+          "control": [
+            "\"UTC\"",
+            "\"UTC\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "\"America/Chicago\"",
+            "\"America/Chicago\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "iframe_same_origin": {
+          "control": [
+            "\"UTC\"",
+            "\"UTC\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "\"America/Chicago\"",
+            "\"America/Chicago\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "iframe_srcdoc": {
+          "control": [
+            "\"UTC\"",
+            "\"UTC\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "\"America/Chicago\"",
+            "\"America/Chicago\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "page": {
+          "control": [
+            "\"UTC\"",
+            "\"UTC\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "\"America/Chicago\"",
+            "\"America/Chicago\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_blob": {
+          "control": [
+            "\"UTC\"",
+            "\"UTC\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "\"America/Chicago\"",
+            "\"America/Chicago\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_in_iframe": {
+          "control": [
+            "\"UTC\"",
+            "\"UTC\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "\"America/Chicago\"",
+            "\"America/Chicago\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_nested": {
+          "control": [
+            "\"UTC\"",
+            "\"UTC\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "\"America/Chicago\"",
+            "\"America/Chicago\""
+          ],
+          "product_moves_with_seed": false
+        }
+      },
+      "realm_coherent": true,
+      "vector": "switches.timezone"
+    },
+    {
+      "all_realms_differ": true,
+      "any_realm_differs": true,
+      "distinct_product_values_across_realms": [
+        "300"
+      ],
+      "label": "Q1 Date offset (patch 018)",
+      "layer": "off",
+      "moves_with_seed": false,
+      "per_realm": {
+        "iframe_about_blank": {
+          "control": [
+            "0",
+            "0"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "300",
+            "300"
+          ],
+          "product_moves_with_seed": false
+        },
+        "iframe_same_origin": {
+          "control": [
+            "0",
+            "0"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "300",
+            "300"
+          ],
+          "product_moves_with_seed": false
+        },
+        "iframe_srcdoc": {
+          "control": [
+            "0",
+            "0"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "300",
+            "300"
+          ],
+          "product_moves_with_seed": false
+        },
+        "page": {
+          "control": [
+            "0",
+            "0"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "300",
+            "300"
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_blob": {
+          "control": [
+            "0",
+            "0"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "300",
+            "300"
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_in_iframe": {
+          "control": [
+            "0",
+            "0"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "300",
+            "300"
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_nested": {
+          "control": [
+            "0",
+            "0"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "300",
+            "300"
+          ],
+          "product_moves_with_seed": false
+        }
+      },
+      "realm_coherent": true,
+      "vector": "switches.tz_offset_minutes"
+    },
+    {
+      "all_realms_differ": true,
+      "any_realm_differs": true,
+      "distinct_product_values_across_realms": [
+        "300"
+      ],
+      "label": "Q1 Date offset (patch 018)",
+      "layer": "on",
+      "moves_with_seed": false,
+      "per_realm": {
+        "iframe_about_blank": {
+          "control": [
+            "0",
+            "0"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "300",
+            "300"
+          ],
+          "product_moves_with_seed": false
+        },
+        "iframe_same_origin": {
+          "control": [
+            "0",
+            "0"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "300",
+            "300"
+          ],
+          "product_moves_with_seed": false
+        },
+        "iframe_srcdoc": {
+          "control": [
+            "0",
+            "0"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "300",
+            "300"
+          ],
+          "product_moves_with_seed": false
+        },
+        "page": {
+          "control": [
+            "0",
+            "0"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "300",
+            "300"
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_blob": {
+          "control": [
+            "0",
+            "0"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "300",
+            "300"
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_in_iframe": {
+          "control": [
+            "0",
+            "0"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "300",
+            "300"
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_nested": {
+          "control": [
+            "0",
+            "0"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "300",
+            "300"
+          ],
+          "product_moves_with_seed": false
+        }
+      },
+      "realm_coherent": true,
+      "vector": "switches.tz_offset_minutes"
+    },
+    {
+      "all_realms_differ": false,
+      "any_realm_differs": true,
+      "distinct_product_values_across_realms": [
+        "<absent>",
+        "false"
+      ],
+      "label": "Q1 navigator.webdriver (patch 009)",
+      "layer": "off",
+      "moves_with_seed": false,
+      "per_realm": {
+        "iframe_about_blank": {
+          "control": [
+            "true",
+            "true"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "false",
+            "false"
+          ],
+          "product_moves_with_seed": false
+        },
+        "iframe_same_origin": {
+          "control": [
+            "true",
+            "true"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "false",
+            "false"
+          ],
+          "product_moves_with_seed": false
+        },
+        "iframe_srcdoc": {
+          "control": [
+            "true",
+            "true"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "false",
+            "false"
+          ],
+          "product_moves_with_seed": false
+        },
+        "page": {
+          "control": [
+            "true",
+            "true"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "false",
+            "false"
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_blob": {
+          "control": [
+            "<absent>",
+            "<absent>"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "<absent>",
+            "<absent>"
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_in_iframe": {
+          "control": [
+            "<absent>",
+            "<absent>"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "<absent>",
+            "<absent>"
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_nested": {
+          "control": [
+            "<absent>",
+            "<absent>"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "<absent>",
+            "<absent>"
+          ],
+          "product_moves_with_seed": false
+        }
+      },
+      "realm_coherent": true,
+      "vector": "switches.webdriver"
+    },
+    {
+      "all_realms_differ": false,
+      "any_realm_differs": true,
+      "distinct_product_values_across_realms": [
+        "<absent>",
+        "false"
+      ],
+      "label": "Q1 navigator.webdriver (patch 009)",
+      "layer": "on",
+      "moves_with_seed": false,
+      "per_realm": {
+        "iframe_about_blank": {
+          "control": [
+            "true",
+            "true"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "false",
+            "false"
+          ],
+          "product_moves_with_seed": false
+        },
+        "iframe_same_origin": {
+          "control": [
+            "true",
+            "true"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "false",
+            "false"
+          ],
+          "product_moves_with_seed": false
+        },
+        "iframe_srcdoc": {
+          "control": [
+            "true",
+            "true"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "false",
+            "false"
+          ],
+          "product_moves_with_seed": false
+        },
+        "page": {
+          "control": [
+            "true",
+            "true"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "false",
+            "false"
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_blob": {
+          "control": [
+            "<absent>",
+            "<absent>"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "<absent>",
+            "<absent>"
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_in_iframe": {
+          "control": [
+            "<absent>",
+            "<absent>"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "<absent>",
+            "<absent>"
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_nested": {
+          "control": [
+            "<absent>",
+            "<absent>"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "<absent>",
+            "<absent>"
+          ],
+          "product_moves_with_seed": false
+        }
+      },
+      "realm_coherent": true,
+      "vector": "switches.webdriver"
+    },
+    {
+      "all_realms_differ": true,
+      "any_realm_differs": true,
+      "distinct_product_values_across_realms": [
+        "\"Google Inc. (NVIDIA Corporation)\""
+      ],
+      "label": "Q2 WebGL UNMASKED_VENDOR (patch 011)",
+      "layer": "off",
+      "moves_with_seed": false,
+      "per_realm": {
+        "iframe_about_blank": {
+          "control": [
+            "\"Google Inc. (Google)\"",
+            "\"Google Inc. (Google)\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "\"Google Inc. (NVIDIA Corporation)\"",
+            "\"Google Inc. (NVIDIA Corporation)\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "iframe_same_origin": {
+          "control": [
+            "\"Google Inc. (Google)\"",
+            "\"Google Inc. (Google)\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "\"Google Inc. (NVIDIA Corporation)\"",
+            "\"Google Inc. (NVIDIA Corporation)\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "iframe_srcdoc": {
+          "control": [
+            "\"Google Inc. (Google)\"",
+            "\"Google Inc. (Google)\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "\"Google Inc. (NVIDIA Corporation)\"",
+            "\"Google Inc. (NVIDIA Corporation)\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "page": {
+          "control": [
+            "\"Google Inc. (Google)\"",
+            "\"Google Inc. (Google)\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "\"Google Inc. (NVIDIA Corporation)\"",
+            "\"Google Inc. (NVIDIA Corporation)\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_blob": {
+          "control": [
+            "\"Google Inc. (Google)\"",
+            "\"Google Inc. (Google)\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "\"Google Inc. (NVIDIA Corporation)\"",
+            "\"Google Inc. (NVIDIA Corporation)\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_in_iframe": {
+          "control": [
+            "\"Google Inc. (Google)\"",
+            "\"Google Inc. (Google)\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "\"Google Inc. (NVIDIA Corporation)\"",
+            "\"Google Inc. (NVIDIA Corporation)\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_nested": {
+          "control": [
+            "\"Google Inc. (Google)\"",
+            "\"Google Inc. (Google)\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "\"Google Inc. (NVIDIA Corporation)\"",
+            "\"Google Inc. (NVIDIA Corporation)\""
+          ],
+          "product_moves_with_seed": false
+        }
+      },
+      "realm_coherent": true,
+      "vector": "webgl.unmasked_vendor"
+    },
+    {
+      "all_realms_differ": false,
+      "any_realm_differs": false,
+      "distinct_product_values_across_realms": [
+        "\"Google Inc. (Intel)\""
+      ],
+      "label": "Q2 WebGL UNMASKED_VENDOR (patch 011)",
+      "layer": "on",
+      "moves_with_seed": false,
+      "per_realm": {
+        "iframe_about_blank": {
+          "control": [
+            "\"Google Inc. (Intel)\"",
+            "\"Google Inc. (Intel)\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "\"Google Inc. (Intel)\"",
+            "\"Google Inc. (Intel)\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "iframe_same_origin": {
+          "control": [
+            "\"Google Inc. (Intel)\"",
+            "\"Google Inc. (Intel)\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "\"Google Inc. (Intel)\"",
+            "\"Google Inc. (Intel)\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "iframe_srcdoc": {
+          "control": [
+            "\"Google Inc. (Intel)\"",
+            "\"Google Inc. (Intel)\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "\"Google Inc. (Intel)\"",
+            "\"Google Inc. (Intel)\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "page": {
+          "control": [
+            "\"Google Inc. (Intel)\"",
+            "\"Google Inc. (Intel)\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "\"Google Inc. (Intel)\"",
+            "\"Google Inc. (Intel)\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_blob": {
+          "control": [
+            "\"Google Inc. (Intel)\"",
+            "\"Google Inc. (Intel)\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "\"Google Inc. (Intel)\"",
+            "\"Google Inc. (Intel)\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_in_iframe": {
+          "control": [
+            "\"Google Inc. (Intel)\"",
+            "\"Google Inc. (Intel)\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "\"Google Inc. (Intel)\"",
+            "\"Google Inc. (Intel)\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_nested": {
+          "control": [
+            "\"Google Inc. (Intel)\"",
+            "\"Google Inc. (Intel)\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "\"Google Inc. (Intel)\"",
+            "\"Google Inc. (Intel)\""
+          ],
+          "product_moves_with_seed": false
+        }
+      },
+      "realm_coherent": true,
+      "vector": "webgl.unmasked_vendor"
+    },
+    {
+      "all_realms_differ": true,
+      "any_realm_differs": true,
+      "distinct_product_values_across_realms": [
+        "\"ANGLE (NVIDIA Corporation, NVIDIA GeForce RTX 3080 Laptop GPU/PCIe/SSE2, OpenGL 4.5.0)\"",
+        "\"ANGLE (NVIDIA Corporation, NVIDIA GeForce RTX 4070/PCIe/SSE2, OpenGL 4.5.0)\""
+      ],
+      "label": "Q2 WebGL UNMASKED_RENDERER (patch 011)",
+      "layer": "off",
+      "moves_with_seed": true,
+      "per_realm": {
+        "iframe_about_blank": {
+          "control": [
+            "\"ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)\"",
+            "\"ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "\"ANGLE (NVIDIA Corporation, NVIDIA GeForce RTX 3080 Laptop GPU/PCIe/SSE2, OpenGL 4.5.0)\"",
+            "\"ANGLE (NVIDIA Corporation, NVIDIA GeForce RTX 4070/PCIe/SSE2, OpenGL 4.5.0)\""
+          ],
+          "product_moves_with_seed": true
+        },
+        "iframe_same_origin": {
+          "control": [
+            "\"ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)\"",
+            "\"ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "\"ANGLE (NVIDIA Corporation, NVIDIA GeForce RTX 3080 Laptop GPU/PCIe/SSE2, OpenGL 4.5.0)\"",
+            "\"ANGLE (NVIDIA Corporation, NVIDIA GeForce RTX 4070/PCIe/SSE2, OpenGL 4.5.0)\""
+          ],
+          "product_moves_with_seed": true
+        },
+        "iframe_srcdoc": {
+          "control": [
+            "\"ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)\"",
+            "\"ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "\"ANGLE (NVIDIA Corporation, NVIDIA GeForce RTX 3080 Laptop GPU/PCIe/SSE2, OpenGL 4.5.0)\"",
+            "\"ANGLE (NVIDIA Corporation, NVIDIA GeForce RTX 4070/PCIe/SSE2, OpenGL 4.5.0)\""
+          ],
+          "product_moves_with_seed": true
+        },
+        "page": {
+          "control": [
+            "\"ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)\"",
+            "\"ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "\"ANGLE (NVIDIA Corporation, NVIDIA GeForce RTX 3080 Laptop GPU/PCIe/SSE2, OpenGL 4.5.0)\"",
+            "\"ANGLE (NVIDIA Corporation, NVIDIA GeForce RTX 4070/PCIe/SSE2, OpenGL 4.5.0)\""
+          ],
+          "product_moves_with_seed": true
+        },
+        "worker_blob": {
+          "control": [
+            "\"ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)\"",
+            "\"ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "\"ANGLE (NVIDIA Corporation, NVIDIA GeForce RTX 3080 Laptop GPU/PCIe/SSE2, OpenGL 4.5.0)\"",
+            "\"ANGLE (NVIDIA Corporation, NVIDIA GeForce RTX 4070/PCIe/SSE2, OpenGL 4.5.0)\""
+          ],
+          "product_moves_with_seed": true
+        },
+        "worker_in_iframe": {
+          "control": [
+            "\"ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)\"",
+            "\"ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "\"ANGLE (NVIDIA Corporation, NVIDIA GeForce RTX 3080 Laptop GPU/PCIe/SSE2, OpenGL 4.5.0)\"",
+            "\"ANGLE (NVIDIA Corporation, NVIDIA GeForce RTX 4070/PCIe/SSE2, OpenGL 4.5.0)\""
+          ],
+          "product_moves_with_seed": true
+        },
+        "worker_nested": {
+          "control": [
+            "\"ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)\"",
+            "\"ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "\"ANGLE (NVIDIA Corporation, NVIDIA GeForce RTX 3080 Laptop GPU/PCIe/SSE2, OpenGL 4.5.0)\"",
+            "\"ANGLE (NVIDIA Corporation, NVIDIA GeForce RTX 4070/PCIe/SSE2, OpenGL 4.5.0)\""
+          ],
+          "product_moves_with_seed": true
+        }
+      },
+      "realm_coherent": true,
+      "vector": "webgl.unmasked_renderer"
+    },
+    {
+      "all_realms_differ": false,
+      "any_realm_differs": false,
+      "distinct_product_values_across_realms": [
+        "\"ANGLE (Intel, Mesa Intel(R) Iris(R) Xe Graphics (ADL GT2), OpenGL 4.6)\"",
+        "\"ANGLE (Intel, Mesa Intel(R) UHD Graphics 630 (CFL GT2), OpenGL 4.6)\""
+      ],
+      "label": "Q2 WebGL UNMASKED_RENDERER (patch 011)",
+      "layer": "on",
+      "moves_with_seed": true,
+      "per_realm": {
+        "iframe_about_blank": {
+          "control": [
+            "\"ANGLE (Intel, Mesa Intel(R) Iris(R) Xe Graphics (ADL GT2), OpenGL 4.6)\"",
+            "\"ANGLE (Intel, Mesa Intel(R) UHD Graphics 630 (CFL GT2), OpenGL 4.6)\""
+          ],
+          "control_moves_with_seed": true,
+          "differs_from_control": false,
+          "product": [
+            "\"ANGLE (Intel, Mesa Intel(R) Iris(R) Xe Graphics (ADL GT2), OpenGL 4.6)\"",
+            "\"ANGLE (Intel, Mesa Intel(R) UHD Graphics 630 (CFL GT2), OpenGL 4.6)\""
+          ],
+          "product_moves_with_seed": true
+        },
+        "iframe_same_origin": {
+          "control": [
+            "\"ANGLE (Intel, Mesa Intel(R) Iris(R) Xe Graphics (ADL GT2), OpenGL 4.6)\"",
+            "\"ANGLE (Intel, Mesa Intel(R) UHD Graphics 630 (CFL GT2), OpenGL 4.6)\""
+          ],
+          "control_moves_with_seed": true,
+          "differs_from_control": false,
+          "product": [
+            "\"ANGLE (Intel, Mesa Intel(R) Iris(R) Xe Graphics (ADL GT2), OpenGL 4.6)\"",
+            "\"ANGLE (Intel, Mesa Intel(R) UHD Graphics 630 (CFL GT2), OpenGL 4.6)\""
+          ],
+          "product_moves_with_seed": true
+        },
+        "iframe_srcdoc": {
+          "control": [
+            "\"ANGLE (Intel, Mesa Intel(R) Iris(R) Xe Graphics (ADL GT2), OpenGL 4.6)\"",
+            "\"ANGLE (Intel, Mesa Intel(R) UHD Graphics 630 (CFL GT2), OpenGL 4.6)\""
+          ],
+          "control_moves_with_seed": true,
+          "differs_from_control": false,
+          "product": [
+            "\"ANGLE (Intel, Mesa Intel(R) Iris(R) Xe Graphics (ADL GT2), OpenGL 4.6)\"",
+            "\"ANGLE (Intel, Mesa Intel(R) UHD Graphics 630 (CFL GT2), OpenGL 4.6)\""
+          ],
+          "product_moves_with_seed": true
+        },
+        "page": {
+          "control": [
+            "\"ANGLE (Intel, Mesa Intel(R) Iris(R) Xe Graphics (ADL GT2), OpenGL 4.6)\"",
+            "\"ANGLE (Intel, Mesa Intel(R) UHD Graphics 630 (CFL GT2), OpenGL 4.6)\""
+          ],
+          "control_moves_with_seed": true,
+          "differs_from_control": false,
+          "product": [
+            "\"ANGLE (Intel, Mesa Intel(R) Iris(R) Xe Graphics (ADL GT2), OpenGL 4.6)\"",
+            "\"ANGLE (Intel, Mesa Intel(R) UHD Graphics 630 (CFL GT2), OpenGL 4.6)\""
+          ],
+          "product_moves_with_seed": true
+        },
+        "worker_blob": {
+          "control": [
+            "\"ANGLE (Intel, Mesa Intel(R) Iris(R) Xe Graphics (ADL GT2), OpenGL 4.6)\"",
+            "\"ANGLE (Intel, Mesa Intel(R) UHD Graphics 630 (CFL GT2), OpenGL 4.6)\""
+          ],
+          "control_moves_with_seed": true,
+          "differs_from_control": false,
+          "product": [
+            "\"ANGLE (Intel, Mesa Intel(R) Iris(R) Xe Graphics (ADL GT2), OpenGL 4.6)\"",
+            "\"ANGLE (Intel, Mesa Intel(R) UHD Graphics 630 (CFL GT2), OpenGL 4.6)\""
+          ],
+          "product_moves_with_seed": true
+        },
+        "worker_in_iframe": {
+          "control": [
+            "\"ANGLE (Intel, Mesa Intel(R) Iris(R) Xe Graphics (ADL GT2), OpenGL 4.6)\"",
+            "\"ANGLE (Intel, Mesa Intel(R) UHD Graphics 630 (CFL GT2), OpenGL 4.6)\""
+          ],
+          "control_moves_with_seed": true,
+          "differs_from_control": false,
+          "product": [
+            "\"ANGLE (Intel, Mesa Intel(R) Iris(R) Xe Graphics (ADL GT2), OpenGL 4.6)\"",
+            "\"ANGLE (Intel, Mesa Intel(R) UHD Graphics 630 (CFL GT2), OpenGL 4.6)\""
+          ],
+          "product_moves_with_seed": true
+        },
+        "worker_nested": {
+          "control": [
+            "\"ANGLE (Intel, Mesa Intel(R) Iris(R) Xe Graphics (ADL GT2), OpenGL 4.6)\"",
+            "\"ANGLE (Intel, Mesa Intel(R) UHD Graphics 630 (CFL GT2), OpenGL 4.6)\""
+          ],
+          "control_moves_with_seed": true,
+          "differs_from_control": false,
+          "product": [
+            "\"ANGLE (Intel, Mesa Intel(R) Iris(R) Xe Graphics (ADL GT2), OpenGL 4.6)\"",
+            "\"ANGLE (Intel, Mesa Intel(R) UHD Graphics 630 (CFL GT2), OpenGL 4.6)\""
+          ],
+          "product_moves_with_seed": true
+        }
+      },
+      "realm_coherent": true,
+      "vector": "webgl.unmasked_renderer"
+    },
+    {
+      "all_realms_differ": false,
+      "any_realm_differs": false,
+      "distinct_product_values_across_realms": [
+        "\"WebKit\""
+      ],
+      "label": "Q2 WebGL VENDOR",
+      "layer": "off",
+      "moves_with_seed": false,
+      "per_realm": {
+        "iframe_about_blank": {
+          "control": [
+            "\"WebKit\"",
+            "\"WebKit\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "\"WebKit\"",
+            "\"WebKit\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "iframe_same_origin": {
+          "control": [
+            "\"WebKit\"",
+            "\"WebKit\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "\"WebKit\"",
+            "\"WebKit\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "iframe_srcdoc": {
+          "control": [
+            "\"WebKit\"",
+            "\"WebKit\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "\"WebKit\"",
+            "\"WebKit\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "page": {
+          "control": [
+            "\"WebKit\"",
+            "\"WebKit\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "\"WebKit\"",
+            "\"WebKit\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_blob": {
+          "control": [
+            "\"WebKit\"",
+            "\"WebKit\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "\"WebKit\"",
+            "\"WebKit\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_in_iframe": {
+          "control": [
+            "\"WebKit\"",
+            "\"WebKit\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "\"WebKit\"",
+            "\"WebKit\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_nested": {
+          "control": [
+            "\"WebKit\"",
+            "\"WebKit\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "\"WebKit\"",
+            "\"WebKit\""
+          ],
+          "product_moves_with_seed": false
+        }
+      },
+      "realm_coherent": true,
+      "vector": "webgl.masked_vendor"
+    },
+    {
+      "all_realms_differ": false,
+      "any_realm_differs": false,
+      "distinct_product_values_across_realms": [
+        "\"WebKit\""
+      ],
+      "label": "Q2 WebGL VENDOR",
+      "layer": "on",
+      "moves_with_seed": false,
+      "per_realm": {
+        "iframe_about_blank": {
+          "control": [
+            "\"WebKit\"",
+            "\"WebKit\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "\"WebKit\"",
+            "\"WebKit\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "iframe_same_origin": {
+          "control": [
+            "\"WebKit\"",
+            "\"WebKit\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "\"WebKit\"",
+            "\"WebKit\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "iframe_srcdoc": {
+          "control": [
+            "\"WebKit\"",
+            "\"WebKit\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "\"WebKit\"",
+            "\"WebKit\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "page": {
+          "control": [
+            "\"WebKit\"",
+            "\"WebKit\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "\"WebKit\"",
+            "\"WebKit\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_blob": {
+          "control": [
+            "\"WebKit\"",
+            "\"WebKit\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "\"WebKit\"",
+            "\"WebKit\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_in_iframe": {
+          "control": [
+            "\"WebKit\"",
+            "\"WebKit\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "\"WebKit\"",
+            "\"WebKit\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_nested": {
+          "control": [
+            "\"WebKit\"",
+            "\"WebKit\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "\"WebKit\"",
+            "\"WebKit\""
+          ],
+          "product_moves_with_seed": false
+        }
+      },
+      "realm_coherent": true,
+      "vector": "webgl.masked_vendor"
+    },
+    {
+      "all_realms_differ": false,
+      "any_realm_differs": false,
+      "distinct_product_values_across_realms": [
+        "\"WebKit WebGL\""
+      ],
+      "label": "Q2 WebGL RENDERER",
+      "layer": "off",
+      "moves_with_seed": false,
+      "per_realm": {
+        "iframe_about_blank": {
+          "control": [
+            "\"WebKit WebGL\"",
+            "\"WebKit WebGL\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "\"WebKit WebGL\"",
+            "\"WebKit WebGL\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "iframe_same_origin": {
+          "control": [
+            "\"WebKit WebGL\"",
+            "\"WebKit WebGL\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "\"WebKit WebGL\"",
+            "\"WebKit WebGL\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "iframe_srcdoc": {
+          "control": [
+            "\"WebKit WebGL\"",
+            "\"WebKit WebGL\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "\"WebKit WebGL\"",
+            "\"WebKit WebGL\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "page": {
+          "control": [
+            "\"WebKit WebGL\"",
+            "\"WebKit WebGL\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "\"WebKit WebGL\"",
+            "\"WebKit WebGL\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_blob": {
+          "control": [
+            "\"WebKit WebGL\"",
+            "\"WebKit WebGL\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "\"WebKit WebGL\"",
+            "\"WebKit WebGL\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_in_iframe": {
+          "control": [
+            "\"WebKit WebGL\"",
+            "\"WebKit WebGL\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "\"WebKit WebGL\"",
+            "\"WebKit WebGL\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_nested": {
+          "control": [
+            "\"WebKit WebGL\"",
+            "\"WebKit WebGL\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "\"WebKit WebGL\"",
+            "\"WebKit WebGL\""
+          ],
+          "product_moves_with_seed": false
+        }
+      },
+      "realm_coherent": true,
+      "vector": "webgl.masked_renderer"
+    },
+    {
+      "all_realms_differ": false,
+      "any_realm_differs": false,
+      "distinct_product_values_across_realms": [
+        "\"WebKit WebGL\""
+      ],
+      "label": "Q2 WebGL RENDERER",
+      "layer": "on",
+      "moves_with_seed": false,
+      "per_realm": {
+        "iframe_about_blank": {
+          "control": [
+            "\"WebKit WebGL\"",
+            "\"WebKit WebGL\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "\"WebKit WebGL\"",
+            "\"WebKit WebGL\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "iframe_same_origin": {
+          "control": [
+            "\"WebKit WebGL\"",
+            "\"WebKit WebGL\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "\"WebKit WebGL\"",
+            "\"WebKit WebGL\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "iframe_srcdoc": {
+          "control": [
+            "\"WebKit WebGL\"",
+            "\"WebKit WebGL\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "\"WebKit WebGL\"",
+            "\"WebKit WebGL\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "page": {
+          "control": [
+            "\"WebKit WebGL\"",
+            "\"WebKit WebGL\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "\"WebKit WebGL\"",
+            "\"WebKit WebGL\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_blob": {
+          "control": [
+            "\"WebKit WebGL\"",
+            "\"WebKit WebGL\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "\"WebKit WebGL\"",
+            "\"WebKit WebGL\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_in_iframe": {
+          "control": [
+            "\"WebKit WebGL\"",
+            "\"WebKit WebGL\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "\"WebKit WebGL\"",
+            "\"WebKit WebGL\""
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_nested": {
+          "control": [
+            "\"WebKit WebGL\"",
+            "\"WebKit WebGL\""
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "\"WebKit WebGL\"",
+            "\"WebKit WebGL\""
+          ],
+          "product_moves_with_seed": false
+        }
+      },
+      "realm_coherent": true,
+      "vector": "webgl.masked_renderer"
+    },
+    {
+      "all_realms_differ": true,
+      "any_realm_differs": true,
+      "distinct_product_values_across_realms": [
+        "1153635684",
+        "3803232679"
+      ],
+      "label": "Q3 WebGL readPixels (patch 016)",
+      "layer": "off",
+      "moves_with_seed": true,
+      "per_realm": {
+        "iframe_about_blank": {
+          "control": [
+            "1412431872",
+            "1412431872"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "1153635684",
+            "3803232679"
+          ],
+          "product_moves_with_seed": true
+        },
+        "iframe_same_origin": {
+          "control": [
+            "1412431872",
+            "1412431872"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "1153635684",
+            "3803232679"
+          ],
+          "product_moves_with_seed": true
+        },
+        "iframe_srcdoc": {
+          "control": [
+            "1412431872",
+            "1412431872"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "1153635684",
+            "3803232679"
+          ],
+          "product_moves_with_seed": true
+        },
+        "page": {
+          "control": [
+            "1412431872",
+            "1412431872"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "1153635684",
+            "3803232679"
+          ],
+          "product_moves_with_seed": true
+        },
+        "worker_blob": {
+          "control": [
+            "1412431872",
+            "1412431872"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "1153635684",
+            "3803232679"
+          ],
+          "product_moves_with_seed": true
+        },
+        "worker_in_iframe": {
+          "control": [
+            "1412431872",
+            "1412431872"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "1153635684",
+            "3803232679"
+          ],
+          "product_moves_with_seed": true
+        },
+        "worker_nested": {
+          "control": [
+            "1412431872",
+            "1412431872"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "1153635684",
+            "3803232679"
+          ],
+          "product_moves_with_seed": true
+        }
+      },
+      "realm_coherent": true,
+      "vector": "webgl.readpixels_hash"
+    },
+    {
+      "all_realms_differ": true,
+      "any_realm_differs": true,
+      "distinct_product_values_across_realms": [
+        "386586079",
+        "4144096834"
+      ],
+      "label": "Q3 WebGL readPixels (patch 016)",
+      "layer": "on",
+      "moves_with_seed": true,
+      "per_realm": {
+        "iframe_about_blank": {
+          "control": [
+            "107925726",
+            "2290752568"
+          ],
+          "control_moves_with_seed": true,
+          "differs_from_control": true,
+          "product": [
+            "4144096834",
+            "386586079"
+          ],
+          "product_moves_with_seed": true
+        },
+        "iframe_same_origin": {
+          "control": [
+            "107925726",
+            "2290752568"
+          ],
+          "control_moves_with_seed": true,
+          "differs_from_control": true,
+          "product": [
+            "4144096834",
+            "386586079"
+          ],
+          "product_moves_with_seed": true
+        },
+        "iframe_srcdoc": {
+          "control": [
+            "107925726",
+            "2290752568"
+          ],
+          "control_moves_with_seed": true,
+          "differs_from_control": true,
+          "product": [
+            "4144096834",
+            "386586079"
+          ],
+          "product_moves_with_seed": true
+        },
+        "page": {
+          "control": [
+            "107925726",
+            "2290752568"
+          ],
+          "control_moves_with_seed": true,
+          "differs_from_control": true,
+          "product": [
+            "4144096834",
+            "386586079"
+          ],
+          "product_moves_with_seed": true
+        },
+        "worker_blob": {
+          "control": [
+            "107925726",
+            "2290752568"
+          ],
+          "control_moves_with_seed": true,
+          "differs_from_control": true,
+          "product": [
+            "4144096834",
+            "386586079"
+          ],
+          "product_moves_with_seed": true
+        },
+        "worker_in_iframe": {
+          "control": [
+            "107925726",
+            "2290752568"
+          ],
+          "control_moves_with_seed": true,
+          "differs_from_control": true,
+          "product": [
+            "4144096834",
+            "386586079"
+          ],
+          "product_moves_with_seed": true
+        },
+        "worker_nested": {
+          "control": [
+            "107925726",
+            "2290752568"
+          ],
+          "control_moves_with_seed": true,
+          "differs_from_control": true,
+          "product": [
+            "4144096834",
+            "386586079"
+          ],
+          "product_moves_with_seed": true
+        }
+      },
+      "realm_coherent": true,
+      "vector": "webgl.readpixels_hash"
+    },
+    {
+      "all_realms_differ": true,
+      "any_realm_differs": true,
+      "distinct_product_values_across_realms": [
+        "234950365",
+        "3740682202"
+      ],
+      "label": "Q3 canvas getImageData (patch 012)",
+      "layer": "off",
+      "moves_with_seed": true,
+      "per_realm": {
+        "iframe_about_blank": {
+          "control": [
+            "507247862",
+            "507247862"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "3740682202",
+            "234950365"
+          ],
+          "product_moves_with_seed": true
+        },
+        "iframe_same_origin": {
+          "control": [
+            "507247862",
+            "507247862"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "3740682202",
+            "234950365"
+          ],
+          "product_moves_with_seed": true
+        },
+        "iframe_srcdoc": {
+          "control": [
+            "507247862",
+            "507247862"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "3740682202",
+            "234950365"
+          ],
+          "product_moves_with_seed": true
+        },
+        "page": {
+          "control": [
+            "507247862",
+            "507247862"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "3740682202",
+            "234950365"
+          ],
+          "product_moves_with_seed": true
+        },
+        "worker_blob": {
+          "control": [
+            "507247862",
+            "507247862"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "3740682202",
+            "234950365"
+          ],
+          "product_moves_with_seed": true
+        },
+        "worker_in_iframe": {
+          "control": [
+            "507247862",
+            "507247862"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "3740682202",
+            "234950365"
+          ],
+          "product_moves_with_seed": true
+        },
+        "worker_nested": {
+          "control": [
+            "507247862",
+            "507247862"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "3740682202",
+            "234950365"
+          ],
+          "product_moves_with_seed": true
+        }
+      },
+      "realm_coherent": true,
+      "vector": "canvas.getimagedata_hash"
+    },
+    {
+      "all_realms_differ": true,
+      "any_realm_differs": true,
+      "distinct_product_values_across_realms": [
+        "234950365",
+        "3740682202"
+      ],
+      "label": "Q3 canvas getImageData (patch 012)",
+      "layer": "on",
+      "moves_with_seed": true,
+      "per_realm": {
+        "iframe_about_blank": {
+          "control": [
+            "507247862",
+            "507247862"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "3740682202",
+            "234950365"
+          ],
+          "product_moves_with_seed": true
+        },
+        "iframe_same_origin": {
+          "control": [
+            "507247862",
+            "507247862"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "3740682202",
+            "234950365"
+          ],
+          "product_moves_with_seed": true
+        },
+        "iframe_srcdoc": {
+          "control": [
+            "507247862",
+            "507247862"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "3740682202",
+            "234950365"
+          ],
+          "product_moves_with_seed": true
+        },
+        "page": {
+          "control": [
+            "507247862",
+            "507247862"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "3740682202",
+            "234950365"
+          ],
+          "product_moves_with_seed": true
+        },
+        "worker_blob": {
+          "control": [
+            "507247862",
+            "507247862"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "3740682202",
+            "234950365"
+          ],
+          "product_moves_with_seed": true
+        },
+        "worker_in_iframe": {
+          "control": [
+            "507247862",
+            "507247862"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "3740682202",
+            "234950365"
+          ],
+          "product_moves_with_seed": true
+        },
+        "worker_nested": {
+          "control": [
+            "507247862",
+            "507247862"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "3740682202",
+            "234950365"
+          ],
+          "product_moves_with_seed": true
+        }
+      },
+      "realm_coherent": true,
+      "vector": "canvas.getimagedata_hash"
+    },
+    {
+      "all_realms_differ": false,
+      "any_realm_differs": true,
+      "distinct_product_values_across_realms": [
+        "2280707950",
+        "3391877372",
+        "<absent>"
+      ],
+      "label": "Q3 canvas toDataURL (patch 013)",
+      "layer": "off",
+      "moves_with_seed": true,
+      "per_realm": {
+        "iframe_about_blank": {
+          "control": [
+            "294442885",
+            "294442885"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "2280707950",
+            "3391877372"
+          ],
+          "product_moves_with_seed": true
+        },
+        "iframe_same_origin": {
+          "control": [
+            "294442885",
+            "294442885"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "2280707950",
+            "3391877372"
+          ],
+          "product_moves_with_seed": true
+        },
+        "iframe_srcdoc": {
+          "control": [
+            "294442885",
+            "294442885"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "2280707950",
+            "3391877372"
+          ],
+          "product_moves_with_seed": true
+        },
+        "page": {
+          "control": [
+            "294442885",
+            "294442885"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "2280707950",
+            "3391877372"
+          ],
+          "product_moves_with_seed": true
+        },
+        "worker_blob": {
+          "control": [
+            "<absent>",
+            "<absent>"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "<absent>",
+            "<absent>"
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_in_iframe": {
+          "control": [
+            "<absent>",
+            "<absent>"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "<absent>",
+            "<absent>"
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_nested": {
+          "control": [
+            "<absent>",
+            "<absent>"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "<absent>",
+            "<absent>"
+          ],
+          "product_moves_with_seed": false
+        }
+      },
+      "realm_coherent": false,
+      "vector": "canvas.todataurl_hash"
+    },
+    {
+      "all_realms_differ": false,
+      "any_realm_differs": true,
+      "distinct_product_values_across_realms": [
+        "2280707950",
+        "3391877372",
+        "<absent>"
+      ],
+      "label": "Q3 canvas toDataURL (patch 013)",
+      "layer": "on",
+      "moves_with_seed": true,
+      "per_realm": {
+        "iframe_about_blank": {
+          "control": [
+            "294442885",
+            "294442885"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "2280707950",
+            "3391877372"
+          ],
+          "product_moves_with_seed": true
+        },
+        "iframe_same_origin": {
+          "control": [
+            "294442885",
+            "294442885"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "2280707950",
+            "3391877372"
+          ],
+          "product_moves_with_seed": true
+        },
+        "iframe_srcdoc": {
+          "control": [
+            "294442885",
+            "294442885"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "2280707950",
+            "3391877372"
+          ],
+          "product_moves_with_seed": true
+        },
+        "page": {
+          "control": [
+            "294442885",
+            "294442885"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "2280707950",
+            "3391877372"
+          ],
+          "product_moves_with_seed": true
+        },
+        "worker_blob": {
+          "control": [
+            "<absent>",
+            "<absent>"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "<absent>",
+            "<absent>"
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_in_iframe": {
+          "control": [
+            "<absent>",
+            "<absent>"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "<absent>",
+            "<absent>"
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_nested": {
+          "control": [
+            "<absent>",
+            "<absent>"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "<absent>",
+            "<absent>"
+          ],
+          "product_moves_with_seed": false
+        }
+      },
+      "realm_coherent": false,
+      "vector": "canvas.todataurl_hash"
+    },
+    {
+      "all_realms_differ": false,
+      "any_realm_differs": true,
+      "distinct_product_values_across_realms": [
+        "-0.0006666202070680776",
+        "-9.913113367801893e-05",
+        "172.1083984375"
+      ],
+      "label": "Q3 measureText width (patch 015)",
+      "layer": "off",
+      "moves_with_seed": true,
+      "per_realm": {
+        "iframe_about_blank": {
+          "control": [
+            "172.1083984375",
+            "172.1083984375"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "-0.0006666202070680776",
+            "-9.913113367801893e-05"
+          ],
+          "product_moves_with_seed": true
+        },
+        "iframe_same_origin": {
+          "control": [
+            "172.1083984375",
+            "172.1083984375"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "-0.0006666202070680776",
+            "-9.913113367801893e-05"
+          ],
+          "product_moves_with_seed": true
+        },
+        "iframe_srcdoc": {
+          "control": [
+            "172.1083984375",
+            "172.1083984375"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "-0.0006666202070680776",
+            "-9.913113367801893e-05"
+          ],
+          "product_moves_with_seed": true
+        },
+        "page": {
+          "control": [
+            "172.1083984375",
+            "172.1083984375"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "-0.0006666202070680776",
+            "-9.913113367801893e-05"
+          ],
+          "product_moves_with_seed": true
+        },
+        "worker_blob": {
+          "control": [
+            "172.1083984375",
+            "172.1083984375"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "172.1083984375",
+            "172.1083984375"
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_in_iframe": {
+          "control": [
+            "172.1083984375",
+            "172.1083984375"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "172.1083984375",
+            "172.1083984375"
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_nested": {
+          "control": [
+            "172.1083984375",
+            "172.1083984375"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "172.1083984375",
+            "172.1083984375"
+          ],
+          "product_moves_with_seed": false
+        }
+      },
+      "realm_coherent": false,
+      "vector": "canvas.measuretext_width"
+    },
+    {
+      "all_realms_differ": false,
+      "any_realm_differs": true,
+      "distinct_product_values_across_realms": [
+        "172.1083984375",
+        "172.109375",
+        "172.10937500000003"
+      ],
+      "label": "Q3 measureText width (patch 015)",
+      "layer": "on",
+      "moves_with_seed": true,
+      "per_realm": {
+        "iframe_about_blank": {
+          "control": [
+            "172.1083984375",
+            "172.1083984375"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "172.10937500000003",
+            "172.109375"
+          ],
+          "product_moves_with_seed": true
+        },
+        "iframe_same_origin": {
+          "control": [
+            "172.1083984375",
+            "172.1083984375"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "172.10937500000003",
+            "172.109375"
+          ],
+          "product_moves_with_seed": true
+        },
+        "iframe_srcdoc": {
+          "control": [
+            "172.1083984375",
+            "172.1083984375"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "172.10937500000003",
+            "172.109375"
+          ],
+          "product_moves_with_seed": true
+        },
+        "page": {
+          "control": [
+            "172.1083984375",
+            "172.1083984375"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "172.10937500000003",
+            "172.109375"
+          ],
+          "product_moves_with_seed": true
+        },
+        "worker_blob": {
+          "control": [
+            "172.1083984375",
+            "172.1083984375"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "172.1083984375",
+            "172.1083984375"
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_in_iframe": {
+          "control": [
+            "172.1083984375",
+            "172.1083984375"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "172.1083984375",
+            "172.1083984375"
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_nested": {
+          "control": [
+            "172.1083984375",
+            "172.1083984375"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "172.1083984375",
+            "172.1083984375"
+          ],
+          "product_moves_with_seed": false
+        }
+      },
+      "realm_coherent": false,
+      "vector": "canvas.measuretext_width"
+    },
+    {
+      "all_realms_differ": false,
+      "any_realm_differs": true,
+      "distinct_product_values_across_realms": [
+        "60.108951568603516",
+        "60.109130859375",
+        "7.999577522277832",
+        "7.999754428863525",
+        "<absent>"
+      ],
+      "label": "Q3 getBoundingClientRect.x (patch 014, ELIGIBLE elem)",
+      "layer": "off",
+      "moves_with_seed": true,
+      "per_realm": {
+        "iframe_about_blank": {
+          "control": [
+            "8",
+            "8"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "7.999577522277832",
+            "7.999754428863525"
+          ],
+          "product_moves_with_seed": true
+        },
+        "iframe_same_origin": {
+          "control": [
+            "8",
+            "8"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "7.999577522277832",
+            "7.999754428863525"
+          ],
+          "product_moves_with_seed": true
+        },
+        "iframe_srcdoc": {
+          "control": [
+            "60.109375",
+            "60.109375"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "60.108951568603516",
+            "60.109130859375"
+          ],
+          "product_moves_with_seed": true
+        },
+        "page": {
+          "control": [
+            "8",
+            "8"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "7.999577522277832",
+            "7.999754428863525"
+          ],
+          "product_moves_with_seed": true
+        },
+        "worker_blob": {
+          "control": [
+            "<absent>",
+            "<absent>"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "<absent>",
+            "<absent>"
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_in_iframe": {
+          "control": [
+            "<absent>",
+            "<absent>"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "<absent>",
+            "<absent>"
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_nested": {
+          "control": [
+            "<absent>",
+            "<absent>"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "<absent>",
+            "<absent>"
+          ],
+          "product_moves_with_seed": false
+        }
+      },
+      "realm_coherent": false,
+      "vector": "client_rects.x"
+    },
+    {
+      "all_realms_differ": false,
+      "any_realm_differs": true,
+      "distinct_product_values_across_realms": [
+        "60.108951568603516",
+        "60.109130859375",
+        "7.999577522277832",
+        "7.999754428863525",
+        "<absent>"
+      ],
+      "label": "Q3 getBoundingClientRect.x (patch 014, ELIGIBLE elem)",
+      "layer": "on",
+      "moves_with_seed": true,
+      "per_realm": {
+        "iframe_about_blank": {
+          "control": [
+            "8",
+            "8"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "7.999577522277832",
+            "7.999754428863525"
+          ],
+          "product_moves_with_seed": true
+        },
+        "iframe_same_origin": {
+          "control": [
+            "8",
+            "8"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "7.999577522277832",
+            "7.999754428863525"
+          ],
+          "product_moves_with_seed": true
+        },
+        "iframe_srcdoc": {
+          "control": [
+            "60.109375",
+            "60.109375"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "60.108951568603516",
+            "60.109130859375"
+          ],
+          "product_moves_with_seed": true
+        },
+        "page": {
+          "control": [
+            "8",
+            "8"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "7.999577522277832",
+            "7.999754428863525"
+          ],
+          "product_moves_with_seed": true
+        },
+        "worker_blob": {
+          "control": [
+            "<absent>",
+            "<absent>"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "<absent>",
+            "<absent>"
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_in_iframe": {
+          "control": [
+            "<absent>",
+            "<absent>"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "<absent>",
+            "<absent>"
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_nested": {
+          "control": [
+            "<absent>",
+            "<absent>"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "<absent>",
+            "<absent>"
+          ],
+          "product_moves_with_seed": false
+        }
+      },
+      "realm_coherent": false,
+      "vector": "client_rects.x"
+    },
+    {
+      "all_realms_differ": false,
+      "any_realm_differs": true,
+      "distinct_product_values_across_realms": [
+        "40.999961853027344",
+        "41.00051498413086",
+        "7.9999613761901855",
+        "8.00051498413086",
+        "<absent>"
+      ],
+      "label": "Q3 getBoundingClientRect.y (patch 014, ELIGIBLE elem)",
+      "layer": "off",
+      "moves_with_seed": true,
+      "per_realm": {
+        "iframe_about_blank": {
+          "control": [
+            "8",
+            "8"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "8.00051498413086",
+            "7.9999613761901855"
+          ],
+          "product_moves_with_seed": true
+        },
+        "iframe_same_origin": {
+          "control": [
+            "8",
+            "8"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "8.00051498413086",
+            "7.9999613761901855"
+          ],
+          "product_moves_with_seed": true
+        },
+        "iframe_srcdoc": {
+          "control": [
+            "8",
+            "8"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "8.00051498413086",
+            "7.9999613761901855"
+          ],
+          "product_moves_with_seed": true
+        },
+        "page": {
+          "control": [
+            "41",
+            "41"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "41.00051498413086",
+            "40.999961853027344"
+          ],
+          "product_moves_with_seed": true
+        },
+        "worker_blob": {
+          "control": [
+            "<absent>",
+            "<absent>"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "<absent>",
+            "<absent>"
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_in_iframe": {
+          "control": [
+            "<absent>",
+            "<absent>"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "<absent>",
+            "<absent>"
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_nested": {
+          "control": [
+            "<absent>",
+            "<absent>"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "<absent>",
+            "<absent>"
+          ],
+          "product_moves_with_seed": false
+        }
+      },
+      "realm_coherent": false,
+      "vector": "client_rects.y"
+    },
+    {
+      "all_realms_differ": false,
+      "any_realm_differs": true,
+      "distinct_product_values_across_realms": [
+        "40.999961853027344",
+        "41.00051498413086",
+        "7.9999613761901855",
+        "8.00051498413086",
+        "<absent>"
+      ],
+      "label": "Q3 getBoundingClientRect.y (patch 014, ELIGIBLE elem)",
+      "layer": "on",
+      "moves_with_seed": true,
+      "per_realm": {
+        "iframe_about_blank": {
+          "control": [
+            "8",
+            "8"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "8.00051498413086",
+            "7.9999613761901855"
+          ],
+          "product_moves_with_seed": true
+        },
+        "iframe_same_origin": {
+          "control": [
+            "8",
+            "8"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "8.00051498413086",
+            "7.9999613761901855"
+          ],
+          "product_moves_with_seed": true
+        },
+        "iframe_srcdoc": {
+          "control": [
+            "8",
+            "8"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "8.00051498413086",
+            "7.9999613761901855"
+          ],
+          "product_moves_with_seed": true
+        },
+        "page": {
+          "control": [
+            "41",
+            "41"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": true,
+          "product": [
+            "41.00051498413086",
+            "40.999961853027344"
+          ],
+          "product_moves_with_seed": true
+        },
+        "worker_blob": {
+          "control": [
+            "<absent>",
+            "<absent>"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "<absent>",
+            "<absent>"
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_in_iframe": {
+          "control": [
+            "<absent>",
+            "<absent>"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "<absent>",
+            "<absent>"
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_nested": {
+          "control": [
+            "<absent>",
+            "<absent>"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "<absent>",
+            "<absent>"
+          ],
+          "product_moves_with_seed": false
+        }
+      },
+      "realm_coherent": false,
+      "vector": "client_rects.y"
+    },
+    {
+      "all_realms_differ": false,
+      "any_realm_differs": false,
+      "distinct_product_values_across_realms": [
+        "135.375",
+        "<absent>"
+      ],
+      "label": "Q3 getBoundingClientRect.width (Offset \u21d2 must NOT move)",
+      "layer": "off",
+      "moves_with_seed": false,
+      "per_realm": {
+        "iframe_about_blank": {
+          "control": [
+            "135.375",
+            "135.375"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "135.375",
+            "135.375"
+          ],
+          "product_moves_with_seed": false
+        },
+        "iframe_same_origin": {
+          "control": [
+            "135.375",
+            "135.375"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "135.375",
+            "135.375"
+          ],
+          "product_moves_with_seed": false
+        },
+        "iframe_srcdoc": {
+          "control": [
+            "135.375",
+            "135.375"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "135.375",
+            "135.375"
+          ],
+          "product_moves_with_seed": false
+        },
+        "page": {
+          "control": [
+            "135.375",
+            "135.375"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "135.375",
+            "135.375"
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_blob": {
+          "control": [
+            "<absent>",
+            "<absent>"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "<absent>",
+            "<absent>"
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_in_iframe": {
+          "control": [
+            "<absent>",
+            "<absent>"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "<absent>",
+            "<absent>"
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_nested": {
+          "control": [
+            "<absent>",
+            "<absent>"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "<absent>",
+            "<absent>"
+          ],
+          "product_moves_with_seed": false
+        }
+      },
+      "realm_coherent": true,
+      "vector": "client_rects.width"
+    },
+    {
+      "all_realms_differ": false,
+      "any_realm_differs": false,
+      "distinct_product_values_across_realms": [
+        "135.375",
+        "<absent>"
+      ],
+      "label": "Q3 getBoundingClientRect.width (Offset \u21d2 must NOT move)",
+      "layer": "on",
+      "moves_with_seed": false,
+      "per_realm": {
+        "iframe_about_blank": {
+          "control": [
+            "135.375",
+            "135.375"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "135.375",
+            "135.375"
+          ],
+          "product_moves_with_seed": false
+        },
+        "iframe_same_origin": {
+          "control": [
+            "135.375",
+            "135.375"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "135.375",
+            "135.375"
+          ],
+          "product_moves_with_seed": false
+        },
+        "iframe_srcdoc": {
+          "control": [
+            "135.375",
+            "135.375"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "135.375",
+            "135.375"
+          ],
+          "product_moves_with_seed": false
+        },
+        "page": {
+          "control": [
+            "135.375",
+            "135.375"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "135.375",
+            "135.375"
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_blob": {
+          "control": [
+            "<absent>",
+            "<absent>"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "<absent>",
+            "<absent>"
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_in_iframe": {
+          "control": [
+            "<absent>",
+            "<absent>"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "<absent>",
+            "<absent>"
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_nested": {
+          "control": [
+            "<absent>",
+            "<absent>"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "<absent>",
+            "<absent>"
+          ],
+          "product_moves_with_seed": false
+        }
+      },
+      "realm_coherent": true,
+      "vector": "client_rects.width"
+    },
+    {
+      "all_realms_differ": false,
+      "any_realm_differs": false,
+      "distinct_product_values_across_realms": [
+        "13.296875",
+        "<absent>"
+      ],
+      "label": "Q3 clientRects x on the EXEMPT shape (must NOT move)",
+      "layer": "off",
+      "moves_with_seed": false,
+      "per_realm": {
+        "iframe_about_blank": {
+          "control": [
+            "13.296875",
+            "13.296875"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "13.296875",
+            "13.296875"
+          ],
+          "product_moves_with_seed": false
+        },
+        "iframe_same_origin": {
+          "control": [
+            "13.296875",
+            "13.296875"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "13.296875",
+            "13.296875"
+          ],
+          "product_moves_with_seed": false
+        },
+        "iframe_srcdoc": {
+          "control": [
+            "13.296875",
+            "13.296875"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "13.296875",
+            "13.296875"
+          ],
+          "product_moves_with_seed": false
+        },
+        "page": {
+          "control": [
+            "13.296875",
+            "13.296875"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "13.296875",
+            "13.296875"
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_blob": {
+          "control": [
+            "<absent>",
+            "<absent>"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "<absent>",
+            "<absent>"
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_in_iframe": {
+          "control": [
+            "<absent>",
+            "<absent>"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "<absent>",
+            "<absent>"
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_nested": {
+          "control": [
+            "<absent>",
+            "<absent>"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "<absent>",
+            "<absent>"
+          ],
+          "product_moves_with_seed": false
+        }
+      },
+      "realm_coherent": true,
+      "vector": "client_rects_exempt.x"
+    },
+    {
+      "all_realms_differ": false,
+      "any_realm_differs": false,
+      "distinct_product_values_across_realms": [
+        "13.296875",
+        "<absent>"
+      ],
+      "label": "Q3 clientRects x on the EXEMPT shape (must NOT move)",
+      "layer": "on",
+      "moves_with_seed": false,
+      "per_realm": {
+        "iframe_about_blank": {
+          "control": [
+            "13.296875",
+            "13.296875"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "13.296875",
+            "13.296875"
+          ],
+          "product_moves_with_seed": false
+        },
+        "iframe_same_origin": {
+          "control": [
+            "13.296875",
+            "13.296875"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "13.296875",
+            "13.296875"
+          ],
+          "product_moves_with_seed": false
+        },
+        "iframe_srcdoc": {
+          "control": [
+            "13.296875",
+            "13.296875"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "13.296875",
+            "13.296875"
+          ],
+          "product_moves_with_seed": false
+        },
+        "page": {
+          "control": [
+            "13.296875",
+            "13.296875"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "13.296875",
+            "13.296875"
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_blob": {
+          "control": [
+            "<absent>",
+            "<absent>"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "<absent>",
+            "<absent>"
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_in_iframe": {
+          "control": [
+            "<absent>",
+            "<absent>"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "<absent>",
+            "<absent>"
+          ],
+          "product_moves_with_seed": false
+        },
+        "worker_nested": {
+          "control": [
+            "<absent>",
+            "<absent>"
+          ],
+          "control_moves_with_seed": false,
+          "differs_from_control": false,
+          "product": [
+            "<absent>",
+            "<absent>"
+          ],
+          "product_moves_with_seed": false
+        }
+      },
+      "realm_coherent": true,
+      "vector": "client_rects_exempt.x"
+    }
+  ]
+}

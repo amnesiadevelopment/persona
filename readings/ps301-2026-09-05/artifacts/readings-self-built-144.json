@@ -1,0 +1,1686 @@
+{
+  "binary": {
+    "engine_dir": "/tmp/ps301/engine-144",
+    "real_path": "/tmp/ps301/run144/chrome",
+    "resolved_path": "/tmp/ps301/engine-144/fpchrome.AppImage",
+    "sha256": "3b403afbdd6e6847d394a630a27e097831701123fad738de25e8e0d71c3c0fe4",
+    "size_bytes": 456688328,
+    "version_string": "Chromium 144.0.7559.132"
+  },
+  "engine_id": "self-built-144",
+  "engine_label": "self-built patched 144.0.7559.132 (CI artifact ps218-patched-binary-144.0.7559.132-1, run 9895111731)",
+  "generated_at": "2026-09-05T19:59:50.727282+00:00",
+  "host": {
+    "container_hostname": "beceaf359992",
+    "uname": "Linux beceaf359992 6.8.0-138-generic #138-Ubuntu SMP PREEMPT_DYNAMIC Fri Jul 31 22:41:49 UTC 2026 x86_64"
+  },
+  "records": [
+    {
+      "argv": [
+        "/tmp/ps301/engine-144/fpchrome.AppImage",
+        "--appimage-extract-and-run",
+        "--no-sandbox",
+        "--timezone=America/Chicago",
+        "--user-data-dir=/tmp/persona-verify-chromium-8wtrjat4",
+        "--fingerprint=24601",
+        "--fingerprint-platform=linux",
+        "--fingerprint-brand=Chrome",
+        "--lang=en-US",
+        "--accept-lang=en-US,en",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-search-engine-choice-screen",
+        "--remote-debugging-port=0",
+        "--remote-allow-origins=*",
+        "--no-proxy-server",
+        "--dns-over-https-mode=off",
+        "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+        "--dns-prefetch-disable",
+        "--disable-quic",
+        "--disable-features=DnsOverHttps,EnableQuic",
+        "--use-gl=angle",
+        "--use-angle=swiftshader",
+        "--enable-unsafe-swiftshader",
+        "--password-store=basic",
+        "--use-mock-keychain",
+        "--disable-extensions-except=/tmp/persona-verify-chromium-8wtrjat4/.persona-native-ext,/tmp/persona-verify-chromium-8wtrjat4/.persona-locale-ext,/tmp/persona-verify-chromium-8wtrjat4/.persona-voice-ext,/tmp/persona-verify-chromium-8wtrjat4/.persona-stealth-ext,/tmp/persona-verify-chromium-8wtrjat4/.persona-measuretext-ext,/tmp/persona-verify-chromium-8wtrjat4/.persona-audio-ext,/tmp/persona-verify-chromium-8wtrjat4/.persona-device-ext,/tmp/persona-verify-chromium-8wtrjat4/.persona-webgl-ext,/tmp/persona-verify-chromium-8wtrjat4/.persona-gpu-ext,/tmp/persona-verify-chromium-8wtrjat4/.persona-canvas-ctx-ext",
+        "--load-extension=/tmp/persona-verify-chromium-8wtrjat4/.persona-native-ext,/tmp/persona-verify-chromium-8wtrjat4/.persona-locale-ext,/tmp/persona-verify-chromium-8wtrjat4/.persona-voice-ext,/tmp/persona-verify-chromium-8wtrjat4/.persona-stealth-ext,/tmp/persona-verify-chromium-8wtrjat4/.persona-measuretext-ext,/tmp/persona-verify-chromium-8wtrjat4/.persona-audio-ext,/tmp/persona-verify-chromium-8wtrjat4/.persona-device-ext,/tmp/persona-verify-chromium-8wtrjat4/.persona-webgl-ext,/tmp/persona-verify-chromium-8wtrjat4/.persona-gpu-ext,/tmp/persona-verify-chromium-8wtrjat4/.persona-canvas-ctx-ext",
+        "about:blank"
+      ],
+      "arm": "linux",
+      "engine": "self-built-144",
+      "layer_installed": [
+        "audio",
+        "canvas_ctx",
+        "device",
+        "gpu",
+        "locale",
+        "measuretext",
+        "native",
+        "stealth",
+        "voice",
+        "webgl"
+      ],
+      "layer_reason": null,
+      "masking_layer": "on",
+      "reading": {
+        "audio_page": {
+          "length": 44100,
+          "sample_4500": -0.10808160156011581,
+          "sum": 124.04346565259038
+        },
+        "meta": {},
+        "realms": {
+          "iframe_about_blank": {
+            "audio": {
+              "pending": true
+            },
+            "canvas": {
+              "available": true,
+              "getimagedata_hash": 234950365,
+              "measuretext_actual_left": -1.0000056741129943,
+              "measuretext_actual_right": 171.9077136995075,
+              "measuretext_width": 172.109375,
+              "todataurl_hash": 3391877372,
+              "todataurl_len": 6194
+            },
+            "client_rects": {
+              "height": 19,
+              "left": 7.999754428863525,
+              "top": 7.9999613761901855,
+              "width": 135.375,
+              "x": 7.999754428863525,
+              "y": 7.9999613761901855
+            },
+            "client_rects_exempt": {
+              "width": 111.6875,
+              "x": 13.296875,
+              "y": 7.6875
+            },
+            "switches": {
+              "color_depth": 24,
+              "device_memory": 8,
+              "device_pixel_ratio": 1,
+              "hardware_concurrency": 12,
+              "intl_locale": "en-US",
+              "language": "en-US",
+              "languages": "en-US,en",
+              "platform": "Linux x86_64",
+              "screen_avail_height": 1160,
+              "screen_avail_width": 1920,
+              "screen_height": 1200,
+              "screen_width": 1920,
+              "timezone": "America/Chicago",
+              "tz_offset_minutes": 300,
+              "uad_brands": "Not(A:Brand/8 Chromium/144 Google Chrome/144",
+              "uad_mobile": false,
+              "uad_platform": "Linux",
+              "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36",
+              "webdriver": false
+            },
+            "webgl": {
+              "available": true,
+              "masked_renderer": "WebKit WebGL",
+              "masked_vendor": "WebKit",
+              "readpixels_first16": "64,128,191,255,65,129,191,255,65,129,190,255,64,128,191,255",
+              "readpixels_hash": 386586079,
+              "unmasked_renderer": "ANGLE (Intel, Mesa Intel(R) UHD Graphics 630 (CFL GT2), OpenGL 4.6)",
+              "unmasked_vendor": "Google Inc. (Intel)",
+              "version": "WebGL 1.0 (OpenGL ES 2.0 Chromium)"
+            }
+          },
+          "iframe_same_origin": {
+            "audio": {
+              "pending": true
+            },
+            "canvas": {
+              "available": true,
+              "getimagedata_hash": 234950365,
+              "measuretext_actual_left": -1.0000056741129943,
+              "measuretext_actual_right": 171.9077136995075,
+              "measuretext_width": 172.109375,
+              "todataurl_hash": 3391877372,
+              "todataurl_len": 6194
+            },
+            "client_rects": {
+              "height": 19,
+              "left": 7.999754428863525,
+              "top": 7.9999613761901855,
+              "width": 135.375,
+              "x": 7.999754428863525,
+              "y": 7.9999613761901855
+            },
+            "client_rects_exempt": {
+              "width": 111.6875,
+              "x": 13.296875,
+              "y": 7.6875
+            },
+            "switches": {
+              "color_depth": 24,
+              "device_memory": 8,
+              "device_pixel_ratio": 1,
+              "hardware_concurrency": 12,
+              "intl_locale": "en-US",
+              "language": "en-US",
+              "languages": "en-US,en",
+              "platform": "Linux x86_64",
+              "screen_avail_height": 1160,
+              "screen_avail_width": 1920,
+              "screen_height": 1200,
+              "screen_width": 1920,
+              "timezone": "America/Chicago",
+              "tz_offset_minutes": 300,
+              "uad_brands": "Not(A:Brand/8 Chromium/144 Google Chrome/144",
+              "uad_mobile": false,
+              "uad_platform": "Linux",
+              "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36",
+              "webdriver": false
+            },
+            "webgl": {
+              "available": true,
+              "masked_renderer": "WebKit WebGL",
+              "masked_vendor": "WebKit",
+              "readpixels_first16": "64,128,191,255,65,129,191,255,65,129,190,255,64,128,191,255",
+              "readpixels_hash": 386586079,
+              "unmasked_renderer": "ANGLE (Intel, Mesa Intel(R) UHD Graphics 630 (CFL GT2), OpenGL 4.6)",
+              "unmasked_vendor": "Google Inc. (Intel)",
+              "version": "WebGL 1.0 (OpenGL ES 2.0 Chromium)"
+            }
+          },
+          "iframe_srcdoc": {
+            "audio": {
+              "pending": true
+            },
+            "canvas": {
+              "available": true,
+              "getimagedata_hash": 234950365,
+              "measuretext_actual_left": -1.0000056741129943,
+              "measuretext_actual_right": 171.9077136995075,
+              "measuretext_width": 172.109375,
+              "todataurl_hash": 3391877372,
+              "todataurl_len": 6194
+            },
+            "client_rects": {
+              "height": 19,
+              "left": 60.109130859375,
+              "top": 7.9999613761901855,
+              "width": 135.375,
+              "x": 60.109130859375,
+              "y": 7.9999613761901855
+            },
+            "client_rects_exempt": {
+              "width": 111.6875,
+              "x": 13.296875,
+              "y": 7.6875
+            },
+            "switches": {
+              "color_depth": 24,
+              "device_memory": 8,
+              "device_pixel_ratio": 1,
+              "hardware_concurrency": 12,
+              "intl_locale": "en-US",
+              "language": "en-US",
+              "languages": "en-US,en",
+              "platform": "Linux x86_64",
+              "screen_avail_height": 1160,
+              "screen_avail_width": 1920,
+              "screen_height": 1200,
+              "screen_width": 1920,
+              "timezone": "America/Chicago",
+              "tz_offset_minutes": 300,
+              "uad_brands": "Not(A:Brand/8 Chromium/144 Google Chrome/144",
+              "uad_mobile": false,
+              "uad_platform": "Linux",
+              "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36",
+              "webdriver": false
+            },
+            "webgl": {
+              "available": true,
+              "masked_renderer": "WebKit WebGL",
+              "masked_vendor": "WebKit",
+              "readpixels_first16": "64,128,191,255,65,129,191,255,65,129,190,255,64,128,191,255",
+              "readpixels_hash": 386586079,
+              "unmasked_renderer": "ANGLE (Intel, Mesa Intel(R) UHD Graphics 630 (CFL GT2), OpenGL 4.6)",
+              "unmasked_vendor": "Google Inc. (Intel)",
+              "version": "WebGL 1.0 (OpenGL ES 2.0 Chromium)"
+            }
+          },
+          "page": {
+            "audio": {
+              "pending": true
+            },
+            "canvas": {
+              "available": true,
+              "getimagedata_hash": 234950365,
+              "measuretext_actual_left": -1.0000056741129943,
+              "measuretext_actual_right": 171.9077136995075,
+              "measuretext_width": 172.109375,
+              "todataurl_hash": 3391877372,
+              "todataurl_len": 6194
+            },
+            "client_rects": {
+              "height": 19,
+              "left": 7.999754428863525,
+              "top": 40.999961853027344,
+              "width": 135.375,
+              "x": 7.999754428863525,
+              "y": 40.999961853027344
+            },
+            "client_rects_exempt": {
+              "width": 111.6875,
+              "x": 13.296875,
+              "y": 7.6875
+            },
+            "switches": {
+              "color_depth": 24,
+              "device_memory": 8,
+              "device_pixel_ratio": 1,
+              "hardware_concurrency": 12,
+              "intl_locale": "en-US",
+              "language": "en-US",
+              "languages": "en-US,en",
+              "platform": "Linux x86_64",
+              "screen_avail_height": 1160,
+              "screen_avail_width": 1920,
+              "screen_height": 1200,
+              "screen_width": 1920,
+              "timezone": "America/Chicago",
+              "tz_offset_minutes": 300,
+              "uad_brands": "Not(A:Brand/8 Chromium/144 Google Chrome/144",
+              "uad_mobile": false,
+              "uad_platform": "Linux",
+              "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36",
+              "webdriver": false
+            },
+            "webgl": {
+              "available": true,
+              "masked_renderer": "WebKit WebGL",
+              "masked_vendor": "WebKit",
+              "readpixels_first16": "64,128,191,255,65,129,191,255,65,129,190,255,64,128,191,255",
+              "readpixels_hash": 386586079,
+              "unmasked_renderer": "ANGLE (Intel, Mesa Intel(R) UHD Graphics 630 (CFL GT2), OpenGL 4.6)",
+              "unmasked_vendor": "Google Inc. (Intel)",
+              "version": "WebGL 1.0 (OpenGL ES 2.0 Chromium)"
+            }
+          },
+          "worker_blob": {
+            "audio": {
+              "note": "no OfflineAudioContext in this realm"
+            },
+            "canvas": {
+              "available": true,
+              "getimagedata_hash": 234950365,
+              "measuretext_actual_left": -1,
+              "measuretext_actual_right": 171.90673828125,
+              "measuretext_width": 172.1083984375,
+              "todataurl": "n/a-in-this-realm"
+            },
+            "client_rects": {
+              "note": "no DOM in this realm"
+            },
+            "client_rects_exempt": {
+              "note": "no DOM in this realm"
+            },
+            "switches": {
+              "device_memory": 8,
+              "hardware_concurrency": 12,
+              "intl_locale": "en-US",
+              "language": "en-US",
+              "languages": "en-US,en",
+              "platform": "Linux x86_64",
+              "timezone": "America/Chicago",
+              "tz_offset_minutes": 300,
+              "uad_brands": "Not(A:Brand/8 Chromium/144 Google Chrome/144",
+              "uad_mobile": false,
+              "uad_platform": "Linux",
+              "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36"
+            },
+            "webgl": {
+              "available": true,
+              "masked_renderer": "WebKit WebGL",
+              "masked_vendor": "WebKit",
+              "readpixels_first16": "64,128,191,255,65,129,191,255,65,129,190,255,64,128,191,255",
+              "readpixels_hash": 386586079,
+              "unmasked_renderer": "ANGLE (Intel, Mesa Intel(R) UHD Graphics 630 (CFL GT2), OpenGL 4.6)",
+              "unmasked_vendor": "Google Inc. (Intel)",
+              "version": "WebGL 1.0 (OpenGL ES 2.0 Chromium)"
+            }
+          },
+          "worker_in_iframe": {
+            "audio": {
+              "note": "no OfflineAudioContext in this realm"
+            },
+            "canvas": {
+              "available": true,
+              "getimagedata_hash": 234950365,
+              "measuretext_actual_left": -1,
+              "measuretext_actual_right": 171.90673828125,
+              "measuretext_width": 172.1083984375,
+              "todataurl": "n/a-in-this-realm"
+            },
+            "client_rects": {
+              "note": "no DOM in this realm"
+            },
+            "client_rects_exempt": {
+              "note": "no DOM in this realm"
+            },
+            "switches": {
+              "device_memory": 8,
+              "hardware_concurrency": 12,
+              "intl_locale": "en-US",
+              "language": "en-US",
+              "languages": "en-US,en",
+              "platform": "Linux x86_64",
+              "timezone": "America/Chicago",
+              "tz_offset_minutes": 300,
+              "uad_brands": "Not(A:Brand/8 Chromium/144 Google Chrome/144",
+              "uad_mobile": false,
+              "uad_platform": "Linux",
+              "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36"
+            },
+            "webgl": {
+              "available": true,
+              "masked_renderer": "WebKit WebGL",
+              "masked_vendor": "WebKit",
+              "readpixels_first16": "64,128,191,255,65,129,191,255,65,129,190,255,64,128,191,255",
+              "readpixels_hash": 386586079,
+              "unmasked_renderer": "ANGLE (Intel, Mesa Intel(R) UHD Graphics 630 (CFL GT2), OpenGL 4.6)",
+              "unmasked_vendor": "Google Inc. (Intel)",
+              "version": "WebGL 1.0 (OpenGL ES 2.0 Chromium)"
+            }
+          },
+          "worker_nested": {
+            "audio": {
+              "note": "no OfflineAudioContext in this realm"
+            },
+            "canvas": {
+              "available": true,
+              "getimagedata_hash": 234950365,
+              "measuretext_actual_left": -1,
+              "measuretext_actual_right": 171.90673828125,
+              "measuretext_width": 172.1083984375,
+              "todataurl": "n/a-in-this-realm"
+            },
+            "client_rects": {
+              "note": "no DOM in this realm"
+            },
+            "client_rects_exempt": {
+              "note": "no DOM in this realm"
+            },
+            "switches": {
+              "device_memory": 8,
+              "hardware_concurrency": 12,
+              "intl_locale": "en-US",
+              "language": "en-US",
+              "languages": "en-US,en",
+              "platform": "Linux x86_64",
+              "timezone": "America/Chicago",
+              "tz_offset_minutes": 300,
+              "uad_brands": "Not(A:Brand/8 Chromium/144 Google Chrome/144",
+              "uad_mobile": false,
+              "uad_platform": "Linux",
+              "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36"
+            },
+            "webgl": {
+              "available": true,
+              "masked_renderer": "WebKit WebGL",
+              "masked_vendor": "WebKit",
+              "readpixels_first16": "64,128,191,255,65,129,191,255,65,129,190,255,64,128,191,255",
+              "readpixels_hash": 386586079,
+              "unmasked_renderer": "ANGLE (Intel, Mesa Intel(R) UHD Graphics 630 (CFL GT2), OpenGL 4.6)",
+              "unmasked_vendor": "Google Inc. (Intel)",
+              "version": "WebGL 1.0 (OpenGL ES 2.0 Chromium)"
+            }
+          }
+        }
+      },
+      "sandbox_waived": true,
+      "seed": 24601,
+      "timezone_requested": "America/Chicago"
+    },
+    {
+      "argv": [
+        "/tmp/ps301/engine-144/fpchrome.AppImage",
+        "--appimage-extract-and-run",
+        "--no-sandbox",
+        "--timezone=America/Chicago",
+        "--user-data-dir=/tmp/persona-verify-chromium-bhwwfkml",
+        "--fingerprint=24601",
+        "--fingerprint-platform=linux",
+        "--fingerprint-brand=Chrome",
+        "--lang=en-US",
+        "--accept-lang=en-US,en",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-search-engine-choice-screen",
+        "--remote-debugging-port=0",
+        "--remote-allow-origins=*",
+        "--no-proxy-server",
+        "--dns-over-https-mode=off",
+        "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+        "--dns-prefetch-disable",
+        "--disable-quic",
+        "--disable-features=DnsOverHttps,EnableQuic",
+        "--use-gl=angle",
+        "--use-angle=swiftshader",
+        "--enable-unsafe-swiftshader",
+        "--password-store=basic",
+        "--use-mock-keychain",
+        "about:blank"
+      ],
+      "arm": "linux",
+      "engine": "self-built-144",
+      "layer_installed": [],
+      "layer_reason": null,
+      "masking_layer": "off",
+      "reading": {
+        "audio_page": {
+          "length": 44100,
+          "sample_4500": -0.10808052122592926,
+          "sum": 124.04347527516074
+        },
+        "meta": {},
+        "realms": {
+          "iframe_about_blank": {
+            "audio": {
+              "pending": true
+            },
+            "canvas": {
+              "available": true,
+              "getimagedata_hash": 234950365,
+              "measuretext_actual_left": 5.759808038305448e-07,
+              "measuretext_actual_right": -9.901498129912147e-05,
+              "measuretext_width": -9.913113367801893e-05,
+              "todataurl_hash": 3391877372,
+              "todataurl_len": 6194
+            },
+            "client_rects": {
+              "height": 19,
+              "left": 7.999754428863525,
+              "top": 7.9999613761901855,
+              "width": 135.375,
+              "x": 7.999754428863525,
+              "y": 7.9999613761901855
+            },
+            "client_rects_exempt": {
+              "width": 111.6875,
+              "x": 13.296875,
+              "y": 7.6875
+            },
+            "switches": {
+              "color_depth": 24,
+              "device_memory": 8,
+              "device_pixel_ratio": 1,
+              "hardware_concurrency": 18,
+              "intl_locale": "en-US",
+              "language": "en-US",
+              "languages": "en-US,en",
+              "platform": "Linux x86_64",
+              "screen_avail_height": 1080,
+              "screen_avail_width": 1920,
+              "screen_height": 1080,
+              "screen_width": 1920,
+              "timezone": "America/Chicago",
+              "tz_offset_minutes": 300,
+              "uad_brands": "Not(A:Brand/8 Chromium/144 Google Chrome/144",
+              "uad_mobile": false,
+              "uad_platform": "Linux",
+              "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36",
+              "webdriver": false
+            },
+            "webgl": {
+              "available": true,
+              "masked_renderer": "WebKit WebGL",
+              "masked_vendor": "WebKit",
+              "readpixels_first16": "64,128,191,255,65,129,191,255,65,129,190,255,64,128,191,255",
+              "readpixels_hash": 3803232679,
+              "unmasked_renderer": "ANGLE (NVIDIA Corporation, NVIDIA GeForce RTX 4070/PCIe/SSE2, OpenGL 4.5.0)",
+              "unmasked_vendor": "Google Inc. (NVIDIA Corporation)",
+              "version": "WebGL 1.0 (OpenGL ES 2.0 Chromium)"
+            }
+          },
+          "iframe_same_origin": {
+            "audio": {
+              "pending": true
+            },
+            "canvas": {
+              "available": true,
+              "getimagedata_hash": 234950365,
+              "measuretext_actual_left": 5.759808038305448e-07,
+              "measuretext_actual_right": -9.901498129912147e-05,
+              "measuretext_width": -9.913113367801893e-05,
+              "todataurl_hash": 3391877372,
+              "todataurl_len": 6194
+            },
+            "client_rects": {
+              "height": 19,
+              "left": 7.999754428863525,
+              "top": 7.9999613761901855,
+              "width": 135.375,
+              "x": 7.999754428863525,
+              "y": 7.9999613761901855
+            },
+            "client_rects_exempt": {
+              "width": 111.6875,
+              "x": 13.296875,
+              "y": 7.6875
+            },
+            "switches": {
+              "color_depth": 24,
+              "device_memory": 8,
+              "device_pixel_ratio": 1,
+              "hardware_concurrency": 18,
+              "intl_locale": "en-US",
+              "language": "en-US",
+              "languages": "en-US,en",
+              "platform": "Linux x86_64",
+              "screen_avail_height": 1080,
+              "screen_avail_width": 1920,
+              "screen_height": 1080,
+              "screen_width": 1920,
+              "timezone": "America/Chicago",
+              "tz_offset_minutes": 300,
+              "uad_brands": "Not(A:Brand/8 Chromium/144 Google Chrome/144",
+              "uad_mobile": false,
+              "uad_platform": "Linux",
+              "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36",
+              "webdriver": false
+            },
+            "webgl": {
+              "available": true,
+              "masked_renderer": "WebKit WebGL",
+              "masked_vendor": "WebKit",
+              "readpixels_first16": "64,128,191,255,65,129,191,255,65,129,190,255,64,128,191,255",
+              "readpixels_hash": 3803232679,
+              "unmasked_renderer": "ANGLE (NVIDIA Corporation, NVIDIA GeForce RTX 4070/PCIe/SSE2, OpenGL 4.5.0)",
+              "unmasked_vendor": "Google Inc. (NVIDIA Corporation)",
+              "version": "WebGL 1.0 (OpenGL ES 2.0 Chromium)"
+            }
+          },
+          "iframe_srcdoc": {
+            "audio": {
+              "pending": true
+            },
+            "canvas": {
+              "available": true,
+              "getimagedata_hash": 234950365,
+              "measuretext_actual_left": 5.759808038305448e-07,
+              "measuretext_actual_right": -9.901498129912147e-05,
+              "measuretext_width": -9.913113367801893e-05,
+              "todataurl_hash": 3391877372,
+              "todataurl_len": 6194
+            },
+            "client_rects": {
+              "height": 19,
+              "left": 60.109130859375,
+              "top": 7.9999613761901855,
+              "width": 135.375,
+              "x": 60.109130859375,
+              "y": 7.9999613761901855
+            },
+            "client_rects_exempt": {
+              "width": 111.6875,
+              "x": 13.296875,
+              "y": 7.6875
+            },
+            "switches": {
+              "color_depth": 24,
+              "device_memory": 8,
+              "device_pixel_ratio": 1,
+              "hardware_concurrency": 18,
+              "intl_locale": "en-US",
+              "language": "en-US",
+              "languages": "en-US,en",
+              "platform": "Linux x86_64",
+              "screen_avail_height": 1080,
+              "screen_avail_width": 1920,
+              "screen_height": 1080,
+              "screen_width": 1920,
+              "timezone": "America/Chicago",
+              "tz_offset_minutes": 300,
+              "uad_brands": "Not(A:Brand/8 Chromium/144 Google Chrome/144",
+              "uad_mobile": false,
+              "uad_platform": "Linux",
+              "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36",
+              "webdriver": false
+            },
+            "webgl": {
+              "available": true,
+              "masked_renderer": "WebKit WebGL",
+              "masked_vendor": "WebKit",
+              "readpixels_first16": "64,128,191,255,65,129,191,255,65,129,190,255,64,128,191,255",
+              "readpixels_hash": 3803232679,
+              "unmasked_renderer": "ANGLE (NVIDIA Corporation, NVIDIA GeForce RTX 4070/PCIe/SSE2, OpenGL 4.5.0)",
+              "unmasked_vendor": "Google Inc. (NVIDIA Corporation)",
+              "version": "WebGL 1.0 (OpenGL ES 2.0 Chromium)"
+            }
+          },
+          "page": {
+            "audio": {
+              "pending": true
+            },
+            "canvas": {
+              "available": true,
+              "getimagedata_hash": 234950365,
+              "measuretext_actual_left": 5.759808038305448e-07,
+              "measuretext_actual_right": -9.901498129912147e-05,
+              "measuretext_width": -9.913113367801893e-05,
+              "todataurl_hash": 3391877372,
+              "todataurl_len": 6194
+            },
+            "client_rects": {
+              "height": 19,
+              "left": 7.999754428863525,
+              "top": 40.999961853027344,
+              "width": 135.375,
+              "x": 7.999754428863525,
+              "y": 40.999961853027344
+            },
+            "client_rects_exempt": {
+              "width": 111.6875,
+              "x": 13.296875,
+              "y": 7.6875
+            },
+            "switches": {
+              "color_depth": 24,
+              "device_memory": 8,
+              "device_pixel_ratio": 1,
+              "hardware_concurrency": 18,
+              "intl_locale": "en-US",
+              "language": "en-US",
+              "languages": "en-US,en",
+              "platform": "Linux x86_64",
+              "screen_avail_height": 1080,
+              "screen_avail_width": 1920,
+              "screen_height": 1080,
+              "screen_width": 1920,
+              "timezone": "America/Chicago",
+              "tz_offset_minutes": 300,
+              "uad_brands": "Not(A:Brand/8 Chromium/144 Google Chrome/144",
+              "uad_mobile": false,
+              "uad_platform": "Linux",
+              "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36",
+              "webdriver": false
+            },
+            "webgl": {
+              "available": true,
+              "masked_renderer": "WebKit WebGL",
+              "masked_vendor": "WebKit",
+              "readpixels_first16": "64,128,191,255,65,129,191,255,65,129,190,255,64,128,191,255",
+              "readpixels_hash": 3803232679,
+              "unmasked_renderer": "ANGLE (NVIDIA Corporation, NVIDIA GeForce RTX 4070/PCIe/SSE2, OpenGL 4.5.0)",
+              "unmasked_vendor": "Google Inc. (NVIDIA Corporation)",
+              "version": "WebGL 1.0 (OpenGL ES 2.0 Chromium)"
+            }
+          },
+          "worker_blob": {
+            "audio": {
+              "note": "no OfflineAudioContext in this realm"
+            },
+            "canvas": {
+              "available": true,
+              "getimagedata_hash": 234950365,
+              "measuretext_actual_left": -1,
+              "measuretext_actual_right": 171.90673828125,
+              "measuretext_width": 172.1083984375,
+              "todataurl": "n/a-in-this-realm"
+            },
+            "client_rects": {
+              "note": "no DOM in this realm"
+            },
+            "client_rects_exempt": {
+              "note": "no DOM in this realm"
+            },
+            "switches": {
+              "device_memory": 8,
+              "hardware_concurrency": 18,
+              "intl_locale": "en-US",
+              "language": "en-US",
+              "languages": "en-US,en",
+              "platform": "Linux x86_64",
+              "timezone": "America/Chicago",
+              "tz_offset_minutes": 300,
+              "uad_brands": "Not(A:Brand/8 Chromium/144 Google Chrome/144",
+              "uad_mobile": false,
+              "uad_platform": "Linux",
+              "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36"
+            },
+            "webgl": {
+              "available": true,
+              "masked_renderer": "WebKit WebGL",
+              "masked_vendor": "WebKit",
+              "readpixels_first16": "64,128,191,255,65,129,191,255,65,129,190,255,64,128,191,255",
+              "readpixels_hash": 3803232679,
+              "unmasked_renderer": "ANGLE (NVIDIA Corporation, NVIDIA GeForce RTX 4070/PCIe/SSE2, OpenGL 4.5.0)",
+              "unmasked_vendor": "Google Inc. (NVIDIA Corporation)",
+              "version": "WebGL 1.0 (OpenGL ES 2.0 Chromium)"
+            }
+          },
+          "worker_in_iframe": {
+            "audio": {
+              "note": "no OfflineAudioContext in this realm"
+            },
+            "canvas": {
+              "available": true,
+              "getimagedata_hash": 234950365,
+              "measuretext_actual_left": -1,
+              "measuretext_actual_right": 171.90673828125,
+              "measuretext_width": 172.1083984375,
+              "todataurl": "n/a-in-this-realm"
+            },
+            "client_rects": {
+              "note": "no DOM in this realm"
+            },
+            "client_rects_exempt": {
+              "note": "no DOM in this realm"
+            },
+            "switches": {
+              "device_memory": 8,
+              "hardware_concurrency": 18,
+              "intl_locale": "en-US",
+              "language": "en-US",
+              "languages": "en-US,en",
+              "platform": "Linux x86_64",
+              "timezone": "America/Chicago",
+              "tz_offset_minutes": 300,
+              "uad_brands": "Not(A:Brand/8 Chromium/144 Google Chrome/144",
+              "uad_mobile": false,
+              "uad_platform": "Linux",
+              "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36"
+            },
+            "webgl": {
+              "available": true,
+              "masked_renderer": "WebKit WebGL",
+              "masked_vendor": "WebKit",
+              "readpixels_first16": "64,128,191,255,65,129,191,255,65,129,190,255,64,128,191,255",
+              "readpixels_hash": 3803232679,
+              "unmasked_renderer": "ANGLE (NVIDIA Corporation, NVIDIA GeForce RTX 4070/PCIe/SSE2, OpenGL 4.5.0)",
+              "unmasked_vendor": "Google Inc. (NVIDIA Corporation)",
+              "version": "WebGL 1.0 (OpenGL ES 2.0 Chromium)"
+            }
+          },
+          "worker_nested": {
+            "audio": {
+              "note": "no OfflineAudioContext in this realm"
+            },
+            "canvas": {
+              "available": true,
+              "getimagedata_hash": 234950365,
+              "measuretext_actual_left": -1,
+              "measuretext_actual_right": 171.90673828125,
+              "measuretext_width": 172.1083984375,
+              "todataurl": "n/a-in-this-realm"
+            },
+            "client_rects": {
+              "note": "no DOM in this realm"
+            },
+            "client_rects_exempt": {
+              "note": "no DOM in this realm"
+            },
+            "switches": {
+              "device_memory": 8,
+              "hardware_concurrency": 18,
+              "intl_locale": "en-US",
+              "language": "en-US",
+              "languages": "en-US,en",
+              "platform": "Linux x86_64",
+              "timezone": "America/Chicago",
+              "tz_offset_minutes": 300,
+              "uad_brands": "Not(A:Brand/8 Chromium/144 Google Chrome/144",
+              "uad_mobile": false,
+              "uad_platform": "Linux",
+              "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36"
+            },
+            "webgl": {
+              "available": true,
+              "masked_renderer": "WebKit WebGL",
+              "masked_vendor": "WebKit",
+              "readpixels_first16": "64,128,191,255,65,129,191,255,65,129,190,255,64,128,191,255",
+              "readpixels_hash": 3803232679,
+              "unmasked_renderer": "ANGLE (NVIDIA Corporation, NVIDIA GeForce RTX 4070/PCIe/SSE2, OpenGL 4.5.0)",
+              "unmasked_vendor": "Google Inc. (NVIDIA Corporation)",
+              "version": "WebGL 1.0 (OpenGL ES 2.0 Chromium)"
+            }
+          }
+        }
+      },
+      "sandbox_waived": true,
+      "seed": 24601,
+      "timezone_requested": "America/Chicago"
+    },
+    {
+      "argv": [
+        "/tmp/ps301/engine-144/fpchrome.AppImage",
+        "--appimage-extract-and-run",
+        "--no-sandbox",
+        "--timezone=America/Chicago",
+        "--user-data-dir=/tmp/persona-verify-chromium-6nlvfijv",
+        "--fingerprint=5150",
+        "--fingerprint-platform=linux",
+        "--fingerprint-brand=Chrome",
+        "--lang=en-US",
+        "--accept-lang=en-US,en",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-search-engine-choice-screen",
+        "--remote-debugging-port=0",
+        "--remote-allow-origins=*",
+        "--no-proxy-server",
+        "--dns-over-https-mode=off",
+        "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+        "--dns-prefetch-disable",
+        "--disable-quic",
+        "--disable-features=DnsOverHttps,EnableQuic",
+        "--use-gl=angle",
+        "--use-angle=swiftshader",
+        "--enable-unsafe-swiftshader",
+        "--password-store=basic",
+        "--use-mock-keychain",
+        "--disable-extensions-except=/tmp/persona-verify-chromium-6nlvfijv/.persona-native-ext,/tmp/persona-verify-chromium-6nlvfijv/.persona-locale-ext,/tmp/persona-verify-chromium-6nlvfijv/.persona-voice-ext,/tmp/persona-verify-chromium-6nlvfijv/.persona-stealth-ext,/tmp/persona-verify-chromium-6nlvfijv/.persona-measuretext-ext,/tmp/persona-verify-chromium-6nlvfijv/.persona-audio-ext,/tmp/persona-verify-chromium-6nlvfijv/.persona-device-ext,/tmp/persona-verify-chromium-6nlvfijv/.persona-webgl-ext,/tmp/persona-verify-chromium-6nlvfijv/.persona-gpu-ext,/tmp/persona-verify-chromium-6nlvfijv/.persona-canvas-ctx-ext",
+        "--load-extension=/tmp/persona-verify-chromium-6nlvfijv/.persona-native-ext,/tmp/persona-verify-chromium-6nlvfijv/.persona-locale-ext,/tmp/persona-verify-chromium-6nlvfijv/.persona-voice-ext,/tmp/persona-verify-chromium-6nlvfijv/.persona-stealth-ext,/tmp/persona-verify-chromium-6nlvfijv/.persona-measuretext-ext,/tmp/persona-verify-chromium-6nlvfijv/.persona-audio-ext,/tmp/persona-verify-chromium-6nlvfijv/.persona-device-ext,/tmp/persona-verify-chromium-6nlvfijv/.persona-webgl-ext,/tmp/persona-verify-chromium-6nlvfijv/.persona-gpu-ext,/tmp/persona-verify-chromium-6nlvfijv/.persona-canvas-ctx-ext",
+        "about:blank"
+      ],
+      "arm": "linux",
+      "engine": "self-built-144",
+      "layer_installed": [
+        "audio",
+        "canvas_ctx",
+        "device",
+        "gpu",
+        "locale",
+        "measuretext",
+        "native",
+        "stealth",
+        "voice",
+        "webgl"
+      ],
+      "layer_reason": null,
+      "masking_layer": "on",
+      "reading": {
+        "audio_page": {
+          "length": 44100,
+          "sample_4500": -0.10853156447410583,
+          "sum": 124.03661129210377
+        },
+        "meta": {},
+        "realms": {
+          "iframe_about_blank": {
+            "audio": {
+              "pending": true
+            },
+            "canvas": {
+              "available": true,
+              "getimagedata_hash": 3740682202,
+              "measuretext_actual_left": -1.0000056741129943,
+              "measuretext_actual_right": 171.9077136995075,
+              "measuretext_width": 172.10937500000003,
+              "todataurl_hash": 2280707950,
+              "todataurl_len": 6198
+            },
+            "client_rects": {
+              "height": 19,
+              "left": 7.999577522277832,
+              "top": 8.00051498413086,
+              "width": 135.375,
+              "x": 7.999577522277832,
+              "y": 8.00051498413086
+            },
+            "client_rects_exempt": {
+              "width": 111.6875,
+              "x": 13.296875,
+              "y": 7.6875
+            },
+            "switches": {
+              "color_depth": 24,
+              "device_memory": 8,
+              "device_pixel_ratio": 1,
+              "hardware_concurrency": 8,
+              "intl_locale": "en-US",
+              "language": "en-US",
+              "languages": "en-US,en",
+              "platform": "Linux x86_64",
+              "screen_avail_height": 1160,
+              "screen_avail_width": 1920,
+              "screen_height": 1200,
+              "screen_width": 1920,
+              "timezone": "America/Chicago",
+              "tz_offset_minutes": 300,
+              "uad_brands": "Not(A:Brand/8 Chromium/144 Google Chrome/144",
+              "uad_mobile": false,
+              "uad_platform": "Linux",
+              "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36",
+              "webdriver": false
+            },
+            "webgl": {
+              "available": true,
+              "masked_renderer": "WebKit WebGL",
+              "masked_vendor": "WebKit",
+              "readpixels_first16": "64,128,191,255,64,128,191,255,64,129,191,255,64,128,190,255",
+              "readpixels_hash": 4144096834,
+              "unmasked_renderer": "ANGLE (Intel, Mesa Intel(R) Iris(R) Xe Graphics (ADL GT2), OpenGL 4.6)",
+              "unmasked_vendor": "Google Inc. (Intel)",
+              "version": "WebGL 1.0 (OpenGL ES 2.0 Chromium)"
+            }
+          },
+          "iframe_same_origin": {
+            "audio": {
+              "pending": true
+            },
+            "canvas": {
+              "available": true,
+              "getimagedata_hash": 3740682202,
+              "measuretext_actual_left": -1.0000056741129943,
+              "measuretext_actual_right": 171.9077136995075,
+              "measuretext_width": 172.10937500000003,
+              "todataurl_hash": 2280707950,
+              "todataurl_len": 6198
+            },
+            "client_rects": {
+              "height": 19,
+              "left": 7.999577522277832,
+              "top": 8.00051498413086,
+              "width": 135.375,
+              "x": 7.999577522277832,
+              "y": 8.00051498413086
+            },
+            "client_rects_exempt": {
+              "width": 111.6875,
+              "x": 13.296875,
+              "y": 7.6875
+            },
+            "switches": {
+              "color_depth": 24,
+              "device_memory": 8,
+              "device_pixel_ratio": 1,
+              "hardware_concurrency": 8,
+              "intl_locale": "en-US",
+              "language": "en-US",
+              "languages": "en-US,en",
+              "platform": "Linux x86_64",
+              "screen_avail_height": 1160,
+              "screen_avail_width": 1920,
+              "screen_height": 1200,
+              "screen_width": 1920,
+              "timezone": "America/Chicago",
+              "tz_offset_minutes": 300,
+              "uad_brands": "Not(A:Brand/8 Chromium/144 Google Chrome/144",
+              "uad_mobile": false,
+              "uad_platform": "Linux",
+              "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36",
+              "webdriver": false
+            },
+            "webgl": {
+              "available": true,
+              "masked_renderer": "WebKit WebGL",
+              "masked_vendor": "WebKit",
+              "readpixels_first16": "64,128,191,255,64,128,191,255,64,129,191,255,64,128,190,255",
+              "readpixels_hash": 4144096834,
+              "unmasked_renderer": "ANGLE (Intel, Mesa Intel(R) Iris(R) Xe Graphics (ADL GT2), OpenGL 4.6)",
+              "unmasked_vendor": "Google Inc. (Intel)",
+              "version": "WebGL 1.0 (OpenGL ES 2.0 Chromium)"
+            }
+          },
+          "iframe_srcdoc": {
+            "audio": {
+              "pending": true
+            },
+            "canvas": {
+              "available": true,
+              "getimagedata_hash": 3740682202,
+              "measuretext_actual_left": -1.0000056741129943,
+              "measuretext_actual_right": 171.9077136995075,
+              "measuretext_width": 172.10937500000003,
+              "todataurl_hash": 2280707950,
+              "todataurl_len": 6198
+            },
+            "client_rects": {
+              "height": 19,
+              "left": 60.108951568603516,
+              "top": 8.00051498413086,
+              "width": 135.375,
+              "x": 60.108951568603516,
+              "y": 8.00051498413086
+            },
+            "client_rects_exempt": {
+              "width": 111.6875,
+              "x": 13.296875,
+              "y": 7.6875
+            },
+            "switches": {
+              "color_depth": 24,
+              "device_memory": 8,
+              "device_pixel_ratio": 1,
+              "hardware_concurrency": 8,
+              "intl_locale": "en-US",
+              "language": "en-US",
+              "languages": "en-US,en",
+              "platform": "Linux x86_64",
+              "screen_avail_height": 1160,
+              "screen_avail_width": 1920,
+              "screen_height": 1200,
+              "screen_width": 1920,
+              "timezone": "America/Chicago",
+              "tz_offset_minutes": 300,
+              "uad_brands": "Not(A:Brand/8 Chromium/144 Google Chrome/144",
+              "uad_mobile": false,
+              "uad_platform": "Linux",
+              "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36",
+              "webdriver": false
+            },
+            "webgl": {
+              "available": true,
+              "masked_renderer": "WebKit WebGL",
+              "masked_vendor": "WebKit",
+              "readpixels_first16": "64,128,191,255,64,128,191,255,64,129,191,255,64,128,190,255",
+              "readpixels_hash": 4144096834,
+              "unmasked_renderer": "ANGLE (Intel, Mesa Intel(R) Iris(R) Xe Graphics (ADL GT2), OpenGL 4.6)",
+              "unmasked_vendor": "Google Inc. (Intel)",
+              "version": "WebGL 1.0 (OpenGL ES 2.0 Chromium)"
+            }
+          },
+          "page": {
+            "audio": {
+              "pending": true
+            },
+            "canvas": {
+              "available": true,
+              "getimagedata_hash": 3740682202,
+              "measuretext_actual_left": -1.0000056741129943,
+              "measuretext_actual_right": 171.9077136995075,
+              "measuretext_width": 172.10937500000003,
+              "todataurl_hash": 2280707950,
+              "todataurl_len": 6198
+            },
+            "client_rects": {
+              "height": 19,
+              "left": 7.999577522277832,
+              "top": 41.00051498413086,
+              "width": 135.375,
+              "x": 7.999577522277832,
+              "y": 41.00051498413086
+            },
+            "client_rects_exempt": {
+              "width": 111.6875,
+              "x": 13.296875,
+              "y": 7.6875
+            },
+            "switches": {
+              "color_depth": 24,
+              "device_memory": 8,
+              "device_pixel_ratio": 1,
+              "hardware_concurrency": 8,
+              "intl_locale": "en-US",
+              "language": "en-US",
+              "languages": "en-US,en",
+              "platform": "Linux x86_64",
+              "screen_avail_height": 1160,
+              "screen_avail_width": 1920,
+              "screen_height": 1200,
+              "screen_width": 1920,
+              "timezone": "America/Chicago",
+              "tz_offset_minutes": 300,
+              "uad_brands": "Not(A:Brand/8 Chromium/144 Google Chrome/144",
+              "uad_mobile": false,
+              "uad_platform": "Linux",
+              "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36",
+              "webdriver": false
+            },
+            "webgl": {
+              "available": true,
+              "masked_renderer": "WebKit WebGL",
+              "masked_vendor": "WebKit",
+              "readpixels_first16": "64,128,191,255,64,128,191,255,64,129,191,255,64,128,190,255",
+              "readpixels_hash": 4144096834,
+              "unmasked_renderer": "ANGLE (Intel, Mesa Intel(R) Iris(R) Xe Graphics (ADL GT2), OpenGL 4.6)",
+              "unmasked_vendor": "Google Inc. (Intel)",
+              "version": "WebGL 1.0 (OpenGL ES 2.0 Chromium)"
+            }
+          },
+          "worker_blob": {
+            "audio": {
+              "note": "no OfflineAudioContext in this realm"
+            },
+            "canvas": {
+              "available": true,
+              "getimagedata_hash": 3740682202,
+              "measuretext_actual_left": -1,
+              "measuretext_actual_right": 171.90673828125,
+              "measuretext_width": 172.1083984375,
+              "todataurl": "n/a-in-this-realm"
+            },
+            "client_rects": {
+              "note": "no DOM in this realm"
+            },
+            "client_rects_exempt": {
+              "note": "no DOM in this realm"
+            },
+            "switches": {
+              "device_memory": 8,
+              "hardware_concurrency": 8,
+              "intl_locale": "en-US",
+              "language": "en-US",
+              "languages": "en-US,en",
+              "platform": "Linux x86_64",
+              "timezone": "America/Chicago",
+              "tz_offset_minutes": 300,
+              "uad_brands": "Not(A:Brand/8 Chromium/144 Google Chrome/144",
+              "uad_mobile": false,
+              "uad_platform": "Linux",
+              "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36"
+            },
+            "webgl": {
+              "available": true,
+              "masked_renderer": "WebKit WebGL",
+              "masked_vendor": "WebKit",
+              "readpixels_first16": "64,128,191,255,64,128,191,255,64,129,191,255,64,128,190,255",
+              "readpixels_hash": 4144096834,
+              "unmasked_renderer": "ANGLE (Intel, Mesa Intel(R) Iris(R) Xe Graphics (ADL GT2), OpenGL 4.6)",
+              "unmasked_vendor": "Google Inc. (Intel)",
+              "version": "WebGL 1.0 (OpenGL ES 2.0 Chromium)"
+            }
+          },
+          "worker_in_iframe": {
+            "audio": {
+              "note": "no OfflineAudioContext in this realm"
+            },
+            "canvas": {
+              "available": true,
+              "getimagedata_hash": 3740682202,
+              "measuretext_actual_left": -1,
+              "measuretext_actual_right": 171.90673828125,
+              "measuretext_width": 172.1083984375,
+              "todataurl": "n/a-in-this-realm"
+            },
+            "client_rects": {
+              "note": "no DOM in this realm"
+            },
+            "client_rects_exempt": {
+              "note": "no DOM in this realm"
+            },
+            "switches": {
+              "device_memory": 8,
+              "hardware_concurrency": 8,
+              "intl_locale": "en-US",
+              "language": "en-US",
+              "languages": "en-US,en",
+              "platform": "Linux x86_64",
+              "timezone": "America/Chicago",
+              "tz_offset_minutes": 300,
+              "uad_brands": "Not(A:Brand/8 Chromium/144 Google Chrome/144",
+              "uad_mobile": false,
+              "uad_platform": "Linux",
+              "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36"
+            },
+            "webgl": {
+              "available": true,
+              "masked_renderer": "WebKit WebGL",
+              "masked_vendor": "WebKit",
+              "readpixels_first16": "64,128,191,255,64,128,191,255,64,129,191,255,64,128,190,255",
+              "readpixels_hash": 4144096834,
+              "unmasked_renderer": "ANGLE (Intel, Mesa Intel(R) Iris(R) Xe Graphics (ADL GT2), OpenGL 4.6)",
+              "unmasked_vendor": "Google Inc. (Intel)",
+              "version": "WebGL 1.0 (OpenGL ES 2.0 Chromium)"
+            }
+          },
+          "worker_nested": {
+            "audio": {
+              "note": "no OfflineAudioContext in this realm"
+            },
+            "canvas": {
+              "available": true,
+              "getimagedata_hash": 3740682202,
+              "measuretext_actual_left": -1,
+              "measuretext_actual_right": 171.90673828125,
+              "measuretext_width": 172.1083984375,
+              "todataurl": "n/a-in-this-realm"
+            },
+            "client_rects": {
+              "note": "no DOM in this realm"
+            },
+            "client_rects_exempt": {
+              "note": "no DOM in this realm"
+            },
+            "switches": {
+              "device_memory": 8,
+              "hardware_concurrency": 8,
+              "intl_locale": "en-US",
+              "language": "en-US",
+              "languages": "en-US,en",
+              "platform": "Linux x86_64",
+              "timezone": "America/Chicago",
+              "tz_offset_minutes": 300,
+              "uad_brands": "Not(A:Brand/8 Chromium/144 Google Chrome/144",
+              "uad_mobile": false,
+              "uad_platform": "Linux",
+              "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36"
+            },
+            "webgl": {
+              "available": true,
+              "masked_renderer": "WebKit WebGL",
+              "masked_vendor": "WebKit",
+              "readpixels_first16": "64,128,191,255,64,128,191,255,64,129,191,255,64,128,190,255",
+              "readpixels_hash": 4144096834,
+              "unmasked_renderer": "ANGLE (Intel, Mesa Intel(R) Iris(R) Xe Graphics (ADL GT2), OpenGL 4.6)",
+              "unmasked_vendor": "Google Inc. (Intel)",
+              "version": "WebGL 1.0 (OpenGL ES 2.0 Chromium)"
+            }
+          }
+        }
+      },
+      "sandbox_waived": true,
+      "seed": 5150,
+      "timezone_requested": "America/Chicago"
+    },
+    {
+      "argv": [
+        "/tmp/ps301/engine-144/fpchrome.AppImage",
+        "--appimage-extract-and-run",
+        "--no-sandbox",
+        "--timezone=America/Chicago",
+        "--user-data-dir=/tmp/persona-verify-chromium-1b0rc_te",
+        "--fingerprint=5150",
+        "--fingerprint-platform=linux",
+        "--fingerprint-brand=Chrome",
+        "--lang=en-US",
+        "--accept-lang=en-US,en",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-search-engine-choice-screen",
+        "--remote-debugging-port=0",
+        "--remote-allow-origins=*",
+        "--no-proxy-server",
+        "--dns-over-https-mode=off",
+        "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+        "--dns-prefetch-disable",
+        "--disable-quic",
+        "--disable-features=DnsOverHttps,EnableQuic",
+        "--use-gl=angle",
+        "--use-angle=swiftshader",
+        "--enable-unsafe-swiftshader",
+        "--password-store=basic",
+        "--use-mock-keychain",
+        "about:blank"
+      ],
+      "arm": "linux",
+      "engine": "self-built-144",
+      "layer_installed": [],
+      "layer_reason": null,
+      "masking_layer": "off",
+      "reading": {
+        "audio_page": {
+          "length": 44100,
+          "sample_4500": -0.10853265225887299,
+          "sum": 124.03660513012437
+        },
+        "meta": {},
+        "realms": {
+          "iframe_about_blank": {
+            "audio": {
+              "pending": true
+            },
+            "canvas": {
+              "available": true,
+              "getimagedata_hash": 3740682202,
+              "measuretext_actual_left": 3.873257860279004e-06,
+              "measuretext_actual_right": -0.0006658391252827771,
+              "measuretext_width": -0.0006666202070680776,
+              "todataurl_hash": 2280707950,
+              "todataurl_len": 6198
+            },
+            "client_rects": {
+              "height": 19,
+              "left": 7.999577522277832,
+              "top": 8.00051498413086,
+              "width": 135.375,
+              "x": 7.999577522277832,
+              "y": 8.00051498413086
+            },
+            "client_rects_exempt": {
+              "width": 111.6875,
+              "x": 13.296875,
+              "y": 7.6875
+            },
+            "switches": {
+              "color_depth": 24,
+              "device_memory": 8,
+              "device_pixel_ratio": 1,
+              "hardware_concurrency": 12,
+              "intl_locale": "en-US",
+              "language": "en-US",
+              "languages": "en-US,en",
+              "platform": "Linux x86_64",
+              "screen_avail_height": 1080,
+              "screen_avail_width": 1920,
+              "screen_height": 1080,
+              "screen_width": 1920,
+              "timezone": "America/Chicago",
+              "tz_offset_minutes": 300,
+              "uad_brands": "Not(A:Brand/8 Chromium/144 Google Chrome/144",
+              "uad_mobile": false,
+              "uad_platform": "Linux",
+              "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36",
+              "webdriver": false
+            },
+            "webgl": {
+              "available": true,
+              "masked_renderer": "WebKit WebGL",
+              "masked_vendor": "WebKit",
+              "readpixels_first16": "64,128,191,255,64,128,191,255,64,129,191,255,64,128,190,255",
+              "readpixels_hash": 1153635684,
+              "unmasked_renderer": "ANGLE (NVIDIA Corporation, NVIDIA GeForce RTX 3080 Laptop GPU/PCIe/SSE2, OpenGL 4.5.0)",
+              "unmasked_vendor": "Google Inc. (NVIDIA Corporation)",
+              "version": "WebGL 1.0 (OpenGL ES 2.0 Chromium)"
+            }
+          },
+          "iframe_same_origin": {
+            "audio": {
+              "pending": true
+            },
+            "canvas": {
+              "available": true,
+              "getimagedata_hash": 3740682202,
+              "measuretext_actual_left": 3.873257860279004e-06,
+              "measuretext_actual_right": -0.0006658391252827771,
+              "measuretext_width": -0.0006666202070680776,
+              "todataurl_hash": 2280707950,
+              "todataurl_len": 6198
+            },
+            "client_rects": {
+              "height": 19,
+              "left": 7.999577522277832,
+              "top": 8.00051498413086,
+              "width": 135.375,
+              "x": 7.999577522277832,
+              "y": 8.00051498413086
+            },
+            "client_rects_exempt": {
+              "width": 111.6875,
+              "x": 13.296875,
+              "y": 7.6875
+            },
+            "switches": {
+              "color_depth": 24,
+              "device_memory": 8,
+              "device_pixel_ratio": 1,
+              "hardware_concurrency": 12,
+              "intl_locale": "en-US",
+              "language": "en-US",
+              "languages": "en-US,en",
+              "platform": "Linux x86_64",
+              "screen_avail_height": 1080,
+              "screen_avail_width": 1920,
+              "screen_height": 1080,
+              "screen_width": 1920,
+              "timezone": "America/Chicago",
+              "tz_offset_minutes": 300,
+              "uad_brands": "Not(A:Brand/8 Chromium/144 Google Chrome/144",
+              "uad_mobile": false,
+              "uad_platform": "Linux",
+              "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36",
+              "webdriver": false
+            },
+            "webgl": {
+              "available": true,
+              "masked_renderer": "WebKit WebGL",
+              "masked_vendor": "WebKit",
+              "readpixels_first16": "64,128,191,255,64,128,191,255,64,129,191,255,64,128,190,255",
+              "readpixels_hash": 1153635684,
+              "unmasked_renderer": "ANGLE (NVIDIA Corporation, NVIDIA GeForce RTX 3080 Laptop GPU/PCIe/SSE2, OpenGL 4.5.0)",
+              "unmasked_vendor": "Google Inc. (NVIDIA Corporation)",
+              "version": "WebGL 1.0 (OpenGL ES 2.0 Chromium)"
+            }
+          },
+          "iframe_srcdoc": {
+            "audio": {
+              "pending": true
+            },
+            "canvas": {
+              "available": true,
+              "getimagedata_hash": 3740682202,
+              "measuretext_actual_left": 3.873257860279004e-06,
+              "measuretext_actual_right": -0.0006658391252827771,
+              "measuretext_width": -0.0006666202070680776,
+              "todataurl_hash": 2280707950,
+              "todataurl_len": 6198
+            },
+            "client_rects": {
+              "height": 19,
+              "left": 60.108951568603516,
+              "top": 8.00051498413086,
+              "width": 135.375,
+              "x": 60.108951568603516,
+              "y": 8.00051498413086
+            },
+            "client_rects_exempt": {
+              "width": 111.6875,
+              "x": 13.296875,
+              "y": 7.6875
+            },
+            "switches": {
+              "color_depth": 24,
+              "device_memory": 8,
+              "device_pixel_ratio": 1,
+              "hardware_concurrency": 12,
+              "intl_locale": "en-US",
+              "language": "en-US",
+              "languages": "en-US,en",
+              "platform": "Linux x86_64",
+              "screen_avail_height": 1080,
+              "screen_avail_width": 1920,
+              "screen_height": 1080,
+              "screen_width": 1920,
+              "timezone": "America/Chicago",
+              "tz_offset_minutes": 300,
+              "uad_brands": "Not(A:Brand/8 Chromium/144 Google Chrome/144",
+              "uad_mobile": false,
+              "uad_platform": "Linux",
+              "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36",
+              "webdriver": false
+            },
+            "webgl": {
+              "available": true,
+              "masked_renderer": "WebKit WebGL",
+              "masked_vendor": "WebKit",
+              "readpixels_first16": "64,128,191,255,64,128,191,255,64,129,191,255,64,128,190,255",
+              "readpixels_hash": 1153635684,
+              "unmasked_renderer": "ANGLE (NVIDIA Corporation, NVIDIA GeForce RTX 3080 Laptop GPU/PCIe/SSE2, OpenGL 4.5.0)",
+              "unmasked_vendor": "Google Inc. (NVIDIA Corporation)",
+              "version": "WebGL 1.0 (OpenGL ES 2.0 Chromium)"
+            }
+          },
+          "page": {
+            "audio": {
+              "pending": true
+            },
+            "canvas": {
+              "available": true,
+              "getimagedata_hash": 3740682202,
+              "measuretext_actual_left": 3.873257860279004e-06,
+              "measuretext_actual_right": -0.0006658391252827771,
+              "measuretext_width": -0.0006666202070680776,
+              "todataurl_hash": 2280707950,
+              "todataurl_len": 6198
+            },
+            "client_rects": {
+              "height": 19,
+              "left": 7.999577522277832,
+              "top": 41.00051498413086,
+              "width": 135.375,
+              "x": 7.999577522277832,
+              "y": 41.00051498413086
+            },
+            "client_rects_exempt": {
+              "width": 111.6875,
+              "x": 13.296875,
+              "y": 7.6875
+            },
+            "switches": {
+              "color_depth": 24,
+              "device_memory": 8,
+              "device_pixel_ratio": 1,
+              "hardware_concurrency": 12,
+              "intl_locale": "en-US",
+              "language": "en-US",
+              "languages": "en-US,en",
+              "platform": "Linux x86_64",
+              "screen_avail_height": 1080,
+              "screen_avail_width": 1920,
+              "screen_height": 1080,
+              "screen_width": 1920,
+              "timezone": "America/Chicago",
+              "tz_offset_minutes": 300,
+              "uad_brands": "Not(A:Brand/8 Chromium/144 Google Chrome/144",
+              "uad_mobile": false,
+              "uad_platform": "Linux",
+              "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36",
+              "webdriver": false
+            },
+            "webgl": {
+              "available": true,
+              "masked_renderer": "WebKit WebGL",
+              "masked_vendor": "WebKit",
+              "readpixels_first16": "64,128,191,255,64,128,191,255,64,129,191,255,64,128,190,255",
+              "readpixels_hash": 1153635684,
+              "unmasked_renderer": "ANGLE (NVIDIA Corporation, NVIDIA GeForce RTX 3080 Laptop GPU/PCIe/SSE2, OpenGL 4.5.0)",
+              "unmasked_vendor": "Google Inc. (NVIDIA Corporation)",
+              "version": "WebGL 1.0 (OpenGL ES 2.0 Chromium)"
+            }
+          },
+          "worker_blob": {
+            "audio": {
+              "note": "no OfflineAudioContext in this realm"
+            },
+            "canvas": {
+              "available": true,
+              "getimagedata_hash": 3740682202,
+              "measuretext_actual_left": -1,
+              "measuretext_actual_right": 171.90673828125,
+              "measuretext_width": 172.1083984375,
+              "todataurl": "n/a-in-this-realm"
+            },
+            "client_rects": {
+              "note": "no DOM in this realm"
+            },
+            "client_rects_exempt": {
+              "note": "no DOM in this realm"
+            },
+            "switches": {
+              "device_memory": 8,
+              "hardware_concurrency": 12,
+              "intl_locale": "en-US",
+              "language": "en-US",
+              "languages": "en-US,en",
+              "platform": "Linux x86_64",
+              "timezone": "America/Chicago",
+              "tz_offset_minutes": 300,
+              "uad_brands": "Not(A:Brand/8 Chromium/144 Google Chrome/144",
+              "uad_mobile": false,
+              "uad_platform": "Linux",
+              "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36"
+            },
+            "webgl": {
+              "available": true,
+              "masked_renderer": "WebKit WebGL",
+              "masked_vendor": "WebKit",
+              "readpixels_first16": "64,128,191,255,64,128,191,255,64,129,191,255,64,128,190,255",
+              "readpixels_hash": 1153635684,
+              "unmasked_renderer": "ANGLE (NVIDIA Corporation, NVIDIA GeForce RTX 3080 Laptop GPU/PCIe/SSE2, OpenGL 4.5.0)",
+              "unmasked_vendor": "Google Inc. (NVIDIA Corporation)",
+              "version": "WebGL 1.0 (OpenGL ES 2.0 Chromium)"
+            }
+          },
+          "worker_in_iframe": {
+            "audio": {
+              "note": "no OfflineAudioContext in this realm"
+            },
+            "canvas": {
+              "available": true,
+              "getimagedata_hash": 3740682202,
+              "measuretext_actual_left": -1,
+              "measuretext_actual_right": 171.90673828125,
+              "measuretext_width": 172.1083984375,
+              "todataurl": "n/a-in-this-realm"
+            },
+            "client_rects": {
+              "note": "no DOM in this realm"
+            },
+            "client_rects_exempt": {
+              "note": "no DOM in this realm"
+            },
+            "switches": {
+              "device_memory": 8,
+              "hardware_concurrency": 12,
+              "intl_locale": "en-US",
+              "language": "en-US",
+              "languages": "en-US,en",
+              "platform": "Linux x86_64",
+              "timezone": "America/Chicago",
+              "tz_offset_minutes": 300,
+              "uad_brands": "Not(A:Brand/8 Chromium/144 Google Chrome/144",
+              "uad_mobile": false,
+              "uad_platform": "Linux",
+              "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36"
+            },
+            "webgl": {
+              "available": true,
+              "masked_renderer": "WebKit WebGL",
+              "masked_vendor": "WebKit",
+              "readpixels_first16": "64,128,191,255,64,128,191,255,64,129,191,255,64,128,190,255",
+              "readpixels_hash": 1153635684,
+              "unmasked_renderer": "ANGLE (NVIDIA Corporation, NVIDIA GeForce RTX 3080 Laptop GPU/PCIe/SSE2, OpenGL 4.5.0)",
+              "unmasked_vendor": "Google Inc. (NVIDIA Corporation)",
+              "version": "WebGL 1.0 (OpenGL ES 2.0 Chromium)"
+            }
+          },
+          "worker_nested": {
+            "audio": {
+              "note": "no OfflineAudioContext in this realm"
+            },
+            "canvas": {
+              "available": true,
+              "getimagedata_hash": 3740682202,
+              "measuretext_actual_left": -1,
+              "measuretext_actual_right": 171.90673828125,
+              "measuretext_width": 172.1083984375,
+              "todataurl": "n/a-in-this-realm"
+            },
+            "client_rects": {
+              "note": "no DOM in this realm"
+            },
+            "client_rects_exempt": {
+              "note": "no DOM in this realm"
+            },
+            "switches": {
+              "device_memory": 8,
+              "hardware_concurrency": 12,
+              "intl_locale": "en-US",
+              "language": "en-US",
+              "languages": "en-US,en",
+              "platform": "Linux x86_64",
+              "timezone": "America/Chicago",
+              "tz_offset_minutes": 300,
+              "uad_brands": "Not(A:Brand/8 Chromium/144 Google Chrome/144",
+              "uad_mobile": false,
+              "uad_platform": "Linux",
+              "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36"
+            },
+            "webgl": {
+              "available": true,
+              "masked_renderer": "WebKit WebGL",
+              "masked_vendor": "WebKit",
+              "readpixels_first16": "64,128,191,255,64,128,191,255,64,129,191,255,64,128,190,255",
+              "readpixels_hash": 1153635684,
+              "unmasked_renderer": "ANGLE (NVIDIA Corporation, NVIDIA GeForce RTX 3080 Laptop GPU/PCIe/SSE2, OpenGL 4.5.0)",
+              "unmasked_vendor": "Google Inc. (NVIDIA Corporation)",
+              "version": "WebGL 1.0 (OpenGL ES 2.0 Chromium)"
+            }
+          }
+        }
+      },
+      "sandbox_waived": true,
+      "seed": 5150,
+      "timezone_requested": "America/Chicago"
+    }
+  ],
+  "ticket": "PS-301"
+}
