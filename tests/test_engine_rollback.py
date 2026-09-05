@@ -296,7 +296,7 @@ def test_downgrade_clears_firefox_own_refusal(tmp_path):
 
     prof = _profile_last_opened_by(tmp_path, "firefox-20")
 
-    lines = inv._migrate_profile_for_engine_build(str(prof), "/cache/firefox-19")
+    lines = inv._migrate_profile_for_engine_build(str(prof), "/cache/firefox-19", {})
 
     assert not (prof / "compatibility.ini").exists(), (
         "the downgrade guard must be cleared or the older build refuses to "
@@ -318,7 +318,7 @@ def test_downgrade_still_drops_the_incompatible_prefs(tmp_path):
 
     prof = _profile_last_opened_by(tmp_path, "firefox-20")
 
-    lines = inv._migrate_profile_for_engine_build(str(prof), "/cache/firefox-19")
+    lines = inv._migrate_profile_for_engine_build(str(prof), "/cache/firefox-19", {})
 
     # prefs.js is REWRITTEN, not left absent: the reset is immediately followed
     # by the warmup chrome prefs (#242, so the window doesn't open light). What
@@ -341,7 +341,7 @@ def test_forward_update_does_not_clear_the_guard(tmp_path):
 
     prof = _profile_last_opened_by(tmp_path, "firefox-19")
 
-    lines = inv._migrate_profile_for_engine_build(str(prof), "/cache/firefox-20")
+    lines = inv._migrate_profile_for_engine_build(str(prof), "/cache/firefox-20", {})
 
     assert (prof / "compatibility.ini").exists(), (
         "a forward update must not touch compatibility.ini"
@@ -358,7 +358,7 @@ def test_same_build_is_a_no_op(tmp_path):
 
     prof = _profile_last_opened_by(tmp_path, "firefox-19")
 
-    lines = inv._migrate_profile_for_engine_build(str(prof), "/cache/firefox-19")
+    lines = inv._migrate_profile_for_engine_build(str(prof), "/cache/firefox-19", {})
 
     assert lines == []
     assert (prof / "prefs.js").exists(), "an unchanged build keeps its prefs"
@@ -374,7 +374,7 @@ def test_profile_firefox_never_opened_is_untouched(tmp_path):
     prof.mkdir()
     (prof / "prefs.js").write_text('user_pref("x", 1);\n', encoding="utf-8")
 
-    assert inv._migrate_profile_for_engine_build(str(prof), "/cache/firefox-19") == []
+    assert inv._migrate_profile_for_engine_build(str(prof), "/cache/firefox-19", {}) == []
     assert (prof / "prefs.js").exists()
 
 
