@@ -582,7 +582,31 @@ def test_the_window_worker_comparison_is_unchanged_by_the_new_realm():
 # test_the_two_records_share_one_expression_so_they_cannot_drift exists to
 # prevent one file away; a guard's proof must fail when the GUARD goes soft,
 # which it can only do by reading the guard itself.
-_REALM_NATIVE_IDS = frozenset({"realm.frameIdentity", "webgl.readback.childFrame"})
+#
+# PS-247 added the two residue twins. THIS IS THE MOST DANGEROUS EDIT IN THAT
+# SLICE and it is made deliberately, not as a test fix to turn a red green.
+# What the guard forbids is a record that PRE-DATES the child-frame realm
+# silently gaining it; what this set holds is the records that were BORN with
+# the realm, for which the guard's predicate is not merely inapplicable but
+# actively wrong — `_child_frame_guard_violations` flags on TWO clauses, and a
+# CHILD_FRAME_ONLY record trips both (it declares the realm, and its realms
+# tuple is neither BOTH nor WINDOW_ONLY). So membership here is what makes such
+# a record legal at all, and every id added must be a genuinely new record.
+#
+# `realm.bootMarkers.childFrame` and `realm.seedRecoverable.childFrame` are new
+# records introduced BY this realm — they are not the pre-existing
+# `realm.bootMarkers` / `realm.seedRecoverable`, which remain BOTH, remain
+# subject to this guard, and are untouched. `webgl.readback` is still NOT here
+# and is still subject, which is the property
+# test_the_guard_still_covers_the_record_the_realm_was_forbidden_on pins.
+_REALM_NATIVE_IDS = frozenset(
+    {
+        "realm.frameIdentity",
+        "webgl.readback.childFrame",
+        "realm.bootMarkers.childFrame",
+        "realm.seedRecoverable.childFrame",
+    }
+)
 
 
 def _records_predating_the_child_frame_realm(inventory):
@@ -698,8 +722,12 @@ def test_the_guard_still_covers_the_record_the_realm_was_forbidden_on():
     ``_REALM_NATIVE_IDS``, so widening that set is the one edit that disarms the
     guard while every assertion above still reads true — the exact mutation
     round 2 review landed and measured green. Pinning membership directly is
-    what makes that edit loud: the ids exempt from the guard are the two records
-    that were BORN with the realm, and `webgl.readback` is not one of them.
+    what makes that edit loud: the ids exempt from the guard are the records
+    that were BORN with the realm — `realm.frameIdentity` and the
+    `*.childFrame` twins — and `webgl.readback` is not one of them. Named as a
+    SET rather than as a COUNT deliberately: PS-247 grew the exemption from two
+    ids to four, which falsified the previous spelling of this sentence, and a
+    count re-breaks on the next child-realm record while a description does not.
     """
     live_ids = {p.id for p in probes.PROBES}
     assert _REALM_NATIVE_IDS <= live_ids, "premise: exempt ids are real records"
@@ -710,3 +738,30 @@ def test_the_guard_still_covers_the_record_the_realm_was_forbidden_on():
     assert "webgl.readback" in {
         p.id for p in _records_predating_the_child_frame_realm(probes.PROBES)
     }
+
+    # PS-247. The exemption grew by two ids, so the same property is pinned for
+    # the two records those twins were derived FROM. The hazard is precise: an
+    # author reaching for "make the guard accept my child-realm record" could
+    # exempt `realm.bootMarkers` instead of `realm.bootMarkers.childFrame` —
+    # one character of difference, every assertion above still true, and the
+    # residue vector the six historical leaks were caught by would be free to
+    # silently gain a realm it was never validated in.
+    for pre_existing in ("realm.bootMarkers", "realm.seedRecoverable"):
+        assert pre_existing not in _REALM_NATIVE_IDS
+        assert pre_existing in {
+            p.id for p in _records_predating_the_child_frame_realm(probes.PROBES)
+        }
+        record = next(p for p in probes.PROBES if p.id == pre_existing)
+        assert record.realms == probes.BOTH, (
+            f"{pre_existing} silently gained a realm — it must stay "
+            "(window, worker); the child realm belongs to its twin"
+        )
+
+    # And every exempt id is a REAL record declaring ONLY the child realm.
+    # An exemption for anything else is bookkeeping that disarms the guard.
+    for native in _REALM_NATIVE_IDS - {"realm.frameIdentity"}:
+        record = next(p for p in probes.PROBES if p.id == native)
+        assert record.realms == probes.CHILD_FRAME_ONLY, (
+            f"{native} is exempt from the guard but is not a child-realm-only "
+            "record — the exemption is covering a widening"
+        )
