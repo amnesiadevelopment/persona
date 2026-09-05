@@ -206,14 +206,37 @@ __MOBILE_REALM_GUARD__
           if (key in MOBILE_MQ) {
             var want = MOBILE_MQ[key];
             try {
+              // A real accessor, not an expression getter — the MediaQueryList
+              // `matches` accessor is as enumerable as any other, and
+              // `.name === ""` on an anonymous expression is its own tell.
+              var mg = Object.getOwnPropertyDescriptor(
+                { get m() { return want; } }, 'm').get;
+              try {
+                Object.defineProperty(mg, 'name', { value: 'get matches' });
+                Object.defineProperty(mg, '__pnaName', { value: 'get matches' });
+              } catch (e) {}
               Object.defineProperty(mql, 'matches', {
-                get: function () { return want; }, configurable: true,
+                get: mg, configurable: true,
               });
             } catch (e) {}
           }
           return mql;
         }
         try {
+          // Re-house the declaration in a real method shorthand, and copy arity
+          // from the ORIGINAL matchMedia rather than pinning a literal.
+          //
+          // `innerMM` captures the binding BEFORE it is rebound — otherwise the
+          // shorthand closes over `patchedMM`, which the assignment points at
+          // the shorthand itself, and every matchMedia call recurses until the
+          // stack blows.
+          var innerMM = patchedMM;
+          var mmShell = ({ m() { return innerMM.apply(this, arguments); } }).m;
+          try {
+            Object.defineProperty(mmShell, 'length', { value: realMM.length });
+          } catch (e) {}
+          patchedMM = mmShell;
+        } catch (e) {}
           Object.defineProperty(patchedMM, 'name', { value: 'matchMedia' });
           Object.defineProperty(patchedMM, '__pnaName', { value: 'matchMedia' });
         } catch (e) {}

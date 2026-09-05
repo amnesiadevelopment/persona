@@ -49,10 +49,25 @@ __GEO_REALM_GUARD__
     }
     // Mark each override for the native_ext Function.prototype.toString patch so
     // a detector calling Function.prototype.toString.call(fn) reads native code.
+    //
+    // Also RE-HOUSE the caller's function expression inside a real method
+    // shorthand: an expression owns `prototype`/`arguments`/`caller` and a
+    // native method owns exactly ["length","name"], so the form the callsite
+    // typed is readable by Object.getOwnPropertyNames without calling anything.
+    // `delete fn.prototype` cannot repair it, so the shape must be right here,
+    // at creation. Arity is copied from the caller's own function because these
+    // overrides ARE the reference implementation (there is no `orig` to read:
+    // navigator.geolocation may be absent entirely, which is why this helper
+    // takes a name rather than an original).
     function mark(fn, name) {
-      try { Object.defineProperty(fn, "__pnaName", { value: name }); } catch (e) {}
-      try { Object.defineProperty(fn, "name", { value: name }); } catch (e) {}
-      return fn;
+      var shell;
+      try {
+        shell = ({ m() { return fn.apply(this, arguments); } }).m;
+        Object.defineProperty(shell, "length", { value: fn.length });
+      } catch (e) { shell = fn; }
+      try { Object.defineProperty(shell, "__pnaName", { value: name }); } catch (e) {}
+      try { Object.defineProperty(shell, "name", { value: name }); } catch (e) {}
+      return shell;
     }
     var geo = G.navigator.geolocation;
     if (geo) {
