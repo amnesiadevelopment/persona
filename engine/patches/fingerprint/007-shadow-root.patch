@@ -1,8 +1,7 @@
 diff --git a/third_party/blink/renderer/core/dom/element.cc b/third_party/blink/renderer/core/dom/element.cc
-index 54013e7a94..da056fc1a5 100644
 --- a/third_party/blink/renderer/core/dom/element.cc
 +++ b/third_party/blink/renderer/core/dom/element.cc
-@@ -5802,6 +5802,11 @@ ShadowRoot* Element::OpenShadowRoot() const {
+@@ -7850,6 +7850,11 @@
    return root && root->GetMode() == ShadowRootMode::kOpen ? root : nullptr;
  }
  
@@ -15,22 +14,20 @@ index 54013e7a94..da056fc1a5 100644
    ShadowRoot* root = GetShadowRoot();
    if (!root) {
 diff --git a/third_party/blink/renderer/core/dom/element.h b/third_party/blink/renderer/core/dom/element.h
-index f835dfab2d..67e4057ed2 100644
 --- a/third_party/blink/renderer/core/dom/element.h
 +++ b/third_party/blink/renderer/core/dom/element.h
-@@ -842,6 +842,7 @@ class CORE_EXPORT Element : public ContainerNode, public Animatable {
-   // Returns the shadow root attached to this element if it is a shadow host.
-   ShadowRoot* GetShadowRoot() const;
+@@ -1097,6 +1097,7 @@
+     return HasShadowRoot() ? GetShadowRootInternal() : nullptr;
+   }
    ShadowRoot* OpenShadowRoot() const;
 +  ShadowRoot* FakeShadowRoot() const;
    ShadowRoot* ClosedShadowRoot() const;
    ShadowRoot* AuthorShadowRoot() const;
    ShadowRoot* UserAgentShadowRoot() const;
 diff --git a/third_party/blink/renderer/core/dom/element.idl b/third_party/blink/renderer/core/dom/element.idl
-index 2e1d194f76..4debe0a2ed 100644
 --- a/third_party/blink/renderer/core/dom/element.idl
 +++ b/third_party/blink/renderer/core/dom/element.idl
-@@ -65,6 +65,7 @@ dictionary CheckVisibilityOptions {
+@@ -81,6 +81,7 @@
  
      [RaisesException, MeasureAs=ElementAttachShadow] ShadowRoot attachShadow(ShadowRootInit shadowRootInitDict);
      [PerWorldBindings, ImplementedAs=OpenShadowRoot] readonly attribute ShadowRoot? shadowRoot;
