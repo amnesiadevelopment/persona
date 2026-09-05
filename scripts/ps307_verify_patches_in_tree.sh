@@ -149,6 +149,16 @@ normalised_copy() {
   printf '%s' "$key"
 }
 
+# How many CHECKABLE claims an evidence file carries — every record except the
+# `noevidence` diagnostics, which the consumer loop skips without checking.
+#
+# Split out as a function rather than inlined so the guard above and the loop
+# below cannot drift apart about what counts as a claim: this is the same
+# predicate the loop applies (`kind = noevidence` → `continue`), stated once.
+count_claims() {
+  awk -F'\t' '$1 != "" && $2 != "noevidence"' "$1" | wc -l
+}
+
 FAILURES=0
 CHECKED=0
 PATCHES_OK=0
@@ -185,7 +195,30 @@ for patch_path in "${PATCHES[@]}"; do
   # A patch that yields no claims cannot be verified, and "nothing to check"
   # must never read as "checked and fine". That is the shape of the very defect
   # this ticket is about, arriving through the checker instead of the build.
-  if [ ! -s "$ev" ]; then
+  #
+  # ⚠️ AN EMPTY EVIDENCE FILE IS ONLY *ONE* OF THE TWO WAYS A PATCH ARRIVES HERE
+  # WITH NOTHING CHECKABLE, AND IT IS THE RARER ONE. The extractor emits an
+  # explicit `noevidence` record for a file section it could not draw a usable
+  # candidate from, so a patch whose every section is `noevidence` produces a
+  # NON-EMPTY file that yields ZERO claims — `! -s` never fires, the consumer
+  # loop `continue`s past each record without incrementing `claims`, and the
+  # patch reaches the verdict with `bad=0`. It is then printed as
+  # `PRESENT (0/0 claims hold)`: a pass, in `present` mode, for a patch that may
+  # be wholly absent from the tree.
+  #
+  # Measured, not hypothetical: a patch whose only section is a short BUILD.gn
+  # source-list edit — the exact shape the `noevidence` comment below names —
+  # was reported PRESENT against a tree that did not carry it, and was the only
+  # "passing" patch in a run where all fifteen others correctly failed.
+  #
+  # Our current set does not hit it (011-gpu-info and 002-user-agent-fingerprint
+  # each have one `noevidence` section but carry 22 and 21 real claims from
+  # their other files), but that is a property of THIS patch set at THIS tag,
+  # and the premise of this whole ticket is that a rebase changes the patch
+  # layer. So the guard is on the CLAIM COUNT, which is the thing the verdict
+  # actually rests on, rather than on the file being empty, which is a proxy for
+  # it that the extractor's own diagnostics falsify.
+  if [ ! -s "$ev" ] || [ "$(count_claims "$ev")" -eq 0 ]; then
     echo "::error::PS-307: ${patch_name} produced NO verifiable evidence."
     echo "::error::PS-307: a patch that cannot be checked must not be reported as checked. Refusing."
     printf '%-45s UNVERIFIABLE — the evidence extractor produced no claims\n' "$patch_name" >> "$REPORT"

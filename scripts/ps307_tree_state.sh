@@ -152,7 +152,14 @@ fingerprint_digest() {
     echo "::error::PS-307: refusing to compute a tree identity that could not tell one patch set from another." >&2
     exit 1
   fi
-  ( cd "$PATCH_DIR" && sha256sum ./*.patch 2>/dev/null | sort ) | sha256sum | cut -d' ' -f1
+  # ⚠️ NO `2>/dev/null` ON THE INNER CALL. It was there once and it hid the
+  # thing worth seeing: on a host without GNU coreutils the inner `sha256sum`
+  # fails with "command not found", the redirect swallows that, and the failure
+  # then surfaces from the OUTER `sha256sum` instead — so the diagnostic named
+  # the wrong command and said nothing about the missing tool. This digest is
+  # load-bearing (it is what stops a tree being reused for a patch set it does
+  # not carry), so a failure here must be loud and must name itself.
+  ( cd "$PATCH_DIR" && sha256sum ./*.patch | sort ) | sha256sum | cut -d' ' -f1
 }
 
 want_digest="$(fingerprint_digest)"
