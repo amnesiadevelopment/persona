@@ -436,6 +436,34 @@ def rollback_target() -> tuple[str, str]:
     return _entry(_read_builds(), "previous")
 
 
+def current_build_target() -> tuple[str, str]:
+    """The (tag, digest) of the build the record says is installed RIGHT NOW, or
+    ("", "") when the record does not name one.
+
+    The third sibling reader of BUILDS_FILE, and it exists for the same reason
+    the other two do: callers must not poke at the file themselves. It reads the
+    SAME "current" slot current_build_recorded() next door reduces to a bool —
+    that one answers "will the next swap have something to demote?", this one
+    answers "WHICH build, and what did its bytes verify against?", which is a
+    question the bool structurally cannot carry.
+
+    WHY A CALLER NEEDS THE PAIR AND NOT JUST THE TAG (PS-317). After a revert,
+    revert_to_previous_build has written record_installed_build(tag, digest)
+    BEFORE _set_pin(tag) — deliberately, and the ordering is what makes this
+    readable — so the pinned tag sits here together with the digest those bytes
+    were VERIFIED against when they were installed. ensure_engine can therefore
+    re-install a pinned build against a RECORDED digest instead of trusting
+    whatever upstream advertises for that tag today, which is exactly the PS-49
+    discipline revert_to_previous_build already documents ("The URL only. The
+    digest is the RECORDED one"). Honouring the pin consequently widens no trust
+    surface.
+
+    BOTH OR NEITHER, via _entry: a slot carrying a tag but no usable digest
+    answers ("", ""), so a caller can never end up fetching a tag it has nothing
+    to verify against. That gate is at the READ, not left to each caller."""
+    return _entry(_read_builds(), "current")
+
+
 def current_build_recorded() -> bool:
     """True when the record names the build that is installed RIGHT NOW.
 
@@ -1518,16 +1546,116 @@ def download_engine(
         return ok
 
 
+def _pinned_candidate(pin: str) -> tuple[str, str, str]:
+    """(tag, url, digest) for the build an operator PINNED, or ('','','') when
+    upstream no longer serves it.
+
+    THE DIGEST IS THE RECORDED ONE WHEN THERE IS ONE (PS-49, and the reason
+    honouring the pin widens no trust surface). revert_to_previous_build writes
+    record_installed_build(tag, digest) BEFORE _set_pin(tag), so after a revert
+    the pinned tag sits in builds.json["current"] together with the digest those
+    bytes actually verified against. Re-installing the pinned build therefore
+    verifies against a digest read off this machine's own disk rather than
+    against whatever the API advertises for that tag today — exactly what
+    revert_to_previous_build means by "The URL only. The digest is the RECORDED
+    one".
+
+    THE FRESH DIGEST IS THE FALLBACK, not the preference, and it is deliberately
+    not a refusal. A pin can name a build the record does not (a machine pinned
+    before builds.json existed, a hand-edited settings file), and in that case
+    the fresh digest is precisely the trust level an UNPINNED first install
+    already runs at — fetch_latest_full's digest is a fresh API response too. So
+    falling back costs nothing that was being protected, while refusing would
+    strand a legitimately pinned machine over a bookkeeping gap.
+
+    ('','','') is the honest answer to a YANKED OR DELETED release, the same one
+    fetch_release_full gives revert_to_previous_build. The CALLER decides what to
+    do about it — see ensure_engine, which must never dead-end the first install
+    over a pin it cannot honour."""
+    tag, url, fresh_digest = fetch_release_full(pin)
+    if not url:
+        return "", "", ""
+    rec_tag, rec_digest = current_build_target()
+    if rec_tag == tag and rec_digest:
+        return tag, url, rec_digest
+    return tag, url, fresh_digest
+
+
+def _release_pin(log=None) -> None:
+    """Drop a hold persona could NOT honour, best-effort.
+
+    Only ever called after a DIFFERENT build has actually been installed, and
+    that is the whole justification for touching an operator's instruction:
+    leaving the pin would leave _engine_rollback_row rendering "currently held
+    at {pin}" over an engine that is not that build — a false statement on
+    screen about the operator's own instruction — and would leave
+    _engine_update_available() holding every future update off in the name of a
+    build that no longer exists upstream.
+
+    Best-effort, like _set_pin beside it: a settings file that cannot be written
+    must not turn a SUCCESSFUL install into a reported failure."""
+    try:
+        from ...core import settings
+
+        settings.set_chromium_build_pin("")
+    except Exception as e:
+        if log:
+            log(
+                f"Chromium engine: couldn't clear the hold ({e}) — the panel "
+                "may still say your engine is held at a build you no longer "
+                "have"
+            )
+
+
 def ensure_engine(
     progress=None, timeout: int = 600, attempts: int = 3, log=None
 ) -> tuple[bool, str]:
     """Make sure the engine is installed. If already present, no-op. Otherwise
-    fetch the latest release and download it. Returns (ok, message).
+    fetch a release and download it. Returns (ok, message).
+
+    WHICH release is the operator's call when they have made one (PS-317). This
+    is the FIRST-INSTALL lane, and it is reached on a machine that already has
+    an engine more often than the name suggests: a FAILED upgrade deliberately
+    leaves the .engine-installing sentinel behind, so is_installed() answers
+    False, and _check_engine_async routes that machine HERE rather than through
+    the update lane. On a machine that had reverted, the update lane's pin gate
+    (_engine_update_available) is therefore never consulted — so before this
+    read, a failed upgrade after a revert re-installed the exact build the
+    operator had rejected, unattended, with their pin still sitting on disk.
+
+    So this lane honours BOTH operator instructions it can see, not one:
+
+      * policy.check's ABOVE_CEILING — a ceiling set in their own policy file.
+      * pinned_build() — the standing "not that build" a revert writes.
+
+    THE PIN SELECTS, IT DOES NOT VETO, and that direction is the whole of the
+    design decision. Refusing to install anything while a pin is set would honour
+    the instruction by leaving an operator with no browser at all, and ui/app.py
+    states this project's answer to that trade in as many words: an app with no
+    engine is worse than one with an unwanted engine. Installing the PINNED tag
+    honours the instruction AND leaves a working engine, and (see
+    _pinned_candidate) it does so against a digest recorded on this machine, so
+    it widens no trust surface either.
+
+    ⛔ A PIN NAMING A BUILD UPSTREAM NO LONGER SERVES MUST NOT DEAD-END THE
+    FIRST INSTALL. Firefox's engine states the same rule from the other side —
+    "a pin naming a build that is NOT installed is IGNORED rather than
+    honoured-into-nothing" — and here the failure would be worse than a bad
+    resolution: no engine at all. So a pinned tag that cannot be resolved falls
+    through to the newest acceptable build, SAYS SO through `log`, and, once
+    that substitute is actually on disk, RELEASES the hold. The release is
+    deliberately keyed on a successful install of something else rather than on
+    the resolution failing, because fetch_release_full cannot tell a yanked
+    release from a network outage: on an outage nothing installs, so nothing is
+    substituted and the operator's instruction survives untouched.
 
     The GitHub releases API call and the download each occasionally fail on a
     transient network hiccup (a dropped connection, a flaky first request on a
     cold start). Retry the whole fetch+download a few times so one blip doesn't
     leave the engine uninstalled — the same treatment the Firefox engine gets.
+    A pinned machine whose pin is unreachable therefore spends its retries
+    twice, once per lane; that is the cost of not stranding it, and it is paid
+    only on the path that would otherwise end with no engine.
 
     ``log`` (optional) receives every operator-facing note this path produces:
     the reason for a refusal (persona declining a build) and the reason for any
@@ -1540,13 +1668,97 @@ def ensure_engine(
     """
     if is_installed():
         return True, "engine present"
+    pin = pinned_build()
+    if pin:
+        ok, message, reachable = _install_first(
+            lambda: _pinned_candidate(pin),
+            progress=progress,
+            timeout=timeout,
+            attempts=attempts,
+            log=log,
+            fallback_follows=True,
+        )
+        if reachable:
+            # The pin was resolvable, so its answer is THE answer — including a
+            # refusal or a transfer failure. Falling through to the newest build
+            # on a failed download would substitute silently for a build that
+            # still exists and is still what the operator asked for; the next
+            # check retries the pinned build instead.
+            return ok, message
+        # NO "Engine download failed" PREFIX, and the suppression above is what
+        # keeps that true. This is persona reporting that it cannot carry out an
+        # operator instruction, in the same vocabulary revert_to_previous_build
+        # uses for the identical upstream condition.
+        #
+        # WORDED WITHOUT CLAIMING WHICH, deliberately: fetch_release_full
+        # answers ('','','') for a yanked release AND for a network outage, and
+        # it cannot tell them apart. Saying "it was withdrawn" would be persona
+        # asserting something it does not know. What it DOES know — that it
+        # could not get that build, and what it is doing instead — is stated.
+        if log:
+            log(
+                f"Chromium engine: persona could not get {pin} from upstream "
+                "(it may have been withdrawn), so it cannot hold your engine "
+                "there — installing the newest build instead."
+            )
+    ok, message, _reachable = _install_first(
+        fetch_latest_full,
+        progress=progress,
+        timeout=timeout,
+        attempts=attempts,
+        log=log,
+    )
+    if pin and ok:
+        # Reached only via the fall-through above: a build that is NOT the
+        # pinned one is now installed, so the hold is released rather than left
+        # to describe an engine this machine does not have.
+        #
+        # KEYED ON A SUCCESSFUL INSTALL OF SOMETHING ELSE, never on the
+        # resolution failing — which is what makes the outage case safe. On an
+        # outage nothing installs, `ok` is False, and the operator's instruction
+        # survives untouched for the next check to honour.
+        _release_pin(log=log)
+    return ok, message
+
+
+def _install_first(
+    resolve,
+    progress=None,
+    timeout: int = 600,
+    attempts: int = 3,
+    log=None,
+    fallback_follows: bool = False,
+) -> tuple[bool, str, bool]:
+    """The first install itself, over whichever release `resolve` names.
+
+    Returns (ok, message, reachable). ``reachable`` is False only when `resolve`
+    never produced a URL across every attempt — i.e. there was nothing to try,
+    as opposed to something that was tried and refused or failed. ensure_engine
+    reads that third value to tell "your pinned build is gone" apart from "your
+    pinned build would not install", which are different situations and must not
+    get the same answer.
+
+    `resolve` is a callable rather than a tag because the two lanes differ in
+    more than which release they name: the pinned lane also supplies a digest
+    read off this machine's disk. Everything BELOW the resolution — the policy
+    verdicts, the refuse/failed vocabulary, the digest gate, the record-then-
+    write-version ordering — is identical for both and lives here once, which is
+    the point of the seam.
+
+    ``fallback_follows`` says the caller has ANOTHER lane to try if this one
+    resolves nothing. It suppresses exactly one line — the retryable "Engine
+    download failed" tail, and only when nothing was ever resolved — so a run
+    that ends with an engine installed does not also tell the operator their
+    engine download failed. See that line for why this is the refuse/failed
+    distinction being kept rather than bent."""
     last = "could not reach GitHub releases"
+    reachable = False
     for _ in range(max(1, attempts)):
         # The raw fetch, with policy applied HERE rather than via
         # fetch_latest_checked(), because the first install answers the
         # ABOVE_CEILING verdict differently from an update and so needs the URL
         # the checked fetch deliberately blanks.
-        tag, url, digest = fetch_latest_full()
+        tag, url, digest = resolve()
         verdict, message = policy.check(tag)
         # THE FIRST INSTALL IS NOT AN UPDATE, and the two verdicts are not the
         # same kind of claim — so this path treats them differently on purpose.
@@ -1566,7 +1778,7 @@ def ensure_engine(
             # place, next to the code that draws it.
             if log:
                 log(message)
-            return False, message
+            return False, message, True
         # ABOVE_CEILING is now an OPERATOR instruction, and that inverted this
         # branch's answer (PS-42). It used to mean "persona has not been SHOWN
         # to work against this" — persona's own soft self-assessment, recorded
@@ -1601,10 +1813,15 @@ def ensure_engine(
             # and the edit; do not dress it up as an engine problem.
             if log:
                 log(message)
-            return False, message
+            return False, message, True
         if not url:
             last = "could not reach GitHub releases"
             continue
+        # A URL came back, so this lane's release EXISTS. Recorded before any of
+        # the install can fail, because `reachable` answers "was there anything
+        # to try?" and not "did it work?" — see the caller, which must tell a
+        # pin whose build is GONE from a pin whose build would not install.
+        reachable = True
         # THE FOURTH REFUSAL, AND NO PLATFORM IS CARVED OUT OF IT (PS-49).
         #
         # The rule itself is NOT written here. It lives in download_engine,
@@ -1678,7 +1895,7 @@ def ensure_engine(
             # RETURNED, not `continue`d, for the same reason KNOWN_BAD returns:
             # what upstream published will not differ across the remaining
             # attempts, so burning them only delays the same answer.
-            return False, message
+            return False, message, True
         if installed:
             # BEFORE write_version, always — version.txt has one slot, and once
             # it is overwritten the identity of the build being replaced is gone
@@ -1687,7 +1904,7 @@ def ensure_engine(
             # wipe it is the same. Either way the NEXT swap has a target.
             record_installed_build(tag, digest)
             write_version(tag)
-            return True, tag
+            return True, tag, True
         last = "download failed"
     # The other operator-facing exit. Prefixed with "Engine download failed"
     # BECAUSE THAT IS WHAT THIS ONE IS — a network/transfer failure, worth
@@ -1695,9 +1912,19 @@ def ensure_engine(
     # that is persona declining a build, and retrying cannot change it. Both
     # lines are emitted from this function so the two can never again be worded
     # by a caller that cannot tell them apart.
-    if log:
+    #
+    # ...WITH ONE SUPPRESSION, AND IT IS THE SAME DISTINCTION RATHER THAN AN
+    # EXCEPTION TO IT (PS-317). A lane that never resolved a URL AND whose
+    # caller is about to try another one has not failed at anything the operator
+    # can act on: nothing was transferred, and a second lane is about to install
+    # an engine. Emitting the retryable wording there would tell an operator
+    # their engine download failed on a run that ends with an engine installed,
+    # and would bury the accurate sentence the caller logs instead. A lane that
+    # DID resolve a URL keeps the prefix even under this flag, because that one
+    # really is a transfer that failed.
+    if log and not (fallback_follows and not reachable):
         log(f"Engine download failed: {last}")
-    return False, last
+    return False, last, reachable
 
 
 def revert_to_previous_build(
