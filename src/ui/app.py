@@ -1131,10 +1131,55 @@ class App:
                 label = f"{pf.percent(done, total)}%"
             else:
                 label = pf.fmt_mb(done)
+            # THE HEADLINE, BOUNDED BY RELOCATION RATHER THAN BY ELLIPSIS —
+            # and which of the two is used here is the one judgement in this
+            # conversion, so it is argued rather than assumed.
+            #
+            # THE PROBLEM WITH A PLAIN ELLIPSIS AT THIS SITE. The old string
+            # was f"updating to {target} · {label}", 31 characters with a
+            # short tag and 37 with the "new version" fallback, against a rail
+            # that carries about _RAIL_MAX_CHARS. Its INFORMATIVE HALF SITS AT
+            # THE TAIL: ellipsised at the budget, "updating to 3.0.2 ·
+            # connecting…" reaches the operator as "updating to 3.0.2 · c…" —
+            # the PROGRESS is what gets eaten, and progress is the only thing
+            # a progress line is for. That is a worse outcome than the
+            # overflow it replaces, and it is the failure mode the
+            # "BOUNDED AND RECOVERABLE" comment below exists to prevent.
+            #
+            # SO THE VERSION MOVES, THE PROGRESS STAYS. This is PS-229's own
+            # precedent, already established in this file: _ROLLBACK_LABEL
+            # took a 30-character build identifier out of a visible label and
+            # left it in the tooltip that already named it. The same trade
+            # applies here — "which version is being installed?" is asked
+            # deliberately, once, and a tooltip is the right home for it,
+            # while "how far along is it?" is read at a glance and must stay
+            # on screen. NOTHING IS INVENTED: the visible line is the original
+            # string with the relocated words removed, and the tooltip is the
+            # original string's own "updating to {target}".
+            #
+            # MEASURED, not asserted — the widest visible form is
+            # "updating · connecting…" at 22 characters, which is the budget
+            # exactly; the percent and bytes forms are 14 and 17. So this line
+            # FITS rather than merely truncating politely, and
+            # test_ps297_download_progress_rail.py holds it to that.
+            #
+            # INSIDE A ROW, deliberately, and not appended straight to the
+            # panel Column: expand=True is what bounds the WIDTH, and it does
+            # that on a Row's MAIN axis. See sidebar_status_text for why
+            # bounding lines without bounding width is the fix that looks
+            # right and changes nothing on screen.
             rows.append(
-                ft.Text(
-                    f"updating to {target} \u00b7 {label}",
-                    size=10, color=COLORS["accent"], font_family="monospace",
+                ft.Container(
+                    tooltip=f"updating to {target}",
+                    content=ft.Row(
+                        controls=[
+                            sidebar_status_text(
+                                f"updating \u00b7 {label}",
+                                size=10,
+                                color=COLORS["accent"],
+                            )
+                        ],
+                    ),
                 )
             )
             rows.append(
@@ -1143,10 +1188,42 @@ class App:
                     color=COLORS["accent"], bgcolor=COLORS["input_bg"], height=4,
                 )
             )
+            # THE DETAIL LINE, BOUNDED BY ELLIPSIS — and the asymmetry with
+            # the headline above is deliberate, not an inconsistency.
+            #
+            # This is fmt_line's "52.4 MB of 123.7 MB   2.1 MB/s   34s left",
+            # 41 characters, and unlike the headline its PRIMARY READING IS
+            # ITS HEAD: "52.4 MB of 123.7 MB" is the answer, and the speed and
+            # ETA behind it are the elaboration. Ellipsising it therefore
+            # costs the secondary half, which is the right way round — so
+            # there is nothing here to relocate and no reason to rewrite the
+            # string (fmt_line's output is correct and is shared with the
+            # engine panel; this changes how the rail LAYS IT OUT, never what
+            # it says).
+            #
+            # BUT THE TAIL IS STILL NOT DROPPED. Bounding a line without
+            # saying where its truncated tail went trades a visible overflow
+            # for a silent amputation, which is the half of PS-229's treatment
+            # that is easy to skip. The status line below answers that with a
+            # reveal chevron; a live progress line that reflows on every tick
+            # is the wrong host for a click target, so it answers it the other
+            # way PS-229 sanctioned — the full line, verbatim, in the tooltip.
+            #
+            # NOT BUDGETED, unlike the headline, and for the reason the status
+            # line below is not budgeted either: this reports an OUTCOME and
+            # must say what it says. It is held to the BOUND, not to a
+            # character count.
+            detail = pf.fmt_line(done, total, elapsed)
             rows.append(
-                ft.Text(
-                    pf.fmt_line(done, total, elapsed),
-                    size=9, color=COLORS["text_sub"], font_family="monospace",
+                ft.Container(
+                    tooltip=detail,
+                    content=ft.Row(
+                        controls=[
+                            sidebar_status_text(
+                                detail, size=9, color=COLORS["text_sub"]
+                            )
+                        ],
+                    ),
                 )
             )
         elif self._update_staged or self._app_update_status == "ready":
