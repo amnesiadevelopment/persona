@@ -123,6 +123,32 @@ echo "      actualBoundingBoxLeft value printed beside it. A negative width is"
 echo "      impossible per spec, so this is trivially detectable."
 
 echo
+echo "=== 2b. THE VERDICT — and this one can FAIL ==================="
+# Everything above PRINTS. This step DECIDES, and it is the reason the script
+# has a meaningful exit code at all.
+#
+# The original version of this file ended section 2 with a prose paragraph
+# beginning "READ:" that told the reader what to conclude, and exited 0 whatever
+# the numbers were — including on its own disconfirming case. A check that
+# cannot go red is not evidence, so the arithmetic now runs through a guard that
+# exits non-zero when the defect is present. See ps301_measuretext_repro.py,
+# whose --self-test demonstrates it reaching DEFECT, PLAUSIBLE and INDETERMINATE.
+VERDICT_PY="$(dirname "$0")/../../../scripts/ps301_measuretext_repro.py"
+[ -f "$VERDICT_PY" ] || VERDICT_PY="$(dirname "$0")/ps301_measuretext_repro.py"
+MT_RC=0
+if [ -f "$VERDICT_PY" ]; then
+  # Re-capture section 2 into a transcript the verdict can parse, then judge it.
+  { echo "--- self-built, --fingerprint=24601"; mt "$SELF" --fingerprint=24601
+    echo "--- STOCK control, --fingerprint=24601"; mt "$STOCK" --fingerprint=24601
+  } > "$TMP/mt-transcript.txt"
+  python3 "$VERDICT_PY" --transcript "$TMP/mt-transcript.txt" || MT_RC=$?
+  echo "  (measureText verdict exit code: $MT_RC — 1 = DEFECT PRESENT)"
+else
+  echo "  !! verdict script not found; NOT claiming a pass" >&2
+  MT_RC=2
+fi
+
+echo
 echo "=== 3. patch 002 platform — WORKS across all three arms ======"
 for arm in linux windows macos; do
   printf '  self-built --fingerprint-platform=%-8s ' "$arm"
@@ -160,3 +186,21 @@ echo
 echo "READ: eligible_x/y move per seed; eligible_w does NOT (the patch calls"
 echo "      Offset, not Scale); exempt_x does NOT (ShouldSkipClientRectsOffset"
 echo "      deliberately exempts position:absolute with fixed top+left)."
+
+echo
+echo "############################################################"
+echo "# EXIT STATUS"
+echo "############################################################"
+# The script's own exit code now carries the measureText verdict, so a caller
+# (or CI) can act on it instead of parsing prose. Non-zero = the defect is still
+# present, which is the CURRENT expected state of the 144 engine: this is a
+# measure-not-fix ticket, so a red exit here is the finding being reported, not
+# a broken script. It turns green the day patch 015 is repaired.
+if [ "$MT_RC" -eq 0 ]; then
+  echo "measureText: PLAUSIBLE (exit 0)"
+elif [ "$MT_RC" -eq 1 ]; then
+  echo "measureText: DEFECT PRESENT (exit 1) — patch 015 Shuffle/offset mismatch"
+else
+  echo "measureText: INDETERMINATE (exit $MT_RC) — measured nothing; NOT reported as a pass"
+fi
+exit "$MT_RC"

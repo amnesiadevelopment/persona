@@ -27,6 +27,36 @@ underneath it". It was itself checked against a sabotaged copy (one realm's GPU
 string rewritten to SwiftShader) and correctly failed, so a pass is a real
 signal rather than a vacuous one.
 
+> **⚠️ CORRECTION (audit follow-up): the measureText reproduction could not fail.**
+> As first written, `ps301_repro.sh` *printed* its readings and ended §2 with a
+> prose paragraph beginning `READ:` that told the reader what to conclude. It had
+> one conditional in 162 lines, **no non-zero exit path at all**, and no
+> disconfirming branch — so it exited `0` on its own "the patch stands down" arm
+> exactly as it did on the defect. A check that cannot go red is not evidence,
+> however detailed its transcript, and this is the one class of failure this
+> report is otherwise built to avoid.
+>
+> The arithmetic now runs through **`scripts/ps301_measuretext_repro.py`**, which
+> *decides* and exits non-zero when the defect is present. `ps301_repro.sh` calls
+> it and **propagates its exit code**. Demonstrated rather than asserted, against
+> the committed transcript:
+>
+> | arm | verdict | exit |
+> |---|---|---|
+> | self-built, `--fingerprint=24601`, layer OFF | DEFECT (4/4 widths negative) | **1** |
+> | self-built, `--fingerprint=5150`, layer OFF | DEFECT (4/4 widths negative) | **1** |
+> | self-built, **no** `--fingerprint` (patch stands down) | PLAUSIBLE (ratios 1.0) | **0** |
+> | harness single-sample shape | INDETERMINATE (refuses to guess) | **2** |
+>
+> `--self-test` proves the guard reaches all three verdicts on real measured
+> inputs, including a *healthy scale-shaped noise factor* — which is constant
+> across strings too, and must **not** read as a defect. That case is why the
+> constant-ratio rule alone does not condemn.
+>
+> **The red exit is the finding, not a broken script.** This is a measure-not-fix
+> ticket, so exit 1 is the current, correct state of the 144 engine; the guard
+> turns green the day patch 015 is repaired, and is a regression check from then on.
+
 ---
 
 ## 0. Summary — five findings, in order of how much they change the answer
