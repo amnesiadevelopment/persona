@@ -29,6 +29,7 @@ from .components import (
 )
 from ..services.engine import policy as engine_policy
 from ..services.engine import updater as engine
+from ..services import egress
 from ..services.app_update import updater as app_update
 from ..core import platform as _platform
 from ..core import settings as app_settings
@@ -1478,6 +1479,8 @@ class App:
                 on_ssh_edit=self._edit_ssh_host,
                 on_ssh_delete=self._delete_ssh_host,
                 on_ssh_run=self._ssh_run,
+                app_egress=app_settings.app_egress_proxy(),
+                on_save_app_egress=self._save_app_egress,
             )
         elif self._active_page == "tags":
             self._page_host.content = build_tags_page(
@@ -4140,6 +4143,30 @@ class App:
             and len(self.bl.running_profile_names()) == 0
         ):
             self._start_app_update(self._app_update_url)
+
+    def _save_app_egress(self, value: str) -> tuple[bool, str]:
+        """Write persona's OWN egress policy, or refuse it. Returns (ok, reason).
+
+        The gate is `egress.validate_for_save`, which asks `egress.resolve()` —
+        the same authority the nine consumers ask at send time. Nothing about
+        what a usable proxy looks like is decided here or in the page; a
+        second opinion in the UI layer is precisely the drift `services/egress`
+        exists to prevent, and it would let a value be accepted at save and
+        then silently stop every request the app makes, update checks included.
+
+        NOTHING HERE LOGS THE VALUE. It can embed credentials, and `_log` goes
+        to the Activity Log and to the disk-backed log — the same reason
+        `egress._last_curl_refusal` keeps the value as an identity and never
+        prints it. The log line records only that the policy changed and to
+        which VERDICT.
+        """
+        ok, reason = egress.validate_for_save(value)
+        if not ok:
+            return False, reason
+        app_settings.set_app_egress_proxy(value)
+        verdict, _ = egress.resolve()
+        self._log(f"App egress policy set — persona's own requests: {verdict}")
+        return True, ""
 
     def _ensure_api_server(self):
         """The Claude control server, built on first need from the factory (its

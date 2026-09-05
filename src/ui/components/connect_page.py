@@ -3,10 +3,41 @@ from collections.abc import Callable
 import flet as ft
 
 from ...models.profile import Profile
+from ...services.egress import DIRECT, PROXIED, REFUSE, resolve
 from ...services.ssh.store import SSHHost
 from ..theme.colors import COLORS
 from ..theme.styles import MONO
 from .ssh_page import build_ssh_section
+
+#: How each of `egress.resolve()`'s THREE verdicts is put on screen: a short
+#: state word and the sentence under it. Keyed on the resolver's own constants
+#: rather than on a boolean, because "configured but unusable" is deliberately
+#: not "off" — that conflation is the exact thing `services/egress.py` defines
+#: three constants to prevent, and a control showing only on/off would
+#: reintroduce it at the surface the operator actually reads.
+#:
+#: REFUSE is the one that has to say what it COSTS. It is not a cosmetic
+#: warning: with a configured-but-unparseable value every persona-owned request
+#: is NOT SENT — the update poll included, security updates with it — and until
+#: this card existed the operator's only notice was a log line.
+EGRESS_VERDICT_TEXT: dict[str, tuple[str, str]] = {
+    DIRECT: (
+        "direct",
+        "No proxy set. Persona's own requests (update checks) leave from this "
+        "machine's own address — the default, and what every install has "
+        "unless you set one here.",
+    ),
+    PROXIED: (
+        "proxied",
+        "Persona's own requests leave through this proxy, or not at all — it "
+        "never falls back to a direct connection.",
+    ),
+    REFUSE: (
+        "refuse",
+        "A proxy IS set but persona cannot use it, so it is sending NOTHING — "
+        "update checks included. This is not 'off': fix or clear the value.",
+    ),
+}
 
 
 def _bracket_toggle(
@@ -110,6 +141,8 @@ def build_connect_page(
     on_ssh_edit: Callable[[str], None],
     on_ssh_delete: Callable[[str], None],
     on_ssh_run: Callable[[str, str], tuple[int, str, str]],
+    app_egress: str = "",
+    on_save_app_egress: Callable[[str], tuple[bool, str]] | None = None,
 ) -> ft.Container:
     controls: list[ft.Control] = [
         _title("connect Claude"),
@@ -159,6 +192,12 @@ def build_connect_page(
     section, footer = build_ssh_section(
         ssh_hosts, on_ssh_add, on_ssh_edit, on_ssh_delete, on_ssh_run
     )
+    controls += [
+        ft.Divider(height=40, color=COLORS["border"]),
+        _section_header("PERSONA'S OWN TRAFFIC", ft.Icons.PUBLIC),
+        ft.Container(height=12),
+        _app_egress_card(app_egress, on_save_app_egress),
+    ]
     controls += [ft.Divider(height=40, color=COLORS["border"]), section]
     controls.append(ft.Container(height=20))
 
@@ -257,6 +296,162 @@ def _server_card(
                     ],
                 ),
                 status,
+            ],
+        ),
+    )
+
+
+#: The verdict word's colour. REFUSE is an ERROR colour, not a warning one: it
+#: means nothing is being sent at all.
+_VERDICT_COLOR = {
+    DIRECT: "text_sub",
+    PROXIED: "accent",
+    REFUSE: "error",
+}
+
+
+def _app_egress_card(
+    value: str,
+    on_save: Callable[[str], tuple[bool, str]] | None,
+) -> ft.Container:
+    """The operator's door to persona's OWN egress policy.
+
+    The policy has had a complete reader since PS-46 and nine consumers across
+    all four transport arms since PS-216, and no writer at all: the only way to
+    configure it was to close persona, hand-edit settings.json and restart. This
+    is the writer.
+
+    Three things it must do, each of them load-bearing:
+
+    * **Show the verdict, not a boolean.** `egress.resolve()` answers with one
+      of THREE constants and the third one — a policy that is set and cannot be
+      honoured — is deliberately not "direct". The state word here comes from
+      `resolve()` itself, so "configured but unusable" can never render as off.
+    * **Refuse at save what the transport would refuse at send.** `on_save`
+      returns (ok, reason) from `egress.validate_for_save`, which asks
+      `resolve()`. There is no scheme list, no regex and no second opinion in
+      this file.
+    * **Mask by default.** The value can embed credentials, exactly like the
+      MCP token two cards up, so it ships masked with an opt-in eye — flet's
+      own `password` / `can_reveal_password`, the same pair the proxy and SSH
+      dialogs use. It is never logged.
+    """
+    verdict, _detail = resolve(value)
+    state_word, state_line = EGRESS_VERDICT_TEXT[verdict]
+
+    state = ft.Text(
+        f"[ {state_word} ]",
+        size=12,
+        color=COLORS[_VERDICT_COLOR[verdict]],
+        font_family=MONO,
+        weight=ft.FontWeight.BOLD,
+        no_wrap=True,
+    )
+    explain = ft.Text(
+        state_line, size=11, color=COLORS["text_sub"], font_family=MONO,
+    )
+    # The field carries the CURRENT value so "change" is an edit rather than a
+    # retype from memory, and emptying it is how the setting is cleared — the
+    # same gesture the store's own "" means.
+    field = ft.TextField(
+        value=value,
+        hint_text="socks5://user:pass@host:1080  (empty = direct)",
+        password=True,
+        can_reveal_password=True,
+        text_style=ft.TextStyle(font_family=MONO, size=12, color=COLORS["text_main"]),
+        hint_style=ft.TextStyle(font_family=MONO, size=12, color=COLORS["text_dim"]),
+        border_color=COLORS["card_border"],
+        focused_border_color=COLORS["accent"],
+        bgcolor=COLORS["input_bg"],
+        content_padding=ft.Padding.symmetric(horizontal=12, vertical=10),
+        expand=True,
+        dense=True,
+    )
+    # Its own line, and it starts EMPTY rather than reserving space: a refusal
+    # has to be visibly new, not a slot that was always there.
+    message = ft.Text("", size=11, color=COLORS["error"], font_family=MONO)
+
+    def save(_: ft.ControlEvent) -> None:
+        if on_save is None:  # pragma: no cover - only when wired without a handler
+            return
+        typed = (field.value or "").strip()
+        ok, reason = on_save(typed)
+        if not ok:
+            # The rejected value is NOT echoed back in the message — it can
+            # embed credentials, and this string is put on screen and could be
+            # copied into a report. The reason is resolve()'s own sentence.
+            message.value = f"not saved — {reason}"
+            message.color = COLORS["error"]
+            message.update()
+            return
+        new_verdict, _ = resolve(typed)
+        new_word, new_line = EGRESS_VERDICT_TEXT[new_verdict]
+        state.value = f"[ {new_word} ]"
+        state.color = COLORS[_VERDICT_COLOR[new_verdict]]
+        explain.value = new_line
+        message.value = "saved" if typed else "cleared — sending directly"
+        message.color = COLORS["success"]
+        field.value = typed
+        for ctl in (state, explain, message, field):
+            ctl.update()
+
+    field.on_submit = save
+
+    save_btn = ft.OutlinedButton(
+        "[ save ]",
+        height=34,
+        on_click=save,
+        style=ft.ButtonStyle(
+            shape=ft.RoundedRectangleBorder(radius=3),
+            side=ft.BorderSide(1, COLORS["card_border"]),
+            color=COLORS["accent"],
+            padding=ft.Padding.symmetric(horizontal=12, vertical=0),
+            text_style=ft.TextStyle(font_family=MONO, size=12),
+        ),
+    )
+
+    return ft.Container(
+        border_radius=4,
+        border=ft.Border.all(1, COLORS["card_border"]),
+        bgcolor=COLORS["card_bg"],
+        padding=ft.Padding.symmetric(horizontal=16, vertical=14),
+        content=ft.Column(
+            spacing=10,
+            controls=[
+                ft.Row(
+                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    controls=[
+                        ft.Column(
+                            spacing=2,
+                            tight=True,
+                            controls=[
+                                ft.Text(
+                                    "App egress proxy",
+                                    size=14,
+                                    weight=ft.FontWeight.BOLD,
+                                    color=COLORS["text_main"],
+                                    font_family=MONO,
+                                ),
+                                ft.Text(
+                                    "How persona's OWN requests leave — its "
+                                    "update checks. Not a profile's proxy.",
+                                    size=11,
+                                    color=COLORS["text_sub"],
+                                    font_family=MONO,
+                                ),
+                            ],
+                        ),
+                        state,
+                    ],
+                ),
+                explain,
+                ft.Row(
+                    spacing=10,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    controls=[field, save_btn],
+                ),
+                message,
             ],
         ),
     )
