@@ -171,10 +171,17 @@ _FILTERS = (
 #: So the width is no longer a budget anyone has to respect: the header's tool
 #: run is now a flexible, SCROLLING Row and the close button is the outer Row's
 #: own trailing child, laid out before the tools get their space (see
-#: :func:`open_log_dialog`'s ``header``). The close button holds its 40px box at
-#: four, five, six and eight profiles, measured the same way. This label's cost
-#: is therefore paid in scroll distance rather than in a lost control — which
-#: is what makes spending it on legibility the right trade.
+#: :func:`log_header`). The close button holds its 40px box at four, five, six
+#: and eight profiles, measured the same way.
+#:
+#: WHAT THE LABEL COSTS, STATED IN FULL. The first revision of this note said
+#: the cost "is paid in scroll distance rather than in a lost control", and
+#: that was an incomplete accounting: making the tool run flexible enough to
+#: absorb the extra width ALSO re-anchored it to the left, until
+#: :func:`log_header` declared ``alignment=END`` to put the right-anchored
+#: reading order back. So the honest bill is scroll distance PLUS one explicit
+#: alignment on the Row that carries the run — and not a lost control, which is
+#: what makes spending it on legibility the right trade.
 #:
 #: The general header REDESIGN — wrapping, a second line, a restyle — remains
 #: out of scope, as PS-292 says; what shipped is two properties on the Row that
@@ -476,8 +483,35 @@ def log_header(
     operator cannot press, which is PS-292's own complaint one control along.
     With the scroll the run that no longer fits is reached rather than lost.
 
-    NOT a header redesign, which PS-292 puts out of scope: nothing wraps,
-    nothing moves to a second line, nothing is restyled.
+    ``alignment=END`` ON THE TOOLS IS THE THIRD PROPERTY, AND IT IS HERE TO PUT
+    BACK SOMETHING THE OTHER TWO TOOK AWAY. This is recorded rather than
+    smoothed over because the first revision of this header shipped without it
+    and its docstring said "nothing is restyled", which was FALSE: an
+    ``expand=True`` child fills the space its inflexible siblings leave and
+    then packs its contents under the default ``MainAxisAlignment.START``, so
+    the whole tool run — which the outer ``SPACE_BETWEEN`` had held against the
+    right edge since the ``ab83eb7`` Activity Log redesign — collapsed leftward
+    into the brand. Measured at the shipped default (1280x820, two profiles),
+    ``main`` against that revision:
+
+        control          main    expand, no alignment    shift
+        severity "all"   597     146                     -451
+        profile clear    793     343                     -450
+        search field     ~1005   ~595                    -410
+        close button     1226    1226                    0
+
+    ``END`` restores it: the same window reads severity "all" at ~550 and the
+    run right-anchored again. AND IT IS A NO-OP EXACTLY WHERE THE EXIT MATTERS
+    — at 1024x680 with a roster long enough to overflow there is no free space
+    to align within, so the close button keeps its ``(970, 12, 40, 40)`` box at
+    four, five, six and eight profiles, unchanged. The three properties do not
+    trade against each other.
+
+    NOT a header redesign, which PS-292 puts out of scope: nothing wraps and
+    nothing moves to a second line. What this function DOES change beyond the
+    exit's parentage is stated above rather than denied — the tool run gained a
+    horizontal scroll, and its alignment is declared explicitly here instead of
+    being inherited from a Row that used to be intrinsically sized.
     """
     return ft.Row(
         alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
@@ -487,6 +521,7 @@ def log_header(
             ft.Row(
                 expand=True,
                 scroll=ft.ScrollMode.AUTO,
+                alignment=ft.MainAxisAlignment.END,
                 spacing=6,
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
                 controls=tools,

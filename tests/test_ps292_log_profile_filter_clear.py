@@ -456,3 +456,57 @@ def test_the_tools_group_flexes_and_scrolls_so_it_cannot_push_its_siblings():
         if isinstance(c, ft.Text)
     ]
     assert "all" in labels and _ALL_PROFILES_LABEL in labels
+
+
+def test_the_tools_group_stays_right_anchored_beside_the_exit():
+    """``expand`` re-anchors a Row's contents unless the alignment says so.
+
+    This is the SECOND regression this ticket shipped, and it is here because
+    the property is invisible to every other assertion in this file. Making the
+    tools group ``expand=True`` — needed so the exit is laid out first and
+    keeps its box — also makes that Row fill the space its inflexible siblings
+    leave, and its contents then pack under the default
+    ``MainAxisAlignment.START``. The whole toolbar collapsed leftward into the
+    brand: measured at 1280x820, the severity ``all`` moved 597 -> 146 and the
+    search field ~1005 -> ~595, opening ~400px of dead space before the close
+    button, against a right-alignment the outer ``SPACE_BETWEEN`` had held
+    since the ``ab83eb7`` Activity Log redesign.
+
+    A STRUCTURAL PIN OF A GEOMETRIC PROPERTY, and it is worth being precise
+    about which of the two it can speak for. It asserts the declaration, not
+    the rendered x — a control's ``alignment`` reads the same whether the run
+    is painted at 146 or at 550. The pixels are measured in
+    ``tests/ui_driver/live_ps292.py``, whose Pass A reads the gap between the
+    last tool and the exit and whose Pass E falsifies that reading by removing
+    exactly this line. What this test buys is speed: a later edit that drops
+    the alignment fails in two seconds rather than in a browser.
+    """
+    page = _open()
+    close = _close_button(page)
+    header = next(
+        c
+        for c in _walk(page.shown)
+        if isinstance(c, ft.Row) and any(x is close for x in (c.controls or []))
+    )
+    tools = next(
+        c
+        for c in header.controls
+        if isinstance(c, ft.Row)
+        and any(
+            isinstance(t, ft.Text) and t.value == _ALL_PROFILES_LABEL
+            for ctl in (c.controls or [])
+            for t in _walk(ctl)
+        )
+    )
+
+    # The premise this assertion depends on: alignment only matters on a Row
+    # that has free space to align WITHIN, which is what expand creates. If
+    # expand ever goes away this test would pass while meaning nothing.
+    assert tools.expand, (
+        "the alignment below is only load-bearing on a flexible Row — without "
+        "expand the run is intrinsically sized and SPACE_BETWEEN anchors it"
+    )
+    assert tools.alignment == ft.MainAxisAlignment.END, (
+        "the tools group must stay right-anchored; the default START packs it "
+        "against the brand and opens ~400px of dead space before the exit"
+    )

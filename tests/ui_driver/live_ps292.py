@@ -46,6 +46,29 @@ was before this fix — the close button back inside the tools group, no
 label. Pass B's five-profile check MUST go red there. If it stays green, pass B
 is not reading the rendered header and this whole file is decoration.
 
+**Pass D — the tools' horizontal SCROLL, as a gesture.** At eight profiles on
+the 1024px window the run overflows; the last profile is scrolled into view and
+PRESSED, and the list must narrow to it. An earlier revision of this file
+recorded the gesture as not driven and asserted only its consequence — which
+was honest and was also the weaker claim, because a filter that can be seen and
+not pressed is PS-292's own complaint one control along.
+
+**Pass E — falsification of the HORIZONTAL check.** Pass A now asserts the tool
+run stays right-anchored beside the exit; pass E rebuilds the header without
+``alignment=END`` — everything else identical — and that assertion must go red.
+
+WHY THERE IS A HORIZONTAL CHECK AT ALL
+---------------------------------------
+Because the second revision of this fix shipped a 450px LEFT shift of the whole
+toolbar and all twenty checks in this file stayed green. Every one of them bands
+header controls by vertical ``y`` and then reads labels, row counts and
+dismissal — a band cannot see a shift ALONG the band, so a reviewer had to
+notice it by eye. ``expand=True`` reserves the exit's space and then packs its
+own contents under the default ``MainAxisAlignment.START``, collapsing a run
+that the outer ``SPACE_BETWEEN`` had held right-anchored since the ``ab83eb7``
+redesign. The gap between the last tool and the close button is now measured
+(:func:`_tools_right_edge`), and pass E proves that measurement can go red.
+
 WHAT WAS MEASURED HERE THAT NO STRUCTURAL TEST COULD
 -----------------------------------------------------
 The numbers below are this script's output, not an estimate, at 1024x680:
@@ -101,10 +124,6 @@ WHAT IS NOT COVERED, recorded rather than smoothed over
   test_on_open_the_profile_row_is_painted_and_says_it_is_unfiltered``, and is
   visible in the screenshots this script captures for a human to look at. It is
   recorded as not driven rather than covered by a weaker check.
-* **The SCROLL of the tools group is not driven as a gesture.** What is driven
-  is its consequence, which is the claim that matters: the exit keeps its box
-  at every roster size. Whether a clipped filter can be scrolled back into view
-  is asserted only by the layout property.
 
 RUN IT
 ------
@@ -142,6 +161,16 @@ ALL_PROFILES_LABEL = "all profiles"
 #: page, and the list body starts at y=62 — so 55 separates them with room on
 #: both sides, and it is the same divider ``live_ps266.py`` uses on this view.
 _HEADER_MAX_Y = 55
+
+#: How much space may sit between the LAST TOOL and the exit before the run has
+#: stopped being right-anchored. The outer Row is ``SPACE_BETWEEN`` with a 6px
+#: inner spacing and the close button carries its own padding, so a
+#: right-anchored run leaves a small gap; a LEFT-PACKED one leaves ~400px at
+#: 1280x820 with two profiles (measured: search field right edge ~595+220 vs a
+#: close button at 1226). 120 sits far from both readings — this is a check
+#: against a collapse, not a pixel-perfect layout pin, and a pin would go red
+#: on any legitimate spacing change.
+_MAX_TOOLS_TO_EXIT_GAP = 120
 
 #: Seeds a roster and enough events that filtering visibly narrows. Every
 #: profile gets two lines, so a one-profile view is always a strict subset.
@@ -204,6 +233,39 @@ _log.log_header = _one_row_header
 '''
 
 
+#: PASS E's sabotage: :func:`log_header` WITHOUT ``alignment=END`` on the tools
+#: Row — i.e. exactly the second revision of this fix, which left-packed the
+#: whole tool run because an ``expand=True`` child fills its space and then
+#: packs under the default ``MainAxisAlignment.START``. Everything else is
+#: identical, INCLUDING ``expand`` and ``scroll``, so what is isolated is the
+#: alignment and nothing else.
+_ALIGNMENT_SABOTAGE = '''
+import flet as ft
+from src.ui.dialogs import log as _log
+
+
+def _start_packed_header(brand, tools, close_button):
+    return ft.Row(
+        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        controls=[
+            brand,
+            ft.Row(
+                expand=True,
+                scroll=ft.ScrollMode.AUTO,
+                spacing=6,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                controls=tools,
+            ),
+            close_button,
+        ],
+    )
+
+
+_log.log_header = _start_packed_header
+'''
+
+
 def _report(name: str, ok: bool, detail: str) -> bool:
     print(f"  [{'PASS' if ok else 'FAIL'}] {name}: {detail}")
     return ok
@@ -237,6 +299,35 @@ def _visible_label(node) -> str:
     """
     parts = [p.strip() for p in (node.text or "").split("\n") if p.strip()]
     return parts[-1] if parts else ""
+
+
+def _tools_right_edge(drv: FletDriver) -> int:
+    """The right edge of the RIGHTMOST tool in the header, close button aside.
+
+    THIS IS THE HORIZONTAL READING THE REST OF THIS FILE COULD NOT MAKE, and it
+    exists because of a specific miss. Every other check here bands controls by
+    VERTICAL ``y`` (:data:`_HEADER_MAX_Y`) and then asserts on labels, row
+    counts and dismissal — so when the second revision of this fix moved the
+    entire tool run 450px to the LEFT, all twenty checks stayed green and a
+    reviewer had to notice it by eye. A band cannot see a shift along the band.
+
+    What is measured is the GAP between the last tool and the exit, not an
+    absolute x: an absolute coordinate is a fact about one roster at one width,
+    while "the run ends near the button" is the property the ``SPACE_BETWEEN``
+    header has had since the ``ab83eb7`` redesign. Left-packed, that gap opens
+    to ~400px of dead space; right-anchored it is the Row's own spacing.
+
+    Header-band nodes are bounded by width so the dialog and page ancestors —
+    which span the viewport and would read as a rightmost edge of 1280 whatever
+    the tools do — cannot answer for a control.
+    """
+    close_boxes = {n.box for n in _close_nodes(drv)}
+    edges = [
+        n.box[0] + n.box[2]
+        for n in drv.nodes()
+        if n.box[1] < _HEADER_MAX_Y and 0 < n.box[2] <= 400 and n.box not in close_boxes
+    ]
+    return max(edges) if edges else 0
 
 
 def _header_controls(drv: FletDriver) -> list:
@@ -371,6 +462,23 @@ def _functional_pass(drv: FletDriver, label: str, results: list[bool], shot: str
     if sev_all is None or prof_all is None:
         return
 
+    # --- 3b. the tool run is still RIGHT-ANCHORED ------------------------
+    # The horizontal reading. See :func:`_tools_right_edge` for why it is a
+    # GAP and not an absolute x, and for the 450px shift that every other
+    # check in this file was structurally unable to see.
+    closes_now = [n for n in _close_nodes(drv) if n.box[2] > 0]
+    gap = (min(c.box[0] for c in closes_now) - _tools_right_edge(drv)) if closes_now else -1
+    results.append(
+        _report(
+            "the tool run stays RIGHT-ANCHORED beside the exit",
+            0 <= gap <= _MAX_TOOLS_TO_EXIT_GAP,
+            f"gap between the last tool and the close button = {gap}px "
+            f"(<= {_MAX_TOOLS_TO_EXIT_GAP} required; left-packing this run "
+            f"opens ~400px of dead space here, which is what the second "
+            f"revision of this fix shipped unnoticed)",
+        )
+    )
+
     # --- 4/5. clicking a profile NARROWS -------------------------------
     full_rows = _rows(drv)
     full_readout = _readout(drv)
@@ -502,6 +610,133 @@ def _escape_hatches(drv: FletDriver) -> dict[str, bool]:
     return out
 
 
+def _scroll_pass(results: list[bool]) -> None:
+    """PASS D — the tools' horizontal SCROLL, driven as a GESTURE, with
+    ``alignment=END`` in place.
+
+    Two reasons this exists. The first: alignment and scroll INTERACT — an
+    aligned run and a scrolling one are laid out by the same Row, and only the
+    static layout was measured when ``END`` was added, so "the scroll still
+    reaches the last filter" was an assumption. The second: the earlier
+    revision of this file recorded the scroll gesture as NOT driven and
+    asserted only its consequence (the exit keeps its box). That was honest and
+    it was also the weaker claim — a clipped filter that cannot be reached is
+    PS-292's own complaint one control along.
+
+    So: at eight profiles on a 1024px window the run overflows; the last
+    profile is scrolled into view with a horizontal wheel over the header and
+    then PRESSED, and the evidence is that the list NARROWS to it.
+
+    A DRIVER-TIER GOTCHA, recorded because it will bite the next author: after
+    a horizontal scroll the semantics tree reports a STALE ``y`` for the moved
+    nodes (measured: ``(665, -46, ...)`` for a control painted in the header
+    band). The x is current and the y is not, so the click is issued at the
+    node's x and at the header band's own centre rather than at the reported
+    box — and the screenshot beside it is what a human checks that against.
+    """
+    print("\nPASS D — the tools SCROLL, and the last filter can be pressed")
+    names = [f"profile-{i:02d}" for i in range(8)]
+    with serve_app(REPO_ROOT, patch=_SEED.format(profiles=names)) as app:
+        with FletDriver(app.url, width=1280, height=820) as drv:
+            _dismiss(drv)
+            drv.page.wait_for_timeout(10000)
+            drv.page.set_viewport_size({"width": 1024, "height": 680})
+            drv.page.wait_for_timeout(3000)
+            if not _open_fullscreen(drv):
+                results.append(_report("PASS D: the log opens at 8 profiles", False, ""))
+                return
+
+            last = names[-1]
+            before = _control_reading(drv, last)
+            vw = drv.page.evaluate("() => window.innerWidth")
+            clipped = before is not None and (before.box[0] + before.box[2]) > vw - 40
+            print(
+                f"    before the scroll: {last} at "
+                f"{before.box if before else 'ABSENT'} (viewport {vw}px) — "
+                f"clipped={clipped}"
+            )
+
+            rows_before = len(_rows(drv))
+            drv.page.mouse.move(vw // 2, 30)
+            for _ in range(6):
+                drv.page.mouse.wheel(300, 0)
+                drv.page.wait_for_timeout(300)
+            drv.page.wait_for_timeout(1200)
+            drv.screenshot("/tmp/ps292-scrolled-1024x680.png")
+
+            moved = _control_reading(drv, last)
+            reached = moved is not None and (moved.box[0] + moved.box[2]) <= vw
+            results.append(
+                _report(
+                    "the horizontal scroll REACHES the last filter with END set",
+                    reached,
+                    f"{last} now at {moved.box if moved else 'ABSENT'} "
+                    f"(viewport {vw}px; the y is stale after a scroll — see the "
+                    f"docstring and /tmp/ps292-scrolled-1024x680.png)",
+                )
+            )
+            if not reached:
+                return
+
+            # Click at the node's CURRENT x and the header band's centre: the
+            # reported y is stale after the scroll, the x is not.
+            drv.page.mouse.click(moved.box[0] + moved.box[2] // 2, 30)
+            drv.page.wait_for_timeout(1800)
+            rows_after = len(_rows(drv))
+            results.append(
+                _report(
+                    "and pressing that scrolled-in filter NARROWS the list",
+                    0 < rows_after < rows_before,
+                    f"{rows_before} rows -> {rows_after} rows "
+                    f"(readout {_readout(drv)!r}) — a filter that can be seen "
+                    f"but not pressed would be PS-292 one control along",
+                )
+            )
+
+
+def _alignment_pass(results: list[bool]) -> None:
+    """PASS E — FALSIFICATION of the horizontal check added in this round.
+
+    Pass A now asserts that the tool run stays right-anchored beside the exit.
+    That check is worth exactly as much as its ability to go RED against the
+    thing it was written for — so here the header is rebuilt WITHOUT
+    ``alignment=END`` and with everything else identical, which is precisely
+    the build a reviewer rejected, and the same gap is measured.
+
+    If this stays under the threshold, the check in Pass A is decoration and
+    the next left-packing will ship exactly as the last one did.
+    """
+    print("\nPASS E — FALSIFICATION: log_header without alignment=END")
+    with serve_app(
+        REPO_ROOT,
+        patch=_SEED.format(profiles=list(_PAIR)) + _ALIGNMENT_SABOTAGE,
+    ) as app:
+        with FletDriver(app.url, width=1280, height=820) as drv:
+            _dismiss(drv)
+            drv.page.wait_for_timeout(10000)
+            if not _open_fullscreen(drv):
+                results.append(_report("PASS E: the log opens", False, ""))
+                return
+            closes = [n for n in _close_nodes(drv) if n.box[2] > 0]
+            edge = _tools_right_edge(drv)
+            gap = (min(c.box[0] for c in closes) - edge) if closes else -1
+            sev = _control_reading(drv, "all")
+            print(
+                f"    START-packed: severity 'all' at "
+                f"{sev.box if sev else 'ABSENT'}, last tool right edge {edge}, "
+                f"gap to exit {gap}px"
+            )
+            results.append(
+                _report(
+                    "removing alignment=END makes the right-anchor check go RED",
+                    not (0 <= gap <= _MAX_TOOLS_TO_EXIT_GAP),
+                    f"gap {gap}px vs the {_MAX_TOOLS_TO_EXIT_GAP}px bound — if "
+                    f"this is green, Pass A's horizontal check cannot see a "
+                    f"left-packed toolbar and does not earn its place",
+                )
+            )
+
+
 def main() -> int:
     results: list[bool] = []
 
@@ -579,6 +814,12 @@ def main() -> int:
         )
     )
 
+    # ---------------- PASS D ----------------
+    _scroll_pass(results)
+
+    # ---------------- PASS E ----------------
+    _alignment_pass(results)
+
     print("\n" + "=" * 74)
     print("NOT COVERED BY DRIVING, recorded rather than smoothed over:")
     print("  * COLOUR AND FONT WEIGHT. The cleared state is marked with the")
@@ -586,9 +827,6 @@ def main() -> int:
     print("    the accessibility tree. The paint_profiles() half of this fix is")
     print("    asserted structurally in tests/test_ps292_log_profile_filter_")
     print("    clear.py and is visible in the screenshots above for a human.")
-    print("  * THE SCROLL GESTURE on the tools group. What is driven is its")
-    print("    consequence — the exit keeps its box at every roster size —")
-    print("    not that a clipped filter can be scrolled back into view.")
     print("=" * 74)
 
     ok = all(results)
