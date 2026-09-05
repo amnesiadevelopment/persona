@@ -92,20 +92,31 @@ the blast radius is what makes recording it worthwhile. PS-161 round 4 closed
 the GPU **authorship** leak (``engine_platform`` is one computation over both
 fields, handed to both consumers), and it closed exactly that one vector:
 
-* **chromium** — ``is_mobile`` is true, so an Android device preset drives the
-  UA, screen and touch, while the GPU **pool arm** (``gpu_ext._os_norm``) and
-  the **voice roster** (``voice_ext``) are still selected from ``os_type``
-  alone: a Direct3D11 renderer and Microsoft desktop voices underneath an
-  Android UA. Those two vectors still read one field.
+* **chromium — HISTORY, closed by PS-236.** Until PS-236 reconciled the field
+  at the launch path, ``is_mobile`` was true on such a record, so an Android
+  device preset drove the UA, screen and touch, while the GPU **pool arm**
+  (``gpu_ext._os_norm``) and the **voice roster** (``voice_ext``) were still
+  selected from ``os_type`` alone: a Direct3D11 renderer and Microsoft desktop
+  voices underneath an Android UA, told ``--fingerprint-platform=linux``. One
+  machine, three answers. ``process.spawn_browser`` now calls
+  ``coherent_device_type`` (below) ONCE before either consumer reads the field,
+  so the two vectors that read it agree with the two that do not, and the
+  launched chromium machine is the coherent ``windows`` + ``desktop`` one. The
+  GPU pool arm and the voice roster still read ``os_type`` alone — that is
+  unchanged and is precisely why reconciling the ONE field was the remedy.
 * **firefox** — the launch path reads NEITHER field (``invisible_launch.py``
   has no ``device_type`` or ``is_mobile`` reference at all, #211), and the pair
   rules make ``windows`` the only OS Firefox may carry, so a ``windows`` +
   ``mobile`` + ``firefox`` record is pair-COHERENT, launches Firefox, and has
   its ``device_type`` dropped entirely: the record claims a phone and the
-  browser presents a desktop Windows machine.
+  browser presents a desktop Windows machine. **Still true** — PS-236 touched
+  the chromium path only, because there is nothing on the Firefox arm to
+  reconcile.
 
-Reconciling either belongs on the launch path (``process.py``), not in this
-module — see ``device_type_error``.
+The RULE is owned here — ``coherent_device_type`` below, the counterpart of
+``coherent_engine`` — and its CALL SITE is the launch path (``process.py``),
+which is the only place that needs the reconciled answer. The stored record is
+never rewritten by either; see ``device_type_error``.
 
 ⚠️ RULE 4 IS NOT DISPOSED OF BY THAT LIST, and the difference matters. Rules 1-3
 judge a PAIR of fields, so they can only be applied where both values are in
@@ -152,13 +163,20 @@ the caller acts on the reason.
 launch path derives "is this a phone?" from BOTH fields
 (``services.browser.process``: ``is_mobile_os(os_type) or device_type ==
 "mobile"``) while every other half of the same launch reads ``os_type`` alone.
-So a stored ``windows`` + ``mobile`` profile launches one machine that answers
-"what OS am I?" four different ways: an **android** device preset drives the UA
-and screen (a Pixel 7 / SM-S911B, ``platform: "Android"``), while the GPU
-extension is built for **windows** and reports a Direct3D11 renderer, the voice
-roster is built for **windows** and carries Microsoft desktop voices, and the
-engine is launched with ``--fingerprint-platform=linux``. Any one of those pairs
-is a contradiction a checker reads directly.
+So a stored ``windows`` + ``mobile`` profile USED to launch one machine that
+answered "what OS am I?" on its four vectors with THREE different values: an
+**android** device preset drove the UA and screen (a Pixel 7 / SM-S911B,
+``platform: "Android"``), while the GPU extension was built for **windows** and
+reported a Direct3D11 renderer, the voice roster was built for **windows** and
+carried Microsoft desktop voices, and the engine was launched with
+``--fingerprint-platform=linux`` — and any one of those pairs is a contradiction
+a checker reads directly. **PS-236 closed that at the launch path**:
+``process.spawn_browser`` now reconciles the field ONCE through
+``coherent_device_type`` (below) before either consumer reads it, so such a
+record launches as the coherent ``windows`` + ``desktop`` machine its ``os_type``
+claims — one machine, ONE answer. The rule stated here is unchanged and still
+refuses the pair at the authoring doors; what changed is what an ALREADY-STORED
+one does at launch. See the chromium bullet above for the measured before/after.
 
 The rule is DELIBERATELY ONE-DIRECTIONAL: it refuses ``device_type == "mobile"``
 beside a desktop ``os_type``, and says nothing about ``device_type ==
@@ -176,9 +194,9 @@ beside a desktop ``os_type``, and says nothing about ``device_type ==
 Which way it reconciles: ``os_type`` WINS and ``device_type`` is reconciled to
 it — the same principle ``coherent_engine`` already applies for the pair ("in
 favour of the record rather than in favour of the engine"), and the one
-``process.py`` itself already claims is true two lines above the code that
-breaks it: *"the OS is the source of truth so the UI only needs the OS
-dropdown."*
+``process.py`` itself already claims is true two lines above the code that now
+HONOURS it (it calls ``coherent_device_type``, PS-236): *"the OS is the source
+of truth so the UI only needs the OS dropdown."*
 
 Note the SET this rule refuses is exactly the set that flips that launch
 derivation — the literal string ``"mobile"``, matched as ``process.py`` matches
@@ -488,11 +506,64 @@ def coherent_engine(os_type: str, engine: str | None) -> str:
     answers "which engine?", and Rule 3 has no engine remedy — a windows +
     mobile profile is contradictory on chromium and on firefox alike, so
     feeding the third field in here could only make this function return
-    chromium for a record it cannot repair. Rule 3's reconciliation at launch
-    belongs on the launch path (``process.py``), which is out of scope for this
-    slice; see the PR.
+    chromium for a record it cannot repair. Rule 3's reconciliation is
+    ``coherent_device_type`` immediately below (PS-236), a separate function
+    with its own answer, called from the launch path (``process.py``).
     """
     normalized = normalize_engine(engine)
     if not is_coherent(os_type, normalized):
         return DEFAULT_ENGINE
     return normalized
+
+
+def coherent_device_type(os_type: str, device_type: str | None) -> str:
+    """The ``device_type`` an already-stored profile actually launches as.
+
+    Rule 3's reconciliation, and the exact counterpart of ``coherent_engine``
+    for the other rule family: the doors REFUSE an incoherent value at write
+    time, and this resolves an incoherent one that is ALREADY STORED — reached
+    by import, restore, a legacy record, or the unguarded REST lane. It is the
+    residual PS-188 declined and handed on by name, and the direction it
+    applies is the one this module's docstring already settled: **``os_type``
+    WINS and ``device_type`` is reconciled to it**, in favour of the record
+    rather than in favour of the field.
+
+    WHY THIS IS ONE FUNCTION AND NOT A CONDITION AT EACH CALL SITE. A launched
+    profile answers "what OS am I?" on four vectors, and only two of them read
+    this field: the device preset (UA / screen / touch) and
+    ``--fingerprint-platform``. The GPU pool arm and the voice roster read
+    ``os_type`` alone and cannot be moved by it. So UNRECONCILED, a stored
+    ``windows`` + ``mobile`` record launches an Android **Pixel-class UA and
+    screen** over a **Windows** Direct3D11 GPU pool and **Microsoft SAPI**
+    voices, told ``--fingerprint-platform=linux`` — one machine, three answers,
+    and any pair of them is a contradiction a checker reads directly.
+    Reconciling the field ONCE at the launch path brings the two vectors that
+    read it into line with the two that do not; spelling the condition out at
+    each of those two call sites would be the "two authors, each deciding from
+    its own copy of the question" shape ``engine_platform``'s module docstring
+    was written about, and that PS-161 spent two review rounds on. There is one
+    owner, so there is no second copy to drift.
+
+    ⚠️ ONE-DIRECTIONAL, and the asymmetry is Rule 3's own (see the module
+    docstring). It coerces the literal ``"mobile"`` to ``"desktop"`` when
+    ``os_type`` is NOT a mobile family, and is a no-op in every other case —
+    including ``android`` + ``desktop``, which is what EVERY android profile the
+    UI has ever created is stored as (``"desktop"`` is the model default and the
+    profile dialog carries no ``device_type`` control). Coercing that pair the
+    other way would rewrite the normal case. A value that is neither literal
+    makes no competing claim at launch and is passed through untouched.
+
+    ⚠️ THE STORED RECORD IS NOT REWRITTEN. This returns a value; it never
+    assigns to a profile. ``Profile.device_type_incoherence`` is a derived
+    property computed from the stored fields on every read, so it keeps
+    reporting the incoherence after a launch — which is the point of PS-188's
+    accept-and-record decision, and would be silenced by an in-place repair. A
+    *pair* rule has no safe repair at rest anyway: nothing in the record says
+    which of the two fields is the lie. This is the launch answering coherently,
+    not the record being corrected.
+    """
+    if device_type is None:
+        return DEFAULT_DEVICE_TYPE
+    if is_device_type_coherent(os_type, device_type):
+        return device_type
+    return DEFAULT_DEVICE_TYPE
