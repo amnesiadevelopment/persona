@@ -250,7 +250,12 @@ class LogDock:
         self.profiles: frozenset = frozenset()
         # Sized against the window rather than a constant, so a short window
         # does not cost the sidebar its bottom cluster — see default_height.
-        self.height = default_height(window_height)
+        # ANNOTATED float, not inferred int: between press and release the
+        # console's height genuinely IS fractional — that is the smoothness
+        # fix, not a rounding accident — and every height that comes to REST
+        # here is snapped by set_height regardless. The narrower inferred type
+        # would have made _apply_height's honest float assignment a type error.
+        self.height: float = default_height(window_height)
         #: The UNSNAPPED height the drag is accumulating into.
         #:
         #: THE BUG THIS EXISTS TO FIX, measured on the running app: a drag
@@ -287,7 +292,11 @@ class LogDock:
         #: afford), so a window that shrinks takes height away and a window
         #: that grows back HANDS IT BACK — without a resize ever overwriting a
         #: deliberate drag. See apply_window_height.
-        self._desired_height = OPEN_HEIGHT
+        #:
+        #: A float for the same reason ``height`` is: ``_apply_height`` writes
+        #: the applied height straight into it, and a live drag frame's height
+        #: is not a whole row.
+        self._desired_height: float = OPEN_HEIGHT
 
         #: How many lines the app has EVER produced, as of the last paint. The
         #: dock appends the difference rather than diffing text, so repeated
@@ -494,13 +503,27 @@ class LogDock:
             mouse_cursor=ft.MouseCursor.RESIZE_UP_DOWN,
             on_pan_update=on_drag,
             on_vertical_drag_update=on_drag,
-            # BOTH ends, for the same reason both updates are registered: the
-            # arena awards the gesture to one recognizer, and a settle that
-            # only listens to the other one never fires — leaving the console
-            # parked mid-row, which is the very artefact the snap exists to
-            # remove.
+            # EVERY terminator, for the same reason both updates are
+            # registered: the arena awards the gesture to one recognizer, and a
+            # settle that only listens to the others never fires — leaving the
+            # console parked mid-row, which is the very artefact the snap
+            # exists to remove.
+            #
+            # AND A GESTURE CAN END WITHOUT ENDING. flet 0.85 exposes FOUR
+            # terminators for these two recognizers, not two: a drag that the
+            # arena takes away, or that the pointer loses, terminates through
+            # *_cancel and NEVER through *_end. Registering only the end pair
+            # left that path delivering frames, applying raw heights, and never
+            # settling — and because _apply_height writes the float into
+            # _desired_height, the un-snapped height became the REMEMBERED one:
+            # a shrink-and-restore round trip handed the fractional height back
+            # rather than correcting it. The invariant is "however the gesture
+            # ends, the console rests on a row boundary", so all four route to
+            # the same settle. drag_end is idempotent and safe with no event.
             on_pan_end=on_drag_end,
             on_vertical_drag_end=on_drag_end,
+            on_pan_cancel=on_drag_end,
+            on_vertical_drag_cancel=on_drag_end,
             content=ft.Container(
                 height=GRIP_HIT_HEIGHT,
                 bgcolor=COLORS["log_bg"],
@@ -681,9 +704,13 @@ class LogDock:
         row, and dropping almost a full row away from the pointer reads as the
         console rejecting the gesture.
 
-        Registered on both drag-end gestures, so it fires whichever recognizer
-        Flutter's arena awarded the drag to. Safe to call when no drag
-        happened: it is idempotent on an already-settled height.
+        Registered on all FOUR gesture terminators — both ``*_end`` events and
+        both ``*_cancel`` events — so it fires whichever recognizer Flutter's
+        arena awarded the drag to AND however that gesture finished. A
+        cancelled drag is still a finished drag as far as the console is
+        concerned; the only path that must never leave a fractional height is
+        "all of them". Safe to call when no drag happened: it is idempotent on
+        an already-settled height.
         """
         target = height_for_rows(settle_rows(self._raw_height))
         self.set_height(target)

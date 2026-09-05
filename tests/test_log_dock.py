@@ -30,8 +30,10 @@ from src.ui.components.log_dock import (  # noqa: E402
     OPEN_HEIGHT,
     RAIL_CONTENT_HEIGHT,
     LogDock,
+    affordable_height,
     default_height,
     height_for_rows,
+    rows_for_height,
 )
 from src.ui.log_console import (  # noqa: E402
     NO_PROFILE,
@@ -763,17 +765,17 @@ def test_ps291_the_release_settles_the_console_onto_a_whole_row():
     press and release, and lands on a row boundary the moment the pointer is
     let go.
     """
-    from src.ui.components.log_dock import height_for_rows as h
-
     d = LogDock(window_height=1400)
     for _ in range(5):
         d.drag_by(-9.0)
 
     mid = d.height
-    assert mid != h(rows_at(mid)), "premise: the drag left the panel mid-row"
+    assert mid != height_for_rows(
+        rows_for_height(mid)
+    ), "premise: the drag left the panel mid-row"
 
     d.drag_end()
-    assert d.height == h(d.rows), "the console did not settle onto a row"
+    assert d.height == height_for_rows(d.rows), "the console did not settle onto a row"
     assert float(d.height).is_integer()
 
     # Settling goes to the NEAREST row, not the floor: a release 21px into a
@@ -787,10 +789,67 @@ def test_ps291_the_release_settles_the_console_onto_a_whole_row():
     assert d2.rows == 7, f"the release fell back a whole row (rows={d2.rows})"
 
 
-def rows_at(height):
-    from src.ui.components.log_dock import rows_for_height
+def test_ps291_however_the_gesture_ends_the_console_rests_on_a_row_boundary():
+    """The settle must be reachable from EVERY terminator, not just the ends.
 
-    return rows_for_height(height)
+    THE DEFECT THIS PINS, and note it is one THIS DIRECTION CREATED: while
+    every frame passed through quantize(), no gesture-termination path could
+    leave a fractional height, so a missed terminator was unobservable. Moving
+    the snap to the release is what makes the terminator surface matter — and
+    flet 0.85 exposes FOUR terminators for these two recognizers, not two.
+    A drag taken away by the arena, or whose pointer is lost, ends through
+    ``*_cancel`` and NEVER through ``*_end``.
+
+    The consequence was not transient, which is what made it worth a test.
+    _apply_height writes the applied float into _desired_height, so an
+    un-settled height became the REMEMBERED one: a shrink-and-restore round
+    trip handed the fractional height back rather than correcting it.
+
+    So this drives the HANDLERS OFF THE BUILT CONTROL rather than calling
+    drag_end() directly — calling the method passes whether or not it is
+    wired, which is exactly the assertion that could not see this. The
+    invariant is the one the grip's own comment claims: however the gesture
+    ends, the console rests on a row boundary.
+    """
+    terminators = (
+        "on_pan_end",
+        "on_vertical_drag_end",
+        "on_pan_cancel",
+        "on_vertical_drag_cancel",
+    )
+
+    for terminator in terminators:
+        d = LogDock(window_height=1400)
+        grip = d._grip()
+        handler = getattr(grip, terminator, None)
+        assert handler is not None, f"{terminator} is not registered on the grip"
+
+        for _ in range(5):
+            d.drag_by(-9.0)
+        mid = d.height
+        assert mid != height_for_rows(
+            rows_for_height(mid)
+        ), f"premise: {terminator} case did not leave the panel mid-row"
+
+        handler(None)
+
+        assert d.height == height_for_rows(
+            d.rows
+        ), f"{terminator} left the console parked mid-row at {d.height}"
+
+        # And the REMEMBERED height is settled too, so a resize round trip
+        # hands back a whole row rather than the fraction. This is the half
+        # that does not heal on its own.
+        settled = d.height
+        d.apply_window_height(680)
+        d.apply_window_height(1400)
+        assert d.height == settled, (
+            f"{terminator}: a resize round trip did not restore the settled "
+            f"height ({d.height} != {settled})"
+        )
+        assert d.height == height_for_rows(
+            rows_for_height(d.height)
+        ), f"{terminator}: the remembered height was fractional"
 
 
 def test_ps291_the_readout_never_claims_a_row_the_operator_cannot_see():
@@ -837,17 +896,11 @@ def test_ps291_the_plus_stepper_cannot_starve_the_rail_at_the_app_minimum():
     # The SAME cap the drag stops at — reaching a height through a different
     # control must not reach a different budget.
     assert d.rows == 3
-    assert d.height == affordable_height_at(680)
+    assert d.height == affordable_height(680)
 
     # And the readout tells the truth about the refusal rather than reporting
     # the row count that was asked for.
     assert d._size_label.value == "3 rows"
-
-
-def affordable_height_at(window_height):
-    from src.ui.components.log_dock import affordable_height
-
-    return affordable_height(window_height)
 
 
 def test_ps291_the_budget_bounds_growth_and_never_bounds_shrinking():
@@ -888,7 +941,7 @@ def test_ps291_the_clamp_is_in_set_height_so_every_caller_inherits_it():
     # A pixel height, not a row count: the path set_rows does not go through.
     d.set_height(MAX_HEIGHT)
     assert 680 - d.height >= RAIL_CONTENT_HEIGHT, "a pixel height starved the rail"
-    assert d.height == affordable_height_at(680)
+    assert d.height == affordable_height(680)
 
     # A drag that ends beyond the budget settles inside it too.
     for _ in range(400):
