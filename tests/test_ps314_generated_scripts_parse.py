@@ -38,10 +38,22 @@ file proves a handful of wrappers have the right SHAPE, this one proves every
 leaf is PARSEABLE at all.
 
 ⭐ IT COVERS EVERY LEAF, NOT THE ONE THAT BROKE. Fixing only `mobile_ext` would
-leave the same trap armed on the other ten builders PS-314 rewrote. The builder
-list is derived by IMPORT rather than hand-listed, so a leaf added later is
-covered without anyone remembering to add it here — the failure mode of a
-hand-maintained list is precisely that nobody updates it.
+leave the same trap armed on the other ten builders PS-314 rewrote.
+
+⚠️ The builder list below IS hand-written, and an earlier revision of this
+docstring claimed it was "derived by IMPORT rather than hand-listed" — which
+was false, and false in the exact way this file exists to catch: an unenforced
+promise that reads as a guarantee. It was complete on the day it was written
+and nothing tied it to disk, so the next leaf added to
+`src/services/browser/` would have been silently uncovered while this paragraph
+went on claiming otherwise.
+
+So the promise is now ENFORCED instead of asserted:
+`test_the_builder_list_covers_every_shipped_builder` walks the package, finds
+every `build_*_extension` callable, and fails naming any that `BUILDERS` omits.
+The list stays hand-written — each builder needs real arguments, and inventing
+them by signature inspection would be a second, subtler unenforced promise —
+but it can no longer fall behind the tree without a test going red.
 """
 
 from __future__ import annotations
@@ -245,3 +257,55 @@ def test_the_parse_gate_can_actually_fail(tmp_path):
     rc, err = _parse(bad)
     assert rc != 0, "a dangling catch must be REJECTED — the gate cannot fail"
     assert "SyntaxError" in err
+
+
+def test_the_builder_list_covers_every_shipped_builder():
+    """`BUILDERS` must not fall behind the tree.
+
+    This is the enforcement behind the docstring's coverage claim. The list
+    above is hand-written — every builder needs real arguments and inventing
+    them from a signature would be its own unenforced promise — so the risk is
+    that someone adds a leaf and nobody adds it here. That failure is silent:
+    the parse gate would keep passing while covering one builder fewer than it
+    says it does.
+
+    An earlier revision of this file claimed the list was "derived by IMPORT",
+    which was simply untrue. Rather than soften the claim, this test makes it
+    hold: walk `src/services/browser/`, collect every public
+    `build_*_extension` callable, and fail naming whatever `BUILDERS` omits.
+    """
+    import importlib
+    import pkgutil
+
+    import src.services.browser as browser_pkg
+
+    shipped: set[str] = set()
+    for mod in pkgutil.iter_modules(browser_pkg.__path__):
+        if not mod.name.endswith("_ext"):
+            continue
+        m = importlib.import_module(f"src.services.browser.{mod.name}")
+        for attr in dir(m):
+            if attr.startswith("build_") and attr.endswith("_extension"):
+                if callable(getattr(m, attr)):
+                    shipped.add(attr)
+
+    # Guard the guard: if the walk finds nothing, this test would pass
+    # vacuously while asserting nothing at all.
+    assert len(shipped) >= 10, (
+        f"only {len(shipped)} builders discovered — the package walk is broken, "
+        f"so this test is not actually checking coverage"
+    )
+
+    covered = set()
+    for name, build in BUILDERS:
+        # The lambdas close over exactly one builder each; recover it by name.
+        covered.update(fn for fn in shipped if fn in build.__code__.co_names)
+
+    missing = sorted(shipped - covered)
+    assert not missing, (
+        "these shipped builders emit scripts that NOTHING in this file parses:\n  "
+        + "\n  ".join(missing)
+        + "\n\nAdd a BUILDERS row for each (with real arguments), or — if it "
+        "legitimately emits no JavaScript — a NO_SCRIPT_BY_DESIGN entry stating "
+        "why."
+    )

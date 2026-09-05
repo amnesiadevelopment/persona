@@ -174,6 +174,35 @@ ENV_SENSITIVE_PROBES: tuple[str, ...] = (
     "webgl.parameters",
     "webgl.readback",
     "webgl.unmasked",
+    # PS-314. WebSerial is gated on the HOST PLATFORM, not on anything persona
+    # does: `stealth_ext` never touches `Serial` or `navigator.serial` (grep it
+    # — zero hits), and the two keys are the ONLY movement in a probe that
+    # reports 41 of them. Firefox ships WebSerial behind a platform gate, so a
+    # re-record on a different host flips exactly this pair:
+    #
+    #     window + worker   Serial:           undefined -> function
+    #                       navigator.serial: undefined -> object
+    #
+    # Measured on this project's own artifact when the reference was re-recorded
+    # under PS-314: `engine_build` identical (firefox-20), all 39 other keys
+    # byte-identical, the seven probes already listed here byte-identical.
+    #
+    # ⚠️ LISTED WITH A CAVEAT THE NEIGHBOURS ABOVE DO NOT CARRY. `probes.py`'s
+    # own comment on this probe says "an UNEXPECTED PRESENCE is as much a
+    # finding as an absence", so listing it here BUYS TOLERANCE ON A VECTOR THAT
+    # IS ALSO A REAL SIGNAL — a genuine stealth regression that switched one of
+    # these APIs on would now be absorbed as environment. That trade is made
+    # deliberately and narrowly: the alternative is a reference that reds on any
+    # host whose WebSerial gate differs, for a reason invisible in the artifact,
+    # which is the failure mode the block above says trains an operator to
+    # ignore the command.
+    #
+    # ⛔ SO THE SCOPE MATTERS: this entry excuses the WebSerial PAIR on a
+    # platform-gate difference. It does NOT license a re-record that moves other
+    # keys of this probe. If a future re-record moves anything here besides
+    # `Serial`/`navigator.serial`, that is a finding and must be stated, not
+    # absorbed.
+    "stealth.apiPresence",
 )
 
 # Repo-relative location of the committed artifact. Beside the iOS WebGL

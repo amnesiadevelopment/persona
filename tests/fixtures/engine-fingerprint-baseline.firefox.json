@@ -654,7 +654,8 @@
       "webgl.extensions",
       "webgl.parameters",
       "webgl.readback",
-      "webgl.unmasked"
+      "webgl.unmasked",
+      "stealth.apiPresence"
     ],
     "fingerprint_seed": 1042768975,
     "os_type": "windows",
