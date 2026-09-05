@@ -1,0 +1,13 @@
+{
+ "started": true,
+ "href": "http://127.0.0.1:18100/",
+ "isSecureContext": true,
+ "hasGeo": true,
+ "perm": "granted",
+ "getCurrentPosition": {
+  "outcome": "error",
+  "code": 2,
+  "message": "Unknown error acquiring position",
+  "elapsed_ms": 11
+ }
+}

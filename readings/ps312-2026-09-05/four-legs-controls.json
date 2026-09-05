@@ -1,0 +1,99 @@
+{
+ "legs": {
+  "posctl": {
+   "direct": false,
+   "granted": true,
+   "provider_url": "http://127.0.0.1:18099/v1/geolocate",
+   "profile": {
+    "name": "geo-posctl",
+    "proxy": "probe-de"
+   },
+   "started": true,
+   "href": "https://example.com/",
+   "secure": true,
+   "hasGeo": true,
+   "tz": "Europe/Berlin",
+   "lang": "de-DE",
+   "perm": "granted",
+   "getCurrentPosition": {
+    "outcome": "position",
+    "lat": 11.111111,
+    "lon": 22.222222,
+    "accuracy": 33,
+    "elapsed_ms": 18
+   }
+  },
+  "granted-stock": {
+   "direct": false,
+   "granted": true,
+   "provider_url": null,
+   "profile": {
+    "name": "geo-granted-stock",
+    "proxy": "probe-de"
+   },
+   "started": true,
+   "href": "https://example.com/",
+   "secure": true,
+   "hasGeo": true,
+   "tz": "Europe/Berlin",
+   "lang": "de-DE",
+   "perm": "granted",
+   "getCurrentPosition": {
+    "outcome": "error",
+    "code": 2,
+    "message": "Unknown error acquiring position",
+    "elapsed_ms": 12
+   }
+  },
+  "direct": {
+   "direct": true,
+   "granted": false,
+   "provider_url": null,
+   "profile": {
+    "name": "geo-direct",
+    "proxy": ""
+   },
+   "started": true,
+   "href": "https://example.com/",
+   "secure": true,
+   "hasGeo": true,
+   "tz": "America/New_York",
+   "lang": "en-US",
+   "perm": "prompt",
+   "getCurrentPosition": {
+    "outcome": "timeout",
+    "elapsed_ms": 40001
+   }
+  },
+  "direct-granted": {
+   "direct": true,
+   "granted": true,
+   "provider_url": null,
+   "profile": {
+    "name": "geo-direct-granted",
+    "proxy": ""
+   },
+   "started": true,
+   "href": "https://example.com/",
+   "secure": true,
+   "hasGeo": true,
+   "tz": "America/New_York",
+   "lang": "en-US",
+   "perm": "granted",
+   "getCurrentPosition": {
+    "outcome": "error",
+    "code": 2,
+    "message": "Unknown error acquiring position",
+    "elapsed_ms": 13
+   }
+  }
+ },
+ "geo_endpoint": "http://127.0.0.1:18099/v1/geolocate",
+ "sentinel": {
+  "lat": 11.111111,
+  "lng": 22.222222,
+  "accuracy": 33.0
+ },
+ "geo_endpoint_hits": 2,
+ "stage": "done"
+}
