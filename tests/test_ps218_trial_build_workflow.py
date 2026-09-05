@@ -508,24 +508,79 @@ def _drive_preflight(script: str, tmp_path, *, uname_s: str, uname_m: str, docke
     executable bit and no path translation involved. The script under test is
     still the verbatim body extracted from the workflow; only its environment is
     controlled, which is all the PATH stubs were ever doing.
+
+    ⚠️ DOCKER'S ABSENCE IS SUPPLIED BY THE FIXTURE, NOT BY THE HOST (PS-325).
+    The `uname` leg has been shimmed since PS-299; the docker leg was left
+    relying on ambient `PATH`, and that asymmetry is what broke `main`. See the
+    comment on the shim below — it is the whole defect this function now closes.
     """
     import subprocess
+
+    shell = find_posix_shell()
+    assert shell is not None, "no POSIX shell could be resolved on this host"
 
     shim = (
         'uname() { case "$1" in '
         f"-s) echo {uname_s};; -m) echo {uname_m};; *) echo {uname_s};; esac; }}\n"
     )
+
+    # ── DOCKER PRESENCE: BY CONSTRUCTION, NOT BY LUCK ────────────────────────
+    #
+    # The previous fixture simulated "no docker" by OMISSION — it defined no
+    # shim at all and relied on the pinned `PATH` not carrying one, on the
+    # stated assumption that `shell_env()` "carries no docker on any of the
+    # three CI platforms". That assumption was FALSE: `posix_tool_path()` pins
+    # `PATH` to "/usr/bin:/bin" on every non-Windows platform, and the GitHub
+    # `ubuntu-24.04` image ships docker at `/usr/bin/docker`. So `command -v
+    # docker` SUCCEEDED there, the refusal never named docker, and the docker
+    # assertion failed on ubuntu while passing on macOS and Windows — one job of
+    # seven, red on `main` (PS-325). It was absence-by-luck, and the luck ran
+    # out the moment a runner image happened to carry docker on the pinned PATH.
+    #
+    # ⚠️ SHIM THE RESOLVER, NOT `docker`. A shell FUNCTION named `docker` is
+    # ITSELF found by `command -v docker`, so `docker() { return 127; }` does
+    # NOT reproduce absence — it leaves the probe satisfied and the refusal
+    # suppressed. `command -v docker` is the expression the preflight actually
+    # branches on, so intercepting `command` is what makes the answer come from
+    # the fixture, independent of whatever sits in /usr/bin on the runner.
     if docker:
-        shim += 'docker() { echo "Docker version 29.7.2, build stub"; }\n'
-    # With docker False no shim is defined, so `command -v docker` has only
-    # `PATH` to consult — and `shell_env()` pins that to one known toolchain
-    # directory set, which carries no docker on any of the three CI platforms.
+        shim += (
+            'command() { if [ "$2" = docker ]; then return 0; fi; builtin command "$@"; }\n'
+            'docker() { echo "Docker version 29.7.2, build stub"; }\n'
+        )
+    else:
+        shim += 'command() { if [ "$2" = docker ]; then return 1; fi; builtin command "$@"; }\n'
+
+    # Guard the FIXTURE, not the script under test — the same discipline the
+    # `uname` guard below applies, now extended to the leg that lacked it. Ask
+    # the shimmed environment the EXACT expression the preflight branches on and
+    # assert it answers what this fixture asked for. Had this existed, PS-325
+    # would have failed HERE, naming the fixture, on the first Linux runner that
+    # carried docker — instead of surfacing as a baffling assertion about a
+    # refusal string on one platform out of three.
+    probe = subprocess.run(
+        [
+            shell,
+            "-c",
+            shim + 'if command -v docker >/dev/null 2>&1; then echo PRESENT; else echo ABSENT; fi',
+        ],
+        cwd=tmp_path,
+        env=shell_env(),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=60,
+    )
+    expected_presence = "PRESENT" if docker else "ABSENT"
+    assert probe.stdout.strip() == expected_presence, (
+        f"the docker shim did not take effect — `command -v docker` answered "
+        f"{probe.stdout.strip()!r} when the fixture asked for {expected_presence!r}, so this "
+        f"test is measuring the RUNNER's docker rather than the fixture's:\n"
+        f"{probe.stdout}\n{probe.stderr}"
+    )
 
     script_path = tmp_path / "preflight.sh"
     script_path.write_text(shim + script, encoding="utf-8")
-
-    shell = find_posix_shell()
-    assert shell is not None, "no POSIX shell could be resolved on this host"
 
     proc = subprocess.run(
         [shell, str(script_path)],
