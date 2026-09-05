@@ -1,0 +1,333 @@
+PS-301 — persona's self-built engine, LAUNCHED and READ
+======================================================================
+
+Engine under test : patched  (persona's 16 fingerprint patches)
+Control           : control  (same ungoogled release, unpatched)
+Both              : Chromium 144.0.7559.132 / ungoogled rev 1
+Venue             : loopback 127.0.0.1 — no third party contacted
+
+Q1 — ARE OUR FINGERPRINT SWITCHES HONOURED?
+----------------------------------------------------------------------
+  seed 1337 / layer off
+    DIFFERS  platform
+        patched: Win32
+        control: Linux x86_64
+    DIFFERS  userAgent
+        patched: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36
+        control: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36
+    DIFFERS  hardwareConcurrency
+        patched: 30
+        control: 8
+    same     deviceMemory
+        patched: 8
+        control: 8
+    DIFFERS  ua_platform
+        patched: Windows
+        control: Linux
+    DIFFERS  ua_brands
+        patched: Not(A:Brand/8 Chromium/144 Google Chrome/144
+        control: Not(A:Brand/8 Chromium/144
+    DIFFERS  webdriver
+        patched: false
+        control: true
+    same     screen
+        patched: 1920x1080
+        control: 1920x1080
+    same     timezone
+        patched: UTC
+        control: UTC
+
+  seed 1337 / layer on
+    DIFFERS  platform
+        patched: Win32
+        control: Linux x86_64
+    DIFFERS  userAgent
+        patched: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36
+        control: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36
+    same     hardwareConcurrency
+        patched: 8
+        control: 8
+    same     deviceMemory
+        patched: 8
+        control: 8
+    DIFFERS  ua_platform
+        patched: Windows
+        control: Linux
+    DIFFERS  ua_brands
+        patched: Not(A:Brand/8 Chromium/144 Google Chrome/144
+        control: Not(A:Brand/8 Chromium/144
+    DIFFERS  webdriver
+        patched: false
+        control: true
+    same     screen
+        patched: 2560x1440
+        control: 2560x1440
+    same     timezone
+        patched: UTC
+        control: UTC
+
+  seed 4242 / layer off
+    DIFFERS  platform
+        patched: Win32
+        control: Linux x86_64
+    DIFFERS  userAgent
+        patched: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36
+        control: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36
+    DIFFERS  hardwareConcurrency
+        patched: 16
+        control: 8
+    same     deviceMemory
+        patched: 8
+        control: 8
+    DIFFERS  ua_platform
+        patched: Windows
+        control: Linux
+    DIFFERS  ua_brands
+        patched: Not(A:Brand/8 Chromium/144 Google Chrome/144
+        control: Not(A:Brand/8 Chromium/144
+    DIFFERS  webdriver
+        patched: false
+        control: true
+    same     screen
+        patched: 1920x1080
+        control: 1920x1080
+    same     timezone
+        patched: UTC
+        control: UTC
+
+  seed 4242 / layer on
+    DIFFERS  platform
+        patched: Win32
+        control: Linux x86_64
+    DIFFERS  userAgent
+        patched: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36
+        control: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36
+    same     hardwareConcurrency
+        patched: 6
+        control: 6
+    same     deviceMemory
+        patched: 8
+        control: 8
+    DIFFERS  ua_platform
+        patched: Windows
+        control: Linux
+    DIFFERS  ua_brands
+        patched: Not(A:Brand/8 Chromium/144 Google Chrome/144
+        control: Not(A:Brand/8 Chromium/144
+    DIFFERS  webdriver
+        patched: false
+        control: true
+    same     screen
+        patched: 2560x1440
+        control: 2560x1440
+    same     timezone
+        patched: UTC
+        control: UTC
+
+Q2 — IS THE GPU SPOOFED, AND IN WHICH REALMS?
+----------------------------------------------------------------------
+  A realm-by-realm read. The known chromium/linux leak is a REALM
+  leak, so a single-realm read would report it as clean.
+
+  seed 1337 / layer off
+    DIFFERS  page
+        patched: Google Inc. (NVIDIA) | ANGLE (NVIDIA, NVIDIA GeForce RTX 3090 Ti (0x00002203) Direct3D11 vs_5_0 ps_5_0, D3D11)
+        control: Google Inc. (Google) | ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)
+    DIFFERS  iframe_about_blank
+        patched: Google Inc. (NVIDIA) | ANGLE (NVIDIA, NVIDIA GeForce RTX 3090 Ti (0x00002203) Direct3D11 vs_5_0 ps_5_0, D3D11)
+        control: Google Inc. (Google) | ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)
+    DIFFERS  iframe_srcdoc
+        patched: Google Inc. (NVIDIA) | ANGLE (NVIDIA, NVIDIA GeForce RTX 3090 Ti (0x00002203) Direct3D11 vs_5_0 ps_5_0, D3D11)
+        control: Google Inc. (Google) | ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)
+    DIFFERS  worker
+        patched: Google Inc. (NVIDIA) | ANGLE (NVIDIA, NVIDIA GeForce RTX 3090 Ti (0x00002203) Direct3D11 vs_5_0 ps_5_0, D3D11)
+        control: Google Inc. (Google) | ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)
+    DIFFERS  worker_nested
+        patched: Google Inc. (NVIDIA) | ANGLE (NVIDIA, NVIDIA GeForce RTX 3090 Ti (0x00002203) Direct3D11 vs_5_0 ps_5_0, D3D11)
+        control: Google Inc. (Google) | ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)
+    DIFFERS  worker_in_iframe
+        patched: Google Inc. (NVIDIA) | ANGLE (NVIDIA, NVIDIA GeForce RTX 3090 Ti (0x00002203) Direct3D11 vs_5_0 ps_5_0, D3D11)
+        control: Google Inc. (Google) | ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)
+
+  seed 1337 / layer on
+    DIFFERS  page
+        patched: Google Inc. (NVIDIA) | ANGLE (NVIDIA, NVIDIA GeForce RTX 3090 Ti (0x00002203) Direct3D11 vs_5_0 ps_5_0, D3D11)
+        control: Google Inc. (Google) | ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)
+    DIFFERS  iframe_about_blank
+        patched: Google Inc. (NVIDIA) | ANGLE (NVIDIA, NVIDIA GeForce RTX 3090 Ti (0x00002203) Direct3D11 vs_5_0 ps_5_0, D3D11)
+        control: Google Inc. (Google) | ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)
+    DIFFERS  iframe_srcdoc
+        patched: Google Inc. (NVIDIA) | ANGLE (NVIDIA, NVIDIA GeForce RTX 3090 Ti (0x00002203) Direct3D11 vs_5_0 ps_5_0, D3D11)
+        control: Google Inc. (Google) | ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)
+    DIFFERS  worker
+        patched: Google Inc. (NVIDIA) | ANGLE (NVIDIA, NVIDIA GeForce RTX 3090 Ti (0x00002203) Direct3D11 vs_5_0 ps_5_0, D3D11)
+        control: Google Inc. (Google) | ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)
+    DIFFERS  worker_nested
+        patched: Google Inc. (NVIDIA) | ANGLE (NVIDIA, NVIDIA GeForce RTX 3090 Ti (0x00002203) Direct3D11 vs_5_0 ps_5_0, D3D11)
+        control: Google Inc. (Google) | ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)
+    DIFFERS  worker_in_iframe
+        patched: Google Inc. (NVIDIA) | ANGLE (NVIDIA, NVIDIA GeForce RTX 3090 Ti (0x00002203) Direct3D11 vs_5_0 ps_5_0, D3D11)
+        control: Google Inc. (Google) | ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)
+
+  seed 4242 / layer off
+    DIFFERS  page
+        patched: Google Inc. (NVIDIA) | ANGLE (NVIDIA, NVIDIA GeForce RTX 3080 Ti Laptop GPU (0x00002460) Direct3D11 vs_5_0 ps_5_0, D3D11)
+        control: Google Inc. (Google) | ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)
+    DIFFERS  iframe_about_blank
+        patched: Google Inc. (NVIDIA) | ANGLE (NVIDIA, NVIDIA GeForce RTX 3080 Ti Laptop GPU (0x00002460) Direct3D11 vs_5_0 ps_5_0, D3D11)
+        control: Google Inc. (Google) | ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)
+    DIFFERS  iframe_srcdoc
+        patched: Google Inc. (NVIDIA) | ANGLE (NVIDIA, NVIDIA GeForce RTX 3080 Ti Laptop GPU (0x00002460) Direct3D11 vs_5_0 ps_5_0, D3D11)
+        control: Google Inc. (Google) | ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)
+    DIFFERS  worker
+        patched: Google Inc. (NVIDIA) | ANGLE (NVIDIA, NVIDIA GeForce RTX 3080 Ti Laptop GPU (0x00002460) Direct3D11 vs_5_0 ps_5_0, D3D11)
+        control: Google Inc. (Google) | ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)
+    DIFFERS  worker_nested
+        patched: Google Inc. (NVIDIA) | ANGLE (NVIDIA, NVIDIA GeForce RTX 3080 Ti Laptop GPU (0x00002460) Direct3D11 vs_5_0 ps_5_0, D3D11)
+        control: Google Inc. (Google) | ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)
+    DIFFERS  worker_in_iframe
+        patched: Google Inc. (NVIDIA) | ANGLE (NVIDIA, NVIDIA GeForce RTX 3080 Ti Laptop GPU (0x00002460) Direct3D11 vs_5_0 ps_5_0, D3D11)
+        control: Google Inc. (Google) | ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)
+
+  seed 4242 / layer on
+    DIFFERS  page
+        patched: Google Inc. (NVIDIA) | ANGLE (NVIDIA, NVIDIA GeForce RTX 3080 Ti Laptop GPU (0x00002460) Direct3D11 vs_5_0 ps_5_0, D3D11)
+        control: Google Inc. (Google) | ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)
+    DIFFERS  iframe_about_blank
+        patched: Google Inc. (NVIDIA) | ANGLE (NVIDIA, NVIDIA GeForce RTX 3080 Ti Laptop GPU (0x00002460) Direct3D11 vs_5_0 ps_5_0, D3D11)
+        control: Google Inc. (Google) | ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)
+    DIFFERS  iframe_srcdoc
+        patched: Google Inc. (NVIDIA) | ANGLE (NVIDIA, NVIDIA GeForce RTX 3080 Ti Laptop GPU (0x00002460) Direct3D11 vs_5_0 ps_5_0, D3D11)
+        control: Google Inc. (Google) | ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)
+    DIFFERS  worker
+        patched: Google Inc. (NVIDIA) | ANGLE (NVIDIA, NVIDIA GeForce RTX 3080 Ti Laptop GPU (0x00002460) Direct3D11 vs_5_0 ps_5_0, D3D11)
+        control: Google Inc. (Google) | ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)
+    DIFFERS  worker_nested
+        patched: Google Inc. (NVIDIA) | ANGLE (NVIDIA, NVIDIA GeForce RTX 3080 Ti Laptop GPU (0x00002460) Direct3D11 vs_5_0 ps_5_0, D3D11)
+        control: Google Inc. (Google) | ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)
+    DIFFERS  worker_in_iframe
+        patched: Google Inc. (NVIDIA) | ANGLE (NVIDIA, NVIDIA GeForce RTX 3080 Ti Laptop GPU (0x00002460) Direct3D11 vs_5_0 ps_5_0, D3D11)
+        control: Google Inc. (Google) | ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)
+
+Q3 — CANVAS AND WEBGL READBACK
+----------------------------------------------------------------------
+  layer off
+    patched  canvas toDataURL   (patch 013): VARIES with seed
+        seed 1337: 2433234074
+        seed 4242: 3345026328
+    control  canvas toDataURL   (patch 013): constant across seeds
+        seed 1337: 3906838817
+        seed 4242: 3906838817
+    patched  canvas getImageData (patch 012): VARIES with seed
+        seed 1337: 2627843718
+        seed 4242: 1514692039
+    control  canvas getImageData (patch 012): constant across seeds
+        seed 1337: 1909611142
+        seed 4242: 1909611142
+    patched  canvas measureText  (patch 015): VARIES with seed
+        seed 1337: -0.000127,0.000001,-0.000127,0.000000,-0.000009
+        seed 4242: -0.000409,0.000002,-0.000408,0.000001,-0.000031
+    control  canvas measureText  (patch 015): constant across seeds
+        seed 1337: 182.328125,-1.000000,182.034180,-0.640625,13.640625
+        seed 4242: 182.328125,-1.000000,182.034180,-0.640625,13.640625
+    patched  webgl readPixels    (patch 016): VARIES with seed
+        seed 1337: 2393998117
+        seed 4242: 3056878596
+    control  webgl readPixels    (patch 016): constant across seeds
+        seed 1337: 1951227141
+        seed 4242: 1951227141
+    patched  client rects        (patch 014): VARIES with seed
+        seed 1337: 8.000398,8.000355,129.437500,73.875000
+        seed 4242: 7.999180,7.999197,129.437500,73.875000
+    control  client rects        (patch 014): constant across seeds
+        seed 1337: 8.000000,8.000000,129.437500,73.875000
+        seed 4242: 8.000000,8.000000,129.437500,73.875000
+    patched  offline audio       (patch 003): constant across seeds
+        seed 1337: 1079.89159002
+        seed 4242: 1079.89159002
+    control  offline audio       (patch 003): constant across seeds
+        seed 1337: 1079.88729525
+        seed 4242: 1079.88729525
+
+  layer on
+    patched  canvas toDataURL   (patch 013): VARIES with seed
+        seed 1337: 2433234074
+        seed 4242: 3345026328
+    control  canvas toDataURL   (patch 013): constant across seeds
+        seed 1337: 3906838817
+        seed 4242: 3906838817
+    patched  canvas getImageData (patch 012): VARIES with seed
+        seed 1337: 2627843718
+        seed 4242: 1514692039
+    control  canvas getImageData (patch 012): constant across seeds
+        seed 1337: 1909611142
+        seed 4242: 1909611142
+    patched  canvas measureText  (patch 015): constant across seeds
+        seed 1337: 182.328125,-1.000000,182.034180,-0.640625,13.640625
+        seed 4242: 182.328125,-1.000000,182.034180,-0.640625,13.640625
+    control  canvas measureText  (patch 015): constant across seeds
+        seed 1337: 182.328125,-1.000000,182.034180,-0.640625,13.640625
+        seed 4242: 182.328125,-1.000000,182.034180,-0.640625,13.640625
+    patched  webgl readPixels    (patch 016): VARIES with seed
+        seed 1337: 568802597
+        seed 4242: 1301563258
+    control  webgl readPixels    (patch 016): VARIES with seed
+        seed 1337: 2416181893
+        seed 4242: 3832199429
+    patched  client rects        (patch 014): VARIES with seed
+        seed 1337: 8.000398,8.000355,129.437500,73.875000
+        seed 4242: 7.999180,7.999197,129.437500,73.875000
+    control  client rects        (patch 014): constant across seeds
+        seed 1337: 8.000000,8.000000,129.437500,73.875000
+        seed 4242: 8.000000,8.000000,129.437500,73.875000
+    patched  offline audio       (patch 003): VARIES with seed
+        seed 1337: 1079.89159104
+        seed 4242: 1079.89170869
+    control  offline audio       (patch 003): VARIES with seed
+        seed 1337: 1079.88729641
+        seed 4242: 1079.88741350
+
+Q4 — DOES persona's MASKING LAYER STILL WORK ON THIS ENGINE?
+----------------------------------------------------------------------
+  seed 1337 — patched engine, layer OFF vs ON
+    layer report: LayerReport(route='extensions', installed=('native', 'locale', 'voice', 'stealth', 'measuretext', 'audio', 'device', 'webgl', 'gpu', 'canvas_ctx'), failed={}, expected=('native', 'locale', 'voice', 'stealth', 'measuretext', 'audio', 'device', 'webgl', 'gpu', 'canvas_ctx'))
+    same     page
+        layer off: Google Inc. (NVIDIA) | ANGLE (NVIDIA, NVIDIA GeForce RTX 3090 Ti (0x00002203) Direct3D11 vs_5_0 ps_5_0, D3D11)
+        layer on : Google Inc. (NVIDIA) | ANGLE (NVIDIA, NVIDIA GeForce RTX 3090 Ti (0x00002203) Direct3D11 vs_5_0 ps_5_0, D3D11)
+    same     iframe_about_blank
+        layer off: Google Inc. (NVIDIA) | ANGLE (NVIDIA, NVIDIA GeForce RTX 3090 Ti (0x00002203) Direct3D11 vs_5_0 ps_5_0, D3D11)
+        layer on : Google Inc. (NVIDIA) | ANGLE (NVIDIA, NVIDIA GeForce RTX 3090 Ti (0x00002203) Direct3D11 vs_5_0 ps_5_0, D3D11)
+    same     iframe_srcdoc
+        layer off: Google Inc. (NVIDIA) | ANGLE (NVIDIA, NVIDIA GeForce RTX 3090 Ti (0x00002203) Direct3D11 vs_5_0 ps_5_0, D3D11)
+        layer on : Google Inc. (NVIDIA) | ANGLE (NVIDIA, NVIDIA GeForce RTX 3090 Ti (0x00002203) Direct3D11 vs_5_0 ps_5_0, D3D11)
+    same     worker
+        layer off: Google Inc. (NVIDIA) | ANGLE (NVIDIA, NVIDIA GeForce RTX 3090 Ti (0x00002203) Direct3D11 vs_5_0 ps_5_0, D3D11)
+        layer on : Google Inc. (NVIDIA) | ANGLE (NVIDIA, NVIDIA GeForce RTX 3090 Ti (0x00002203) Direct3D11 vs_5_0 ps_5_0, D3D11)
+    same     worker_nested
+        layer off: Google Inc. (NVIDIA) | ANGLE (NVIDIA, NVIDIA GeForce RTX 3090 Ti (0x00002203) Direct3D11 vs_5_0 ps_5_0, D3D11)
+        layer on : Google Inc. (NVIDIA) | ANGLE (NVIDIA, NVIDIA GeForce RTX 3090 Ti (0x00002203) Direct3D11 vs_5_0 ps_5_0, D3D11)
+    same     worker_in_iframe
+        layer off: Google Inc. (NVIDIA) | ANGLE (NVIDIA, NVIDIA GeForce RTX 3090 Ti (0x00002203) Direct3D11 vs_5_0 ps_5_0, D3D11)
+        layer on : Google Inc. (NVIDIA) | ANGLE (NVIDIA, NVIDIA GeForce RTX 3090 Ti (0x00002203) Direct3D11 vs_5_0 ps_5_0, D3D11)
+
+  seed 4242 — patched engine, layer OFF vs ON
+    layer report: LayerReport(route='extensions', installed=('native', 'locale', 'voice', 'stealth', 'measuretext', 'audio', 'device', 'webgl', 'gpu', 'canvas_ctx'), failed={}, expected=('native', 'locale', 'voice', 'stealth', 'measuretext', 'audio', 'device', 'webgl', 'gpu', 'canvas_ctx'))
+    same     page
+        layer off: Google Inc. (NVIDIA) | ANGLE (NVIDIA, NVIDIA GeForce RTX 3080 Ti Laptop GPU (0x00002460) Direct3D11 vs_5_0 ps_5_0, D3D11)
+        layer on : Google Inc. (NVIDIA) | ANGLE (NVIDIA, NVIDIA GeForce RTX 3080 Ti Laptop GPU (0x00002460) Direct3D11 vs_5_0 ps_5_0, D3D11)
+    same     iframe_about_blank
+        layer off: Google Inc. (NVIDIA) | ANGLE (NVIDIA, NVIDIA GeForce RTX 3080 Ti Laptop GPU (0x00002460) Direct3D11 vs_5_0 ps_5_0, D3D11)
+        layer on : Google Inc. (NVIDIA) | ANGLE (NVIDIA, NVIDIA GeForce RTX 3080 Ti Laptop GPU (0x00002460) Direct3D11 vs_5_0 ps_5_0, D3D11)
+    same     iframe_srcdoc
+        layer off: Google Inc. (NVIDIA) | ANGLE (NVIDIA, NVIDIA GeForce RTX 3080 Ti Laptop GPU (0x00002460) Direct3D11 vs_5_0 ps_5_0, D3D11)
+        layer on : Google Inc. (NVIDIA) | ANGLE (NVIDIA, NVIDIA GeForce RTX 3080 Ti Laptop GPU (0x00002460) Direct3D11 vs_5_0 ps_5_0, D3D11)
+    same     worker
+        layer off: Google Inc. (NVIDIA) | ANGLE (NVIDIA, NVIDIA GeForce RTX 3080 Ti Laptop GPU (0x00002460) Direct3D11 vs_5_0 ps_5_0, D3D11)
+        layer on : Google Inc. (NVIDIA) | ANGLE (NVIDIA, NVIDIA GeForce RTX 3080 Ti Laptop GPU (0x00002460) Direct3D11 vs_5_0 ps_5_0, D3D11)
+    same     worker_nested
+        layer off: Google Inc. (NVIDIA) | ANGLE (NVIDIA, NVIDIA GeForce RTX 3080 Ti Laptop GPU (0x00002460) Direct3D11 vs_5_0 ps_5_0, D3D11)
+        layer on : Google Inc. (NVIDIA) | ANGLE (NVIDIA, NVIDIA GeForce RTX 3080 Ti Laptop GPU (0x00002460) Direct3D11 vs_5_0 ps_5_0, D3D11)
+    same     worker_in_iframe
+        layer off: Google Inc. (NVIDIA) | ANGLE (NVIDIA, NVIDIA GeForce RTX 3080 Ti Laptop GPU (0x00002460) Direct3D11 vs_5_0 ps_5_0, D3D11)
+        layer on : Google Inc. (NVIDIA) | ANGLE (NVIDIA, NVIDIA GeForce RTX 3080 Ti Laptop GPU (0x00002460) Direct3D11 vs_5_0 ps_5_0, D3D11)
+
