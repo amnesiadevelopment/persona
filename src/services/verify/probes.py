@@ -344,6 +344,53 @@ _JS_FNSRC = (
 )
 
 
+# --- the two RESIDUE expressions --------------------------------------------
+#
+# "What did the masking mechanism leave behind in THIS realm?" — asked of the
+# global object and nothing else. Both were written inline in their records and
+# were extracted to module level by PS-247 so a child-realm twin can SHARE them
+# by identity rather than by a hand-copy, following the shape PS-232 used for
+# ``_JS_WEBGL_READBACK``: one source of truth, so there is no second copy to
+# drift. A duplicated expression is the failure ``_CANVAS``'s comment describes
+# above at length, and it fails SILENTLY — the two copies keep measuring
+# something, they just stop measuring the same thing, at which point "the same
+# vector in another realm" is no longer true and the comparison means nothing.
+#
+# REALM-AGNOSTIC BY CONSTRUCTION. Each walks ``Object.getOwnPropertyNames(self)``
+# over whatever global it is evaluated against, and neither touches ``document``
+# or ``window``. That is why they inline into a child realm with no adaptation
+# and no branch, unlike ``_CANVAS`` (which needs its OffscreenCanvas arm) — and
+# it is measured, not assumed: PS-247 read both in a live child realm reached by
+# indexed access before declaring the twins, and got clean, byte-identical
+# readings across two consecutive records.
+
+_JS_BOOT_MARKERS = (
+    "(function(){"
+    "var g=self,markers=[];"
+    "try{Object.getOwnPropertyNames(g).forEach(function(k){"
+    "  if(/^__pna|^__persona/.test(k))markers.push(k);});}catch(e){}"
+    "return {markers:markers,markerCount:markers.length};})()"
+)
+
+_JS_SEED_RECOVERABLE = (
+    "(function(){"
+    "var g=self,hits=[];"
+    "try{Object.getOwnPropertyNames(g).forEach(function(k){"
+    "  var v;try{v=g[k];}catch(e){return;}"
+    "  try{"
+    "    if(typeof v==='function'&&/\\d{5,}/.test(Function.prototype.toString.call(v)))"
+    "      {hits.push(k);return;}"
+    "    if(Array.isArray(v)){"
+    "      for(var i=0;i<v.length&&i<64;i++){"
+    "        var e0=v[i];"
+    "        var s=(typeof e0==='function')?Function.prototype.toString.call(e0)"
+    "              :(typeof e0==='string'?e0:'');"
+    "        if(/\\d{5,}/.test(s)){hits.push(k);return;}}}"
+    "  }catch(e){}});}catch(e){}"
+    "return {candidates:hits,candidateCount:hits.length};})()"
+)
+
+
 def _typeof(path: str) -> str:
     """``typeof`` of a possibly-absent global path, as a probe expression."""
     return f"(function(){{try{{return typeof {path};}}catch(e){{return 'throws';}}}})()"
@@ -875,11 +922,10 @@ PROBES: tuple[Probe, ...] = (
         # standard is the in-tree one: tests/test_ff_language_override.py pins
         # `"__pnaName" not in cloak`, and tests/native_mask_probe.py checks the
         # observable property rather than the presence of a marker.
-        "(function(){"
-        "var g=self,markers=[];"
-        "try{Object.getOwnPropertyNames(g).forEach(function(k){"
-        "  if(/^__pna|^__persona/.test(k))markers.push(k);});}catch(e){}"
-        "return {markers:markers,markerCount:markers.length};})()",
+        #
+        # The expression lives at module level (PS-247) so the child-realm twin
+        # below shares it by IDENTITY. See `_JS_BOOT_MARKERS`.
+        _JS_BOOT_MARKERS,
     ),
     Probe(
         "realm.seedRecoverable",
@@ -896,21 +942,10 @@ PROBES: tuple[Probe, ...] = (
         # cannot know the profile's actual seed (this file is profile-agnostic),
         # so it reports candidates and their shape; an empty list is the healthy
         # reading, and any entry is worth a human look.
-        "(function(){"
-        "var g=self,hits=[];"
-        "try{Object.getOwnPropertyNames(g).forEach(function(k){"
-        "  var v;try{v=g[k];}catch(e){return;}"
-        "  try{"
-        "    if(typeof v==='function'&&/\\d{5,}/.test(Function.prototype.toString.call(v)))"
-        "      {hits.push(k);return;}"
-        "    if(Array.isArray(v)){"
-        "      for(var i=0;i<v.length&&i<64;i++){"
-        "        var e0=v[i];"
-        "        var s=(typeof e0==='function')?Function.prototype.toString.call(e0)"
-        "              :(typeof e0==='string'?e0:'');"
-        "        if(/\\d{5,}/.test(s)){hits.push(k);return;}}}"
-        "  }catch(e){}});}catch(e){}"
-        "return {candidates:hits,candidateCount:hits.length};})()",
+        #
+        # The expression lives at module level (PS-247) so the child-realm twin
+        # below shares it by IDENTITY. See `_JS_SEED_RECOVERABLE`.
+        _JS_SEED_RECOVERABLE,
     ),
     Probe(
         "realm.kind",
@@ -1018,6 +1053,83 @@ PROBES: tuple[Probe, ...] = (
             "on its own evidence rather than inheriting the window realm's."
         ),
         variance=INDEPENDENT,
+    ),
+    # --- realm bootstrap markers, IN THE CHILD REALM (PS-247) ---------------
+    #
+    # WHY THESE TWO RECORDS EXIST. `realm.bootMarkers` and
+    # `realm.seedRecoverable` are the two probes that ask "what did the masking
+    # mechanism LEAVE BEHIND in this realm?" — and until PS-247 neither could
+    # be asked of the child realm at all. PS-215 started installing a spoof
+    # leaf into child frames reached by indexed access (worker_wrap.py, the
+    # `self[N]` reach and its DOM-insertion wrappers), so a leaf is now
+    # delivered into a realm whose residue nothing reads. This project has paid
+    # for that exact shape six times — PS-48, PS-42, PS-56, PS-93, PS-139,
+    # PS-68 — every one of them in the WINDOW realm, and every one of them
+    # found only because a probe read that realm.
+    #
+    # THIS SHIPS NO PROTECTION AND CLOSES NO LEAK, and no leak is claimed to
+    # exist here: nothing a page observes changes and no spoof moves. It widens
+    # what the witness can SEE. Whether the child realm is clean is now a
+    # question the harness can put; before these records it was not.
+    #
+    # WHY SEPARATE RECORDS AND NOT THE TWO ABOVE GAINING A REALM. Same reason
+    # `webgl.readback.childFrame` gives at length: PS-210 chose "the new realm
+    # arrives as a NEW record" so no existing vector silently starts being
+    # evaluated somewhere it was never validated, and installed a guard in
+    # tests/test_verify_child_frame_realm.py that enforces it. The pairs share
+    # EXPRESSION but not IDENTITY — `_JS_BOOT_MARKERS` and
+    # `_JS_SEED_RECOVERABLE` are each one source of truth — so there is no
+    # second copy to drift. What is duplicated is the DECLARATION, which is
+    # exactly the thing that has to be per-realm for the realm to be validated
+    # on its own evidence.
+    #
+    # CHILD_FRAME_ONLY, not (WINDOW, CHILD_FRAME). `BASELINE_REALMS` is
+    # (WINDOW, WORKER) and the committed baseline records the probe-id SET for
+    # those two realms exactly; declaring the window realm here would add these
+    # ids to `probes_for_realm("window")` and trip
+    # test_the_committed_baseline_records_exactly_the_live_probe_inventory for
+    # readings the window realm already has under the ids above. The window
+    # readings are not missing; they belong to the other records.
+    #
+    # SHARED, not INDEPENDENT. diff.py records that `masking.*` and `realm.*`
+    # observe the MECHANISM rather than the identity and should agree across
+    # profiles. These do not enter the must-differ axis, and classifying them
+    # INDEPENDENT would report every pair of profiles as COLLIDING on a clean
+    # (empty-list) reading — the hazard `realm.frameIdentity` documents.
+    #
+    # MEASURED BEFORE DECLARED, as PS-232 measured its own record. Both
+    # expressions were read in a genuinely entered child realm (system
+    # chromium, indexed reach, `contentWindow` never invoked) and returned
+    # clean readings — `{markers:[],markerCount:0}` and
+    # `{candidates:[],candidateCount:0}` — byte-identical across two
+    # consecutive records. That is the determinism this module demands, and it
+    # is why these are expressible here with no adaptation: unlike
+    # `canvas.readback`, neither expression touches `document` or `window`.
+    Probe(
+        "realm.bootMarkers.childFrame",
+        CHILD_FRAME_ONLY,
+        _JS_BOOT_MARKERS,
+        note=(
+            "The realm-bootstrap-marker vector, read in a same-origin CHILD "
+            "realm reached by indexed access. Shares its expression with "
+            "realm.bootMarkers; separate record so the child realm is "
+            "validated on its own evidence rather than inheriting the window "
+            "realm's. A non-empty `markers` list here is the regression."
+        ),
+    ),
+    Probe(
+        "realm.seedRecoverable.childFrame",
+        CHILD_FRAME_ONLY,
+        _JS_SEED_RECOVERABLE,
+        note=(
+            "The seed-recoverability vector, read in a same-origin CHILD realm "
+            "reached by indexed access. Shares its expression with "
+            "realm.seedRecoverable; separate record so the child realm is "
+            "validated on its own evidence. The seed is compiled INSIDE each "
+            "masking leaf, so a readable reference to a leaf — or to its "
+            "source — publishes the identity across a realm boundary; an empty "
+            "`candidates` list is the healthy reading."
+        ),
     ),
 )
 

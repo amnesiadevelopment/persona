@@ -366,10 +366,20 @@ def test_the_per_realm_probe_inventory_for_window_and_worker_is_unchanged():
     new record declares CHILD_FRAME_ONLY rather than (WINDOW, CHILD_FRAME) —
     the latter would add its id to ``probes_for_realm("window")`` and trip that
     guard for a reading the window realm already has under the other id.
+
+    THE CHILD-FRAME COUNT IS A CHARACTERIZATION, NOT A GUARD. The 49 and 36
+    beside it are the load-bearing half — they are this test's whole purpose,
+    and they must not move when a child-realm record is added. The child-frame
+    number simply records how many records the realm held at the moment it was
+    written, so a slice that legitimately adds one re-points it. PS-247 added
+    the two residue twins (``realm.bootMarkers.childFrame`` and
+    ``realm.seedRecoverable.childFrame``), taking it from 2 to 4 while leaving
+    window and worker exactly where PS-232 found them — which is this test
+    passing, not this test being edited around.
     """
     assert len(probes.probes_for_realm(probes.WINDOW)) == 49
     assert len(probes.probes_for_realm(probes.WORKER)) == 36
-    assert len(probes.probes_for_realm(probes.CHILD_FRAME)) == 2
+    assert len(probes.probes_for_realm(probes.CHILD_FRAME)) == 4
 
     # The new id is in the child realm and NOWHERE else — the assertion the
     # counts above cannot make, since a count is satisfied by any membership.
@@ -403,8 +413,27 @@ def test_the_all_realms_selectors_still_resolve_to_the_shared_probe():
     assert matches[0].variance == probes.SHARED
 
     # The child-realm selector, pinned in inventory ORDER for the reason above.
+    #
+    # PS-247 re-pointed this list when it added the two residue twins
+    # (`realm.bootMarkers.childFrame`, `realm.seedRecoverable.childFrame`).
+    # This is an exact-list equality, so it is a CHARACTERIZATION of how many
+    # records the realm held when PS-232 wrote it — the load-bearing property
+    # is the ORDER, and specifically that `[0]` is `realm.frameIdentity`, which
+    # is what the four `_frame_identity_probe` tests bind to. That property is
+    # unchanged: both new records sit at the END of the inventory, after
+    # `webgl.readback.childFrame`. The `[0]` assertion below is stated
+    # separately so it survives any future re-pointing of the list.
     child_records = [p for p in probes.PROBES if probes.CHILD_FRAME in p.realms]
-    assert [p.id for p in child_records] == ["realm.frameIdentity", VECTOR]
+    assert [p.id for p in child_records] == [
+        "realm.frameIdentity",
+        VECTOR,
+        "realm.bootMarkers.childFrame",
+        "realm.seedRecoverable.childFrame",
+    ]
+    assert child_records[0].id == "realm.frameIdentity", (
+        "a child-realm record was declared BEFORE realm.frameIdentity — it "
+        "captures the [0] selector and rebinds four tests onto the wrong vector"
+    )
     assert child_records[0].variance == probes.SHARED
 
 
