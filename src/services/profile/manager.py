@@ -1552,17 +1552,22 @@ class ProfileManager(StoreGuardMixin, TrashableMixin):
             #
             # What such a record DOES at launch, measured rather than assumed —
             # this is the blast radius that justifies recording it at all:
-            #   * chromium: is_mobile is True, so an Android device preset drives
-            #     the UA/screen/touch, while the GPU POOL ARM and the voice
-            #     roster are still built from os_type ("windows") — a D3D11
-            #     renderer and Microsoft desktop voices under an Android UA.
-            #     (PS-161 round 4 fixed the AUTHORSHIP half of the GPU vector —
-            #     engine_platform is one computation over both fields — so the
-            #     host-rasteriser leak is closed. The pool ARM is a separate
-            #     question and still reads os_type alone.)
+            #   * chromium: reconciled at the launch path since PS-236 —
+            #     `process.spawn_browser` calls `coherence.coherent_device_type`
+            #     once, so `windows`+`mobile` launches as `windows`+`desktop`
+            #     and the device preset, engine platform, GPU pool arm and voice
+            #     roster all agree. HISTORY: before PS-236 is_mobile was True,
+            #     so an Android device preset drove the UA/screen/touch while
+            #     the GPU POOL ARM and the voice roster were built from os_type
+            #     ("windows") — a D3D11 renderer and Microsoft desktop voices
+            #     under an Android UA. (PS-161 round 4 had already fixed the
+            #     AUTHORSHIP half of the GPU vector — engine_platform is one
+            #     computation over both fields — so the host-rasteriser leak was
+            #     closed before that.)
             #   * firefox: the launch path reads NEITHER field (#211), so
             #     device_type is dropped entirely and the profile presents a
             #     desktop Windows machine while its record claims a phone.
+            #     Unchanged by PS-236: there is nothing on that arm to reconcile.
             # Reconciling either belongs on the launch path, not at this door.
             if profile.device_type_incoherence is not None:
                 logger.warning(
