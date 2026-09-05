@@ -13,11 +13,11 @@ type EngineCopy = {
 
 const ENGINES: EngineCopy[] = [
   {
-    tag: 'CHROMIUM',
+    tag: 'PERSONIUM',
     tagColor: '#7ea8ff',
     glow: 'rgba(63,107,255,0.20)',
-    title: 'fingerprint-chromium',
-    body: 'An ungoogled build with canvas, WebGL, audio, fonts, hardware and platform spoofed deterministically. Extensions add locale and per-profile entropy — available on every OS.',
+    title: 'Personium',
+    body: 'Our own ungoogled-chromium build, carrying our fingerprint patches: canvas, WebGL, audio, fonts, hardware and platform spoofed deterministically. Extensions add locale and per-profile entropy — available on every OS.',
     Mockup: ChromiumPrimary,
   },
   {

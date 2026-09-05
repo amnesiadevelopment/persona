@@ -12,7 +12,7 @@
 <p align="center">
   <a href="https://github.com/amnesiadevelopment/persona/releases/latest"><img alt="latest release" src="https://img.shields.io/github/v/release/amnesiadevelopment/persona?color=97ca00&label=release"></a>
   <img alt="platforms" src="https://img.shields.io/badge/platforms-Windows%20%C2%B7%20macOS%20%C2%B7%20Linux-333">
-  <img alt="engines" src="https://img.shields.io/badge/engines-Chromium%20%C2%B7%20Firefox-333">
+  <img alt="engines" src="https://img.shields.io/badge/engines-Personium%20%C2%B7%20Firefox-333">
   <a href="LICENSE"><img alt="license" src="https://img.shields.io/badge/license-MIT-blue"></a>
 </p>
 
@@ -42,10 +42,12 @@ looks identical across restarts while distinct personas look unrelated.
 
 persona launches one of two browser engines per profile:
 
-- **Chromium** — [fingerprint-chromium](https://github.com/adryfish/fingerprint-chromium),
-  an ungoogled-chromium build whose fingerprint (canvas, WebGL, audio, fonts,
-  hardware, platform) is seeded deterministically. Extensions add the last-mile
-  spoofs (locale, audio/WebGL entropy, mobile device signals).
+- **Personium** — our own [ungoogled-chromium](https://github.com/ungoogled-software/ungoogled-chromium)
+  build, carrying our fingerprint patches: canvas, WebGL, audio, fonts,
+  hardware and platform are seeded deterministically from the profile name.
+  Extensions add the last-mile spoofs (locale, audio/WebGL entropy, mobile
+  device signals). To a site it presents as Chrome and nothing else — the name
+  is ours and is for you, never for the wire.
 - **Firefox** — a patched Firefox 150+ where the spoofing is done at the C++
   level (no CDP/webdriver tells). Best when you want the most invisible profile.
 
@@ -72,7 +74,7 @@ seconds.
 - **Per-persona fingerprint** — canvas, WebGL, audio, fonts, hardware, and
   platform are spoofed deterministically from the profile name: stable across
   restarts, distinct (and mutually unlinkable) between personas.
-- **Two engines per profile** — pick Chromium or the patched Firefox per persona
+- **Two engines per profile** — pick Personium or the patched Firefox per persona
   (see above).
 - **Geo follows the proxy** — locale, timezone, and geolocation track the
   proxy's country/coordinates so they match the exit IP. With no proxy the
@@ -86,7 +88,7 @@ seconds.
   **only** to that site's address — never to any other site, so it can't become
   a fingerprint that identifies you elsewhere — and it stays inside persona, never
   imported into the OS certificate store. Available on every OS, with either the
-  Chromium or the Firefox engine.
+  Personium or the Firefox engine.
 - **Resolution decoupling & HiDPI** — a profile can report any screen resolution
   while the real window stays native and readable, with no window-size tell.
 - **Mobile personas** — Android/iOS profiles built from real device presets
@@ -107,7 +109,7 @@ seconds.
 
 persona aims for a clean, consistent, human-like profile — not magic invisibility.
 
-- **The Chromium engine's spoofing is partly JS-layer.** Geo/locale and the
+- **Personium's spoofing is partly JS-layer.** Geo/locale and the
   audio/WebGL entropy are MAIN-world overrides, which a thorough checker (e.g.
   pixelscan) can flag as "masking detected". The Firefox engine spoofs at the
   C++ level, which is invisible — prefer it when that matters.

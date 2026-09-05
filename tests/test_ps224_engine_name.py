@@ -31,6 +31,7 @@ the ticket names explicitly:
   data migration.
 """
 
+import ast
 import json
 import os
 import tempfile
@@ -519,3 +520,345 @@ def _capture_launch_argv() -> list[str]:
         f"handed:    {handed[0] if handed else None}\ndelivered: {delivered}"
     )
     return delivered
+
+
+# ---------------------------------------------------------------------------
+# Half 4 — PS-318: the name is SOURCED, never TYPED, across every operator
+#                  surface (the sweep PS-224 scoped to three strings)
+# ---------------------------------------------------------------------------
+#
+# WHY THIS IS AST-BASED AND NOT A GREP, stated because the naive version is the
+# obvious one and it is wrong in a way that costs a whole session.
+#
+# `grep -rn Chromium src/ui/` counts 62 occurrences on the pre-PS-318 tree, of
+# which 17 are `#` comments and 26 are docstrings — including the long
+# explanatory notes in `core/strings.py`'s siblings that exist precisely to
+# explain the rename. Only 19 were real operator-facing strings. A guard built
+# on that grep starts RED at 62, stays red after a correct fix, and sends its
+# reader to rewrite prose whose whole purpose is documenting the rule. So the
+# scope here is STRING LITERALS ONLY, with docstrings excluded by identity
+# rather than by heuristic, which is exactly the population an operator can
+# read.
+#
+# THE ASSERTION IS "SOURCED, NOT TYPED", NOT "SAYS PERSONIUM". A literal
+# reading "Personium engine update available" would satisfy a spelling check
+# and would silently re-introduce the defect this ticket exists to close: the
+# next rename would again be a 19-site sweep instead of one edit. Hence the
+# check is for the ABSENCE of a hardcoded engine name in a literal — the value
+# must arrive by interpolating CHROMIUM_ENGINE_NAME.
+
+
+_UI = os.path.join(SRC, "ui")
+
+#: Spellings of our Chromium engine that must never be TYPED into an
+#: operator-facing string literal. "Chromium" alone is the one that matters
+#: most: it is what 19 literals said before PS-318, and it is a word a future
+#: edit will reach for without thinking.
+#:
+#: ⚠️ OUR OWN NAME IS IN THIS TUPLE, AND IT IS THE ENTRY THAT IS EASY TO LEAVE
+#: OUT — measured, not supposed. With the list holding only the three names
+#: ABOVE, a mutant that replaced an interpolation with a hardcoded
+#: ``f"Personium engine update available ({tag})"`` passed the whole file: it
+#: reads correctly on screen, so nothing else in this suite can see it, and it
+#: silently restores the 19-site sweep this ticket exists to end. The header
+#: note above states the rule as "SOURCED, not TYPED"; without this entry only
+#: the first half was enforced. Sourced from the constant so that renaming the
+#: constant cannot leave the guard checking a name we no longer use.
+_TYPED_ENGINE_NAMES = (
+    "Chromium",
+    "fingerprint-chromium",
+    "fp-chromium",
+    CHROMIUM_ENGINE_NAME,
+)
+
+
+def _operator_string_literals(root):
+    """Every string literal under `root` that is NOT a docstring.
+
+    Docstrings are excluded by NODE IDENTITY — the first statement of a module,
+    function or class when it is a bare string expression — rather than by any
+    textual heuristic. A heuristic ("starts with three quotes", "is long")
+    would misclassify both ways: a triple-quoted operator message would be
+    skipped, and an assigned module-level string would be treated as prose.
+
+    Yields (path, lineno, value).
+    """
+    for dirpath, _dirs, files in os.walk(root):
+        if "__pycache__" in dirpath:
+            continue
+        for fn in sorted(files):
+            if not fn.endswith(".py"):
+                continue
+            path = os.path.join(dirpath, fn)
+            tree = ast.parse(_read(path))
+
+            docstrings = set()
+            for node in ast.walk(tree):
+                if isinstance(
+                    node,
+                    (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef),
+                ):
+                    body = node.body
+                    if (
+                        body
+                        and isinstance(body[0], ast.Expr)
+                        and isinstance(body[0].value, ast.Constant)
+                        and isinstance(body[0].value.value, str)
+                    ):
+                        docstrings.add(id(body[0].value))
+
+            for node in ast.walk(tree):
+                if (
+                    isinstance(node, ast.Constant)
+                    and isinstance(node.value, str)
+                    and id(node) not in docstrings
+                ):
+                    yield path, node.lineno, node.value
+
+
+def test_no_ui_string_literal_TYPES_the_engine_name_instead_of_SOURCING_it():
+    """AC1 + AC2. The 19 literals PS-318 converted, pinned as a property.
+
+    ⚠️ SCOPED TO LITERALS, NOT TO THE FILE. See the note above this test: the
+    same sweep expressed as a grep counts comments and docstrings and is
+    unfixable by construction.
+
+    MUTATION-CHECKED, and this is not a claim — it was run. Re-introducing one
+    hardcoded string (`f"Chromium engine check failed: {e}"` in `app.py`) turns
+    this test RED naming that exact file and line; removing it turns it green
+    again. A guard nobody has watched fail is not a guard.
+    """
+    offenders = []
+    for path, lineno, value in _operator_string_literals(_UI):
+        for typed in _TYPED_ENGINE_NAMES:
+            if typed in value:
+                rel = os.path.relpath(path, REPO_ROOT)
+                offenders.append(f"{rel}:{lineno}: {value[:80]!r}")
+
+    assert not offenders, (
+        "an operator-facing string literal TYPES our Chromium engine's name "
+        f"instead of interpolating {CHROMIUM_ENGINE_NAME!r} from "
+        "core.strings.CHROMIUM_ENGINE_NAME. Sourcing it is what makes the "
+        "next rename ONE edit instead of a sweep:\n  " + "\n  ".join(offenders)
+    )
+
+
+def test_the_guard_above_is_not_vacuous():
+    """The scan must actually be READING src/ui, and reading a lot of it.
+
+    Without this, a broken walk (wrong path, a parse that silently yields
+    nothing) makes the guard pass by finding no literals at all — the classic
+    way a sweep test goes green by testing nothing. The floor is deliberately
+    well below the real count so ordinary edits never trip it.
+    """
+    literals = list(_operator_string_literals(_UI))
+    assert len(literals) > 500, (
+        f"the literal scan found only {len(literals)} strings in src/ui — it "
+        "is not reading the tree, so the guard above proves nothing"
+    )
+
+    # ...and it must be finding the CONVERTED sites, not merely some strings:
+    # each of these is one of the 19 literals PS-318 rewrote, now carrying the
+    # interpolated name.
+    values = [v for _p, _l, v in literals]
+    assert any("engine check failed" in v for v in values)
+    assert any("engine update available" in v for v in values)
+    assert any("keeps one engine build at a time" in v for v in values)
+
+
+def test_the_scan_would_actually_catch_a_hardcoded_name():
+    """The mutation, executed IN-PROCESS rather than described.
+
+    The test above says it was mutation-checked by hand. This one makes that
+    property permanent: the same predicate is run against a synthetic module
+    carrying exactly the defect, and it must flag it. If someone later
+    "simplifies" the scan into something that cannot see a literal, this fails
+    even though the real tree happens to be clean.
+    """
+    import tempfile as _tf
+
+    with _tf.TemporaryDirectory() as tmp:
+        with open(os.path.join(tmp, "mutant.py"), "w", encoding="utf-8") as fh:
+            fh.write(
+                '"""A docstring naming Chromium — prose, must NOT be flagged."""\n'
+                "# A comment naming Chromium — must NOT be flagged either.\n"
+                'MESSAGE = "Chromium engine check failed"\n'
+            )
+        found = [
+            (ln, v)
+            for _p, ln, v in _operator_string_literals(tmp)
+            if any(t in v for t in _TYPED_ENGINE_NAMES)
+        ]
+
+    assert len(found) == 1, (
+        f"the scan must flag the LITERAL and only the literal; it found {found}"
+    )
+    assert found[0][0] == 3, f"it flagged the wrong line: {found}"
+
+
+def test_no_user_facing_fingerprint_chromium_in_readme_or_site_source():
+    """AC3. The two surfaces outside src/ui an operator reads.
+
+    ⚠️ `ungoogled-chromium` IS ALLOWED AND IS NOT AN OVERSIGHT. It names the
+    upstream project we genuinely build on — the exact analogue of the Firefox
+    option naming `invisible_playwright`, which the fence above pins. What the
+    owner's decision removed is `fingerprint-chromium`: we dropped it from our
+    flow, so crediting it was a claim that had stopped being true. Crediting
+    ungoogled-chromium is a claim that is still true, and dropping it would be
+    the opposite defect.
+    """
+    banned = ("fingerprint-chromium", "fp-chromium")
+
+    targets = [os.path.join(REPO_ROOT, "README.MD")]
+    site_src = os.path.join(REPO_ROOT, "site", "src")
+    for dirpath, _dirs, files in os.walk(site_src):
+        targets.extend(os.path.join(dirpath, fn) for fn in sorted(files))
+
+    offenders = []
+    for path in targets:
+        try:
+            body = _read(path)
+        except (OSError, UnicodeDecodeError):
+            continue
+        for i, line in enumerate(body.splitlines(), 1):
+            if any(b in line for b in banned):
+                offenders.append(f"{os.path.relpath(path, REPO_ROOT)}:{i}: {line.strip()[:90]}")
+
+    assert not offenders, (
+        "a user-facing surface still credits fingerprint-chromium, a "
+        "dependency we no longer have:\n  " + "\n  ".join(offenders)
+    )
+
+    # NOT VACUOUS: the README really was read, and it really does name our
+    # engine. A walk that found nothing would pass the assertion above.
+    readme = _read(os.path.join(REPO_ROOT, "README.MD"))
+    assert CHROMIUM_ENGINE_NAME in readme, (
+        f"the README does not name {CHROMIUM_ENGINE_NAME} at all — the scan "
+        "above read nothing, or the rename did not reach it"
+    )
+
+
+def test_the_upstream_we_DO_depend_on_is_still_credited():
+    """The other direction of AC3, and the reason it is not a blanket ban.
+
+    A sweep that removed every "chromium" token from the README would pass the
+    test above and would delete a TRUE attribution. ungoogled-chromium is what
+    we actually build on; saying so is accuracy, not a leftover.
+    """
+    readme = _read(os.path.join(REPO_ROOT, "README.MD"))
+    assert "ungoogled-chromium" in readme
+
+
+def test_an_existing_profile_on_disk_still_resolves_to_the_chromium_engine(
+    tmp_path, monkeypatch
+):
+    """AC4, driven through the REAL loader rather than asserted on a fresh
+    dataclass default.
+
+    `test_the_stored_engine_key_is_unchanged` above pins the default and the
+    dropdown keys — both properties of code that was never written to disk.
+    This one pins what an UPGRADING operator actually cares about: a
+    `profiles.json` written before the rename is read back by the shipped
+    `ProfileManager` and still resolves to the Chromium engine. A display
+    rename that quietly became a data migration fails HERE, on a fixture, and
+    not in the field on somebody's saved profiles.
+
+    The fixture is deliberately a MINIMAL record — name, engine, os_type — the
+    shape an older build wrote. The loader's own absent-key defaults do the
+    rest, which is the migration path being asserted.
+    """
+    import json as _json
+    import pathlib as _pathlib
+
+    from src.services.profile import manager as manager_mod
+
+    profiles_file = tmp_path / "profiles.json"
+    profiles_file.write_text(
+        _json.dumps(
+            {
+                "ps318-existing": {
+                    "name": "ps318-existing",
+                    "engine": "chromium",
+                    "os_type": "windows",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(manager_mod, "PROFILES_FILE", str(profiles_file))
+
+    mgr = manager_mod.ProfileManager.__new__(manager_mod.ProfileManager)
+    mgr.profiles = {}
+    mgr._load_profiles_locked()
+
+    assert "ps318-existing" in mgr.profiles, (
+        f"the pre-rename fixture did not load at all: "
+        f"{_pathlib.Path(profiles_file).read_text(encoding='utf-8')}"
+    )
+    loaded = mgr.profiles["ps318-existing"]
+    assert loaded.engine == "chromium", (
+        "a saved profile's stored engine key changed — a display rename became "
+        "a data migration, and every existing installation's profiles would "
+        "stop resolving on upgrade"
+    )
+    assert loaded.to_dict()["engine"] == "chromium", (
+        "the round-trip must write back the SAME key it read"
+    )
+
+    # AND THE LAUNCH SIDE AGREES. Loading the record is only half of AC4: what
+    # an upgrading operator depends on is that the profile still LAUNCHES the
+    # Chromium engine. `effective_engine` is the resolver the launch path
+    # actually consults (`services/browser/process.py`) — `profile.engine` is
+    # deliberately NOT what it reads — so a rename that survived the loader and
+    # broke the resolver would pass every assertion above.
+    from src.services.browser.process import effective_engine
+
+    assert effective_engine(loaded) == "chromium", (
+        "the launch path no longer resolves a pre-rename profile to the "
+        "chromium engine"
+    )
+
+
+def test_the_shipped_changelog_entries_name_the_engine_we_actually_ship():
+    """The three changelog literals, asserted on the RENDERED dict.
+
+    The literal scan proves no entry TYPES "Chromium"; it cannot prove the
+    entries still name the engine at all — deleting the three sentences would
+    satisfy it just as well. This reads the built `CHANGELOG` and asserts our
+    name is really there, which is the only check that distinguishes a rename
+    from a deletion.
+
+    ⛔ SHIPPED HISTORY IS REWRITTEN ON PURPOSE (the PS-318 owner decision).
+    These are notes for 3.0.2 and earlier. The engine was already ours when
+    they shipped — they named it by a label that has since been corrected — so
+    leaving them would keep an inaccurate name in front of every operator who
+    opens the "what's new" panel, indefinitely.
+    """
+    from src.ui.changelog import CHANGELOG
+
+    named = [
+        entry
+        for entries in CHANGELOG.values()
+        for entry in entries
+        if CHROMIUM_ENGINE_NAME in entry
+    ]
+    assert len(named) >= 3, (
+        "the shipped changelog entries naming our Chromium engine are gone or "
+        f"were never renamed; found {len(named)}: {named}"
+    )
+
+
+def test_the_sidebar_rail_measurement_still_bounds_the_engine_name():
+    """AC6, as an executable bound rather than a comment.
+
+    The 200px rail was measured against "fp-chromium" (11 chars). Our name is
+    shorter, so the measurement still holds — but "shorter" is the load-bearing
+    fact, and it is currently recorded only in a comment in `app.py`. Stated
+    here so a LONGER future name fails a test instead of silently ellipsising
+    the version cell to "ch…" on somebody's screen.
+    """
+    assert len(CHROMIUM_ENGINE_NAME) <= len("fp-chromium"), (
+        f"{CHROMIUM_ENGINE_NAME!r} is longer than the 11-char string the 200px "
+        "sidebar rail was measured against. Re-measure the rail (see the note "
+        "at App._engine_row) before widening the name."
+    )
