@@ -363,54 +363,6 @@ __SCREEN_REALM_SLOT__
       }
     } catch (e) {}
 
-    // window.outerWidth/outerHeight must FIT the screen we just reported.
-    //
-    // WHY (#327, measured, not assumed). The host window is whatever the WM
-    // gives it — desktop chromium passes no --window-size at all (the only
-    // --window-size in the module is process.py's MOBILE branch). So with a
-    // user-picked resolution SMALLER than the live window, a page reads
-    // outerWidth 1919 against screen.width 1280: a window wider than its own
-    // monitor, which no real un-maximized window shows, and which additionally
-    // hands the page the true window extent the spoofed screen was meant to
-    // conceal. Measured live under Xvfb at 1920x1080 with a 1280x720 pick:
-    // outer 1919x1079 vs screen 1280x720 on FORCED; coherent on AUTO.
-    //
-    // BOTH AXES, deliberately: height failed too (1079 > 720), so pinning
-    // width alone would leave the pair impossible.
-    //
-    // WHY REPORTING RATHER THAN RESIZING. The other engine answers this twice:
-    // it CAPS the window (_seed_window_size, #216) and it PINS outer
-    // (_outer_size_override_script). Capping is unavailable here in the same
-    // shape — Firefox seeds a persisted window size into the profile, while
-    // chromium has only a launch flag, so capping would silently resize the
-    // operator's actual window and still miss a window resized after launch.
-    // Pinning is also the only option that CANNOT re-open #167: that leak was
-    // FORCED falling through to the auto-pick and reporting ~4K, and this code
-    // never participates in choosing W/H — it runs after they are fixed and
-    // reads them.
-    //
-    // NOT Firefox's exact formula. Its override reports inner + fixed chrome,
-    // which is right when the window is smaller than the spoofed screen. Here
-    // INNER ITSELF (1919) already exceeds the forced screen (1280), so
-    // inner + chrome is still impossible. Clamping to the reported screen is
-    // what makes the pair coherent on the branch that actually breaks — the
-    // same "a window can't be wider than its screen" rule as #216, applied at
-    // the reporting layer instead of the window-sizing layer.
-    try {
-      var oW = G.outerWidth || 0, oH = G.outerHeight || 0;
-      var iW = G.innerWidth || 0, iH = G.innerHeight || 0;
-      // Chrome offsets from the LIVE window when they are sane, so a genuinely
-      // small window keeps reporting its own extent rather than being inflated
-      // to the screen. Falls back to the engine's own offsets when outer is
-      // unreadable (headless reports 0 — see the ticket's venue note).
-      var cW = (oW > iW) ? (oW - iW) : 0;
-      var cH = (oH > iH) ? (oH - iH) : 0;
-      var pinW = Math.min(iW + cW, W);
-      var pinH = Math.min(iH + cH, H - INSET);
-      def(G, 'outerWidth', pinW);
-      def(G, 'outerHeight', pinH);
-    } catch (e) {}
-
     // devicePixelRatio must agree with the spoofed screen. The host's real DPR
     // leaking through makes scanners read screen.width * dpr = a resolution no
     // monitor has. Pin DPR (1 Windows / 2 Retina) and answer the matchMedia
