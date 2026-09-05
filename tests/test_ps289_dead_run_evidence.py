@@ -62,14 +62,23 @@ requires_posix_shell = pytest.mark.skipif(
 )
 
 
-def run_journal(*args, cwd, journal_root, run_id="2000", **env_extra):
-    """Invoke ps289_journal.sh with a pinned toolchain and an isolated root."""
+def run_journal(*args, cwd, journal_root, run_id="2000", run_attempt="1", **env_extra):
+    """Invoke ps289_journal.sh with a pinned toolchain and an isolated root.
+
+    ⚠️ `run_attempt` IS A PARAMETER AND NOT A CONSTANT, DELIBERATELY. It used to
+    be hard-coded to "1" for every invocation in this file, which made a whole
+    dimension of the script's behaviour invisible to the entire suite: GitHub
+    keeps `github_run_id` constant across attempts and increments
+    `github_run_attempt`, so no test could express "the same run, re-run", and
+    the salvage guard that compares identities was green over a branch that
+    deleted a dead attempt's record unread.
+    """
     shell = find_posix_shell()
     assert shell, "no POSIX shell on this host"
     env = shell_env(
         PS289_JOURNAL_ROOT=str(journal_root),
         GITHUB_RUN_ID=run_id,
-        GITHUB_RUN_ATTEMPT="1",
+        GITHUB_RUN_ATTEMPT=run_attempt,
         HOME=str(cwd),
         **env_extra,
     )
@@ -293,13 +302,13 @@ def test_the_journal_is_written_outside_the_workspace(tmp_path):
 # SALVAGE — recovering a dead dispatch's stranded record/
 # ─────────────────────────────────────────────────────────────────────────────
 
-def seed_dead_record(ws, run_id="1001"):
+def seed_dead_record(ws, run_id="1001", run_attempt="1"):
     """A previous dispatch's leftovers, in the shape the real scripts write them."""
     rec = ws / "record"
     (rec / "sub").mkdir(parents=True, exist_ok=True)
     (rec / "prepare-patched.provenance").write_text(
         f"phase=prepare\ntree=patched\nungoogled_tag=144.0.7559.132-1\n"
-        f"github_run_id={run_id}\ngithub_run_attempt=1\n",
+        f"github_run_id={run_id}\ngithub_run_attempt={run_attempt}\n",
         encoding="utf-8",
     )
     (rec / "prepare-patched.log").write_text("applying 003\napplying 004\n", encoding="utf-8")
@@ -391,12 +400,129 @@ def test_salvage_does_not_carry_off_the_current_runs_own_record(tmp_path):
     """
     ws = tmp_path / "ws"
     ws.mkdir()
-    seed_dead_record(ws, run_id="1002")   # SAME id as the salvaging run
+    # SAME id AND same attempt as the salvaging run: this is the case the guard
+    # genuinely exists for. (Same id, DIFFERENT attempt is a re-run — a previous
+    # dispatch, whose evidence must be recovered. See the test below.)
+    seed_dead_record(ws, run_id="1002", run_attempt="1")
 
-    result = run_journal("salvage", cwd=ws, journal_root=tmp_path / "journal", run_id="1002")
+    result = run_journal(
+        "salvage", cwd=ws, journal_root=tmp_path / "journal",
+        run_id="1002", run_attempt="1",
+    )
     assert result.returncode == 0, result.stderr
     assert not (ws / "record" / "salvaged").exists(), (
         "this run's own material was filed as salvage from an earlier dispatch"
+    )
+
+
+@requires_posix_shell
+def test_a_RE_RUN_does_not_delete_the_dead_attempts_record(tmp_path):
+    """A run id is not a dispatch's identity on a platform with re-runs.
+
+    GitHub keeps `github_run_id` CONSTANT across attempts and increments
+    `github_run_attempt` — that is what the "Re-run jobs" button does, and it is
+    how this ticket's own run 33748889046 was re-run at 11:51Z. An earlier
+    version of the salvage guard compared run IDS ONLY, so on attempt 2 the
+    leftovers of a DEAD attempt 1 read as "our own material from an earlier step
+    of THIS run": no staging copy was taken and the zeroing `rm -rf` destroyed
+    them, while the summary said "no stranded `record/`".
+
+    ⚠️ THE FAILURE INVERTED WITH HOW FAR THE DEAD ATTEMPT GOT, which is why it
+    survived four reviews. A dispatch that died in the first twenty seconds
+    wrote no provenance stamp, fell to the `unknown` path, and was recovered.
+    One that survived the 5 GB checkout, staged all 16 patches and then died
+    four hours into the compile was DELETED — because getting that far is what
+    writes the stamp that trips the branch. The more expensive the loss, the
+    more certain it was.
+
+    ⚠️ AND IT ASSERTS THE BYTES, NOT A MESSAGE. The orphan-journal sweep carries
+    the dead attempt's journal out either way, so `"salvaged"` appearing in
+    stdout is satisfied while the compile log is gone. The log is the artifact
+    that answers the ticket's stated territory — whether patch application had
+    started, finished, or failed — so it is the log that is asserted.
+    """
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    journal_root = tmp_path / "journal"
+
+    # Attempt 1 of run 9100: got four hours into the compile, then the runner died.
+    seed_dead_record(ws, run_id="9100", run_attempt="1")
+    (ws / "record" / "compile-patched.log").write_text(
+        "[42000/50000] CXX obj/x.o\n", encoding="utf-8"
+    )
+    (journal_root / "9100-1").mkdir(parents=True)
+    (journal_root / "9100-1" / "journal.txt").write_text(
+        "# header\n"
+        "2026-09-05T00:00:00Z  BEGIN  patched/compile\n"
+        "2026-09-05T04:00:00Z  ALIVE  patched/compile  elapsed=14400s\n",
+        encoding="utf-8",
+    )
+
+    # The operator hits "Re-run jobs": same run id, attempt 2.
+    result = run_journal(
+        "salvage", cwd=ws, journal_root=journal_root, run_id="9100", run_attempt="2",
+    )
+    assert result.returncode == 0, result.stderr
+
+    recovered = (
+        ws / "record" / "salvaged" / "record-from-run-9100" / "compile-patched.log"
+    )
+    assert recovered.is_file(), (
+        "the dead attempt's compile log was deleted unread by the re-run: the "
+        "guard compared run ids only, so attempt 1's leftovers read as attempt "
+        "2's own material. Salvage said:\n"
+        f"{result.stdout}"
+    )
+    assert "[42000/50000] CXX obj/x.o" in recovered.read_text(encoding="utf-8"), (
+        "the path exists but the bytes did not arrive"
+    )
+
+
+@requires_posix_shell
+def test_the_summary_does_not_tell_a_re_run_there_was_nothing_stranded(tmp_path):
+    """The misinformation half of the re-run defect, on the page a reader lands on.
+
+    When the id-only guard deleted a dead attempt's record, the run summary
+    still printed `record recovered from run | none (no stranded record/)` —
+    about a run whose stranded `record/` had been destroyed three lines earlier.
+    A reader hunting a lost compile log was told it never existed, which is
+    strictly worse than saying nothing (the round-2 lesson, on the exact page
+    they land on).
+
+    Asserted separately from the bytes above because these are two different
+    failures — losing evidence, and reporting that there was none to lose — and
+    a fix for one does not imply a fix for the other.
+    """
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    journal_root = tmp_path / "journal"
+    summary = tmp_path / "summary.md"
+    summary.write_text("", encoding="utf-8")
+
+    seed_dead_record(ws, run_id="9300", run_attempt="1")
+    (journal_root / "9300-1").mkdir(parents=True)
+    (journal_root / "9300-1" / "journal.txt").write_text(
+        "# header\n2026-09-05T00:00:00Z  BEGIN  patched/compile\n", encoding="utf-8"
+    )
+
+    result = run_journal(
+        "salvage", cwd=ws, journal_root=journal_root,
+        run_id="9300", run_attempt="2", GITHUB_STEP_SUMMARY=str(summary),
+    )
+    assert result.returncode == 0, result.stderr
+
+    text = summary.read_text(encoding="utf-8")
+    assert "no stranded" not in text, (
+        "the summary told a reader there was no stranded record/ on a re-run "
+        f"whose predecessor attempt left one. Summary was:\n{text}"
+    )
+    assert "9300" in text, (
+        "the dead attempt's run id appears nowhere on the summary, so a reader "
+        f"following the notice cannot identify what was recovered:\n{text}"
+    )
+    assert "attempt" in text and "`1`" in text, (
+        "a re-run keeps the run id, so the row must name the ATTEMPT too — "
+        f"otherwise it reads as though the run recovered itself:\n{text}"
     )
 
 
@@ -1166,6 +1292,61 @@ def test_a_chain_of_consecutive_deaths_does_not_lose_the_FIRST_run(tmp_path):
         "to the wrong run is worse than none"
     )
     assert "`8002`" not in legend
+
+
+@requires_posix_shell
+def test_a_dispatch_that_died_MID_SALVAGE_does_not_strand_what_it_had_carried(tmp_path):
+    """The carry-forward staging directory is a window where bytes exist once.
+
+    Between the `mv` that lifts the previous dispatch's `salvaged/` aside and the
+    lay-down that puts it under this run's `record/salvaged/`, that material
+    lives at `${JOURNAL_ROOT}/.salvage-carried-<pid>` — OUTSIDE `record/`, so no
+    upload can ship it, and hidden from the `*/` orphan glob, so no later
+    dispatch used to find it. A death inside the window stranded it on disk
+    forever and leaked the disk it sat on.
+
+    The window is milliseconds against a ten-minute step, and `mv` is the right
+    primitive precisely because it is near-atomic — but this is the same shape as
+    the last three findings on this file (bytes existing in exactly one place
+    that nothing sweeps), so it is swept rather than accepted.
+
+    Asserts the BYTES arrive AND the stranded directory is cleaned up, because
+    recovering the material while leaving a copy behind would re-strand it and
+    accumulate one such directory per death.
+    """
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "record").mkdir()
+    journal_root = tmp_path / "journal"
+    journal_root.mkdir()
+
+    # What a dispatch had carried aside before it died mid-salvage: run 7700's
+    # whole recovered record, sitting outside record/ where nothing ships it.
+    stranded = journal_root / ".salvage-carried-31337"
+    (stranded / "record-from-run-7700").mkdir(parents=True)
+    (stranded / "record-from-run-7700" / "compile-patched.log").write_text(
+        "[49999/50000] LINK ./chrome\n", encoding="utf-8"
+    )
+
+    result = run_journal(
+        "salvage", cwd=ws, journal_root=journal_root, run_id="7800", run_attempt="1",
+    )
+    assert result.returncode == 0, result.stderr
+
+    recovered = (
+        ws / "record" / "salvaged" / "record-from-run-7700" / "compile-patched.log"
+    )
+    assert recovered.is_file(), (
+        "a dispatch died between lifting the previous salvage aside and laying "
+        "it back down, and the next dispatch did not sweep the staging "
+        f"directory: those bytes are stranded on disk forever. Salvage said:\n{result.stdout}"
+    )
+    assert "[49999/50000] LINK ./chrome" in recovered.read_text(encoding="utf-8")
+    assert not stranded.exists(), (
+        "the stranded staging directory was recovered but not removed, so it "
+        "will be recovered again on every future dispatch and one such "
+        "directory accumulates per death"
+    )
 
 
 @requires_posix_shell

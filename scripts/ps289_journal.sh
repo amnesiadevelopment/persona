@@ -253,30 +253,37 @@ _salvage_file() {
   return 0
 }
 
-# Which run produced the material currently sitting in `record/`? Read from the
-# provenance stamps ps218_build.sh writes. Absent stamps are reported as
-# `unknown` rather than guessed — a dispatch that died BEFORE prepare has no
+# Read ONE field of the provenance stamps ps218_build.sh writes, and say who
+# owns the material currently sitting in `record/`. Absent stamps are reported
+# as `unknown` rather than guessed — a dispatch that died BEFORE prepare has no
 # stamp at all, and that is exactly the case this must not silently mislabel.
-_owning_run_of_record() {
-  local prov id found="" other=0
+#
+# ⚠️ READ EVERY STAMP, NOT THE FIRST. Stopping at the first stamp the glob
+# yielded made the label a coin-flip in exactly the situation salvage exists to
+# meet: leftovers from more than one dispatch. `mixed` is reported rather than
+# one of the values picked arbitrarily, because a directory named
+# `record-from-run-555` that also contains run 554's bytes is a worse answer
+# than one that says it does not know. It is also the SAFE answer for the gate:
+# `mixed` matches no journal directory, so `_previous_run_finished` says "not
+# finished" and the material is kept.
+#
+# ⚠️ ONE READER, PARAMETERISED BY KEY — not two hand-rolled copies. The run id
+# and the attempt are asked the same question of the same files, and two
+# separate implementations of "read every stamp, report `mixed` on disagreement,
+# `unknown` when absent" would be free to drift apart, which is the same reason
+# `_journal_is_unfinished` was consolidated for the gate and the orphan sweep.
+_owning_field_of_record() {
+  local key="$1" prov val found="" other=0
   for prov in "${RECORD_DIR}"/*.provenance; do
     [ -f "$prov" ] || continue
-    id="$(sed -n 's/^github_run_id=//p' "$prov" 2>/dev/null | head -1)"
-    [ -n "$id" ] || continue
+    val="$(sed -n "s/^${key}=//p" "$prov" 2>/dev/null | head -1)"
+    [ -n "$val" ] || continue
     if [ -z "$found" ]; then
-      found="$id"
-    elif [ "$id" != "$found" ]; then
+      found="$val"
+    elif [ "$val" != "$found" ]; then
       other=1
     fi
   done
-  # ⚠️ READ EVERY STAMP, NOT THE FIRST. Stopping at the first stamp the glob
-  # yielded made the label a coin-flip in exactly the situation salvage exists
-  # to meet: leftovers from more than one dispatch. `mixed` is reported rather
-  # than one of the ids picked arbitrarily, because a directory named
-  # `record-from-run-555` that also contains run 554's bytes is a worse answer
-  # than one that says it does not know. It is also the SAFE answer for the
-  # gate: `mixed` matches no journal directory, so `_previous_run_finished`
-  # says "not finished" and the material is kept.
   if [ -z "$found" ]; then
     echo "unknown"
   elif [ "$other" -eq 1 ]; then
@@ -285,6 +292,9 @@ _owning_run_of_record() {
     echo "$found"
   fi
 }
+
+_owning_run_of_record()     { _owning_field_of_record github_run_id; }
+_owning_attempt_of_record() { _owning_field_of_record github_run_attempt; }
 
 # Did the run that owns the leftover `record/` FINISH its phases?
 #
@@ -383,16 +393,67 @@ case "$CMD" in
     # artifact it mirrors) but it means the durable copy does NOT always outlive
     # the incident: it outlives it for 30 days.
     _prune
+    # ⚠️ SWEEP UP A CARRY-FORWARD THAT NEVER LANDED. Between the `mv` and the
+    # lay-down below, the previous dispatch's salvaged tree lives at
+    # `${JOURNAL_ROOT}/.salvage-carried-$$` — outside `record/`, so no upload can
+    # ship it, and hidden from the `*/` orphan glob, so no later dispatch finds
+    # it. The window is milliseconds against a ten-minute step and a `mv` is the
+    # right primitive precisely because it is near-atomic, but a death inside it
+    # would strand those bytes on disk forever and leak the disk they sit on.
+    # Recovering them is nearly free here: anything left from a PID that is no
+    # longer us is laid back down under this run's `record/salvaged/` with the
+    # rest, by the same code path, further down.
+    inherited=()
+    for stale in "${JOURNAL_ROOT}"/.salvage-carried-*; do
+      [ -d "$stale" ] || continue
+      [ "$stale" = "${JOURNAL_ROOT}/.salvage-carried-$$" ] && continue
+      inherited+=("$stale")
+    done
     stage=""
     carried=""
     prev_run="none"
+    prev_attempt="unknown"
     salvaged_record=0
     carried_forward=0
 
     if [ -d "$RECORD_DIR" ] && [ -n "$(ls -A "$RECORD_DIR" 2>/dev/null || true)" ]; then
       prev_run="$(_owning_run_of_record)"
-      if [ "$prev_run" = "$RUN_ID" ]; then
-        # Our own material, from an earlier step of THIS run. Not salvage.
+      prev_attempt="$(_owning_attempt_of_record)"
+      # ⚠️ A RUN ID IS NOT A DISPATCH'S IDENTITY ON A PLATFORM WITH RE-RUNS, AND
+      # AN EARLIER VERSION COMPARED IDS ALONE. GitHub keeps `github_run_id`
+      # CONSTANT across attempts and increments `github_run_attempt` — that is
+      # what the "Re-run jobs" button does, and it is how this ticket's own run
+      # 33748889046 was re-run at 11:51Z. So on attempt 2 the leftovers of a
+      # DEAD attempt 1 carry the same run id, an id-only comparison read them as
+      # "our own material from an earlier step of THIS run", no staging copy was
+      # taken, and the `rm -rf "$RECORD_DIR"` below destroyed them — while the
+      # summary reported "no stranded `record/`".
+      #
+      # The failure INVERTED with how far the dead attempt got: a dispatch that
+      # died in the first twenty seconds wrote no stamp, so it fell to the
+      # `unknown` path and was recovered; one that survived the 5 GB checkout,
+      # staged all 16 patches and then died four hours into the compile was
+      # deleted, BECAUSE getting that far is what writes the stamp that tripped
+      # the branch. The more expensive the loss, the more certain it was.
+      #
+      # Both terms are required for "ours", and the non-equal arms are chosen
+      # DELIBERATELY rather than incidentally:
+      #   attempt == ours  → genuinely our own material (the second job of a
+      #                      `both` dispatch seeing its sibling's output). Skip.
+      #   attempt differs  → a PREVIOUS attempt of this same run. Salvage it.
+      #   `unknown`        → a stamp carrying a run id but no attempt, i.e. one
+      #                      written before ps218_build.sh:80 began recording
+      #                      the attempt. Cannot be shown to be ours, so it is
+      #                      KEPT. The cost of being wrong here is our own
+      #                      material quarantined under `salvaged/` and labelled
+      #                      with our own run id — legible and harmless. The cost
+      #                      of being wrong the other way is the deletion this
+      #                      whole script exists to prevent.
+      #   `mixed`          → leftovers spanning more than one attempt, so at
+      #                      least one of them is not ours. KEPT, same reasoning.
+      if [ "$prev_run" = "$RUN_ID" ] && [ "$prev_attempt" = "$RUN_ATTEMPT" ]; then
+        # Our own material, from an earlier step of THIS run AND THIS attempt.
+        # Not salvage.
         prev_run="none"
       elif _previous_run_finished "$prev_run"; then
         # That run completed its phases and therefore reached its upload step —
@@ -453,6 +514,22 @@ case "$CMD" in
     # Placed BEFORE this run's own copy so that on the (unlikely) collision of
     # two dispatches recovering the same run id, THIS dispatch's fresher bytes
     # win rather than the inherited ones.
+    #
+    # `$inherited` is the same material from a dispatch that DIED between its
+    # own `mv` and this lay-down; it is laid down first, so a live carry-forward
+    # for the same run id still overwrites it with the fresher copy.
+    for stale in ${inherited+"${inherited[@]}"}; do
+      [ -d "$stale" ] || continue
+      mkdir -p "${RECORD_DIR}/salvaged" 2>/dev/null || true
+      if cp -R "$stale"/. "${RECORD_DIR}/salvaged"/ 2>/dev/null; then
+        carried_forward=1
+        echo "recovered a stranded carry-forward staging directory ($(basename "$stale")) — a dispatch died mid-salvage"
+        # Removed only when the bytes actually moved: this script's bookkeeping
+        # is sound only when it is conditioned on the copy succeeding.
+        rm -rf "$stale" 2>/dev/null || true
+      fi
+    done
+
     if [ -n "$carried" ] && [ -d "$carried" ]; then
       mkdir -p "${RECORD_DIR}/salvaged" 2>/dev/null || true
       cp -R "$carried"/. "${RECORD_DIR}/salvaged"/ 2>/dev/null || true
@@ -605,7 +682,10 @@ case "$CMD" in
         # happened from a run called "none", with the dead run's identity
         # nowhere on the page.
         if [ "$salvaged_record" -eq 1 ]; then
-          echo "| record recovered from run | \`${prev_run}\` |"
+          # The attempt is named too, because a re-run keeps the run id: on the
+          # "Re-run jobs" shape the row would otherwise print this run's own id
+          # and read as though it recovered itself.
+          echo "| record recovered from run | \`${prev_run}\` (attempt \`${prev_attempt}\`) |"
         else
           echo "| record recovered from run | none (no stranded \`record/\`) |"
         fi
