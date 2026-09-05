@@ -722,8 +722,12 @@ def test_the_guard_still_covers_the_record_the_realm_was_forbidden_on():
     ``_REALM_NATIVE_IDS``, so widening that set is the one edit that disarms the
     guard while every assertion above still reads true — the exact mutation
     round 2 review landed and measured green. Pinning membership directly is
-    what makes that edit loud: the ids exempt from the guard are the two records
-    that were BORN with the realm, and `webgl.readback` is not one of them.
+    what makes that edit loud: the ids exempt from the guard are the records
+    that were BORN with the realm — `realm.frameIdentity` and the
+    `*.childFrame` twins — and `webgl.readback` is not one of them. Named as a
+    SET rather than as a COUNT deliberately: PS-247 grew the exemption from two
+    ids to four, which falsified the previous spelling of this sentence, and a
+    count re-breaks on the next child-realm record while a description does not.
     """
     live_ids = {p.id for p in probes.PROBES}
     assert _REALM_NATIVE_IDS <= live_ids, "premise: exempt ids are real records"
