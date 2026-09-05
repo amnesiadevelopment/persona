@@ -25,7 +25,7 @@ THE THREE CONSTRAINTS the mechanism has to satisfy at once, each with a test:
                      script ITSELF *and* is installed into by the parent's
                      `contentWindow` accessor, and Firefox re-evaluates whole
                      leaves into open tabs (invisible_launch.py
-                     `_apply_audio_to_open_tabs`). This is the constraint a
+                     `_apply_spoofs_to_open_tabs`). This is the constraint a
                      closure `WeakSet` cannot meet — `var SEEN` is declared
                      inside `__pnaInstall`'s body, so it is per-INVOCATION;
   (c) carried into a worker AS TEXT — `fragment()` serialises only

@@ -161,12 +161,19 @@ CHROMIUM_CONDITIONS = {
 }
 
 # The Firefox launch path's spoof registry, as it reads today. The label is the
-# one ``_install_spoof`` is called with; ``audio`` is deliberately NOT in the
-# registry — see ``test_firefox_audio_bypasses_the_spoof_registry``.
+# one ``_install_spoof`` is called with.
+#
+# ``audio`` JOINED THIS DICT IN PS-302, and this edit is the record the
+# superseded ``test_firefox_audio_bypasses_the_spoof_registry`` asked for in
+# those words ("fold the route in, delete this test's raw-call expectation in
+# the same commit, and add 'audio' to FIREFOX_SPOOF_CONDITIONS"). Every Firefox
+# spoof now goes through ``_install_spoof``; nothing bypasses it — see
+# ``test_firefox_spoofs_all_go_through_the_registry``.
 FIREFOX_SPOOF_CONDITIONS = {
     "outer-size": "_res_overrides is not None",
     "locale": "",
     "webgl": "",
+    "audio": "",
 }
 
 # --- the matrix --------------------------------------------------------------
@@ -228,12 +235,13 @@ MATRIX = {
         "chromium": (COVERED, "build_audio_extension, unconditional"),
         "firefox": (
             COVERED,
-            "firefox_audio_init_script(seed), unconditional — but installed "
-            "through a RAW ctx.add_init_script plus a bespoke "
-            "_apply_audio_to_open_tabs, NOT through _install_spoof. The "
-            "COVERAGE is what this cell states; the ROUTE is pinned separately "
-            "so PS-84 (folding it through the registry) changes one and not the "
-            "other.",
+            "firefox_audio_init_script(seed), unconditional, installed through "
+            '_install_spoof("audio", ...) like every other Firefox spoof '
+            "(PS-302). The COVERAGE is what this cell states; the ROUTE is "
+            "pinned separately in "
+            "test_firefox_spoofs_all_go_through_the_registry, so folding the "
+            "route through the registry changed one and not the other — the "
+            "cell read COVERED before that fold and reads COVERED after it.",
         ),
     },
     "mobile": {
@@ -436,7 +444,9 @@ def _firefox_spoof_census():
     Two returns, because the difference is load-bearing: ``_install_spoof``'s own
     docstring calls itself "the only supported way to add a spoof to this
     engine", and a spoof that goes around it does not get the restored-tab replay
-    the registry exists to provide. Audio goes around it today.
+    the registry exists to provide. Nothing goes around it today (PS-302 folded
+    audio, the last bypass, back in) — so the second return is expected to be
+    EMPTY, and a non-empty one is the defect, not the status quo.
     """
     src = inspect.getsource(il)
     tree = ast.parse(src)
@@ -594,7 +604,7 @@ def test_chromium_conditions_match_the_source():
 def test_firefox_spoof_registry_matches_the_matrix():
     # The Firefox column's structural half. The registry is the engine's only
     # supported spoof route, so its contents ARE the set of vectors this engine
-    # covers through it — plus audio, which bypasses it (pinned separately).
+    # covers through it — every one of them, since PS-302 folded audio in.
     spoofs, _ = _firefox_spoof_census()
     assert spoofs == FIREFOX_SPOOF_CONDITIONS
     for label in spoofs:
@@ -615,23 +625,27 @@ def test_firefox_spoof_registry_matches_the_matrix():
         )
 
 
-def test_firefox_audio_bypasses_the_spoof_registry():
-    # PS-84's target, pinned as a ROUTE and deliberately not as a coverage cell.
-    # _install_spoof calls itself "the only supported way to add a spoof to this
-    # engine"; audio goes around it with a raw add_init_script and a bespoke
-    # _apply_audio_to_open_tabs replay.
+def test_firefox_spoofs_all_go_through_the_registry():
+    # The route, pinned as a route and deliberately NOT as a coverage cell.
+    # This replaces ``test_firefox_audio_bypasses_the_spoof_registry``, which
+    # pinned the OPPOSITE (audio outside the registry, exactly one raw
+    # ``add_init_script``) and instructed its own successor in those words: "if
+    # PS-84 lands, THIS test is the one that goes red ... fold the route in,
+    # delete this test's raw-call expectation in the same commit, and add
+    # 'audio' to FIREFOX_SPOOF_CONDITIONS." PS-302 landed that fold. The
+    # inversion is the record.
     #
-    # If PS-84 lands, THIS test is the one that goes red and the audio COVERAGE
-    # cell above is untouched — which is the point of separating them. Fold the
-    # route in, delete this test's raw-call expectation in the same commit, and
-    # add "audio" to FIREFOX_SPOOF_CONDITIONS. That edit IS the record.
+    # The coverage cell above is untouched by that landing, which is the point
+    # of having separated them: audio was COVERED before and is COVERED now.
     spoofs, raw = _firefox_spoof_census()
-    assert "audio" not in spoofs
-    assert len(raw) == 1, (
-        "a raw add_init_script appeared or disappeared on the Firefox launch "
-        "path. Exactly one is expected today (audio). A NEW one is a spoof that "
-        "silently misses the restored-tab replay — the PS-78 hole the registry "
-        "exists to close."
+    assert "audio" in spoofs
+    assert raw == [], (
+        f"a raw add_init_script appeared on the Firefox launch path (line(s) "
+        f"{raw}). ZERO are expected: every spoof goes through _install_spoof, "
+        "which is the only route that also replays into ALREADY-OPEN tabs. A "
+        "raw call is a spoof that silently misses the restored-tab replay — "
+        "the PS-78 hole the registry exists to close, and the PS-302 bypass it "
+        "took four vectors to notice."
     )
     assert MATRIX["audio"]["firefox"][0] == COVERED
 
@@ -891,10 +905,14 @@ def test_firefox_vectors_constant_names_only_registry_spoofs():
     # module excludes deliberately, because a harness profile chooses no
     # resolution so the product would not install it either. Pinned so the two
     # cannot drift apart without somebody noticing.
+    #
+    # The right-hand side used to carry an explicit `| {"audio"}` union, because
+    # audio was in FIREFOX_VECTORS while sitting OUTSIDE the registry. PS-302
+    # folded it in, so the union became a no-op and is dropped: the constant is
+    # now exactly the registry minus the one deliberate exclusion, which is a
+    # stronger statement than the same set reached by adding a term back.
     spoofs, _ = _firefox_spoof_census()
-    assert set(masking_layer.FIREFOX_VECTORS) == (set(spoofs) - {"outer-size"}) | {
-        "audio"
-    }
+    assert set(masking_layer.FIREFOX_VECTORS) == set(spoofs) - {"outer-size"}
 
 
 # --- the per-arm GPU cell, kept qualified ------------------------------------
@@ -1047,6 +1065,11 @@ def test_no_cell_claims_coverage_without_a_route():
         if row["chromium"][0] == COVERED:
             assert vector in builders, f"{vector} claims Chromium coverage with no builder"
         if row["firefox"][0] == COVERED:
-            assert vector in spoofs or vector == "audio", (
+            # No escape hatch. This used to read `or vector == "audio"`,
+            # because audio claimed Firefox coverage through a raw
+            # add_init_script that no registry census could see. PS-302 removed
+            # the bypass, so the exemption it needed is gone too — leaving it
+            # would let a future raw-installed vector claim COVERED unchecked.
+            assert vector in spoofs, (
                 f"{vector} claims Firefox coverage with no registered spoof"
             )
