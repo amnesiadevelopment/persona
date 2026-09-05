@@ -38,6 +38,7 @@ import pytest
 import src.services.browser.launch_policy as launch_policy
 from src.models.proxy import Proxy
 from src.services.browser.launch_policy import (
+    _COUNTRY_TZ,
     _proxy_timezone,
     declared_timezone,
     proxy_is_checked_but_unlaunchable,
@@ -53,10 +54,54 @@ from src.services.proxy.tz_names import (
     is_declarable_zone,
 )
 
-#: The exit country from the ticket's transcript: a real, ordinary country with
-#: no `_COUNTRY_TZ` row.
-RO = "RO"
-RO_ZONE = "Europe/Bucharest"
+#: THE UNDERIVABLE EXIT COUNTRY — a real, ordinary country with no
+#: ``_COUNTRY_TZ`` row, which is what puts a passing check into the deadlock.
+#:
+#: ⚠️ THIS WAS ``RO`` AND HAD TO MOVE, and the move is the ticket's own
+#: prediction arriving. PS-240 landed on main between two rounds of this PR and
+#: widened ``_COUNTRY_TZ`` from 31 rows to 241 — Romania among them — so every
+#: fixture here stopped reproducing the state it was written for. Not a
+#: regression in this feature: the tests went RED in CI (which merges with
+#: main) while green locally against the older merge-base, which is exactly the
+#: signal a stale premise should produce.
+#:
+#: The ticket said this would happen: "This ticket shrinks if PS-240 ships
+#: first; it does not disappear, because every country in PS-240's stated
+#: residue reaches this identical deadlock." Measured against the widened
+#: tables, the residue of REAL ISO-3166 alpha-2 codes is eight —
+#: ``AQ BV GS HM NG TF UM ZW`` — of which NG (Nigeria) and ZW (Zimbabwe) are
+#: ordinary countries with commercial proxy exits; the other six are
+#: uninhabited territories. NG is used here.
+#:
+#: ``test_the_chosen_country_is_genuinely_underivable`` below asserts the
+#: premise directly, so if a later widening adds NG this suite says WHY it is
+#: stale in one line instead of failing fifteen tests obscurely.
+UNDERIVABLE_CC = "NG"
+UNDERIVABLE_COUNTRY = "Nigeria"
+UNDERIVABLE_ZONE = "Africa/Lagos"
+
+#: Historical names, kept so the body of the suite reads unchanged. They no
+#: longer mean "Romania" — see above.
+RO = UNDERIVABLE_CC
+RO_ZONE = UNDERIVABLE_ZONE
+
+#: THE COUNTRY A MOVED EXIT LANDS IN. It must ALSO be underivable, because the
+#: assertion on that state is that the launch REFUSES AGAIN once the country
+#: gate retires the declaration — with a derivable country the table answers
+#: and nothing refuses, so the test would pass for the wrong reason. ZW is the
+#: other inhabited code in the residue. (This was ``CZ``, which PS-240 added.)
+MOVED_CC = "ZW"
+MOVED_COUNTRY = "Zimbabwe"
+MOVED_ZONE = "Africa/Harare"
+
+#: A country the tables DO know, whose single ``_COUNTRY_TZ`` row cannot be
+#: right for the whole country. RU is one row (``Europe/Moscow``) for eleven
+#: zones, so an operator whose exit is in Vladivostok has no other way to say
+#: so. This is the case a declaration still unblocks END TO END after PS-240,
+#: because the locale half can answer for it — see the argv test's docstring.
+MULTI_ZONE_CC = "RU"
+MULTI_ZONE_COUNTRY = "Russia"
+MULTI_ZONE_DECLARED = "Asia/Vladivostok"
 
 try:
     import cryptography  # noqa: F401
@@ -91,8 +136,44 @@ def _ro_proxy(tmp_path) -> tuple[ProxyStore, str]:
     s.add("ro-exit", "socks5://u:pw@1.2.3.4:1080")
     # The five real provider body shapes the ticket measured all reduce to
     # this: a country survives `_validate_geo`, the zone does not.
-    s.mark_checked("ro-exit", RO, "Romania", "5.6.7.8", "", None, None)
+    s.mark_checked("ro-exit", RO, UNDERIVABLE_COUNTRY, "5.6.7.8", "", None, None)
     return s, "ro-exit"
+
+
+def _multi_zone_proxy(tmp_path) -> tuple[ProxyStore, str]:
+    """A checked proxy in a country the tables KNOW, whose one table row is
+    wrong for this exit. The declaration overrides it; the launch completes."""
+    s = _store(tmp_path)
+    s.add("multi-zone-exit", "socks5://u:pw@1.2.3.4:1080")
+    s.mark_checked(
+        "multi-zone-exit", MULTI_ZONE_CC, MULTI_ZONE_COUNTRY, "5.6.7.8",
+        "", None, None,
+    )
+    return s, "multi-zone-exit"
+
+
+def test_the_chosen_country_is_genuinely_underivable(tmp_path):
+    """THE SUITE'S PREMISE, ASSERTED IN ONE PLACE.
+
+    Every deadlock fixture here depends on ``UNDERIVABLE_CC`` having no
+    ``_COUNTRY_TZ`` row. That premise is not stable: PS-240 widened the table
+    from 31 rows to 241 between two rounds of this PR and silently invalidated
+    fifteen tests, which then failed obscurely (``DID NOT RAISE``) rather than
+    saying why. This says why, in one line, if it happens again.
+    """
+    assert UNDERIVABLE_CC not in _COUNTRY_TZ, (
+        f"{UNDERIVABLE_CC} gained a _COUNTRY_TZ row, so it is no longer the "
+        "deadlock this suite is about. Pick another country with no row (the "
+        "residue is small and shrinking) and repoint UNDERIVABLE_CC."
+    )
+    assert MOVED_CC not in _COUNTRY_TZ, (
+        f"{MOVED_CC} gained a _COUNTRY_TZ row; the moved-exit state would stop "
+        "refusing and those tests would pass for the wrong reason."
+    )
+    assert MULTI_ZONE_CC in _COUNTRY_TZ, (
+        f"{MULTI_ZONE_CC} lost its row; the argv test needs a country the "
+        "locale half can still answer for."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -124,7 +205,7 @@ def test_the_re_check_remedy_loops_which_is_why_a_declaration_is_needed(tmp_path
     so the refusal is identical however many times it is pressed."""
     s, name = _ro_proxy(tmp_path)
     for _ in range(3):
-        s.mark_checked(name, RO, "Romania", "5.6.7.8", "", None, None)
+        s.mark_checked(name, RO, UNDERIVABLE_COUNTRY, "5.6.7.8", "", None, None)
         with pytest.raises(TimezoneUnderivableError):
             _proxy_timezone(s.get(name))
 
@@ -168,7 +249,7 @@ def test_an_old_proxies_json_without_the_keys_loads_unmigrated(tmp_path):
     path.write_text(json.dumps({
         "legacy": {
             "name": "legacy", "url": "socks5://u:pw@1.2.3.4:1080",
-            "country_code": "RO", "country_name": "Romania",
+            "country_code": RO, "country_name": UNDERIVABLE_COUNTRY,
             "timezone": "", "checked_at": time.time(), "last_check_ok": True,
         }
     }), encoding="utf-8")
@@ -220,12 +301,32 @@ def test_a_declared_zone_reaches_the_real_chromium_argv(tmp_path, monkeypatch):
     own ``spawn_browser`` with Popen faked at the boundary and reads
     ``--timezone=`` off the argv, so nothing between the store and the process
     can drop it.
+
+    ⚠️ NOT ON THE UNDERIVABLE COUNTRY, AND THAT IS A PRODUCT FACT RATHER THAN
+    A FIXTURE CONVENIENCE. Since PS-240 landed, ``_COUNTRY_TZ`` and
+    ``_COUNTRY_LOCALE`` are SET-EQUAL — the correspondence suite enforces it in
+    both directions — so a country with no timezone row has no locale row
+    either, and ``_profile_locale`` refuses BEFORE the timezone is ever read.
+    Executed: an NG exit carrying a valid declared ``Africa/Lagos`` still
+    raises ``LocaleUnderivableError`` at ``spawn_browser``.
+
+    So this test uses a country the tables DO know, and declares a zone that
+    disagrees with its single table row. That is the case a declaration can
+    still unblock end to end, and it is a real one: RU is one row
+    (``Europe/Moscow``) for eleven zones, so an operator whose exit is in
+    Vladivostok has no other way to say so. What is asserted is unchanged —
+    the operator's declared value, not the table's, reaches the argv.
+
+    The residue's own end-to-end launch is recorded as NOT COVERED in the
+    ticket comment, with the measurement above, rather than asserted through a
+    monkeypatched locale table that would prove nothing about the shipped
+    product.
     """
     import src.services.browser.process as process
     from src.models.profile import Profile
 
-    s, name = _ro_proxy(tmp_path)
-    s.set_manual_timezone(name, RO_ZONE)
+    s, name = _multi_zone_proxy(tmp_path)
+    s.set_manual_timezone(name, MULTI_ZONE_DECLARED)
     declared = _store(tmp_path).get(name)
 
     class _Store:
@@ -260,9 +361,13 @@ def test_a_declared_zone_reaches_the_real_chromium_argv(tmp_path, monkeypatch):
     monkeypatch.setattr(process._platform, "IS_LINUX", True)
     monkeypatch.setattr(launch_policy, "_host_timezone", lambda: "America/Chicago")
 
-    process.spawn_browser(Profile(name="ro-profile", proxy=name))
+    process.spawn_browser(Profile(name="declared-profile", proxy=name))
     tz_args = [a for a in captured["args"] if a.startswith("--timezone=")]
-    assert tz_args == [f"--timezone={RO_ZONE}"], captured["args"]
+    assert tz_args == [f"--timezone={MULTI_ZONE_DECLARED}"], captured["args"]
+    assert MULTI_ZONE_DECLARED != _COUNTRY_TZ[MULTI_ZONE_CC], (
+        "the declared zone must DISAGREE with the table row, or this test "
+        "passes whether or not the declaration was consulted"
+    )
     assert not any("America/Chicago" in a for a in captured["args"]), (
         "the host zone must never reach the engine"
     )
@@ -296,19 +401,19 @@ def test_the_full_recheck_lifecycle_table(tmp_path, monkeypatch):
     # 2. RE-CHECK, same RO, still no zone -> it SURVIVES. This is the row that
     #    kills route (b): mark_checked writes `timezone` unconditionally, so a
     #    fix stored in that field would be destroyed here.
-    s.mark_checked(name, RO, "Romania", "5.6.7.8", "", None, None)
+    s.mark_checked(name, RO, UNDERIVABLE_COUNTRY, "5.6.7.8", "", None, None)
     rows.append(("recheck-same-country", launched()))
 
     # 3. The provider LATER gives the real zone -> MEASURED wins. The stored
     #    value and the declaration agree here by construction, so the next row
     #    is what actually proves precedence.
-    s.mark_checked(name, RO, "Romania", "5.6.7.8", RO_ZONE, None, None)
+    s.mark_checked(name, RO, UNDERIVABLE_COUNTRY, "5.6.7.8", RO_ZONE, None, None)
     rows.append(("measured-arrives", launched()))
 
     # 4. The exit MOVED to CZ with no zone -> the declaration DISARMS and the
     #    launch refuses again. Route (a) fails here: it would declare
     #    Europe/Bucharest for a CZ exit — a country/clock contradiction.
-    s.mark_checked(name, "CZ", "Czechia", "9.9.9.9", "", None, None)
+    s.mark_checked(name, MOVED_CC, MOVED_COUNTRY, "9.9.9.9", "", None, None)
     rows.append(("moved-to-cz-no-zone", launched()))
 
     # 5. The exit MOVED to DE WITH a zone -> the measured one is used.
@@ -334,7 +439,7 @@ def test_a_measured_zone_outranks_a_disagreeing_declaration(tmp_path):
     s, name = _ro_proxy(tmp_path)
     s.set_manual_timezone(name, RO_ZONE)
     # Same country, so the declaration still APPLIES — and still loses.
-    s.mark_checked(name, RO, "Romania", "5.6.7.8", "Europe/Chisinau", None, None)
+    s.mark_checked(name, RO, UNDERIVABLE_COUNTRY, "5.6.7.8", "Europe/Chisinau", None, None)
     proxy = s.get(name)
     assert proxy.manual_timezone == RO_ZONE
     assert _proxy_timezone(proxy) == "Europe/Chisinau"
@@ -345,9 +450,9 @@ def test_the_country_gate_is_what_disarms_a_moved_exit(tmp_path):
     different country -> does not, no country on file -> does not."""
     base = dict(name="p", url="socks5://1.2.3.4:1080",
                 manual_timezone=RO_ZONE, manual_timezone_country=RO)
-    assert declared_timezone(Proxy(**base, country_code="RO")) == RO_ZONE
-    assert declared_timezone(Proxy(**base, country_code="ro")) == RO_ZONE
-    assert declared_timezone(Proxy(**base, country_code="CZ")) == ""
+    assert declared_timezone(Proxy(**base, country_code=RO)) == RO_ZONE
+    assert declared_timezone(Proxy(**base, country_code=RO.lower())) == RO_ZONE
+    assert declared_timezone(Proxy(**base, country_code=MOVED_CC)) == ""
     assert declared_timezone(Proxy(**base, country_code="")) == ""
 
 
@@ -393,7 +498,7 @@ def test_a_declaration_refused_before_a_check_does_not_become_a_dead_record(
     s = _store(tmp_path)
     s.add("fresh", "socks5://u:pw@1.2.3.4:1080")
     assert s.set_manual_timezone("fresh", RO_ZONE)[0] is False
-    s.mark_checked("fresh", RO, "Romania", "1.2.3.4", "", None, None)
+    s.mark_checked("fresh", RO, UNDERIVABLE_COUNTRY, "1.2.3.4", "", None, None)
     # Nothing was carried over from the refused attempt.
     p = _store(tmp_path).get("fresh")
     assert (p.manual_timezone, p.manual_timezone_country) == ("", "")
@@ -435,8 +540,8 @@ def test_mark_checked_does_not_touch_the_declaration_fields(tmp_path):
     s, name = _ro_proxy(tmp_path)
     s.set_manual_timezone(name, RO_ZONE)
     for cc, cn, tz in (
-        (RO, "Romania", ""),
-        (RO, "Romania", "Europe/Bucharest"),
+        (RO, UNDERIVABLE_COUNTRY, ""),
+        (RO, UNDERIVABLE_COUNTRY, RO_ZONE),
         ("", "", ""),
     ):
         s.mark_checked(name, cc, cn, "5.6.7.8", tz, None, None)
@@ -771,7 +876,7 @@ def test_the_network_row_does_not_mark_a_passing_check_with_no_country(
     liar = Proxy(name="liar", url="socks5://5.6.7.8:1080", country_code="",
                  country_name="", checked_at=now, last_check_ok=True)
     stuck = Proxy(name="ro-exit", url="socks5://1.2.3.4:1080", country_code=RO,
-                  country_name="Romania", checked_at=now, last_check_ok=True)
+                  country_name=UNDERIVABLE_COUNTRY, checked_at=now, last_check_ok=True)
     page = build_network_page(
         [liar, stuck],
         on_add=lambda _: None, on_edit=lambda n: None, on_delete=lambda n: None,
@@ -782,7 +887,7 @@ def test_the_network_row_does_not_mark_a_passing_check_with_no_country(
     # having stopped rendering everywhere.
     noted = [t for t in texts if UNLAUNCHABLE_NOTE in t]
     assert len(noted) == 1, texts
-    assert "Romania" in noted[0]
+    assert UNDERIVABLE_COUNTRY in noted[0]
     assert any("checked just now" in t and UNLAUNCHABLE_NOTE not in t
                for t in texts), texts
 
@@ -839,7 +944,7 @@ def test_the_network_row_says_so_instead_of_reading_checked_just_now(tmp_path):
 
     now = time.time()
     stuck = Proxy(name="ro-exit", url="socks5://1.2.3.4:1080", country_code=RO,
-                  country_name="Romania", checked_at=now, last_check_ok=True)
+                  country_name=UNDERIVABLE_COUNTRY, checked_at=now, last_check_ok=True)
     fine = Proxy(name="de-exit", url="socks5://1.2.3.4:1080", country_code="DE",
                  country_name="Germany", checked_at=now, last_check_ok=True)
     page = build_network_page(
@@ -850,7 +955,7 @@ def test_the_network_row_says_so_instead_of_reading_checked_just_now(tmp_path):
     texts = _all_text(page)
     stuck_lines = [t for t in texts if UNLAUNCHABLE_NOTE in t]
     assert len(stuck_lines) == 1, texts
-    assert "Romania" in stuck_lines[0]
+    assert UNDERIVABLE_COUNTRY in stuck_lines[0]
     assert not any("Germany" in t and UNLAUNCHABLE_NOTE in t for t in texts)
 
 
@@ -933,7 +1038,7 @@ class _FakePage:
 
 class _FakeCheckService:
     def check_proxy_detailed_sync(self, proxy_str, timeout=None):
-        return (True, "Proxy working", RO, "Romania", "5.6.7.8", "", None, None)
+        return (True, "Proxy working", RO, UNDERIVABLE_COUNTRY, "5.6.7.8", "", None, None)
 
 
 def _dialog_field(dlg, label):
@@ -1189,7 +1294,7 @@ def test_a_bare_save_after_the_exit_moved_does_not_re_arm_the_declaration(
     s.set_manual_timezone(name, RO_ZONE)
     assert _proxy_timezone(_store(tmp_path).get(name)) == RO_ZONE
 
-    s.mark_checked(name, "CZ", "Czechia", "9.9.9.9", "", None, None)
+    s.mark_checked(name, MOVED_CC, MOVED_COUNTRY, "9.9.9.9", "", None, None)
     with pytest.raises(TimezoneUnderivableError):
         _proxy_timezone(_store(tmp_path).get(name))
 
@@ -1213,7 +1318,7 @@ def test_a_rename_after_the_exit_moved_does_not_re_arm_it_either(tmp_path):
     """
     s, name = _ro_proxy(tmp_path)
     s.set_manual_timezone(name, RO_ZONE)
-    s.mark_checked(name, "CZ", "Czechia", "9.9.9.9", "", None, None)
+    s.mark_checked(name, MOVED_CC, MOVED_COUNTRY, "9.9.9.9", "", None, None)
 
     page = _drive_dialog(s, name, name="renamed-exit")
     assert page.popped is True
@@ -1275,16 +1380,16 @@ def test_the_operator_can_still_answer_for_a_moved_exit_through_the_dialog(
     otherwise the fix for BLOCKING 1 would create a second deadlock."""
     s, name = _ro_proxy(tmp_path)
     s.set_manual_timezone(name, RO_ZONE)
-    s.mark_checked(name, "CZ", "Czechia", "9.9.9.9", "", None, None)
+    s.mark_checked(name, MOVED_CC, MOVED_COUNTRY, "9.9.9.9", "", None, None)
 
-    page = _drive_dialog(s, name, zone="Europe/Prague")
+    page = _drive_dialog(s, name, zone=MOVED_ZONE)
     assert page.popped is True
 
     proxy = _store(tmp_path).get(name)
     assert (proxy.manual_timezone, proxy.manual_timezone_country) == (
-        "Europe/Prague", "CZ",
+        MOVED_ZONE, MOVED_CC,
     )
-    assert _proxy_timezone(proxy) == "Europe/Prague"
+    assert _proxy_timezone(proxy) == MOVED_ZONE
 
 
 # ---------------------------------------------------------------------------
@@ -1320,7 +1425,7 @@ def test_the_dialog_box_is_EMPTY_for_a_declaration_the_country_gate_retired(
 
     s, name = _ro_proxy(tmp_path)
     s.set_manual_timezone(name, RO_ZONE)
-    s.mark_checked(name, "CZ", "Czechia", "9.9.9.9", "", None, None)
+    s.mark_checked(name, MOVED_CC, MOVED_COUNTRY, "9.9.9.9", "", None, None)
 
     proxy = _store(tmp_path).get(name)
     assert proxy.manual_timezone == RO_ZONE, "the stored string is untouched"
@@ -1348,7 +1453,7 @@ def test_the_note_and_the_door_it_names_agree_on_a_moved_exit(tmp_path):
 
     s, name = _ro_proxy(tmp_path)
     s.set_manual_timezone(name, RO_ZONE)
-    s.mark_checked(name, "CZ", "Czechia", "9.9.9.9", "", None, None)
+    s.mark_checked(name, MOVED_CC, MOVED_COUNTRY, "9.9.9.9", "", None, None)
     proxy = _store(tmp_path).get(name)
 
     rendered = build_network_page(
@@ -1392,7 +1497,7 @@ def test_re_submitting_the_same_zone_through_the_DIALOG_is_accepted_once(
     """
     s, name = _ro_proxy(tmp_path)
     s.set_manual_timezone(name, RO_ZONE)
-    s.mark_checked(name, "CZ", "Czechia", "9.9.9.9", "", None, None)
+    s.mark_checked(name, MOVED_CC, MOVED_COUNTRY, "9.9.9.9", "", None, None)
 
     page = _drive_dialog(s, name, zone=RO_ZONE)
     assert page.popped is True, "a fresh declaration must not be refused"
@@ -1402,7 +1507,7 @@ def test_re_submitting_the_same_zone_through_the_DIALOG_is_accepted_once(
 
     proxy = _store(tmp_path).get(name)
     assert (proxy.manual_timezone, proxy.manual_timezone_country) == (
-        RO_ZONE, "CZ",
+        RO_ZONE, MOVED_CC,
     ), "the zone must be re-declared FOR the country the exit is now in"
     assert _proxy_timezone(proxy) == RO_ZONE
 
@@ -1418,11 +1523,11 @@ def test_the_store_still_refuses_a_verbatim_re_declaration_to_any_caller(
     """
     s, name = _ro_proxy(tmp_path)
     s.set_manual_timezone(name, RO_ZONE)
-    s.mark_checked(name, "CZ", "Czechia", "9.9.9.9", "", None, None)
+    s.mark_checked(name, MOVED_CC, MOVED_COUNTRY, "9.9.9.9", "", None, None)
 
     ok, err = s.set_manual_timezone(name, RO_ZONE)
     assert ok is False
-    assert RO in err and "CZ" in err, err
+    assert RO in err and MOVED_CC in err, err
     assert _store(tmp_path).get(name).manual_timezone_country == RO
 
 
@@ -1435,7 +1540,7 @@ def test_a_bare_save_never_triggers_the_dialogs_re_declaration_path(tmp_path):
     """
     s, name = _ro_proxy(tmp_path)
     s.set_manual_timezone(name, RO_ZONE)
-    s.mark_checked(name, "CZ", "Czechia", "9.9.9.9", "", None, None)
+    s.mark_checked(name, MOVED_CC, MOVED_COUNTRY, "9.9.9.9", "", None, None)
 
     assert _drive_dialog(s, name).popped is True
     proxy = _store(tmp_path).get(name)
@@ -1485,11 +1590,11 @@ def test_re_declaring_a_retired_zone_verbatim_is_refused_with_a_sentence(
     """
     s, name = _ro_proxy(tmp_path)
     s.set_manual_timezone(name, RO_ZONE)
-    s.mark_checked(name, "CZ", "Czechia", "9.9.9.9", "", None, None)
+    s.mark_checked(name, MOVED_CC, MOVED_COUNTRY, "9.9.9.9", "", None, None)
 
     ok, err = s.set_manual_timezone(name, RO_ZONE)
     assert ok is False
-    assert RO in err and "CZ" in err, err
+    assert RO in err and MOVED_CC in err, err
     assert _store(tmp_path).get(name).manual_timezone_country == RO
 
     # And the two-gesture path the sentence describes works.
@@ -1546,7 +1651,7 @@ def test_the_network_row_and_the_dialog_agree_after_a_url_edit(tmp_path):
     _drive_dialog(s, name, host="5.5.5.5")
     # A later check finds the new exit is in Romania too — which is what
     # re-populates the country and brings the note back.
-    s.mark_checked(name, RO, "Romania", "5.5.5.5", "", None, None)
+    s.mark_checked(name, RO, UNDERIVABLE_COUNTRY, "5.5.5.5", "", None, None)
 
     proxy = _store(tmp_path).get(name)
     rendered = build_network_page(

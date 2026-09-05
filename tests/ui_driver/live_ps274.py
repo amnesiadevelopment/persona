@@ -178,7 +178,25 @@ ADD_NAME = "added-exit"
 #: FOR a country and both gates refuse without one), so the note must NOT be on
 #: its row: following it would end in two refusals and no way out.
 LIAR_NAME = "liar-exit"
-ZONE = "Europe/Bucharest"
+#: THE UNDERIVABLE EXIT COUNTRY — no ``_COUNTRY_TZ`` row, which is what puts a
+#: passing check into the deadlock.
+#:
+#: ⚠️ THIS WAS ``RO``/``CZ`` AND HAD TO MOVE. PS-240 landed on main between two
+#: rounds of this PR and widened ``_COUNTRY_TZ`` from 31 rows to 241, Romania
+#: and Czechia among them, so every fixture here stopped reproducing the state
+#: it was written for. The ticket predicted exactly this ("this ticket shrinks
+#: if PS-240 ships first; it does not disappear"). Measured against the widened
+#: tables the residue of real ISO-3166 codes is eight — AQ BV GS HM NG TF UM ZW
+#: — of which NG and ZW are the two inhabited ones.
+CC = "NG"
+COUNTRY = "Nigeria"
+ZONE = "Africa/Lagos"
+#: The country a moved exit lands in. It must ALSO be underivable, or the
+#: launch would stop refusing once the gate retires the declaration and the
+#: check would pass for the wrong reason.
+MOVED_CC = "ZW"
+MOVED_COUNTRY = "Zimbabwe"
+MOVED_ZONE = "Africa/Harare"
 
 #: The sentence the row must carry. Imported from the product rather than
 #: retyped, so a wording change cannot make this script silently stop checking
@@ -187,7 +205,7 @@ from src.ui.components.network_page import UNLAUNCHABLE_NOTE  # noqa: E402
 
 #: The field's HINT — how an EMPTY field is addressed (see the module
 #: docstring: the hint is dropped once the field holds a value).
-TZ_HINT = "e.g. Europe/Bucharest  — only needed if launching is refused"
+TZ_HINT = "e.g. Europe/Bucharest  — only needed if launching is refused"  # the product's literal hint text
 
 #: Seeds two proxies into the app's OWN store, through the product's own
 #: writers, before the UI is constructed. The RO one is the shipped deadlock;
@@ -198,22 +216,22 @@ from src.services.proxy.store import ProxyStore
 _seed_store = ProxyStore()
 _seed_store.add({RO_NAME!r}, "socks5://u:pw@1.2.3.4:1080")
 # Exactly what a provider that reports a country and no usable zone produces.
-_seed_store.mark_checked({RO_NAME!r}, "RO", "Romania", "5.6.7.8", "", None, None)
+_seed_store.mark_checked({RO_NAME!r}, {CC!r}, {COUNTRY!r}, "5.6.7.8", "", None, None)
 _seed_store.add({DE_NAME!r}, "socks5://u:pw@5.6.7.8:1080")
 _seed_store.mark_checked({DE_NAME!r}, "DE", "Germany", "9.9.9.9", "", None, None)
 # A backconnect proxy declared for RO whose exit has since MOVED to CZ. The
 # country gate has retired the declaration and the launch refuses; the record
 # still carries the zone, which is what the dialog prefills its field from.
 _seed_store.add({MOVED_NAME!r}, "socks5://u:pw@2.2.2.2:1080")
-_seed_store.mark_checked({MOVED_NAME!r}, "RO", "Romania", "2.2.2.2", "", None, None)
+_seed_store.mark_checked({MOVED_NAME!r}, {CC!r}, {COUNTRY!r}, "2.2.2.2", "", None, None)
 _seed_store.set_manual_timezone({MOVED_NAME!r}, {ZONE!r})
-_seed_store.mark_checked({MOVED_NAME!r}, "CZ", "Czechia", "3.3.3.3", "", None, None)
+_seed_store.mark_checked({MOVED_NAME!r}, {MOVED_CC!r}, {MOVED_COUNTRY!r}, "3.3.3.3", "", None, None)
 # The same retired state again, untouched by the gestures above, for the
 # same-zone case.
 _seed_store.add({SAME_ZONE_NAME!r}, "socks5://u:pw@7.7.7.7:1080")
-_seed_store.mark_checked({SAME_ZONE_NAME!r}, "RO", "Romania", "7.7.7.7", "", None, None)
+_seed_store.mark_checked({SAME_ZONE_NAME!r}, {CC!r}, {COUNTRY!r}, "7.7.7.7", "", None, None)
 _seed_store.set_manual_timezone({SAME_ZONE_NAME!r}, {ZONE!r})
-_seed_store.mark_checked({SAME_ZONE_NAME!r}, "CZ", "Czechia", "8.8.8.8", "", None, None)
+_seed_store.mark_checked({SAME_ZONE_NAME!r}, {MOVED_CC!r}, {MOVED_COUNTRY!r}, "8.8.8.8", "", None, None)
 # Added but never checked — the ordinary "fill in the whole form first" case.
 _seed_store.add({FRESH_NAME!r}, "socks5://u:pw@4.4.4.4:1080")
 # A check that PASSED and returned NO geography at all — what `_validate_geo`
@@ -235,7 +253,7 @@ _seed_store.mark_checked({LIAR_NAME!r}, "", "", "6.6.6.6", "", None, None)
 import src.services.proxy.service as _svc
 
 def _stub_detailed(proxy_str, timeout=None):
-    return (True, "Proxy working", "RO", "Romania", "5.6.7.8", "", None, None)
+    return (True, "Proxy working", {CC!r}, {COUNTRY!r}, "5.6.7.8", "", None, None)
 
 _svc._check_detailed = _stub_detailed
 '''
@@ -602,7 +620,7 @@ def main() -> int:
                     "AC1 — the declaration is on DISK, with the country it was "
                     "declared for (what a restart reads)",
                     on_disk.get("manual_timezone") == ZONE
-                    and on_disk.get("manual_timezone_country") == "RO",
+                    and on_disk.get("manual_timezone_country") == CC,
                     f"proxies.json: manual_timezone="
                     f"{on_disk.get('manual_timezone')!r} country="
                     f"{on_disk.get('manual_timezone_country')!r}",
@@ -683,8 +701,8 @@ def main() -> int:
                     "the moved-exit proxy is seeded retired: zone on file, "
                     "declared for RO, exit now CZ",
                     before.get("manual_timezone") == ZONE
-                    and before.get("manual_timezone_country") == "RO"
-                    and before.get("country_code") == "CZ",
+                    and before.get("manual_timezone_country") == CC
+                    and before.get("country_code") == MOVED_CC,
                     f"proxies.json: {before.get('manual_timezone')!r} declared_for="
                     f"{before.get('manual_timezone_country')!r} country="
                     f"{before.get('country_code')!r}",
@@ -731,7 +749,7 @@ def main() -> int:
                     _report(
                         "THE DEFECT: a bare [ save ] must not re-arm the "
                         "declaration onto the NEW country",
-                        after.get("manual_timezone_country") == "RO",
+                        after.get("manual_timezone_country") == CC,
                         f"declared_for={after.get('manual_timezone_country')!r} "
                         f"(was RO; 'CZ' here is the CZ-exit-with-a-Romanian-clock "
                         f"state) zone={after.get('manual_timezone')!r}",
@@ -750,12 +768,12 @@ def main() -> int:
 
             # ---- and the operator can still ANSWER for the moved exit -
             if _open_edit_for(drv, MOVED_NAME):
-                typed = _replace_tz(drv, "Europe/Prague")
+                typed = _replace_tz(drv, MOVED_ZONE)
                 results.append(
                     _report(
                         "the retired zone can be REPLACED with the one the new "
                         "exit needs",
-                        typed == "Europe/Prague",
+                        typed == MOVED_ZONE,
                         f"the field holds {typed!r}",
                     )
                 )
@@ -767,8 +785,8 @@ def main() -> int:
                         "the RECOVERY path: declaring the CZ zone for the moved "
                         "exit is accepted (not re-arming must not become a second "
                         "deadlock)",
-                        moved.get("manual_timezone") == "Europe/Prague"
-                        and moved.get("manual_timezone_country") == "CZ",
+                        moved.get("manual_timezone") == MOVED_ZONE
+                        and moved.get("manual_timezone_country") == MOVED_CC,
                         f"proxies.json: {moved.get('manual_timezone')!r} "
                         f"declared_for={moved.get('manual_timezone_country')!r}",
                     )
@@ -823,7 +841,7 @@ def main() -> int:
                         "and it is re-declared FOR the country the exit is NOW "
                         "in — the same string, a different claim",
                         same.get("manual_timezone") == ZONE
-                        and same.get("manual_timezone_country") == "CZ",
+                        and same.get("manual_timezone_country") == MOVED_CC,
                         f"proxies.json: {same.get('manual_timezone')!r} "
                         f"declared_for={same.get('manual_timezone_country')!r}",
                     )
@@ -998,7 +1016,7 @@ def main() -> int:
                         _report(
                             "and the check run in the dialog reached the record "
                             "once the save created it",
-                            stored.get("country_code") == "RO",
+                            stored.get("country_code") == CC,
                             f"proxies.json country_code="
                             f"{stored.get('country_code')!r}",
                         )
@@ -1010,7 +1028,7 @@ def main() -> int:
                             (
                                 stored.get("manual_timezone"),
                                 stored.get("manual_timezone_country"),
-                            ) == (ZONE, "RO"),
+                            ) == (ZONE, CC),
                             f"manual_timezone={stored.get('manual_timezone')!r} "
                             f"for={stored.get('manual_timezone_country')!r}",
                         )
