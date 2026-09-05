@@ -353,3 +353,106 @@ def test_a_log_with_no_profiles_still_offers_the_clear_control():
     ctl = _by_label(page, _ALL_PROFILES_LABEL)
     assert _is_painted_active(ctl.content)
     assert [c.content.value for c in _filter_controls(page)].count("all") == 1
+
+
+# --- the exit, which the longer label very nearly cost --------------------
+#
+# THESE ARE A CHEAP GUARD, NOT THE EVIDENCE. What is actually wrong when they
+# fail is a rendered geometry these assertions cannot see: a control's
+# properties are identical whether it is painted at x=970 with a 40px box or at
+# x=1024 with a box zero pixels wide, which is exactly the regression the first
+# attempt at this fix shipped and this suite could not catch. The measurement
+# lives in tests/ui_driver/live_ps292.py, which drives the real app at
+# 1024x680 across four roster sizes and falsifies itself by reverting
+# log_header. What these two pin is the STRUCTURE that measurement depends on,
+# so a later edit that quietly puts the close button back inside the tools
+# group fails in two seconds instead of in a browser.
+
+
+def _close_button(page) -> ft.IconButton:
+    hits = [
+        c
+        for c in _walk(page.shown)
+        if isinstance(c, ft.IconButton) and c.tooltip == "Back to the dock"
+    ]
+    assert len(hits) == 1, f"expected exactly one close button, found {len(hits)}"
+    return hits[0]
+
+
+def test_the_close_button_is_not_inside_the_group_that_overflows():
+    """The log's ONLY exit must not be laid out at the end of the filter run.
+
+    ``open_log_dialog`` builds a ``modal=True`` AlertDialog with no Escape
+    handler, no scrim dismissal and no actions row — all three driven and
+    confirmed inert — so this button is the only way out. While it was the last
+    child of the tools Row it was laid out after a run of intrinsically-sized
+    controls with no wrap and no scroll, and a long enough roster pushed it off
+    the right edge: at FIVE profiles on a 1024px window the pre-fix build
+    rendered it zero pixels wide and the operator was stuck in the log.
+    """
+    page = _open()
+    close = _close_button(page)
+
+    tool_rows = [
+        c
+        for c in _walk(page.shown)
+        if isinstance(c, ft.Row) and any(x is close for x in (c.controls or []))
+    ]
+    assert len(tool_rows) == 1, "the close button should have exactly one parent Row"
+    parent = tool_rows[0]
+
+    # Its parent must be the OUTER header row — the one holding the flexible
+    # tools group — and not the tools group itself.
+    assert parent.alignment == ft.MainAxisAlignment.SPACE_BETWEEN, (
+        "the close button's parent is not the outer header row, so it is back "
+        "inside the group that overflows"
+    )
+    # And it is laid out AFTER the tools, so nothing about the reading order
+    # changed for anyone who was not measuring pixels.
+    assert parent.controls[-1] is close
+
+
+def test_the_tools_group_flexes_and_scrolls_so_it_cannot_push_its_siblings():
+    """Reparenting the exit alone is not the fix.
+
+    Move the close button out and an overflowing header simply eats the LAST
+    PROFILE instead — a filter clipped off the edge is still a filter the
+    operator cannot press, which is this ticket's own complaint one control
+    along. The tools group therefore takes the space that is left
+    (``expand``) and makes the remainder REACHABLE (``scroll``).
+    """
+    page = _open()
+    close = _close_button(page)
+    header = next(
+        c
+        for c in _walk(page.shown)
+        if isinstance(c, ft.Row) and any(x is close for x in (c.controls or []))
+    )
+    # By CONTENT, not by index: the header is [brand, tools, close] and picking
+    # positionally would silently move onto the brand row if that order ever
+    # changed — which is how the assertion below would start reading the wrong
+    # control's properties and pass for the wrong reason.
+    tools = next(
+        c
+        for c in header.controls
+        if isinstance(c, ft.Row)
+        and any(
+            isinstance(t, ft.Text) and t.value == _ALL_PROFILES_LABEL
+            for ctl in (c.controls or [])
+            for t in _walk(ctl)
+        )
+    )
+
+    assert tools.expand, "the tools group must take the space the exit leaves"
+    assert tools.scroll is not None, (
+        "without a scroll the overflow moves off the exit and onto the last "
+        "profile filter, which is no better"
+    )
+    # The premise: the controls that used to crowd the exit really are in here.
+    labels = [
+        c.value
+        for ctl in tools.controls
+        for c in _walk(ctl)
+        if isinstance(c, ft.Text)
+    ]
+    assert "all" in labels and _ALL_PROFILES_LABEL in labels

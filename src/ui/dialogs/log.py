@@ -147,14 +147,38 @@ _FILTERS = (
 #: row's clear control has no such set to belong to — the names beside it are
 #: machine names — so it is the one that has to say what it clears.
 #:
-#: IT COSTS HEADER WIDTH, and that is stated rather than left to be discovered:
-#: nine extra characters at ``size=11.5`` monospace is roughly 62px, on a
-#: header that already has no wrap and no scroll (four severity words, a
-#: spacer, one word per profile, a 220px search field and a close button). This
-#: does not CREATE that overflow — a session with enough profiles clips
-#: without it — but it does arrive ~62px sooner. Making the header survive many
-#: profiles is a layout change to the Row itself and is deliberately NOT done
-#: here; PS-292's own ticket lists it as a separate candidate.
+#: IT COSTS HEADER WIDTH, AND THE COST WAS MEASURED RATHER THAN ESTIMATED —
+#: because the estimate turned out to be load-bearing. Nine extra characters at
+#: ``size=11.5`` monospace is roughly 62px, and the first revision of this fix
+#: stated exactly that and then reasoned that it only made a pre-existing
+#: overflow "arrive ~62px sooner". Driving the real app at the app's own
+#: minimum window (1024x680, ``page.window.min_width``) and reading the CLOSE
+#: BUTTON's box says what those 62px actually bought:
+#:
+#:     profiles   without this label   with it, one unbroken header Row
+#:     4          (970,12,40,40)       (970,12,40,40)
+#:     5          (980,12,40,40)       (1024,12,0,40)   <- ZERO WIDTH
+#:     6          gone                 gone
+#:
+#: At FIVE profiles the header ran past the viewport and the thing that fell
+#: off the edge was the dialog's ONLY exit: it is a ``modal=True`` AlertDialog
+#: with no Escape handler and no scrim dismissal, so an operator on a
+#: minimum-size window could open the Activity Log and not get out of it. The
+#: label did not create the clipping — six profiles clipped without it — but it
+#: moved the boundary down by one profile, and the population between those two
+#: boundaries is real.
+#:
+#: So the width is no longer a budget anyone has to respect: the header's tool
+#: run is now a flexible, SCROLLING Row and the close button is the outer Row's
+#: own trailing child, laid out before the tools get their space (see
+#: :func:`open_log_dialog`'s ``header``). The close button holds its 40px box at
+#: four, five, six and eight profiles, measured the same way. This label's cost
+#: is therefore paid in scroll distance rather than in a lost control — which
+#: is what makes spending it on legibility the right trade.
+#:
+#: The general header REDESIGN — wrapping, a second line, a restyle — remains
+#: out of scope, as PS-292 says; what shipped is two properties on the Row that
+#: was already there.
 _ALL_PROFILES_LABEL = "all profiles"
 
 #: Tooltips for the two clear controls. They say which filter each one clears,
@@ -407,6 +431,71 @@ def fullscreen_event_row(
     )
 
 
+def log_header(
+    brand: ft.Control, tools: list[ft.Control], close_button: ft.Control
+) -> ft.Row:
+    """The fullscreen log's header row — and the reason the exit survives it.
+
+    A FUNCTION, not an inline literal, for two reasons. It is the whole of
+    PS-292's second half and deserves to be readable on its own; and it is the
+    seam ``tests/ui_driver/live_ps292.py`` reverts in its falsification pass,
+    so a green in the driven run cannot be a green that never read the header.
+
+    THE SHAPE, AND WHY. Three children, not two:
+
+    1. ``brand`` — the ACTIVITY mark and the "N of M" readout, inflexible.
+    2. ``tools`` — the severity filters, the profile filters and the search,
+       in a ``expand=True`` + ``scroll`` Row.
+    3. ``close_button`` — the exit, THE OUTER ROW'S OWN CHILD.
+
+    Point 3 is the fix. Until PS-292 the close button was the LAST child of the
+    tools group, so it was laid out at the end of a run of intrinsically-sized
+    controls that had no wrap and no scroll — and a long enough run pushed it
+    off the right edge. MEASURED at the app's own minimum window (1024x680,
+    ``page.window.min_width``) by driving the real served app and reading the
+    close button's rendered box:
+
+        profiles   the old one-Row header    this header
+        4          (970, 12, 40, 40)         (970, 12, 40, 40)
+        5          (1024, 12, 0, 40)  ZERO   (970, 12, 40, 40)
+        6          absent from the tree      (970, 12, 40, 40)
+        8          absent from the tree      (970, 12, 40, 40)
+
+    That is not a cosmetic loss. :func:`open_log_dialog` builds a ``modal=True``
+    AlertDialog with no Escape handler, no scrim dismissal and no actions row
+    (all three driven and confirmed inert), so this button's ``page.pop_dialog``
+    is the log's ONLY exit — an operator with five profiles on a minimum-size
+    window could open the Activity Log and be unable to leave it. Being a
+    sibling of the flexible group rather than a member of it means the button
+    is inflexible and is laid out FIRST: it always has its 40px, and the tools
+    get what is left.
+
+    ``scroll`` on the tools is the other half, and reparenting alone is not
+    enough without it. Move the exit out and the overflow simply eats the LAST
+    PROFILE instead — a filter clipped off the edge is still a filter the
+    operator cannot press, which is PS-292's own complaint one control along.
+    With the scroll the run that no longer fits is reached rather than lost.
+
+    NOT a header redesign, which PS-292 puts out of scope: nothing wraps,
+    nothing moves to a second line, nothing is restyled.
+    """
+    return ft.Row(
+        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        controls=[
+            brand,
+            ft.Row(
+                expand=True,
+                scroll=ft.ScrollMode.AUTO,
+                spacing=6,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                controls=tools,
+            ),
+            close_button,
+        ],
+    )
+
+
 def open_log_dialog(page: ft.Page, log_lines: list[str], profiles=None) -> None:
     """Open the Activity Log at full size, with the tools that size deserves."""
     profiles = frozenset(profiles or ())
@@ -588,43 +677,40 @@ def open_log_dialog(page: ft.Page, log_lines: list[str], profiles=None) -> None:
             )
         )
 
-    header = ft.Row(
-        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-        vertical_alignment=ft.CrossAxisAlignment.CENTER,
-        controls=[
-            ft.Row(
-                spacing=10,
-                vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                controls=[
-                    ft.Icon(ft.Icons.TERMINAL, size=16, color=COLORS["accent"]),
-                    ft.Text(
-                        "ACTIVITY",
-                        size=12,
-                        weight=ft.FontWeight.BOLD,
-                        color=COLORS["text_main"],
-                        font_family=MONO,
-                    ),
-                    count_label,
-                ],
-            ),
-            ft.Row(
-                spacing=6,
-                vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                controls=[
-                    *filter_row,
-                    ft.Container(width=8),
-                    *profile_row,
-                    ft.Container(width=220, content=search),
-                    ft.IconButton(
-                        icon=ft.Icons.CLOSE_FULLSCREEN,
-                        icon_size=14,
-                        icon_color=COLORS["text_sub"],
-                        tooltip="Back to the dock",
-                        on_click=lambda _: page.pop_dialog(),
-                    ),
-                ],
-            ),
+    header = log_header(
+        brand=ft.Row(
+            spacing=10,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            controls=[
+                ft.Icon(ft.Icons.TERMINAL, size=16, color=COLORS["accent"]),
+                ft.Text(
+                    "ACTIVITY",
+                    size=12,
+                    weight=ft.FontWeight.BOLD,
+                    color=COLORS["text_main"],
+                    font_family=MONO,
+                ),
+                count_label,
+            ],
+        ),
+        # The tools, in the order they are read: severities, an 8px break, the
+        # profiles, then the search. The CLOSE BUTTON IS DELIBERATELY NOT HERE
+        # — it used to be this list's last element, and that is exactly how the
+        # log's only exit came to be pushed off a 1024px screen at five
+        # profiles. See :func:`log_header`.
+        tools=[
+            *filter_row,
+            ft.Container(width=8),
+            *profile_row,
+            ft.Container(width=220, content=search),
         ],
+        close_button=ft.IconButton(
+            icon=ft.Icons.CLOSE_FULLSCREEN,
+            icon_size=14,
+            icon_color=COLORS["text_sub"],
+            tooltip="Back to the dock",
+            on_click=lambda _: page.pop_dialog(),
+        ),
     )
 
     paint_filters()
