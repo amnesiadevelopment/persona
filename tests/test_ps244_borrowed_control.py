@@ -960,6 +960,19 @@ def test_this_file_no_longer_skips_a_whole_platform():
     over its own source. `pytestmark` is what pytest actually acts on, so it is
     the honest instrument.
 
+    Both `skipif` AND the unconditional `skip` are caught. A bare
+    `@pytest.mark.skip` is the laziest way to buy a green run and it is strictly
+    worse than the `skipif` it would replace — a `skipif` at least still runs the
+    assertion on the other two platforms, while `skip` disables it everywhere. A
+    guard that caught only the conditional form would wave through the worse one.
+
+    KNOWN BOUNDARY, stated so a reader need not discover it by experiment: this
+    reads MARKERS, so a body-level `if sys.platform == "win32": pytest.skip(...)`
+    is invisible to it. That is deliberate rather than an oversight — this file's
+    own `test_posix_hosts_get_byte_identically_what_they_had_before` legitimately
+    uses that form to assert the POSIX branch of a two-branch guarantee, so the
+    form cannot be banned outright. Review is the instrument for that one.
+
     The one permitted exception is named explicitly: the executable-bit test
     asserts a POSIX permission bit, which does not exist on Windows. That is a
     guarantee that is genuinely platform-specific, not staging that is.
@@ -974,10 +987,12 @@ def test_this_file_no_longer_skips_a_whole_platform():
     skipped = sorted(
         name for name, obj in vars(module).items()
         if name.startswith("test_") and callable(obj)
-        and any(m.name == "skipif" for m in getattr(obj, "pytestmark", []))
+        and any(m.name in ("skipif", "skip") for m in getattr(obj, "pytestmark", []))
     )
     assert skipped == ["test_the_verification_script_is_executable"], (
-        "a platform skip was added back to this file. The scripts run under a "
-        "resolved Git Bash on Windows now; if an assertion fails there, that is "
-        f"a finding to report, not a platform to skip. Found: {skipped}"
+        "a skip marker was added back to this file. A `skipif` takes an assertion "
+        "out on one platform; a bare `skip` takes it out on ALL of them, which is "
+        "worse. The scripts run under a resolved Git Bash on Windows now; if an "
+        "assertion fails there, that is a finding to report, not a test to "
+        f"disable. Found: {skipped}"
     )
