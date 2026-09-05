@@ -94,6 +94,63 @@ def _display_present() -> bool:
     )
 
 
+def _ensure_display():
+    """``(display, owned_xvfb_or_None)`` — an inherited DISPLAY, else our own.
+
+    NOT a preference, and NOT a second copy: this delegates to
+    ``chromium_tier._ensure_display``, the tree's existing owner of exactly
+    this problem (it starts an Xvfb, waits for its lock file, and hands back
+    the process so the caller can tear down what it owns).
+
+    IT IS ALSO A BUG FIX FOUND BY AC8, recorded because the failure mode is
+    subtle. The skip gate above is satisfied by Xvfb merely being INSTALLED, so
+    under a plain ``pytest`` with no DISPLAY exported these tests did not skip
+    — they RAN, and the headful engine waited forever on a display nobody had
+    started, tripping the suite's per-test timeout and dumping every thread in
+    the file. A gate that says "a display is OBTAINABLE" has to be paired with
+    a step that actually obtains one.
+    """
+    from src.services.verify.chromium_tier import _ensure_display as _ed
+
+    return _ed()
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _display():
+    """ONE display for the whole module, exported for every launch below.
+
+    Module-scoped for a reason that cost a debugging cycle: an earlier draft
+    obtained a display PER LAUNCH and tore it down in the same ``finally``.
+    Because it also exported ``DISPLAY``, the second launch INHERITED the name
+    of an Xvfb that had already been killed — ``_ensure_display`` sees a
+    non-empty ``DISPLAY`` and hands it straight back, so the engine connected
+    to nothing and the run degraded to three "never reported BROWSER_STARTED"
+    skips. Skips are the honest outcome for a host with no display, which is
+    exactly what made the bug quiet: the suite still reported success.
+
+    So the display outlives every launch in the file, and only what we started
+    is torn down — an inherited ``DISPLAY`` is left exactly as found.
+    """
+    inherited = os.environ.get("DISPLAY", "").strip()
+    display, xvfb = _ensure_display()
+    os.environ["DISPLAY"] = display
+    try:
+        yield display
+    finally:
+        if xvfb is not None:
+            try:
+                xvfb.terminate()
+                xvfb.wait(timeout=10)
+            except Exception:
+                pass
+            # Do not leave the name of a dead display behind for anything that
+            # runs after this module — that is the same trap, one scope up.
+            if inherited:
+                os.environ["DISPLAY"] = inherited
+            else:
+                os.environ.pop("DISPLAY", None)
+
+
 def _launcher_present() -> bool:
     try:
         import invisible_playwright  # noqa: F401
@@ -115,7 +172,43 @@ requires_launcher = pytest.mark.skipif(
     not _launcher_present(),
     reason="invisible_playwright is not importable on this host",
 )
-pytestmark = [requires_engine, requires_display, requires_launcher]
+#: This file's OWN per-test bound, and it must stay comfortably ABOVE the two
+#: waits below while every test stays under the project's `timeout = 120`.
+#: pyproject sets that bound for the whole suite, and a live browser launch is
+#: the one thing here that can exceed it: 120s is generous for a unit test and
+#: TIGHT for a cold engine start plus a 30s geolocation wait.
+#:
+#: AC8 CAUGHT EXACTLY THAT. An earlier draft waited 180s for BROWSER_STARTED —
+#: longer than the suite's own bound — so a slow launch could never produce the
+#: skip it was written to produce: pytest-timeout fired first and dumped every
+#: thread in the file. A bound a test cannot reach is not a bound.
+#:
+#: So the launch wait is sized to LOSE that race deliberately, leaving room for
+#: the reading that follows. A launch slower than this SKIPS (an unobtained
+#: reading), which is the honest outcome and never a product verdict.
+#:
+#: 120s rather than 60s, measured: a cold engine start on a LOADED host (this
+#: file's own launches overlap nothing, but a full-suite run has plenty else in
+#: flight) intermittently crossed 60s and skipped. A skip is honest but it is
+#: still a reading not taken, so the bound is set where the launch reliably
+#: finishes rather than where it usually does.
+_START_TIMEOUT_S = 120.0
+
+#: Launch attempts before the reading is declared UNOBTAINED. Not flake
+#: tolerance for its own sake: the engine documents that ~half of fresh proxied
+#: launches wedge on a half-destroyed initial-window attach, and retries them
+#: internally on a fresh worker. Measured here: the un-granted leg skipped
+#: reproducibly at one attempt and passes with retries.
+_LAUNCH_ATTEMPTS = 3
+
+#: Marked per-test rather than inherited, because these are REAL browser
+#: launches and the 120s default is not sized for one. Inert without
+#: pytest-timeout installed — as is the ini bound it raises — so this can only
+#: ever relax a bound that exists, never invent one.
+_LIVE_TIMEOUT = pytest.mark.timeout(420)
+
+pytestmark = [requires_engine, requires_display, requires_launcher,
+              _LIVE_TIMEOUT]
 
 
 # --- the exit, and the provider endpoint ------------------------------------
@@ -357,6 +450,7 @@ _GEO_PROBE = """(() => new Promise(resolve => {
 _WAIT_MS = 30000
 
 
+
 def _read_geolocation_from_a_running_page(
     tmp_path, *, proxied: bool, granted: bool, provider_url=None
 ) -> dict:
@@ -420,38 +514,63 @@ def _read_geolocation_from_a_running_page(
         pm.add_profile(name, want, "windows", engine="firefox")
         profile = pm.profiles[name]
 
-        proc = spawn_browser(profile, in_process=True)
-
-        # BROWSER_STARTED on a PUMP THREAD: ``readline()`` blocks unboundedly,
-        # so a deadline tested only BETWEEN reads never fires against a session
-        # that starts and then goes silent.
-        lines: "queue.Queue[str]" = queue.Queue()
-
-        def pump():
-            try:
-                for line in iter(proc.stdout.readline, ""):
-                    if not line:
-                        break
-                    lines.put(line.rstrip())
-            except Exception:
-                pass
-
-        threading.Thread(target=pump, daemon=True).start()
-        deadline = time.monotonic() + 180
+        # RETRIED, because a first-attempt failure is NOT a finding here. The
+        # engine says so itself: "a proxied launch of the patched Firefox
+        # wedges INSIDE launch_persistent_context and never returns (live:
+        # ~half of fresh proxied launches hang on a half-destroyed
+        # initial-window attach)" — which is why `_enter_on_worker` bounds each
+        # attempt and retries on a FRESH worker. A harness that took one wedged
+        # launch as final would skip on a coin flip and report a host problem
+        # that is really a known, already-handled engine behaviour.
         started = False
-        while time.monotonic() < deadline:
-            try:
-                line = lines.get(timeout=2)
-            except queue.Empty:
-                continue
-            if "BROWSER_STARTED" in line:
-                started = True
+        for attempt in range(_LAUNCH_ATTEMPTS):
+            if attempt:
+                # Never relaunch over a still-dying instance — the same
+                # settling the engine's own retry loop does.
+                try:
+                    proc.terminate()
+                    proc.wait(timeout=20)
+                except Exception:
+                    pass
+                try:
+                    il.unregister_ff_eval(name)
+                except Exception:
+                    pass
+                time.sleep(5)
+
+            proc = spawn_browser(profile, in_process=True)
+
+            # BROWSER_STARTED on a PUMP THREAD: ``readline()`` blocks
+            # unboundedly, so a deadline tested only BETWEEN reads never fires
+            # against a session that starts and then goes silent.
+            lines: "queue.Queue[str]" = queue.Queue()
+
+            def pump(stream=proc.stdout, sink=lines):
+                try:
+                    for line in iter(stream.readline, ""):
+                        if not line:
+                            break
+                        sink.put(line.rstrip())
+                except Exception:
+                    pass
+
+            threading.Thread(target=pump, daemon=True).start()
+            deadline = time.monotonic() + _START_TIMEOUT_S
+            while time.monotonic() < deadline:
+                try:
+                    line = lines.get(timeout=2)
+                except queue.Empty:
+                    continue
+                if "BROWSER_STARTED" in line:
+                    started = True
+                    break
+            if started:
                 break
         if not started:
             pytest.skip(
-                "the firefox session never reported BROWSER_STARTED on this "
-                "host — an UNOBTAINED reading, which must not become evidence "
-                "in either direction"
+                f"the firefox session never reported BROWSER_STARTED in "
+                f"{_LAUNCH_ATTEMPTS} attempts on this host — an UNOBTAINED "
+                f"reading, which must not become evidence in either direction"
             )
 
         hook = il.get_ff_eval(name)
