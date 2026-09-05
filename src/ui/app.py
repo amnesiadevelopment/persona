@@ -3328,6 +3328,17 @@ class App:
         every prune (startup housekeeping and post-download alike) is covered
         without each call site needing its own condition.
 
+        Wires TWO oracles into the firefox prune, not one (PS-221). The boolean
+        one is the GATE — "is anything running?" — and the second narrows it to
+        WHICH builds those profiles are executing from, so a build none of them
+        is on is reclaimed rather than the whole prune deferring while any
+        profile stays open. They are separate because they fail in OPPOSITE
+        directions when unwired: the gate fails open (a library call with no UI
+        has no session state to defer to), the narrowing fails closed (a prune
+        that cannot say which builds are live must defer, which is precisely
+        today's behaviour). A half-wired app therefore degrades to the old
+        wholesale deferral, never to deleting a live build.
+
         Wires the SAME oracle into the Chromium updater, for the same reason at
         a different moment: pruning must not DELETE a build a session is running
         from, and an unattended install must not REPLACE one. Chromium keeps a
@@ -3350,6 +3361,47 @@ class App:
             )
         except Exception:
             logger.exception("Could not wire the engine-prune in-use guard")
+        try:
+            # PS-221: the NARROWING oracle — WHICH firefox builds the running
+            # sessions are executing from, so a build none of them is on can be
+            # reclaimed instead of the prune deferring wholesale on "is anything
+            # running?". Wired separately from the boolean above, and on purpose:
+            # the two are not one oracle with a richer return type. The boolean
+            # is the gate (and fails OPEN when unwired — a library call with no
+            # UI has no session state); this is a narrowing INSIDE that gate and
+            # fails CLOSED when unwired, so a half-wired app defers exactly as it
+            # did before this existed rather than pruning a live build.
+            #
+            # Reads the LAUNCHER's live session map and NOT the profile store's
+            # last_launch_build. The persisted stamp is written after the
+            # session is registered and its write is best-effort, so for a
+            # RUNNING profile it can name the previous launch's build — see
+            # launch_provenance.firefox_builds_in_use. That is why this lambda
+            # needs only one half now: the launcher answers "running" and "what
+            # it is running" together, in one lock, with no window between them.
+            #
+            # running_session_builds() is keyed WIDER than
+            # running_profile_names() — it includes SURVIVORS (browsers a
+            # previous persona left running) and INDETERMINATES (recorded
+            # sessions whose liveness could not be settled: no psutil,
+            # permission denied, no create time) with a None value, so they
+            # read as UNKNOWN rather than as absent. Either one missing from
+            # the map entirely would not defer the prune; it would licence
+            # deleting the build it is executing from. The boolean gate above
+            # is deliberately NOT widened to match: its callers are the running
+            # snapshot and the launch-refusal path, which handle survivors on
+            # their own and must let an indeterminate through — refusing a
+            # launch on no evidence costs the user their session, whereas
+            # deferring a prune on no evidence costs one prune cycle.
+            from ..services.browser.launch_provenance import firefox_builds_in_use
+
+            inv.set_in_use_builds_provider(
+                lambda: firefox_builds_in_use(self.bl.running_session_builds)
+            )
+        except Exception:
+            logger.exception(
+                "Could not wire the engine-prune in-use BUILDS guard"
+            )
         try:
             engine.set_in_use_provider(
                 lambda: len(self.bl.running_profile_names()) > 0
@@ -4809,8 +4861,15 @@ class App:
 
         A successful download then prunes superseded builds — which would delete
         the build a profile started on the PREVIOUS build is executing from, so
-        pruning defers entirely while any profile runs (the guard wired in
-        _wire_engine_prune_guard). Disk is reclaimed on a later prune instead."""
+        that prune spares the builds running profiles are actually executing
+        from (the guard wired in _wire_engine_prune_guard, which wires TWO
+        oracles: the "is anything running?" gate and the narrowing that says
+        WHICH builds are live). A superseded build no running profile is on is
+        therefore reclaimed HERE, even while other profiles stay open (PS-221).
+        Pruning still defers ENTIRELY — reclaiming nothing until a later prune —
+        when any running session cannot be resolved to a build: a survivor, an
+        indeterminate liveness probe, or an unwired narrowing provider all read
+        as UNKNOWN, and UNKNOWN defers rather than licensing a deletion."""
         from ..services.engine import firefox as ff_engine
 
         tag = self._engine2_latest

@@ -1,3 +1,4 @@
+import contextlib
 import logging
 import threading
 
@@ -59,9 +60,35 @@ class Container:
                 from ..services.browser.launch_provenance import resolve
 
                 engine, build_id = resolve(profile)
-                self.profile_manager.set_last_launch_build(
-                    profile.name, engine, build_id
-                )
+                try:
+                    self.profile_manager.set_last_launch_build(
+                        profile.name, engine, build_id
+                    )
+                except Exception:
+                    # A FAILED WRITE MUST NOT LEAVE THE PREVIOUS LAUNCH'S BUILD
+                    # STANDING (PS-221). The launcher swallows a raise from this
+                    # hook so the browser still opens — correct, and unchanged —
+                    # but "the launch proceeded and the record was not updated"
+                    # leaves an affirmative claim on the profile that names a
+                    # build this session is NOT running. That is the one shape
+                    # launch_provenance's own header rules out: "a stamp that
+                    # says the wrong build is worse than no stamp at all,
+                    # because the comparison it enables returns a confident
+                    # false answer, whereas None reads as 'not known'".
+                    #
+                    # So clear the build and keep the engine, which is known
+                    # from the launch itself. Best-effort in turn, and re-raised
+                    # if even that fails: the launcher's own except is what
+                    # keeps the browser open either way, and swallowing here
+                    # would only hide the first failure.
+                    #
+                    # Done in the container rather than in the launcher so the
+                    # launcher keeps knowing nothing about persistence.
+                    with contextlib.suppress(Exception):
+                        self.profile_manager.set_last_launch_build(
+                            profile.name, engine, None
+                        )
+                    raise
 
             bl.set_launch_record_hook(_record_launch_build)
             return bl
