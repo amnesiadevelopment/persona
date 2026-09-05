@@ -83,9 +83,38 @@ DOWNLOADED_STAMP = ".downloaded.stamp"
 PATCHED_STAMP = ".patched.stamp"
 DOMSUB_STAMP = ".domsub.stamp"
 
+# ⚠️ THE CONDITION MUST MATCH THE REASON, AND ONCE IT DID NOT.
+#
+# This guard used to read `find_posix_shell() is None`, which asks "is there a
+# bash on this machine?". On macOS there is — a GPLv2 **bash 3.2.57**, which
+# Apple has shipped since 2007 and will never update. So the predicate answered
+# "yes, run them" on the one platform whose shell cannot execute them, and the
+# suite went red on macos-latest for three separate reasons that are all facts
+# about the RUNNER rather than about the scripts:
+#
+#   * `${MODE^^}` (case conversion) is bash 4.0+. Under 3.2 it is a PARSE-TIME
+#     `bad substitution`, so the script dies before its first line — the tests
+#     then assert against EMPTY stdout and report "no verdict" as a wrong
+#     verdict, which is the dead-probe shape this file exists to prevent.
+#   * `sha256sum` is a GNU coreutils tool; macOS ships `shasum -a 256` instead,
+#     so the digest step exits 127.
+#   * `find -printf` is GNU-only; BSD find has no such flag.
+#
+# The scripts are NOT being made portable, deliberately. They run on
+# `[self-hosted, persona-build]`, which is Linux, and contorting them for a
+# platform they never execute on would add risk and buy nothing. The defect was
+# in the gate, so the gate is what changed: it now tests the platform the reason
+# string has always named, exactly as `tests/test_ps244_borrowed_control.py`
+# does for the same scripts-on-a-Linux-runner argument.
+#
+# `find_posix_shell() is None` is kept as a second term so a Linux box with no
+# usable shell still skips rather than erroring.
 pytestmark = pytest.mark.skipif(
-    find_posix_shell() is None,
-    reason="ps307_*.sh are bash and run on the Linux self-hosted runner",
+    not sys.platform.startswith("linux") or find_posix_shell() is None,
+    reason=(
+        "ps307_*.sh are GNU/bash-4 scripts that run on the Linux self-hosted "
+        "runner; macOS ships bash 3.2 (no ${x^^}) and lacks sha256sum/find -printf"
+    ),
 )
 
 
@@ -263,6 +292,7 @@ def _apply(patch_path: Path, src: Path, *, reverse: bool = False) -> subprocess.
         ],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         check=False,
     )
 
@@ -324,6 +354,7 @@ def _run(script: Path, args: list[str], *, cwd: Path, env_extra: dict) -> subpro
         env=env,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         check=False,
     )
 
@@ -380,11 +411,11 @@ def test_the_fixture_tree_really_takes_our_patches(patched_tree: Path):
     """
     src = patched_tree / "ucpl" / "build" / "src"
     # 007's added function is only in the tree if 007 actually applied.
-    element = (src / "third_party/blink/renderer/core/dom/element.cc").read_text()
+    element = (src / "third_party/blink/renderer/core/dom/element.cc").read_text(encoding="utf-8")
     assert "ShadowRoot* Element::FakeShadowRoot() const {" in element
 
     # And 009 is a REMOVAL-only patch: its evidence is a line that must be GONE.
-    navigator = (src / "third_party/blink/renderer/core/frame/navigator.cc").read_text()
+    navigator = (src / "third_party/blink/renderer/core/frame/navigator.cc").read_text(encoding="utf-8")
     assert "RuntimeEnabledFeatures::AutomationControlledEnabled()" not in navigator
 
     # 011 creates files that cannot exist unless it applied.
@@ -394,9 +425,9 @@ def test_the_fixture_tree_really_takes_our_patches(patched_tree: Path):
 def test_the_unmodified_fixture_really_lacks_our_patches(unmodified_tree: Path):
     """The negative fixture must be genuinely negative, not merely named so."""
     src = unmodified_tree / "ucpl" / "build" / "src"
-    element = (src / "third_party/blink/renderer/core/dom/element.cc").read_text()
+    element = (src / "third_party/blink/renderer/core/dom/element.cc").read_text(encoding="utf-8")
     assert "ShadowRoot* Element::FakeShadowRoot() const {" not in element
-    navigator = (src / "third_party/blink/renderer/core/frame/navigator.cc").read_text()
+    navigator = (src / "third_party/blink/renderer/core/frame/navigator.cc").read_text(encoding="utf-8")
     assert "RuntimeEnabledFeatures::AutomationControlledEnabled()" in navigator
     assert not (src / "third_party/blink/renderer/modules/webgl/gpu_fingerprint.cc").exists()
 
@@ -409,7 +440,7 @@ def test_verifier_finds_all_sixteen_patches_in_a_genuinely_patched_tree(patched_
     assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
     assert "all 16 fingerprint patches VERIFIED PRESENT" in result.stdout
 
-    report = (patched_tree / "record" / "patch-presence-patched.txt").read_text()
+    report = (patched_tree / "record" / "patch-presence-patched.txt").read_text(encoding="utf-8")
     assert "verdict:          PASS" in report
     # Every patch is individually accounted for — an aggregate verdict could hide
     # a patch that was never checked at all.
@@ -467,7 +498,7 @@ def test_verifier_fails_when_a_single_patch_is_missing(tmp_path: Path):
         "the verifier passed a tree missing 010-headless.patch. An artifact built "
         "from it would be labelled as carrying 16 patches while carrying 15."
     )
-    report = (tmp_path / "record" / "patch-presence-patched.txt").read_text()
+    report = (tmp_path / "record" / "patch-presence-patched.txt").read_text(encoding="utf-8")
     assert "010-headless.patch" in report
     assert "NOT IN THE TREE" in report
     # And the other 15 must still be reported as present — a check that failed
@@ -490,7 +521,7 @@ def test_verifier_catches_a_removal_only_patch(tmp_path: Path):
     result = _verify(tmp_path, "present")
 
     assert result.returncode != 0
-    report = (tmp_path / "record" / "patch-presence-patched.txt").read_text()
+    report = (tmp_path / "record" / "patch-presence-patched.txt").read_text(encoding="utf-8")
     assert "009-webdriver.patch" in report
     assert "NOT IN THE TREE" in report
 
@@ -564,6 +595,102 @@ def test_verifier_refuses_a_patch_set_that_is_not_ours(patched_tree: Path, tmp_p
     assert "expected exactly 16 fingerprint patches" in result.stdout
 
 
+def test_verifier_refuses_a_patch_it_can_draw_no_claims_from(
+    patched_tree: Path, tmp_path_factory
+):
+    """A patch yielding ZERO checkable claims is UNVERIFIABLE, never PRESENT.
+
+    THE GAP THIS PINS, and it is inside the guard this whole ticket exists for.
+    The refusal used to test `[ ! -s "$ev" ]` — an EMPTY evidence file — which is
+    only one of the two ways a patch arrives with nothing checkable, and the
+    rarer one. `ps307_patch_evidence.awk` emits an explicit `noevidence` record
+    for a file section it can draw no usable candidate from, so a patch whose
+    every section is `noevidence` produces a NON-EMPTY file carrying ZERO
+    claims: `! -s` never fires, the consumer loop `continue`s past each record
+    without incrementing `claims`, and the patch reaches the verdict with
+    `bad=0`. It was then printed as `PRESENT (0/0 claims hold)` — a pass, in
+    `present` mode, for a patch wholly absent from the tree.
+
+    The fixture is the exact shape the extractor's own comment names as
+    unusable: a short BUILD.gn source-list edit. It is checked against a tree
+    that does NOT carry it, so a verifier reporting PRESENT here is making a
+    false claim about the artifact's label — this ticket's own failure mode,
+    arriving through the checker instead of through the build.
+
+    Today's 16 do not hit this (011-gpu-info and 002-user-agent-fingerprint each
+    have one `noevidence` section but carry real claims from their other files —
+    `test_a_patch_with_one_unusable_file_is_still_verified_by_its_others` pins
+    that side). But that is a property of THIS set at THIS tag, and the premise
+    of the whole ticket is that a rebase changes the patch layer.
+    """
+    patch_dir = tmp_path_factory.mktemp("noevidence_patches")
+    # 15 of ours, so the count guard is satisfied and cannot be what fires.
+    for patch_path in sorted(PATCH_DIR.glob("*.patch"))[:15]:
+        shutil.copy2(patch_path, patch_dir / patch_path.name)
+    # ...and a 16th whose only section yields no usable evidence.
+    (patch_dir / "900-buildgn-only.patch").write_text(
+        "--- a/gpu/config/BUILD.gn\n"
+        "+++ b/gpu/config/BUILD.gn\n"
+        '@@ -10,6 +10,7 @@ source_set("config") {\n'
+        '     "gpu_info.cc",\n'
+        '     "gpu_info.h",\n'
+        '+    "gpu_spoof.cc",\n'
+        '     "gpu_util.cc",\n'
+        "   ]\n"
+        " }\n",
+        encoding="utf-8",
+    )
+
+    result = _run(
+        VERIFY_SH,
+        ["present", "patched"],
+        cwd=patched_tree,
+        env_extra={"UCPL_DIR": "ucpl", "PATCH_DIR": str(patch_dir)},
+    )
+
+    assert "900-buildgn-only.patch" in result.stdout
+    assert "UNVERIFIABLE" in result.stdout, (
+        "a patch the extractor can draw no claims from was not refused. If it "
+        "reads 'PRESENT   (0/0 claims hold)' the guard is testing the evidence "
+        "file's SIZE rather than its CLAIM COUNT, and a patch absent from the "
+        "tree is being reported as present."
+    )
+    # Not merely recorded — the run must FAIL. "Nothing to check" reporting as
+    # "checked and fine" is the defect; a soft note in the report would leave it.
+    assert result.returncode != 0
+    assert "0/0 claims hold" not in result.stdout
+
+
+def test_a_patch_with_one_unusable_file_is_still_verified_by_its_others(
+    patched_tree: Path,
+):
+    """The other half of the guard above: the refusal must not be over-broad.
+
+    A `noevidence` SECTION is normal and must stay survivable — two of our real
+    sixteen have one (011-gpu-info and 002-user-agent-fingerprint, both short
+    BUILD.gn source-list edits) and are verified through their other files. A
+    guard that refused any patch containing a `noevidence` record would fail
+    this build on a patch set that is entirely correct, which is the opposite
+    error and just as bad: it makes the gate the thing that has to be disabled.
+
+    So this asserts the real sixteen still pass in `present` mode against a tree
+    that genuinely carries them, and names the two patches whose evidence files
+    contain a `noevidence` record so that the claim is about THIS mechanism
+    rather than about the suite being green in general.
+    """
+    result = _verify(patched_tree, "present")
+
+    assert result.returncode == 0, (
+        "the real patch set no longer verifies against a tree that carries it. "
+        "If the zero-claim refusal is firing here it is keyed on the PRESENCE "
+        "of a `noevidence` record rather than on the absence of claims."
+    )
+    # The mechanism is actually exercised: at least one patch reported a file
+    # with no usable evidence AND the patch was still verified.
+    assert "no usable evidence in this file" in result.stdout
+    assert "UNVERIFIABLE" not in result.stdout
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # THE REUSE DECISION — reuse only when the tree on disk is THIS tree
 # ─────────────────────────────────────────────────────────────────────────────
@@ -571,14 +698,14 @@ def test_a_sealed_tree_of_the_same_identity_is_reused(patched_tree: Path):
     """The saving itself: seal, then plan again, and the tree survives."""
     assert _seal(patched_tree, "patched").returncode == 0
     marker = patched_tree / "ucpl" / "build" / "src" / "third_party/blink/renderer/core/dom/element.cc"
-    before = marker.read_text()
+    before = marker.read_text(encoding="utf-8")
 
     result = _plan(patched_tree, "patched")
 
     assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
     assert "REUSING the prepared tree" in result.stdout
-    assert marker.read_text() == before, "the tree was destroyed on the reuse path"
-    report = (patched_tree / "record" / "tree-reuse-patched.txt").read_text()
+    assert marker.read_text(encoding="utf-8") == before, "the tree was destroyed on the reuse path"
+    report = (patched_tree / "record" / "tree-reuse-patched.txt").read_text(encoding="utf-8")
     assert "reused: true" in report
 
 
@@ -593,6 +720,39 @@ def test_a_tree_from_a_different_tag_is_destroyed_not_reused(patched_tree: Path)
     assert OTHER_TAG in result.stdout and TAG in result.stdout
     assert not (patched_tree / "ucpl" / "build" / "src").exists(), (
         "a tree prepared for a different ungoogled tag survived the plan step"
+    )
+
+
+def test_a_tree_sealed_by_a_future_schema_is_not_reused(patched_tree: Path):
+    """An UNRECOGNISED identity format is a mismatch, never an assumed agreement.
+
+    `SCHEMA=1` is the only value that has ever existed, so nothing exercised
+    this comparison and it could have been deleted invisibly — it is
+    forward-looking by nature, which is exactly what makes it easy to drop and
+    expensive to lose. The day the identity format gains a field, an OLD tree on
+    a runner's disk is read by a NEW build: if the schema term is gone, the new
+    build parses the old stamp with the new meaning and can reuse a tree whose
+    identity it does not actually understand. That is the "trust a stamp you
+    cannot read" failure this ticket is written against.
+
+    Seal normally, then rewrite only the schema line — everything else about the
+    identity stays valid, so a refusal here can only be the schema term firing.
+    """
+    assert _seal(patched_tree, "patched").returncode == 0
+    identity = patched_tree / "ucpl" / "build" / "src" / ".persona-tree-identity"
+    identity.write_text(
+        identity.read_text(encoding="utf-8").replace("schema=1", "schema=2"),
+        encoding="utf-8",
+    )
+
+    result = _plan(patched_tree, "patched")
+
+    assert result.returncode == 0
+    assert "DESTROYING the tree" in result.stdout
+    assert "schema" in result.stdout
+    assert not (patched_tree / "ucpl" / "build" / "src").exists(), (
+        "a tree sealed under an identity schema this build does not speak "
+        "survived the plan step and would have been reused"
     )
 
 
@@ -637,7 +797,7 @@ def test_a_changed_patch_layer_destroys_the_tree(patched_tree: Path, tmp_path_fa
     for patch_path in sorted(PATCH_DIR.glob("*.patch")):
         shutil.copy2(patch_path, edited / patch_path.name)
     target = edited / "010-headless.patch"
-    target.write_text(target.read_text() + "\n# rebased\n", encoding="utf-8")
+    target.write_text(target.read_text(encoding="utf-8") + "\n# rebased\n", encoding="utf-8")
 
     result = _run(
         TREE_STATE_SH,
@@ -707,9 +867,26 @@ def test_seal_refuses_a_tree_whose_prepare_never_finished(patched_tree: Path):
     assert "fetch_sources() never completed" in result.stdout
 
 
+def test_seal_refuses_a_tree_whose_patching_never_finished(patched_tree: Path):
+    """The sibling of the check above, and it was the asymmetry in this file.
+
+    `seal` refuses on a missing `.downloaded.stamp` AND on a missing
+    `.patched.stamp`; only the first was pinned, so the second could have been
+    deleted by a later edit without a single test noticing. It matters for the
+    same reason its sibling does: sealing a tree whose `apply_patches()` never
+    completed hands the NEXT dispatch a tree that skips patching it never did —
+    and on the patched leg that is exactly the silent patch-dropping this whole
+    ticket exists to make impossible.
+    """
+    (patched_tree / "ucpl" / "build" / "src" / PATCHED_STAMP).unlink()
+    result = _seal(patched_tree, "patched")
+    assert result.returncode != 0
+    assert "apply_patches() never completed" in result.stdout
+
+
 def test_seal_records_the_identity_the_next_run_compares_against(patched_tree: Path):
     assert _seal(patched_tree, "patched").returncode == 0
-    identity = (patched_tree / "ucpl" / "build" / "src" / ".persona-tree-identity").read_text()
+    identity = (patched_tree / "ucpl" / "build" / "src" / ".persona-tree-identity").read_text(encoding="utf-8")
     assert f"ungoogled_tag={TAG}" in identity
     assert "tree=patched" in identity
     # The digest is over patch CONTENT, so a rebase changes it.
