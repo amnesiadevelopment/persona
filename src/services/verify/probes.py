@@ -797,6 +797,39 @@ PROBES: tuple[Probe, ...] = (
     Probe(
         "devices.kindCounts",
         WINDOW_ONLY,
+        # ⭐ PS-320 CONSIDERED WIDENING THIS AND DELIBERATELY DID NOT. Recorded
+        # here because the ticket's AC6 asks for the decision to be explicit —
+        # leaving it undecided by omission is how the defect it fixed survived.
+        #
+        # The defect was that `enumerateDevices` was installed at device.js's
+        # TOP LEVEL rather than on the realm registry, so a page-built child
+        # realm read the engine's device list while its neighbours were the
+        # profile's. This probe could not see that, because it reads the top
+        # window only.
+        #
+        # Widening it does not fix that, for two independent reasons, both
+        # measured rather than assumed:
+        #
+        #   1. WORKER is the wrong realm. `navigator.mediaDevices` is
+        #      `undefined` in a worker — read straight off the committed
+        #      baseline's own `stealth.apiPresence` row, where both
+        #      `MediaDevices` and `navigator.mediaDevices` are `undefined`. So
+        #      `BOTH` would add a row that is null by construction on every
+        #      engine forever: a widened baseline that records nothing, which
+        #      is worse than no row because it reads like coverage.
+        #
+        #   2. CHILD_FRAME is the right realm and is NOT RECORDED AT ALL. The
+        #      committed artifact's `realms` is ["window","worker"], so
+        #      `ALL_REALMS` cannot be honoured by the current recorder.
+        #      Widening BASELINE_REALMS to carry `child_frame` is its own slice
+        #      — PS-316, open — and doing it here would silently re-record every
+        #      probe in a new realm under a ticket about one vector's delivery.
+        #
+        # So the honest position is: this probe stays WINDOW_ONLY, the vector is
+        # guarded instead by a test that reads the value a CHILD REALM receives
+        # (tests/test_ps320_enumerate_devices_realm.py), and the probe widens
+        # when PS-316 gives the baseline a child_frame realm to record into.
+        #
         # Kind counts only — labels are user-identifying and are deliberately
         # NOT recorded into a file the operator may share.
         "(function(){"
