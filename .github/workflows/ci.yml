@@ -162,13 +162,89 @@ jobs:
       matrix:
         os: [ubuntu-24.04, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
-    # Measured per platform (see the floor table below): ubuntu 107s,
-    # macOS 110s, Windows 225-245s. Windows is ~2x the others and is the reason
-    # this is 30 rather than 20. All three are inside the window where people
-    # wait for a check rather than learning to merge past it, so the gate runs
-    # the WHOLE suite: no -k narrowing, no --deselect, no "fast subset". If it
-    # ever grows slow enough to tempt someone, split it by measuring again and
-    # gating on a stated portion — do not quietly start skipping tests here.
+    # THE SPLIT THIS CAP'S OWN COMMENT ASKED FOR HAS NOW HAPPENED (PS-313).
+    # Read this before changing either the cap or the `-m` expression below.
+    #
+    # The instruction that used to live here was: "the gate runs the WHOLE
+    # suite: no -k narrowing, no --deselect, no 'fast subset'. If it ever grows
+    # slow enough to tempt someone, split it by measuring again and gating on a
+    # stated portion." It grew slow enough. This is that split, taken by the
+    # route the sentence prescribed — measure, state the portion, gate it —
+    # and NOT by the route it forbids.
+    #
+    # WHAT WENT WRONG, MEASURED RATHER THAN INFERRED. The ubuntu leg stopped
+    # producing a verdict on main entirely: it ran to this cap and was
+    # CANCELLED, which is neither a pass nor a failure but the absence of a
+    # result. 21 of the 25 completed runs before this change ended that way,
+    # and every merge in that window landed with one third of the matrix blank.
+    # The last true green (8fbc38b, run 33777234681) was already at 1717s of
+    # the 1800s wall — 83 seconds of margin — so the wall was going to be
+    # crossed by the next thing that landed, whatever it was.
+    #
+    #   FROM THAT RUN'S OWN STEP TIMINGS (gh api .../jobs):
+    #     Install deps 41s | Provision the engine 6s | RUN THE TEST SUITE 1658s
+    #   1658 of 1717 seconds is pytest. There is no job overhead to reclaim.
+    #
+    # WHY IT IS ONE PLATFORM, WHICH IS THE FACT THE SPLIT RESTS ON. Ubuntu is
+    # not slower at the same work — it is doing work the other two do not do.
+    # The `ui_driver` tier boots a real persona and drives its real UI through
+    # a real browser, and it needs a chromium at /usr/bin/chromium. That binary
+    # exists ONLY on the ubuntu runner, so on the same run macOS and Windows
+    # each reported all 15 of those tests as
+    #     SKIPPED ... chromium not runnable here: /usr/bin/chromium is absent
+    # while ubuntu's 24 skips contained none of them. Per-platform: ubuntu
+    # 1717s, windows 1191s, macos 873s. Windows finishing inside the cap was
+    # never evidence that ubuntu misbehaves; it is evidence that Windows never
+    # ran this tier.
+    #
+    #   MEASURED LOCALLY at 62e0b91, PERSONA_REQUIRED_CAPABILITIES=browser,
+    #   full suite with --durations=60:
+    #     whole suite                  1976s   5566 collected
+    #     the 15 `ui_driver` tests       808s  (40.9% of it)
+    #     everything else               ~1168s
+    #   The tier's cost is dominated by a fixed ~45s boot PER TEST, not by the
+    #   interaction (tests/UI_DRIVING.md#cost owns those figures). So it grows
+    #   in ~45s steps every time a driven test is added, which is exactly the
+    #   tightening trend that ate this budget and would eat a raised cap too.
+    #
+    # WHY A SPLIT AND NOT SIMPLY A BIGGER NUMBER. A cap raised to fit today's
+    # suite is consumed by the same growth that consumed this one — the margin
+    # here went from ~439s to ~12s across two days without anyone deciding to
+    # spend it. Splitting puts the fast-growing tier on its own clock, so the
+    # 5551-test portion and the 15-test portion can no longer starve each
+    # other, and each one's growth is legible on its own job.
+    #
+    # THIS IS A PARTITION, NOT A NARROWING, AND THE DIFFERENCE IS THE WHOLE
+    # POINT. Nothing is excluded from the gate. `-m "not ui_driver"` here and
+    # `-m ui_driver` in the `ui-driver-tests` job below are exact complements —
+    # 5551 + 15 = 5566, every test collected by one job or the other, both jobs
+    # gating, neither allowed to fail without failing the workflow. A test that
+    # fell into a gap between them would be the real violation of the sentence
+    # this comment inherits, so the arithmetic is PINNED BY A TEST that
+    # re-collects both expressions and checks they sum to the whole:
+    # tests/test_ci_verification_gates.py::test_the_two_test_jobs_partition_the_suite.
+    # THE BAN THE OLD COMMENT STATED STILL STANDS IN FULL: no -k, no
+    # --deselect, no skip list, no continue-on-error, no non-gating job. Those
+    # turn a blank verdict into a false green, which is strictly worse than the
+    # cancellation this change exists to end.
+    #
+    # ONE THING THIS COSTS, STATED RATHER THAN GLOSSED. macOS and Windows no
+    # longer print those 15 "chromium not runnable here" skip lines, because
+    # the tests are now deselected there instead of collected-and-skipped. The
+    # number of tests EXECUTED on those platforms is unchanged — it was zero
+    # and it is still zero — and the replacement evidence is stronger, not
+    # weaker: the job below declares the `ui_driver` capability, so if that
+    # tier ever stops being able to run, it FAILS there instead of skipping
+    # quietly. What was a silent green is now a red.
+    #
+    # THE CAP STAYS AT 30 DELIBERATELY, and it is now a real bound rather than
+    # a wall being hit every run: this portion measures ~1168s locally and the
+    # ubuntu leg's 1658s should fall to roughly 850s, against 1800s. Windows is
+    # still the reason the number is 30 rather than 20 (it was 1191s on that
+    # last green and does not run the tier that was removed). If either job
+    # starts approaching its cap again, MEASURE AGAIN and split again on a
+    # stated portion — do not raise this number to buy a few weeks, and do not
+    # start skipping tests here.
     timeout-minutes: 30
     steps:
       - name: Check out the code
@@ -468,7 +544,14 @@ jobs:
         shell: bash
         env:
           PERSONA_REQUIRED_CAPABILITIES: browser
-        run: python -m pytest -q
+        # `-m "not ui_driver"` is a PARTITION, not a narrowing — see the long
+        # note on `timeout-minutes` above, which is the single owner of the
+        # reasoning. The complement runs in `ui-driver-tests` below, and the
+        # two are pinned to sum to the whole suite by
+        # tests/test_ci_verification_gates.py::test_the_two_test_jobs_partition_the_suite.
+        # Nothing is deselected FROM THE GATE; it is redistributed across two
+        # jobs that both gate. Do NOT add -k, --deselect or a skip list here.
+        run: python -m pytest -q -m "not ui_driver"
 
       - name: GPU reading (known-environmental, never a pass)
         # A hosted runner has no GPU, so WebGL renders in software. A persona
@@ -489,3 +572,153 @@ jobs:
         if: always()
         shell: bash
         run: python .github/scripts/report_runner_gpu.py
+
+  ui-driver-tests:
+    name: ui-driver tests (ubuntu-24.04)
+    # THE OTHER HALF OF THE PARTITION (PS-313). The `tests` job above runs
+    # `-m "not ui_driver"`; this one runs `-m ui_driver`. Together they collect
+    # every test in the suite — 5551 + 15 = 5566 at the commit this was
+    # measured on — and BOTH gate, so nothing has been removed from the merge
+    # gate. See the long note on that job's `timeout-minutes` for why the split
+    # exists; this comment does not restate it.
+    #
+    # UBUNTU ONLY, AND THAT IS NOT A REDUCTION IN COVERAGE. This tier needs a
+    # chromium at /usr/bin/chromium to drive persona's real UI, and only the
+    # ubuntu runner has one. On macOS and Windows these 15 tests were already
+    # collected and then SKIPPED, every run, with "chromium not runnable here:
+    # /usr/bin/chromium is absent" — measured on run 33777234681. The number of
+    # them that EXECUTED on those platforms was zero before this change and is
+    # zero after it. What changed is only where the zero is stated.
+    #
+    # NOT A MATRIX, DELIBERATELY. A one-entry matrix would imply the other
+    # platforms are coming; they are not, until something provisions a chromium
+    # there. When one does, add it here and the guard test that pins the
+    # partition will keep holding — it checks the marker expressions, not the
+    # platform list.
+    runs-on: ubuntu-24.04
+    # MEASURED, not guessed: the 15 tests total 808s locally at 62e0b91
+    # (--durations over a full suite run), and the tier's cost is ~45s of fixed
+    # app-and-browser boot PER TEST rather than the interaction — see
+    # tests/UI_DRIVING.md#cost, which is the single owner of those figures.
+    # 20 minutes is ~1.5x the measured cost, which is real margin on a tier
+    # whose per-test price is dominated by startup and therefore varies with
+    # runner load. It is a BOUND, not a target: if it is ever being hit rather
+    # than cleared, measure again and split again — do not raise it reflexively
+    # and do not start skipping tests to fit.
+    timeout-minutes: 20
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Set up Node
+        # PINNED for the same reason the `tests` job pins it, and to the same
+        # version: this suite drives generated cloak scripts through a real JS
+        # engine, so an unpinned engine means a gate that can change its answer
+        # with no change to this repo. Keep all three (here, `tests`, and
+        # release.yml) in step.
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: "24"
+
+      - name: Report what this machine actually is
+        shell: bash
+        run: |
+          python -c "import platform, sys; print('platform:', platform.platform()); print('machine :', platform.machine()); print('python  :', sys.version)"
+          node --version
+          echo "DISPLAY=[${DISPLAY:-<unset>}]"
+          echo "chromium: $(command -v chromium || echo '<absent>')"
+
+      - name: Install deps
+        # DELIBERATELY IDENTICAL to the `tests` job and to release.yml's, for
+        # the reason stated there: two gates must not drift into two different
+        # definitions of "the suite". Change all of them or none.
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          pip install --prefer-binary .
+          pip check
+          if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt; else pip install pytest; fi
+
+      - name: Provision the chromium this tier drives
+        # THE ONE STEP THIS JOB HAS THAT THE OTHER DOES NOT, and the whole
+        # reason the tier is ubuntu-only. tests/ui_driver/driver.py:30 launches
+        # the SYSTEM binary at an explicit /usr/bin/chromium
+        # (executable_path=SYSTEM_CHROMIUM) rather than a playwright download,
+        # because the playwright cache this project provisions carries firefox
+        # only. So `playwright install chromium` would NOT satisfy it: the
+        # driver does not look there.
+        #
+        # This is NOT the product's own fingerprint-chromium engine, and it is
+        # not pretending to be — that binary arrives through the app's engine
+        # updater and is a separate, open question (see the browser_chromium
+        # note in the `tests` job). This is a stock chromium used purely as a
+        # thing that can render the served flet UI so the driver can press its
+        # controls.
+        #
+        # CHECK FIRST, INSTALL ONLY IF ABSENT — and that order is a measured
+        # decision, not caution. On run 33777234681 the ubuntu leg's skip list
+        # contained none of the 15 driven tests while macOS and Windows skipped
+        # all of them for want of this binary, so the runner image demonstrably
+        # ALREADY carries it and an unconditional apt-get would spend a minute
+        # reinstalling what is there. The fallback stays because "the image
+        # ships it" is a fact about today's image, and this tier must fail
+        # loudly rather than skip quietly if that ever changes.
+        shell: bash
+        run: |
+          if [ ! -x /usr/bin/chromium ]; then
+            echo "/usr/bin/chromium absent on this image — installing"
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends chromium || \
+              sudo apt-get install -y --no-install-recommends chromium-browser
+            # The driver looks at exactly this path and nowhere else, so a
+            # chromium installed under another name must be LINKED to it
+            # rather than found by a search the driver does not perform.
+            if [ ! -x /usr/bin/chromium ]; then
+              for candidate in /usr/bin/chromium-browser /snap/bin/chromium; do
+                if [ -x "$candidate" ]; then sudo ln -sf "$candidate" /usr/bin/chromium; break; fi
+              done
+            fi
+          fi
+          # Fail the JOB here rather than let the suite report 15 skips. A
+          # missing binary is a broken environment, and this tier exists to
+          # make that loud — the declaration in the run step turns those skips
+          # into failures anyway, but failing at the provisioning step names
+          # the actual cause instead of making a reader infer it from 15
+          # identical skip reasons.
+          test -x /usr/bin/chromium
+          /usr/bin/chromium --version
+
+      - name: Run the ui_driver tier
+        # DECLARES `ui_driver`, WHICH IS THE POINT — and it is strictly stronger
+        # than what this tier had before.
+        #
+        # Under conftest.py's capability mechanism (PS-58), a machine that
+        # DECLARES a capability turns a skip of the tests needing it into a
+        # FAILURE naming what was missing. Before this job existed, these 15
+        # tests ran on the ubuntu leg with only `browser` declared — so if
+        # /usr/bin/chromium ever vanished from the runner image, all 15 would
+        # have skipped with a reason nobody reads and the leg would still have
+        # gone green. Here that is a red.
+        #
+        # `browser` is deliberately NOT declared here. This job provisions a
+        # chromium and nothing else — it runs no `playwright install firefox`
+        # — and declaring a capability a job has not provisioned is the exact
+        # inference this file refuses everywhere else. The Firefox probes are
+        # not in this tier; they run under the `tests` job, which does
+        # provision the binary and does declare it.
+        shell: bash
+        env:
+          PERSONA_REQUIRED_CAPABILITIES: ui_driver
+        # The complement of the `tests` job's expression. Do NOT narrow this
+        # further with -k or --deselect: the two expressions are pinned to sum
+        # to the whole suite, and anything removed here is removed from the
+        # gate entirely rather than moved to the other job.
+        run: python -m pytest -q -m ui_driver
