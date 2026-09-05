@@ -72,3 +72,50 @@ fresh debug ports reproduced that. The bad reading came from a contaminated
 CDP session (stale profile / reused port), not from the build. Distrust a
 reading that changes a value your diff never touches - availHeight 1080 is not
 even reachable through `H - INSET` for any pool entry, which is the tell.
+
+
+=====================================================================
+ROUND 2 — THE FIRST FIX WAS WRONG. CORRECTED BY MEASUREMENT.
+=====================================================================
+Reviewer (persona-reviewer, audit FAIL on PR #266 @ 392ce47) found that the
+round-1 fix — clamping the REPORTED outer down to the spoofed screen — bought
+R3 by breaking R1. Reproduced independently here with the same builder:
+
+   pick          inner        outer       screen    oW-iW  oH-iH  R1
+   win 1280x720  [1919,936]  [1280,680]  [1280,720]  -639   -256  VIOLATED
+   win 1366x768  [1919,936]  [1366,728]  [1366,768]  -553   -208  VIOLATED
+   win 1600x900  [1919,936]  [1600,860]  [1600,900]  -319    -76  VIOLATED
+   mac 1440x900  [1919,936]  [1440,875]  [1440,900]  -479    -61  VIOLATED
+
+ATTRIBUTION, checked at the merge-base d658c81 (the "broke it vs exposed it"
+rule): R1 HELD at base (oW-iW = 0) while R3 was the violation. So round 1's
+breakage was mine and in scope, not debt it exposed.
+
+WHY IT WAS NOT A SLIP IN THE CLAMP — IT IS ARITHMETIC:
+   live inner 1919, picked screen 1280
+   R1 needs outer >= 1919
+   R3 needs outer <= 1280
+   => 1919 <= outer <= 1280 is EMPTY.
+No value the content script reports satisfies both. Bounding the clamp below
+by inner (the obvious repair) only chooses R3's violation instead of R1's.
+
+THE ROOT IS R2 (inner <= screen), and `inner` is the real window's content
+box — not spoofable at the reporting layer without breaking layout on real
+pages. So the reporting layer is the WRONG LAYER for this vector.
+
+MEASURED FIX — CAP THE WINDOW. Live under Xvfb, window sized to the pick:
+   CAP to 1280x720:  inner [1280,577]  outer [1280,680]  screen [1280,720]
+      R1  1280 >= 1280  OK
+      R2  1280 <= 1280  OK   <-- even the PRE-EXISTING violation clears
+      R3  1280 <= 1280  OK
+All three hold simultaneously, which the reporting layer provably cannot do.
+
+A FACT I GOT WRONG IN ROUND 1, corrected: I rejected the cap partly because I
+believed the desktop branch could not know the resolution at launch. It CAN —
+process.py's desktop `else` arm already computes
+parse_resolution(profile.resolution) to build the extension, so the value is
+in hand exactly where launch args are assembled.
+
+RESULT: device_ext.py is now BYTE-IDENTICAL to base. The whole fix is one
+launch arg in process.py, fired only when a desktop profile carries a FORCED
+resolution (parse_resolution("auto") is None, so AUTO cannot reach it).

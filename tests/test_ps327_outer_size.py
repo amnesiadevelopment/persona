@@ -1,74 +1,180 @@
-"""PS-327 — window.outerWidth/outerHeight must FIT the reported screen.
+"""PS-327 — a FORCED-resolution desktop profile must present a COHERENT window.
 
-ASSERT ON BEHAVIOUR, NOT ON THE EMITTED TEXT. Every branch of device_ext is
-written into every generated file and chosen at RUNTIME from a baked value, so
-a substring check proves nothing about what a given profile actually does —
-the trap PS-12 documented and PS-22 re-documented. These tests run the
-generated script in an isolated node realm and ask what a PAGE SEES, which is
-also what AC6 requires: reverting the fix must go red on the VALUE THE PAGE
-RECEIVED, never on a source-text assertion.
+THE THREE RELATIONS, and why one of them cannot be fixed at the reporting layer
+------------------------------------------------------------------------------
+A real browser window always satisfies all three:
 
-WHAT THE CELL IS, AND WHY THE AUTO LEG IS IN EVERY TEST HERE
-------------------------------------------------------------
+    R1  outer >= inner    a window contains its own content
+    R2  inner <= screen   the content fits the monitor
+    R3  outer <= screen   the window fits the monitor
+
 `chromium:outer-size` was the masking matrix's one reverse cell — Firefox
 COVERED, Chromium NOT_ESTABLISHED. It was established for #327 by MEASUREMENT
-before any spoof was written, on a real headful Chromium 152 under Xvfb at
-1920x1080 with an operator-picked 1280x720 (the reading is committed at
+before any spoof was written, on real headful Chromium 152 under Xvfb at
+1920x1080 with an operator-picked 1280x720 (reading committed at
 readings/ps327-2026-09-05/ac1-live-reading.txt):
 
-    FORCED  outer 1919x1079  vs screen 1280x720   -> outer > screen, BOTH axes
+    FORCED  outer 1919x1079  vs screen 1280x720   -> R3 VIOLATED, both axes
     AUTO    outer 1919x1079  vs screen 2560x1440  -> already coherent
 
-AUTO is the POSITIVE CONTROL and is what makes this a finding rather than a
-category: same module, same realm, same window, same seed — one branch cannot
-produce the mismatch and the other did nothing to prevent it. So every test
-below that asserts the FORCED fix also has an AUTO sibling; a fix that "worked"
-by flattening both branches would pass the first and fail the second.
+⭐ THE FIRST ATTEMPT FIXED R3 BY BREAKING R1, AND THAT IS THE INSTRUCTIVE PART.
+Clamping the REPORTED `outer` down to the spoofed screen bought R3 and produced
+`outerWidth < innerWidth` — a window smaller than its own content, negative
+chrome, measured at -639/-256 on the 1280x720 pick. That is arithmetic, not an
+implementation slip:
 
-⚠️ A VENUE TRAP WORTH KNOWING, because it produces a FALSE NEGATIVE on exactly
-this vector: `chromium --headless=new` reports outerWidth/outerHeight as **0**.
-A headless reading therefore says `outer > screen` is false and "establishes"
-the cell as already coherent, having measured nothing. The extension is
-demonstrably live in such a run (screen.width still differs across branches),
-so the zero is an artifact of the venue rather than evidence. The live half of
-this ticket needed a real window; that is why the reading above is headful.
-The node realm here has no window at all, so these tests supply inner/outer as
-explicit stub values — which is the point: the harness states the geometry
-instead of inheriting a host's.
+    live inner 1919, picked screen 1280
+    R1 needs outer >= 1919;  R3 needs outer <= 1280;  the interval is EMPTY
+
+So NO value the content script reports can satisfy both. The root is R2:
+`inner` is the real window's content box, and it is not spoofable at the
+reporting layer without breaking layout on real pages.
+
+CAPPING THE WINDOW fixes R2 at its source, and then all three hold at once —
+measured live under Xvfb with the window capped to the pick:
+
+    inner [1280, 577]   outer [1280, 680]   screen [1280, 720]
+    R1 1280>=1280 OK    R2 1280<=1280 OK    R3 1280<=1280 OK
+
+This is Firefox's own answer to the same question (`_seed_window_size`, #216:
+"a window can't be wider than its screen"), reached here through a launch flag
+because Chromium has no persisted window-size seed.
+
+WHAT THIS FILE ASSERTS, AND AT WHICH LAYER
+------------------------------------------
+The fix is now a LAUNCH ARG, so the argv tests drive the real `spawn_browser`
+with only `Popen` swapped (the `tests/test_launch_reconciles_device_type.py`
+pattern). The relation tests still run the generated extension in a node realm
+and ask what a PAGE SEES — never what the source text says — because that is
+what AC6 requires: reverting the fix must go red on a VALUE, not on a grep.
+
+⚠️ A VENUE TRAP WORTH KNOWING: `chromium --headless=new` reports
+outerWidth/outerHeight as **0**, on the exact property under test, which reads
+as "no mismatch" and would establish the cell having measured nothing. The
+extension is demonstrably live in such a run (screen.width still differs across
+branches), so the zero is an artifact of the venue rather than evidence. The
+live half of this ticket needed a real window.
 """
 
 import json
+import os
 import pathlib
 import shutil
 import subprocess
 
 import pytest
 
+from src.models.profile import Profile
+from src.services.browser import process
 from src.services.browser.device_ext import build_device_extension
+from src.services.browser.engine_version import ChromiumVersion
 
-# A realm with NO window manager: inner/outer are whatever the stub declares.
-# `outer > inner` models real window chrome; the numbers are the measured ones
-# from the live reading so the unit and the live evidence describe one scenario.
-_STUBS = r"""
-globalThis.__geom = { innerWidth: 1919, innerHeight: 936,
-                      outerWidth: 1919, outerHeight: 1079 };
-for (const k of ["innerWidth", "innerHeight", "outerWidth", "outerHeight"]) {
-  Object.defineProperty(globalThis, k, {
-    configurable: true,
-    get: function () { return globalThis.__geom[k]; },
-  });
-}
-globalThis.screen = {
-  width: 1919, height: 1079, availWidth: 1919, availHeight: 1079,
-  colorDepth: 24, pixelDepth: 24,
-};
-globalThis.navigator = { userAgent: "Mozilla/5.0", hardwareConcurrency: 8 };
-globalThis.matchMedia = function (q) {
-  return { matches: false, media: q, addListener: function () {},
-           removeListener: function () {} };
-};
-globalThis.document = { documentElement: {}, addEventListener: function () {} };
-"""
+
+# ---------------------------------------------------------------------------
+# Layer 1 — the launch argv, where the fix lives
+# ---------------------------------------------------------------------------
+
+
+class _Store:
+    def resolve(self, name):
+        return ""
+
+    def get(self, name):
+        return None
+
+
+class _Bookmarks:
+    def resolve_selection(self, pool, names):
+        return []
+
+
+def _argv(monkeypatch, tmp_path, profile):
+    """Drive the REAL spawn_browser with only Popen swapped; return its argv."""
+    captured = {}
+
+    class _FakePopen:
+        def __init__(self, args, **kwargs):
+            captured["args"] = args
+            self.pid = os.getpid()
+
+    monkeypatch.setattr(
+        process, "installed_chromium_version", lambda: ChromiumVersion("152.0.7977.75")
+    )
+    monkeypatch.setattr(process, "DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(process, "ProxyStore", _Store)
+    monkeypatch.setattr(process, "BookmarkStore", _Bookmarks)
+    monkeypatch.setattr(process, "write_window_entry", lambda name: None)
+    monkeypatch.setattr(process.subprocess, "Popen", _FakePopen)
+    monkeypatch.setattr(process._platform, "IS_LINUX", True)
+    process.spawn_browser(profile)
+    return captured["args"]
+
+
+def _window_size(args):
+    for a in args:
+        if a.startswith("--window-size="):
+            return a[len("--window-size=") :]
+    return None
+
+
+def test_a_forced_desktop_resolution_caps_the_window(monkeypatch, tmp_path):
+    """THE FIX. The window is sized to the operator's pick, so the content box
+    it produces cannot exceed the screen the extension reports."""
+    args = _argv(
+        monkeypatch,
+        tmp_path,
+        Profile(name="ps327-forced", os_type="windows", resolution="1280x720"),
+    )
+    assert _window_size(args) == "1280,720", (
+        "a FORCED desktop profile must cap its window to the picked resolution; "
+        f"argv carried --window-size={_window_size(args)}"
+    )
+
+
+def test_an_auto_desktop_profile_still_passes_no_window_size(monkeypatch, tmp_path):
+    """AC4's negative assertion, at the layer the fix now lives in.
+
+    AUTO is the POSITIVE CONTROL for this whole cell: it floors the spoofed
+    screen at the live window, so it was already coherent and must stay
+    EXACTLY as it was. `parse_resolution("auto")` is None, so the new arm
+    cannot fire — asserted rather than assumed.
+    """
+    args = _argv(
+        monkeypatch,
+        tmp_path,
+        Profile(name="ps327-auto", os_type="windows", resolution="auto"),
+    )
+    assert _window_size(args) is None, (
+        "an AUTO desktop launch must pass NO --window-size, exactly as before; "
+        f"argv carried --window-size={_window_size(args)}"
+    )
+
+
+def test_a_mobile_profile_still_uses_its_preset_window(monkeypatch, tmp_path):
+    """The pre-existing mobile arm is untouched. It sizes the window to the
+    device's CSS viewport, which is a different concern from this vector and is
+    explicitly out of scope — asserted so this change cannot silently capture
+    it."""
+    args = _argv(
+        monkeypatch,
+        tmp_path,
+        Profile(
+            name="ps327-mobile",
+            os_type="android",
+            device_type="mobile",
+            resolution="1280x720",
+        ),
+    )
+    size = _window_size(args)
+    assert size is not None and size != "1280,720", (
+        "a mobile launch must keep sizing its window from the DEVICE PRESET, "
+        f"not from the desktop resolution pick; got --window-size={size}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Layer 2 — the three relations, as a page reads them
+# ---------------------------------------------------------------------------
 
 _HARNESS = r"""
 const fs = require('fs');
@@ -96,143 +202,47 @@ _READ = (
 )
 
 
-def _run(tmp_path, *, resolution, os_type="windows", probe=_READ, tag=""):
-    """Build the device extension and read the geometry a page would see."""
+def _stubs(inner_w, inner_h, outer_w, outer_h):
+    """A realm with NO window manager: the geometry is whatever we declare, so
+    the harness STATES the window rather than inheriting a host's."""
+    return f"""
+globalThis.__geom = {{ innerWidth: {inner_w}, innerHeight: {inner_h},
+                       outerWidth: {outer_w}, outerHeight: {outer_h} }};
+for (const k of ["innerWidth", "innerHeight", "outerWidth", "outerHeight"]) {{
+  Object.defineProperty(globalThis, k, {{
+    configurable: true,
+    get: function () {{ return globalThis.__geom[k]; }},
+  }});
+}}
+globalThis.screen = {{
+  width: {outer_w}, height: {outer_h}, availWidth: {outer_w},
+  availHeight: {outer_h}, colorDepth: 24, pixelDepth: 24,
+}};
+globalThis.navigator = {{ userAgent: "Mozilla/5.0", hardwareConcurrency: 8 }};
+globalThis.matchMedia = function (q) {{
+  return {{ matches: false, media: q, addListener: function () {{}},
+           removeListener: function () {{}} }};
+}};
+globalThis.document = {{ documentElement: {{}}, addEventListener: function () {{}} }};
+"""
+
+
+def _seen(tmp_path, *, resolution, inner, outer, os_type="windows", tag=""):
+    """What a page in a window of this geometry sees, under this resolution."""
     node = shutil.which("node")
     if not node:
         pytest.skip("node not available")
 
-    work = pathlib.Path(tmp_path) / f"p{os_type}{tag}{resolution}"
+    work = pathlib.Path(tmp_path) / f"r{os_type}{tag}{resolution}{inner}"
     work.mkdir(parents=True, exist_ok=True)
     ext = build_device_extension(
         12345, str(work / "dev"), 0, resolution=resolution, os_type=os_type
-    )
-    harness = work / "harness.js"
-    harness.write_text(_HARNESS, encoding="utf-8")
-    cfg = work / "cfg.json"
-    cfg.write_text(
-        json.dumps(
-            {
-                "stubs": _STUBS,
-                "scripts": [str(pathlib.Path(ext) / "device.js")],
-                "probe": probe,
-            }
-        ),
-        encoding="utf-8",
-    )
-    out = subprocess.run(
-        [node, str(harness), str(cfg)],
-        capture_output=True,
-        text=True,
-        timeout=60,
-        encoding="utf-8",
-    )
-    assert out.returncode == 0, out.stderr
-    return json.loads(json.loads(out.stdout)["result"])
-
-
-# ---------------------------------------------------------------------------
-# The defect itself
-# ---------------------------------------------------------------------------
-
-
-def test_a_forced_resolution_smaller_than_the_window_reports_a_window_that_fits(
-    tmp_path,
-):
-    """THE AC6 TEST. Revert the pin and this goes red on the reported VALUE.
-
-    A window wider than its own monitor is something no real un-maximized
-    window shows, and it additionally hands the page the true window extent
-    (1919) that the spoofed screen exists to conceal.
-    """
-    g = _run(tmp_path, resolution=(1280, 720))
-
-    assert g["screen"] == [1280, 720], (
-        "the operator's pick must survive verbatim — a changed screen here is "
-        f"#167 re-opening, not this fix working. Got {g['screen']}."
-    )
-    assert g["outer"][0] <= g["screen"][0], (
-        f"outerWidth {g['outer'][0]} exceeds screen.width {g['screen'][0]}: a "
-        "window wider than its monitor, and the real window extent is "
-        "recoverable from the pair."
-    )
-    assert g["outer"][1] <= g["screen"][1], (
-        f"outerHeight {g['outer'][1]} exceeds screen.height {g['screen'][1]}. "
-        "BOTH axes failed in the live reading; a width-only pin leaves the "
-        "pair impossible."
-    )
-
-
-def test_the_auto_branch_is_unchanged_and_is_the_control(tmp_path):
-    """AC4's negative assertion, and the control that gives the test above its
-    meaning. AUTO floors the screen at the window by construction, so it was
-    already coherent and must stay EXACTLY as it was."""
-    g = _run(tmp_path, resolution=None)
-
-    assert g["screen"][0] >= 1919 and g["screen"][1] >= 1079, (
-        "the AUTO branch picks a screen that CONTAINS the window; a screen "
-        f"smaller than the window here means the floor broke. Got {g['screen']}."
-    )
-    assert g["outer"] == [1919, 1079], (
-        "AUTO's reported outer must be the live window untouched — clamping it "
-        f"here would be the fix leaking onto the control. Got {g['outer']}."
-    )
-
-
-def test_the_pick_is_honoured_outright_so_167_stays_closed(tmp_path):
-    """#167: gating FORCED on the window extent leaked the render scale — a
-    chosen 2560 failed containment, fell through to the auto-pick and reported
-    ~4K. Pinning outer cannot re-open it, because it never participates in
-    choosing W/H. Asserted with a pick LARGER than the window, which is the
-    shape that leaked."""
-    g = _run(tmp_path, resolution=(2560, 1440), tag="big")
-
-    assert g["screen"] == [2560, 1440], (
-        f"a pick larger than the window must be honoured outright; got "
-        f"{g['screen']} — this is #167's exact failure shape."
-    )
-    assert g["outer"] == [1919, 1079], (
-        "with the screen larger than the window there is nothing to clamp: the "
-        f"real window extent is already coherent. Got {g['outer']}."
-    )
-
-
-def test_the_clamp_is_not_an_inflation(tmp_path):
-    """A genuinely small window must keep reporting its own small extent.
-
-    The clamp is min(inner + chrome, screen) — it may only ever REDUCE. If it
-    were written as `= screen` it would pass the headline test above while
-    telling every small window to claim it fills the monitor, which is its own
-    tell and would be invisible to a test that only checks outer <= screen.
-
-    ⚠️ THE FIXTURE HAS TO DESCRIBE A WINDOW THAT GENUINELY FITS. A first draft
-    used inner 800x600 / outer 814x691 against a 1280x720 pick, and the clamp
-    correctly trimmed 691 to 680 — because availHeight is 720-40 and a window
-    691 tall would overlap its own taskbar. That was the FIXTURE describing the
-    very defect under test, not the clamp over-reaching. 600x400 fits with room
-    to spare, so any trimming here is the fix leaking.
-    """
-    small = _STUBS.replace(
-        "innerWidth: 1919, innerHeight: 936,\n"
-        "                      outerWidth: 1919, outerHeight: 1079",
-        "innerWidth: 600, innerHeight: 400,\n"
-        "                      outerWidth: 614, outerHeight: 491",
-    )
-    assert small != _STUBS, "the stub substitution did not take"
-
-    node = shutil.which("node")
-    if not node:
-        pytest.skip("node not available")
-    work = pathlib.Path(tmp_path) / "small"
-    work.mkdir(parents=True, exist_ok=True)
-    ext = build_device_extension(
-        12345, str(work / "dev"), 0, resolution=(1280, 720), os_type="windows"
     )
     (work / "harness.js").write_text(_HARNESS, encoding="utf-8")
     (work / "cfg.json").write_text(
         json.dumps(
             {
-                "stubs": small,
+                "stubs": _stubs(inner[0], inner[1], outer[0], outer[1]),
                 "scripts": [str(pathlib.Path(ext) / "device.js")],
                 "probe": _READ,
             }
@@ -247,28 +257,115 @@ def test_the_clamp_is_not_an_inflation(tmp_path):
         encoding="utf-8",
     )
     assert out.returncode == 0, out.stderr
-    g = json.loads(json.loads(out.stdout)["result"])
+    return json.loads(json.loads(out.stdout)["result"])
 
-    assert g["outer"] == [614, 491], (
-        "a small window must report its OWN extent (inner + real chrome), not "
-        f"be inflated to the spoofed screen. Got {g['outer']} against a "
-        "declared 614x491."
+
+def _assert_coherent(g, label):
+    """All three relations, asserted together and named individually."""
+    assert g["outer"][0] >= g["inner"][0] and g["outer"][1] >= g["inner"][1], (
+        f"{label}: R1 broken — outer {g['outer']} is SMALLER than inner "
+        f"{g['inner']}. A window cannot be smaller than its own content; this "
+        "is the negative-chrome signature invisible_launch.py's outer-size "
+        "probe calibrates as leaking."
     )
-    assert g["outer"][0] < g["screen"][0], "still fits its screen"
+    assert g["inner"][0] <= g["screen"][0] and g["inner"][1] <= g["screen"][1], (
+        f"{label}: R2 broken — inner {g['inner']} exceeds screen {g['screen']}. "
+        "The content box does not fit the monitor it claims."
+    )
+    assert g["outer"][0] <= g["screen"][0] and g["outer"][1] <= g["screen"][1], (
+        f"{label}: R3 broken — outer {g['outer']} exceeds screen {g['screen']}. "
+        "A window wider than its own monitor, and the real window extent is "
+        "recoverable from the pair."
+    )
 
 
-def test_the_mac_preset_clamps_against_its_own_inset(tmp_path):
-    """The clamp uses the SAME INSET the availHeight pin uses (25 mac / 40
-    win), so the reported window fits the reported WORK AREA and not merely the
-    raw screen. A mac profile is the cheap way to prove the inset is read
-    rather than hardcoded to 40."""
-    g = _run(tmp_path, resolution=(1440, 900), os_type="macos", tag="mac")
+def test_a_capped_window_satisfies_all_three_relations(tmp_path):
+    """THE AC6 TEST, at the layer the page reads.
 
+    The window is capped to the pick (what the launch arg now does), so the
+    content box fits and every relation holds. Remove the cap — restore a
+    window larger than the pick — and R3 goes red on the reported VALUE, which
+    is the test below.
+    """
+    g = _seen(tmp_path, resolution=(1280, 720), inner=(1280, 577), outer=(1280, 680))
+    assert g["screen"] == [1280, 720], (
+        f"the operator's pick must survive verbatim — a changed screen is #167 "
+        f"re-opening, not this fix working. Got {g['screen']}."
+    )
+    _assert_coherent(g, "capped FORCED")
+
+
+def test_without_the_cap_the_window_is_incoherent(tmp_path):
+    """THE DEFECT ITSELF, pinned so the cap cannot be removed silently.
+
+    This is the geometry the launch produced BEFORE the cap: a real 1920x1080
+    window against a 1280x720 pick. It reproduces the AC1 reading, and it is
+    what goes red if the `--window-size` arm is deleted from spawn_browser.
+    """
+    g = _seen(tmp_path, resolution=(1280, 720), inner=(1919, 936), outer=(1919, 1079))
+
+    assert g["screen"] == [1280, 720]
+    assert g["outer"][0] > g["screen"][0], (
+        "the uncapped window is the defect this ticket established by "
+        f"measurement; got outer {g['outer']} vs screen {g['screen']}"
+    )
+    # R2 is what trips FIRST, and that ordering is the finding rather than an
+    # accident of assertion order: the uncapped window's CONTENT already
+    # exceeds the picked screen (1919 > 1280), which is why no reported `outer`
+    # can satisfy R1 and R3 together, and why the cap has to act on the window
+    # instead of on the reported size.
+    with pytest.raises(AssertionError, match="R2 broken"):
+        _assert_coherent(g, "uncapped FORCED")
+    # ...and R3 is violated too — asserted directly so the test names BOTH
+    # broken relations rather than only the one that happens to raise first.
+    assert g["outer"][0] > g["screen"][0] and g["outer"][1] > g["screen"][1], (
+        f"R3 must also be broken here: outer {g['outer']} vs screen {g['screen']}"
+    )
+
+
+def test_the_auto_branch_is_coherent_and_is_the_control(tmp_path):
+    """AC4 at the reporting layer. AUTO floors the spoofed screen at the live
+    window by construction, so it is coherent WITHOUT any cap — which is what
+    makes the FORCED reading a finding rather than a category."""
+    g = _seen(tmp_path, resolution=None, inner=(1919, 936), outer=(1919, 1079))
+
+    assert g["screen"][0] >= 1919 and g["screen"][1] >= 1079, (
+        f"AUTO must pick a screen that CONTAINS the window; got {g['screen']}"
+    )
+    assert g["outer"] == [1919, 1079], (
+        f"AUTO's reported outer must be the live window untouched; got {g['outer']}"
+    )
+    _assert_coherent(g, "AUTO control")
+
+
+def test_a_pick_larger_than_the_window_keeps_167_closed(tmp_path):
+    """#167: gating FORCED on the window extent leaked the render scale — a
+    chosen 2560 failed containment, fell through to the auto-pick and reported
+    ~4K. Nothing here participates in choosing W/H, so the pick is honoured
+    outright. Asserted with the shape that leaked."""
+    g = _seen(tmp_path, resolution=(2560, 1440), inner=(1919, 936), outer=(1919, 1079))
+
+    assert g["screen"] == [2560, 1440], (
+        f"a pick larger than the window must be honoured outright; got "
+        f"{g['screen']} — this is #167's exact failure shape."
+    )
+    _assert_coherent(g, "pick larger than window")
+
+
+def test_the_mac_preset_is_coherent_against_its_own_inset(tmp_path):
+    """The mac arm carries a 25px menu bar against Windows' 40px taskbar. A
+    capped mac window must be coherent against ITS inset, which is the cheap
+    way to prove the inset is read rather than hardcoded."""
+    g = _seen(
+        tmp_path,
+        resolution=(1440, 900),
+        inner=(1440, 780),
+        outer=(1440, 875),
+        os_type="macos",
+        tag="mac",
+    )
     assert g["screen"] == [1440, 900]
     assert g["avail"][1] == 900 - 25, (
         f"mac inset should be 25; availHeight reads {g['avail'][1]}"
     )
-    assert g["outer"][1] <= g["avail"][1], (
-        f"outerHeight {g['outer'][1]} exceeds the mac work area "
-        f"{g['avail'][1]} — the clamp is not reading the same inset."
-    )
+    _assert_coherent(g, "capped mac FORCED")

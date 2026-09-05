@@ -686,6 +686,13 @@ def spawn_browser(profile: Profile, *, in_process: bool = False) -> subprocess.P
                 os.path.join(profile_dir, ".persona-audio-ext"),
             )
         )
+        # The operator's chosen desktop resolution, parsed ONCE here because two
+        # places need it: the device extension (which pins screen.* to it) and
+        # the launch args below (which size the WINDOW to it). `None` on AUTO
+        # and on every mobile profile, which is what keeps both of those paths
+        # byte-identical to before — see the window-size block for why the
+        # window must be capped rather than the reported outer size clamped.
+        desktop_resolution = None
         if is_mobile and preset is not None:
             # iOS always reports 5 touch points; Android varies by device (commonly 5
             # or 10). A constant 5 on every Android profile is a weak cluster tell, so
@@ -716,12 +723,15 @@ def spawn_browser(profile: Profile, *, in_process: bool = False) -> subprocess.P
                 )
             )
         else:
+            desktop_resolution = parse_resolution(
+                getattr(profile, "resolution", "auto")
+            )
             extensions.append(
                 build_device_extension(
                     profile.fingerprint_seed,
                     os.path.join(profile_dir, ".persona-device-ext"),
                     profile.hardware_generation,
-                    resolution=parse_resolution(getattr(profile, "resolution", "auto")),
+                    resolution=desktop_resolution,
                     os_type=profile.os_type,
                 )
             )
@@ -888,6 +898,50 @@ def spawn_browser(profile: Profile, *, in_process: bool = False) -> subprocess.P
             # iOS the template has no version slot at all.
             args.append(f"--user-agent={preset.user_agent_for(chromium_version)}")
             args.append(f"--window-size={preset.width},{preset.height}")
+        elif desktop_resolution is not None:
+            # CAP THE WINDOW TO THE OPERATOR'S CHOSEN RESOLUTION (#327).
+            #
+            # WHY THE WINDOW AND NOT THE REPORTED SIZE. With the screen spoofed
+            # SMALLER than the live window, three relations a real browser
+            # always satisfies cannot all hold, and this is arithmetic rather
+            # than a matter of taste — measured live at inner 1919 with a 1280
+            # pick:
+            #
+            #   R1  outer >= inner    (a window contains its own content)
+            #   R2  inner <= screen   (content fits the monitor)
+            #   R3  outer <= screen   (the window fits the monitor)
+            #
+            #   R1 needs outer >= 1919; R3 needs outer <= 1280. EMPTY.
+            #
+            # So NOTHING the content script reports can satisfy both: pinning
+            # `outer` down to the screen buys R3 by breaking R1, which is a
+            # window smaller than its own content — negative chrome, and the
+            # exact signature `_outer_size_probe` in invisible_launch.py
+            # calibrates as "leaking". The root is R2: `inner` is the real
+            # window's content box and is not spoofable at the reporting layer
+            # without breaking layout on real pages.
+            #
+            # Capping the WINDOW fixes R2 at its source, and then all three
+            # hold at once. Measured live under Xvfb, 1280x720 pick:
+            #   inner [1280, 577]  outer [1280, 680]  screen [1280, 720]
+            #   R1 1280>=1280 OK   R2 1280<=1280 OK   R3 1280<=1280 OK
+            #
+            # This is Firefox's own answer to the same question
+            # (_seed_window_size, #216: "a window can't be wider than its
+            # screen"), reached here through a launch flag because Chromium has
+            # no persisted window-size seed.
+            #
+            # #167 IS NOT RE-OPENED: that leak was the FORCED branch falling
+            # through to the auto-pick and reporting ~4K. This does not touch
+            # how W/H are chosen — `screen.*` remains exactly the pick, and the
+            # extension's FORCED branch is unchanged.
+            #
+            # AUTO IS UNTOUCHED: `parse_resolution("auto")` is None, so this
+            # arm cannot fire and the AUTO branch keeps floor-picking a screen
+            # that contains the real window, exactly as before.
+            args.append(
+                f"--window-size={desktop_resolution[0]},{desktop_resolution[1]}"
+            )
 
         # Render scale is decoupled from the fingerprint: the device/mobile
         # extension pins the JS-visible screen.*, devicePixelRatio and the
