@@ -480,29 +480,80 @@ class LogDock:
         case a pan-only detector never fires. Registering both means the grip
         responds to the gesture the user actually makes rather than to the one
         the arena happened to pick.
+
+        EACH RECOGNIZER SETTLES ONLY THE DRAG IT ITSELF OWNED — that is what
+        ``live`` below is for, and it is not defensive tidiness. Registering
+        four terminators is what makes "a gesture that terminated without ever
+        moving the panel" a reachable code path, and on that path a settle is
+        not a no-op:
+
+        * A PLAIN CLICK on the grip fires ``*_end`` with no frames. The settle
+          routes through :meth:`set_height` -> :meth:`_apply_height`, which
+          writes the APPLIED height into ``_desired_height``. While the console
+          is yielding height to a short window those two differ, so the click
+          overwrites the operator's remembered height with the borrowed one and
+          :meth:`apply_window_height` can never hand it back. That loss is
+          permanent — it is AC8 destroyed by a click that moved nothing.
+
+        * AN ARENA LOSS IS NOT AN ABORT. ``on_pan_cancel`` means "the pointer
+          that triggered on_pan_down will not cause a pan" — which is exactly
+          what the arena tells the LOSING recognizer when a clean vertical drag
+          is awarded to the vertical one. So on an ordinary drag it fires while
+          the pointer is STILL DOWN, and an ungated settle snaps the panel
+          mid-gesture: measured travel 9.0, 9.0, **4.0**, 9.0. A jerk in the
+          middle of the gesture is the precise artefact this direction exists
+          to remove.
+
+        A guard inside :meth:`drag_end` ("if the target equals the current
+        height, return") would have fixed the click and NOT the arena loss,
+        where the heights genuinely differ. The liveness gate fixes both,
+        because it asks the question that actually distinguishes them: did THIS
+        recognizer own a drag? It also cooperates with
+        :meth:`apply_window_height`, which keeps ``_raw_height`` in step with
+        the applied height — so a terminator that does fire always settles from
+        a current accumulator, and one that does not fire leaves nothing stale
+        behind.
         """
+        live = {"pan": False, "vertical": False}
 
-        def on_drag(e) -> None:
-            delta = _drag_delta_y(e)
-            if delta is None:
-                return
-            # Dragging UP (negative delta) grows the console. Through
-            # drag_by, NOT set_height: a frame is smaller than a row, and
-            # drag_by applies the RAW height so the panel follows the cursor
-            # instead of stepping a row at a time — see drag_by and
-            # _raw_height.
-            self.drag_by(delta)
+        def on_drag(which: str):
+            def go(e) -> None:
+                delta = _drag_delta_y(e)
+                if delta is None:
+                    return
+                # This recognizer is now the one holding the drag, so its own
+                # terminator — and only its own — has something to settle.
+                live[which] = True
+                # Dragging UP (negative delta) grows the console. Through
+                # drag_by, NOT set_height: a frame is smaller than a row, and
+                # drag_by applies the RAW height so the panel follows the
+                # cursor instead of stepping a row at a time — see drag_by and
+                # _raw_height.
+                self.drag_by(delta)
 
-        def on_drag_end(e=None) -> None:
-            # The snap the frames no longer do, done once on release, so the
-            # console follows the pointer and still comes to rest on a whole
-            # row. See drag_end.
-            self.drag_end(e)
+            return go
+
+        def on_drag_end(which: str):
+            def go(e=None) -> None:
+                if not live[which]:
+                    # This recognizer never owned a drag: there is no
+                    # fractional height to settle, and nothing the operator
+                    # asked for to remember. See the docstring — settling here
+                    # erases a deliberate height on a click, and snaps the
+                    # panel mid-gesture on an arena loss.
+                    return
+                live[which] = False
+                # The snap the frames no longer do, done once on release, so
+                # the console follows the pointer and still comes to rest on a
+                # whole row. See drag_end.
+                self.drag_end(e)
+
+            return go
 
         return ft.GestureDetector(
             mouse_cursor=ft.MouseCursor.RESIZE_UP_DOWN,
-            on_pan_update=on_drag,
-            on_vertical_drag_update=on_drag,
+            on_pan_update=on_drag("pan"),
+            on_vertical_drag_update=on_drag("vertical"),
             # EVERY terminator, for the same reason both updates are
             # registered: the arena awards the gesture to one recognizer, and a
             # settle that only listens to the others never fires — leaving the
@@ -519,11 +570,12 @@ class LogDock:
             # a shrink-and-restore round trip handed the fractional height back
             # rather than correcting it. The invariant is "however the gesture
             # ends, the console rests on a row boundary", so all four route to
-            # the same settle. drag_end is idempotent and safe with no event.
-            on_pan_end=on_drag_end,
-            on_vertical_drag_end=on_drag_end,
-            on_pan_cancel=on_drag_end,
-            on_vertical_drag_cancel=on_drag_end,
+            # the same settle — each through the liveness gate above, so a
+            # recognizer only settles the drag IT owned.
+            on_pan_end=on_drag_end("pan"),
+            on_vertical_drag_end=on_drag_end("vertical"),
+            on_pan_cancel=on_drag_end("pan"),
+            on_vertical_drag_cancel=on_drag_end("vertical"),
             content=ft.Container(
                 height=GRIP_HIT_HEIGHT,
                 bgcolor=COLORS["log_bg"],
@@ -709,8 +761,18 @@ class LogDock:
         arena awarded the drag to AND however that gesture finished. A
         cancelled drag is still a finished drag as far as the console is
         concerned; the only path that must never leave a fractional height is
-        "all of them". Safe to call when no drag happened: it is idempotent on
-        an already-settled height.
+        "all of them".
+
+        THIS IS NOT IDEMPOTENT, and the caller is what makes that safe. An
+        earlier revision of this docstring claimed it was "safe to call when no
+        drag happened"; it is not. It routes through :meth:`set_height` ->
+        :meth:`_apply_height`, which writes the applied height into
+        ``_desired_height`` — so calling it after a gesture that moved nothing
+        overwrites the operator's REMEMBERED height with whatever is currently
+        applied, and while the console is yielding to a short window those are
+        different numbers. :meth:`_grip` therefore gates each terminator on
+        whether its own recognizer actually owned a drag; see its docstring for
+        the two ways an ungated call is reached.
         """
         target = height_for_rows(settle_rows(self._raw_height))
         self.set_height(target)
@@ -822,6 +884,12 @@ class LogDock:
         # height the operator last dragged to. Without this the first frames of
         # that drag are spent burning off a height the window no longer
         # affords, and the grip reads as unresponsive.
+        #
+        # It also cooperates with the grip's liveness gate: a terminator that
+        # DOES fire always settles from an accumulator that matches the screen,
+        # and one that does not fire (a click, or a losing recognizer's cancel)
+        # leaves nothing stale behind — which is why the gate needs no
+        # _raw_height reset of its own. See _grip.
         self._raw_height = float(self.height)
         # Deliberately NOT through set_height: this is the window speaking, not
         # the operator, and it must not overwrite what he asked for.

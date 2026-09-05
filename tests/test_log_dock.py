@@ -57,6 +57,29 @@ class Ev:
         self.direction = None
 
 
+class _Offset:
+    def __init__(self, y):
+        self.x = 0.0
+        self.y = y
+
+
+class _DragFrame:
+    """One drag frame shaped the way flet 0.85/0.86 really delivers it.
+
+    NO ``delta_y`` — that attribute does not exist on this flet, which is the
+    defect _drag_delta_y was written for. The per-frame distance arrives as
+    ``local_delta.y``, measured on a served app at -9.0 per frame.
+    """
+
+    def __init__(self, dy):
+        self.local_delta = _Offset(dy)
+        self.global_delta = _Offset(dy)
+
+
+def _drag_frame(dy):
+    return _DragFrame(dy)
+
+
 def gesture(dock, pixels, extent):
     """One complete USER gesture: USER -> UPDATE -> END, as flet sends it."""
     dock._on_scroll(Ev("user", pixels, extent))
@@ -810,22 +833,31 @@ def test_ps291_however_the_gesture_ends_the_console_rests_on_a_row_boundary():
     wired, which is exactly the assertion that could not see this. The
     invariant is the one the grip's own comment claims: however the gesture
     ends, the console rests on a row boundary.
-    """
-    terminators = (
-        "on_pan_end",
-        "on_vertical_drag_end",
-        "on_pan_cancel",
-        "on_vertical_drag_cancel",
-    )
 
-    for terminator in terminators:
+    THE FRAMES ARE DRIVEN THROUGH THE MATCHING UPDATE HANDLER, not through
+    drag_by(), and that is not cosmetic: each terminator settles only a drag
+    ITS OWN recognizer owned (see _grip), so a gesture whose frames arrived
+    behind the recognizer's back is not that recognizer's gesture to finish.
+    Driving drag_by() directly here would assert the settle of a drag no
+    recognizer ever started — a case that cannot happen at the pointer.
+    """
+    terminators = {
+        "on_pan_end": "on_pan_update",
+        "on_vertical_drag_end": "on_vertical_drag_update",
+        "on_pan_cancel": "on_pan_update",
+        "on_vertical_drag_cancel": "on_vertical_drag_update",
+    }
+
+    for terminator, update in terminators.items():
         d = LogDock(window_height=1400)
         grip = d._grip()
         handler = getattr(grip, terminator, None)
         assert handler is not None, f"{terminator} is not registered on the grip"
+        frame = getattr(grip, update, None)
+        assert frame is not None, f"{update} is not registered on the grip"
 
         for _ in range(5):
-            d.drag_by(-9.0)
+            frame(_drag_frame(-9.0))
         mid = d.height
         assert mid != height_for_rows(
             rows_for_height(mid)
@@ -850,6 +882,99 @@ def test_ps291_however_the_gesture_ends_the_console_rests_on_a_row_boundary():
         assert d.height == height_for_rows(
             rows_for_height(d.height)
         ), f"{terminator}: the remembered height was fractional"
+
+
+def test_ps291_a_gesture_that_moved_nothing_must_not_destroy_the_remembered_height():
+    """A CLICK on the grip is a gesture that moves nothing — and it must cost
+    nothing.
+
+    THE DEFECT THIS PINS, and like the terminator gap above it is one THIS
+    DIRECTION CREATED: registering four terminators is exactly what makes "a
+    gesture that terminated without a single frame" a reachable code path. On
+    that path drag_end is NOT a no-op. It routes through set_height ->
+    _apply_height, which writes the APPLIED height into _desired_height — and
+    while the console is yielding height to a short window, applied and desired
+    are different numbers by design.
+
+    So one click on the grip, while a 680px window has borrowed height from the
+    console, replaces the operator's deliberate 15-row height with the borrowed
+    120px. apply_window_height can then never hand it back: the desire it would
+    restore from is gone. The loss is PERMANENT, and it is
+    test_ac8_a_resize_yields_height_but_does_not_overwrite_a_deliberate_drag
+    with one ordinary click inserted in the middle.
+
+    Driven off the built control for all four terminators, because the property
+    is about the WIRING: calling drag_end() directly cannot see a gate that
+    lives in the handler the grip registers.
+    """
+    terminators = (
+        "on_pan_end",
+        "on_vertical_drag_end",
+        "on_pan_cancel",
+        "on_vertical_drag_cancel",
+    )
+
+    for terminator in terminators:
+        chosen = height_for_rows(15)
+        d = LogDock(window_height=1200)
+        d.set_height(chosen)
+        assert d.height == chosen, "premise: the deliberate height was applied"
+
+        d.apply_window_height(680)
+        assert d.height < chosen, "premise: the short window borrowed height"
+
+        getattr(d._grip(), terminator)(None)  # a gesture that delivered no frames
+
+        d.apply_window_height(1200)
+        assert d.height == chosen, (
+            f"{terminator}: a gesture that moved nothing destroyed the "
+            f"remembered height ({d.height} != {chosen})"
+        )
+
+
+def test_ps291_a_losing_recognizer_cannot_snap_the_panel_mid_gesture():
+    """An arena loss is not an abort, and it must not jerk the panel.
+
+    ``on_pan_cancel`` does not only mean "the drag was aborted". flet's own
+    docstring: *the pointer that previously triggered on_pan_down will not end
+    up causing a pan gesture* — which is precisely what Flutter's arena tells
+    the LOSING recognizer when a clean vertical drag is awarded to the vertical
+    one. Both updates are registered on this grip (see _grip), so that is an
+    ORDINARY vertical drag, not an exotic one.
+
+    Ungated, the losing recognizer's cancel settles the console while the
+    pointer is still down. Measured on that tree: travel 9.0, 9.0, **4.0**,
+    9.0 — a snap in the middle of the gesture, which is the exact artefact
+    PS-291 exists to remove, reintroduced through the terminator that was added
+    to fix a different half of it.
+
+    Row counts cannot see this (the drag reaches the same row either way), so
+    this asserts the per-frame TRAVEL across the interleaved cancel.
+    """
+    d = LogDock(window_height=1400)
+    grip = d._grip()
+
+    heights = [d.height]
+    grip.on_vertical_drag_update(_drag_frame(-9.0))
+    heights.append(d.height)
+    grip.on_vertical_drag_update(_drag_frame(-9.0))
+    heights.append(d.height)
+    grip.on_pan_cancel(None)  # the arena takes the gesture off the pan recognizer
+    heights.append(d.height)
+    grip.on_vertical_drag_update(_drag_frame(-9.0))
+    heights.append(d.height)
+
+    steps = [b - a for a, b in zip(heights, heights[1:])]
+
+    # Every step is either a frame's own distance or nothing at all. A step
+    # that is neither is a snap that fired while the pointer was down.
+    assert all(step in (0.0, 9.0) for step in steps), f"the panel jerked: {steps}"
+    assert steps[2] == 0.0, f"the losing recognizer moved the panel: {steps}"
+
+    # And the drag is still LIVE: the winning recognizer's own terminator is
+    # what settles it, so the console still comes to rest on a whole row.
+    grip.on_vertical_drag_end(None)
+    assert d.height == height_for_rows(d.rows), "the surviving drag never settled"
 
 
 def test_ps291_the_readout_never_claims_a_row_the_operator_cannot_see():
