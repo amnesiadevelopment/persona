@@ -4681,8 +4681,15 @@ class App:
 
         A successful download then prunes superseded builds — which would delete
         the build a profile started on the PREVIOUS build is executing from, so
-        pruning defers entirely while any profile runs (the guard wired in
-        _wire_engine_prune_guard). Disk is reclaimed on a later prune instead."""
+        that prune spares the builds running profiles are actually executing
+        from (the guard wired in _wire_engine_prune_guard, which wires TWO
+        oracles: the "is anything running?" gate and the narrowing that says
+        WHICH builds are live). A superseded build no running profile is on is
+        therefore reclaimed HERE, even while other profiles stay open (PS-221).
+        Pruning still defers ENTIRELY — reclaiming nothing until a later prune —
+        when any running session cannot be resolved to a build: a survivor, an
+        indeterminate liveness probe, or an unwired narrowing provider all read
+        as UNKNOWN, and UNKNOWN defers rather than licensing a deletion."""
         from ..services.engine import firefox as ff_engine
 
         tag = self._engine2_latest
