@@ -6,6 +6,7 @@ import flet as ft
 from ...core.strings import get_string
 from ...interfaces.protocols import IProxyService
 from ...models.proxy import Proxy
+from ...services.browser.launch_policy import declared_timezone
 from ...services.proxy.tz_names import is_declarable_zone
 from ...utils.proxy_parse import parse_proxy_line
 from ...utils.proxy_parser import build_proxy_url, split_proxy_url
@@ -106,8 +107,29 @@ def open_proxy_dialog(
     # the country has no `_COUNTRY_TZ` row — a state whose only previously
     # documented remedy was editing a python dict inside an installed desktop
     # app, and whose one available UI action (re-check) loops forever.
+    #
+    # ⚠️ PREFILLED FROM THE COUNTRY-GATED VALUE, NEVER FROM THE RAW STORED
+    # STRING. `manual_timezone` is what is on DISK; `declared_timezone` is what
+    # is IN FORCE, and after the exit moves those two disagree by design — the
+    # gate retires the declaration and the launch refuses again. Showing the
+    # raw string there put the retired zone in the box as though it were live,
+    # which is a lie in the one place the operator goes to fix the problem: the
+    # network row says "cannot launch: set the exit timezone in [ edit ]", they
+    # press [ edit ], the zone is ALREADY SET and looks right, they press
+    # [ save ], the dialog closes with no error — and nothing has changed. A
+    # loop with a success-shaped exit, which is worse than a refusal.
+    #
+    # It also un-deadens the store's own sentence. `set_manual_timezone`
+    # refuses a retired zone re-submitted VERBATIM and says how to re-declare
+    # it, but that fires only when `zone == proxy.manual_timezone`, while the
+    # dialog calls it only when `zone != prefilled`. With prefill == the raw
+    # string those two conditions were mutually exclusive, so the sentence was
+    # unreachable from the product's only caller. Gated prefill makes the box
+    # empty for a retired declaration, so re-typing the same string — legitimate
+    # when one zone serves two countries, e.g. Asia/Bangkok for TH and KH — now
+    # actually reaches the operator.
     tz_field = ft.TextField(
-        value=proxy.manual_timezone if proxy is not None else "",
+        value=declared_timezone(proxy) if proxy is not None else "",
         hint_text="e.g. Europe/Bucharest  — only needed if launching is refused",
         hint_style=_hint, **DLG_INPUT_KWARGS,
     )
@@ -285,12 +307,20 @@ def open_proxy_dialog(
         # then reports an error about a different field. The oracle is the same
         # vendored name set in both places, so the two cannot disagree.
         zone = (tz_field.value or "").strip()
-        # PREFILLED FROM THE RAW STORED STRING, not from the country-gated
-        # `declared_timezone`, so this is what "the operator did not touch the
-        # field" looks like. Every test below is scoped to a CHANGED value: an
-        # untouched field must not be able to fail a save (a legacy record
-        # carrying a zone with no country would otherwise become unrenameable).
-        prefilled = proxy.manual_timezone if proxy is not None else ""
+        # PREFILLED FROM THE COUNTRY-GATED VALUE — the same expression the
+        # field was built with, so this is exactly what "the operator did not
+        # touch the field" looks like on screen. Every test below is scoped to
+        # a CHANGED value: an untouched field must not be able to fail a save
+        # (a legacy record carrying a zone with no country would otherwise
+        # become unrenameable).
+        #
+        # Reading the RAW `manual_timezone` here would disagree with what the
+        # box shows on a retired declaration, and it disagreed in the direction
+        # that mattered: the box read `Europe/Bucharest`, the compare read
+        # `Europe/Bucharest`, `declaring` was False, and a save that the
+        # operator had every reason to believe was doing something did nothing
+        # at all. See the field's own comment block.
+        prefilled = declared_timezone(proxy) if proxy is not None else ""
         declaring = zone != prefilled
         if declaring and zone and not is_declarable_zone(zone):
             tz_error.value = (
@@ -434,6 +464,28 @@ def open_proxy_dialog(
         # the rule — but a dialog should not be issuing a write for a field the
         # operator never touched regardless.
         if on_declare_timezone is not None and declaring:
+            # ⚠️ AND WHEN THE BOX WAS EMPTY, RETIRE THE STALE RECORD FIRST.
+            # The store refuses a zone re-submitted VERBATIM while its
+            # declaration is retired, and tells the operator to "clear the
+            # field and save, then enter the zone for the current exit". With
+            # the gated prefill above, that instruction names a gesture they
+            # can no longer perform: the box is ALREADY empty, so clearing it
+            # changes nothing and the same refusal comes back — the identical
+            # loop-with-a-success-shaped-exit this ticket exists to remove,
+            # one layer further in.
+            #
+            # The dialog can settle it because it knows something the store
+            # cannot: the box was EMPTY when it opened. The store's rule is a
+            # guard against a re-submitted PREFILL, and there was no prefill to
+            # re-submit, so this is a fresh declaration however familiar the
+            # string looks (one zone legitimately serves two countries —
+            # `Asia/Bangkok` for TH and KH). The store's rule is NOT weakened:
+            # a second caller still cannot re-stamp a retired declaration, and
+            # the two writes here are exactly the two gestures its own sentence
+            # prescribes, issued by the one caller that can prove they are
+            # warranted.
+            if not prefilled and getattr(proxy, "manual_timezone", ""):
+                on_declare_timezone(name, "")
             tz_err = on_declare_timezone(name, zone)
             if tz_err:
                 tz_error.value = tz_err

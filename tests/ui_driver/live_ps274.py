@@ -45,8 +45,8 @@ new network note sends the operator to perform. A proxy is seeded ALREADY IN
 THE MOVED STATE (declared for RO, exit now CZ — the move itself is not an
 operator gesture and cannot be driven), then:
 
-7. Its row still says unlaunchable, and the dialog PREFILLS the retired zone —
-   so the input the defect re-submitted is observed, not assumed.
+7. Its row still says unlaunchable, and the dialog's box is EMPTY — the value
+   in FORCE, not the value on disk. See the prefill seam below.
 8. ``[ save ]`` is pressed with NOTHING touched: the dialog closes (an untouched
    field must not block an unrelated save), the country the zone was declared
    FOR is still RO on disk, and the row still says unlaunchable.
@@ -56,6 +56,27 @@ operator gesture and cannot be driven), then:
     with a sentence, because a declaration is made FOR a country and there is
     none on file. It used to be accepted, close the dialog, and store a zone
     bound to an empty country that nothing ever re-bound.
+
+AND THE PREFILL SEAM — the value a form SHOWS is itself a claim
+--------------------------------------------------------------
+Step 7 used to assert the OPPOSITE: that the box prefilled the retired zone.
+That pinned a defect as expected behaviour. The country gate disarmed the
+declaration everywhere except the one place the operator looks at it, so the
+row said "cannot launch: set the exit timezone in ``[ edit ]``", ``[ edit ]``
+showed ``Europe/Bucharest`` already filled in and right-looking, a bare
+``[ save ]`` closed the dialog with no error, and nothing changed. A loop with
+a SUCCESS-SHAPED exit, which is worse than a refusal.
+
+The box now prefills from the country-gated value, so it is empty exactly when
+the declaration is retired. That has a second consequence driven here:
+
+11. On a SECOND proxy seeded in the same retired state, typing the SAME zone
+    string into the now-empty box is accepted IN ONE GESTURE and re-declared
+    for the country the exit is now in. The store still refuses that string
+    from any other caller (it is guarding against a re-submitted prefill), but
+    there was no prefill to re-submit — and its own two-gesture escape
+    ("clear the field and save") would otherwise name a gesture the operator
+    cannot perform, the box being empty already.
 
 THE TRAP THIS SCRIPT AVOIDS, STATED UP FRONT
 --------------------------------------------
@@ -135,6 +156,14 @@ DE_NAME = "de-exit"
 #: exit country) but the GESTURE THAT BROKE ON IT can be: pressing [ save ] on
 #: this proxy's dialog without touching anything.
 MOVED_NAME = "moved-exit"
+#: A SECOND proxy seeded in the identical retired state. The moved-exit one is
+#: consumed by the bare-[ save ] and replace-the-zone checks; this one exists
+#: so the SAME-ZONE case starts from a genuinely retired declaration rather
+#: than from whatever the earlier gestures left behind. Wanting the same zone
+#: string for a different country is legitimate (one zone serves two countries
+#: — `Asia/Bangkok` for TH and KH), and with the box empty it is a fresh
+#: declaration, not a re-submitted prefill.
+SAME_ZONE_NAME = "same-zone-exit"
 #: Never checked. Declaring a zone on it must be REFUSED with a sentence, not
 #: accepted into a record that can never activate.
 FRESH_NAME = "unchecked-exit"
@@ -179,6 +208,12 @@ _seed_store.add({MOVED_NAME!r}, "socks5://u:pw@2.2.2.2:1080")
 _seed_store.mark_checked({MOVED_NAME!r}, "RO", "Romania", "2.2.2.2", "", None, None)
 _seed_store.set_manual_timezone({MOVED_NAME!r}, {ZONE!r})
 _seed_store.mark_checked({MOVED_NAME!r}, "CZ", "Czechia", "3.3.3.3", "", None, None)
+# The same retired state again, untouched by the gestures above, for the
+# same-zone case.
+_seed_store.add({SAME_ZONE_NAME!r}, "socks5://u:pw@7.7.7.7:1080")
+_seed_store.mark_checked({SAME_ZONE_NAME!r}, "RO", "Romania", "7.7.7.7", "", None, None)
+_seed_store.set_manual_timezone({SAME_ZONE_NAME!r}, {ZONE!r})
+_seed_store.mark_checked({SAME_ZONE_NAME!r}, "CZ", "Czechia", "8.8.8.8", "", None, None)
 # Added but never checked — the ordinary "fill in the whole form first" case.
 _seed_store.add({FRESH_NAME!r}, "socks5://u:pw@4.4.4.4:1080")
 # A check that PASSED and returned NO geography at all — what `_validate_geo`
@@ -668,10 +703,14 @@ def main() -> int:
                 prefilled = _tz_field_value(drv)
                 results.append(
                     _report(
-                        "the dialog PREFILLS the retired zone (this is the "
-                        "input the defect re-submitted — driven, not assumed)",
-                        prefilled == ZONE,
-                        f"the field holds {prefilled!r}",
+                        "the dialog's box is EMPTY for the retired declaration "
+                        "— the door the row's note names must not show a zone "
+                        "the product has already retired",
+                        prefilled == "",
+                        f"the field holds {prefilled!r} "
+                        f"({ZONE!r} here is the retired value shown as live: "
+                        "the operator follows the note, finds the zone already "
+                        "set and right-looking, saves, and nothing changes)",
                     )
                 )
                 drv.screenshot("/tmp/ps274-moved-prefilled.png")
@@ -743,6 +782,62 @@ def main() -> int:
                 )
                 drv.screenshot("/tmp/ps274-moved-recovered.png")
                 print("  screenshot: /tmp/ps274-moved-recovered.png")
+                if _dialog_open(drv):
+                    drv.press("[ cancel ]")
+                    drv.page.wait_for_timeout(1500)
+
+            # ---- THE SAME ZONE STRING, for the country the exit moved TO ---
+            # The store refuses a retired zone re-submitted VERBATIM and names
+            # a two-gesture escape ("clear the field and save, then enter the
+            # zone"). With the box empty that sentence would name a gesture the
+            # operator CANNOT PERFORM — clearing an empty box changes nothing
+            # and the same refusal returns — which is this ticket's own defect
+            # (a remedy the product then refuses) one layer further in. The
+            # dialog settles it, because it knows what the store cannot: there
+            # was no prefill to re-submit. Driven here because a unit test
+            # cannot show that the operator typed into an EMPTY box.
+            if _open_edit_for(drv, SAME_ZONE_NAME):
+                empty = _tz_field_value(drv)
+                results.append(
+                    _report(
+                        "the second retired proxy's box is EMPTY too (so what "
+                        "is typed next is a fresh declaration, not a prefill)",
+                        empty == "",
+                        f"the field holds {empty!r}",
+                    )
+                )
+                drv.type_into(TZ_HINT, ZONE)
+                drv.press("[ save ]")
+                drv.page.wait_for_timeout(2500)
+                results.append(
+                    _report(
+                        "typing the SAME zone string into the empty box is "
+                        "ACCEPTED in one gesture (the dialog closes)",
+                        not _dialog_open(drv),
+                        f"dialog still open={_dialog_open(drv)}",
+                    )
+                )
+                same = _stored(app, SAME_ZONE_NAME)
+                results.append(
+                    _report(
+                        "and it is re-declared FOR the country the exit is NOW "
+                        "in — the same string, a different claim",
+                        same.get("manual_timezone") == ZONE
+                        and same.get("manual_timezone_country") == "CZ",
+                        f"proxies.json: {same.get('manual_timezone')!r} "
+                        f"declared_for={same.get('manual_timezone_country')!r}",
+                    )
+                )
+                results.append(
+                    _report(
+                        "AC8 — and the row's unlaunchable indication clears",
+                        _row_says_unlaunchable(drv, SAME_ZONE_NAME) is False,
+                        f"{SAME_ZONE_NAME} meta line now: "
+                        f"{_row_text(drv, SAME_ZONE_NAME)!r}",
+                    )
+                )
+                drv.screenshot("/tmp/ps274-same-zone-redeclared.png")
+                print("  screenshot: /tmp/ps274-same-zone-redeclared.png")
                 if _dialog_open(drv):
                     drv.press("[ cancel ]")
                     drv.page.wait_for_timeout(1500)

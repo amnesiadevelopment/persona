@@ -1287,6 +1287,190 @@ def test_the_operator_can_still_answer_for_a_moved_exit_through_the_dialog(
     assert _proxy_timezone(proxy) == "Europe/Prague"
 
 
+# ---------------------------------------------------------------------------
+# THE PREFILL SEAM — the value a form SHOWS is itself a claim, and it has to be
+# the value that is actually IN FORCE, not the value on disk.
+#
+# The country gate disarmed the declaration everywhere except the one place the
+# operator looks at it. The field prefilled from the RAW `manual_timezone`, so
+# after the exit moved RO -> CZ the box read `Europe/Bucharest` — the retired
+# value — while the launch refused and the network row said "cannot launch: set
+# the exit timezone in [ edit ]". Following that note landed on a box that was
+# already filled with a right-looking zone; a bare [ save ] then closed the
+# dialog with no error and changed nothing. A loop with a SUCCESS-SHAPED exit.
+#
+# The section above varies the operator's GESTURE SEQUENCE; this one varies the
+# DIALOG'S OWN PREFILLED VALUE on a state change, which no test did: the moved-
+# exit tests all supply a DIFFERENT zone, so they exercise `declaring == True`
+# and never read the box.
+# ---------------------------------------------------------------------------
+
+
+def test_the_dialog_box_is_EMPTY_for_a_declaration_the_country_gate_retired(
+    tmp_path,
+):
+    """The box must show what is IN FORCE, not what is on disk.
+
+    `declared_timezone` is the gated value and it answers "" here; the raw
+    `manual_timezone` still holds `Europe/Bucharest` on disk, which is correct
+    (nothing destroys the operator's typing) and is exactly why the two must
+    not be confused at the surface the operator reads.
+    """
+    from src.ui.dialogs.proxy import open_proxy_dialog
+
+    s, name = _ro_proxy(tmp_path)
+    s.set_manual_timezone(name, RO_ZONE)
+    s.mark_checked(name, "CZ", "Czechia", "9.9.9.9", "", None, None)
+
+    proxy = _store(tmp_path).get(name)
+    assert proxy.manual_timezone == RO_ZONE, "the stored string is untouched"
+    assert declared_timezone(proxy) == "", "and the gate has retired it"
+
+    page = _FakePage()
+    open_proxy_dialog(
+        page, _FakeCheckService(), on_save=lambda *a: None, proxy=proxy,
+        on_declare_timezone=lambda n, z: None,
+    )
+    assert _dialog_field(page.shown, TZ_LABEL).value == "", (
+        "the dialog showed a declaration the product had already retired"
+    )
+
+
+def test_the_note_and_the_door_it_names_agree_on_a_moved_exit(tmp_path):
+    """AC8's disagreement, on the ticket's OWN headline state.
+
+    The network row tells the operator to set the exit timezone in [ edit ].
+    Both surfaces are read here off the same stored record, so the row's
+    instruction and the box the operator lands in cannot drift apart.
+    """
+    from src.ui.components.network_page import UNLAUNCHABLE_NOTE, build_network_page
+    from src.ui.dialogs.proxy import open_proxy_dialog
+
+    s, name = _ro_proxy(tmp_path)
+    s.set_manual_timezone(name, RO_ZONE)
+    s.mark_checked(name, "CZ", "Czechia", "9.9.9.9", "", None, None)
+    proxy = _store(tmp_path).get(name)
+
+    rendered = build_network_page(
+        [proxy],
+        on_add=lambda _: None, on_edit=lambda n: None, on_delete=lambda n: None,
+        on_check=lambda n: None, on_rotate=lambda n: None,
+    )
+    assert any(UNLAUNCHABLE_NOTE in t for t in _all_text(rendered)), (
+        "the row must still say the proxy cannot launch"
+    )
+
+    page = _FakePage()
+    open_proxy_dialog(
+        page, _FakeCheckService(), on_save=lambda *a: None, proxy=proxy,
+    )
+    assert _dialog_field(page.shown, TZ_LABEL).value == "", (
+        "the row says the zone is missing; the door it names must not show one"
+    )
+
+
+def test_re_submitting_the_same_zone_through_the_DIALOG_is_accepted_once(
+    tmp_path,
+):
+    """Typing a zone into an EMPTY box is a fresh declaration, however familiar
+    the string looks.
+
+    The store refuses a retired zone re-submitted VERBATIM and names a
+    two-gesture escape ("clear the field and save, then enter the zone"). At
+    the store that rule is right and stays: it is a guard against a
+    re-submitted PREFILL, and a second caller must not be able to skip it.
+
+    But with the gated prefill the box is ALREADY empty here, so that sentence
+    would name a gesture the operator cannot perform — clearing an empty box
+    changes nothing and the same refusal returns. That is this ticket's own
+    defect one layer further in: a remedy the product then refuses. The dialog
+    settles it because it knows what the store cannot — there was no prefill to
+    re-submit — and issues exactly the two writes the sentence prescribes.
+
+    Wanting the same zone string for a different country is legitimate: one
+    zone serves two countries (`Asia/Bangkok` for TH and KH).
+    """
+    s, name = _ro_proxy(tmp_path)
+    s.set_manual_timezone(name, RO_ZONE)
+    s.mark_checked(name, "CZ", "Czechia", "9.9.9.9", "", None, None)
+
+    page = _drive_dialog(s, name, zone=RO_ZONE)
+    assert page.popped is True, "a fresh declaration must not be refused"
+    assert not [t for t in _all_text(page.shown) if "already on file" in t], (
+        "the operator was shown a sentence about a prefill they never saw"
+    )
+
+    proxy = _store(tmp_path).get(name)
+    assert (proxy.manual_timezone, proxy.manual_timezone_country) == (
+        RO_ZONE, "CZ",
+    ), "the zone must be re-declared FOR the country the exit is now in"
+    assert _proxy_timezone(proxy) == RO_ZONE
+
+
+def test_the_store_still_refuses_a_verbatim_re_declaration_to_any_caller(
+    tmp_path,
+):
+    """The no-re-stamp rule is NOT weakened by the dialog performing the escape.
+
+    The dialog may do it only because it can prove the box was empty. The store
+    owns the field and any other caller — a future one, a script, a second
+    dialog — still cannot re-arm a declaration the country gate retired.
+    """
+    s, name = _ro_proxy(tmp_path)
+    s.set_manual_timezone(name, RO_ZONE)
+    s.mark_checked(name, "CZ", "Czechia", "9.9.9.9", "", None, None)
+
+    ok, err = s.set_manual_timezone(name, RO_ZONE)
+    assert ok is False
+    assert RO in err and "CZ" in err, err
+    assert _store(tmp_path).get(name).manual_timezone_country == RO
+
+
+def test_a_bare_save_never_triggers_the_dialogs_re_declaration_path(tmp_path):
+    """The escape is scoped to a value the operator TYPED, not to an empty box.
+
+    `declaring` is still the gate: an untouched field issues no write at all,
+    so the retired declaration stays retired and the launch goes on refusing —
+    the behaviour the reviewer's round-1 finding installed, unchanged.
+    """
+    s, name = _ro_proxy(tmp_path)
+    s.set_manual_timezone(name, RO_ZONE)
+    s.mark_checked(name, "CZ", "Czechia", "9.9.9.9", "", None, None)
+
+    assert _drive_dialog(s, name).popped is True
+    proxy = _store(tmp_path).get(name)
+    assert (proxy.manual_timezone, proxy.manual_timezone_country) == (RO_ZONE, RO)
+    with pytest.raises(TimezoneUnderivableError):
+        _proxy_timezone(proxy)
+
+
+def test_a_LIVE_declaration_still_prefills_so_the_operator_can_read_it_back(
+    tmp_path,
+):
+    """The other direction, so the fix is not "the box is always empty".
+
+    While the declaration is in force the box must show it — that is AC1's
+    "re-open to see it persisted" — and a bare [ save ] must remain the
+    accepted no-op it is on an unmoved proxy.
+    """
+    s, name = _ro_proxy(tmp_path)
+    s.set_manual_timezone(name, RO_ZONE)
+
+    from src.ui.dialogs.proxy import open_proxy_dialog
+
+    page = _FakePage()
+    open_proxy_dialog(
+        page, _FakeCheckService(), on_save=lambda *a: None,
+        proxy=_store(tmp_path).get(name),
+    )
+    assert _dialog_field(page.shown, TZ_LABEL).value == RO_ZONE
+
+    assert _drive_dialog(s, name).popped is True
+    proxy = _store(tmp_path).get(name)
+    assert (proxy.manual_timezone, proxy.manual_timezone_country) == (RO_ZONE, RO)
+    assert _proxy_timezone(proxy) == RO_ZONE
+
+
 def test_re_declaring_a_retired_zone_verbatim_is_refused_with_a_sentence(
     tmp_path,
 ):
