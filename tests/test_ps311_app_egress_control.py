@@ -94,8 +94,16 @@ def _from_disk(tmp_path) -> str:
     ``settings.app_egress_proxy()`` alone would pass against a store that never
     wrote anything if a module-level cache were ever introduced, and it reads
     the same whether or not the bytes reached disk. This opens the JSON.
+
+    A settings.json that does not EXIST reads as ``<KEY ABSENT>`` too, and that
+    is the honest answer rather than a convenience: the store writes the file
+    lazily on the first ``set()``, so a never-configured install genuinely has
+    no file. Both are the same claim — nothing put this key anywhere.
     """
-    with open(tmp_path / "settings.json", encoding="utf-8") as fh:
+    path = tmp_path / "settings.json"
+    if not path.exists():
+        return "<KEY ABSENT>"
+    with open(path, encoding="utf-8") as fh:
         return json.load(fh).get("app_egress_proxy", "<KEY ABSENT>")
 
 
