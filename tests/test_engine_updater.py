@@ -1163,6 +1163,30 @@ def _wire_windows_engine(monkeypatch, engine_dir):
     monkeypatch.setattr(updater, "VERSION_FILE", str(engine_dir / "version.txt"))
 
 
+def _pin_staging_order(monkeypatch, staging, order):
+    """Make _promote_staging visit `staging`'s entries in exactly `order`.
+
+    `_promote_staging` iterates `os.listdir`, which is UNORDERED BY CONTRACT —
+    ext4 hands back insertion-ish order, APFS and NTFS hand back something
+    near-sorted. A test that wants a SPECIFIC half-promoted tree (this file
+    already needs one at _promote_staging's new-build-only arm, and the
+    two-attempt test below needs another) must therefore say which order it
+    means, or the shape it asserts is decided by the filesystem underneath it
+    rather than by the test. Only `staging` is reordered; every other listdir
+    call passes straight through.
+    """
+    real_listdir = updater.os.listdir
+    rank = {name: i for i, name in enumerate(order)}
+
+    def pinned(path):
+        names = real_listdir(path)
+        if os.path.abspath(path) == os.path.abspath(str(staging)):
+            return sorted(names, key=lambda n: (rank.get(n, len(rank)), n))
+        return names
+
+    monkeypatch.setattr(updater.os, "listdir", pinned)
+
+
 def test_a_second_attempt_cannot_clear_a_sentinel_left_by_a_failed_rollback(
     monkeypatch, tmp_path
 ):
@@ -1203,12 +1227,28 @@ def test_a_second_attempt_cannot_clear_a_sentinel_left_by_a_failed_rollback(
     zip_path = tmp_path / "engine.zip"
     _new_build_zip(zip_path)
 
+    # WHICH entry is stranded is asserted below, so it must be CHOSEN here and
+    # not left to the filesystem. `_promote_staging` walks os.listdir, which is
+    # unordered by contract: ext4 yields insertion-ish order while APFS and NTFS
+    # yield something near-sorted, so a failure keyed on a call COUNTER strands
+    # a different file on every platform and the tree-shape assertions below
+    # describe a tree that only one of them produces. Pin the order, then key
+    # the failure on the entry's NAME — the test now says out loud that
+    # `some.dll` is the file left half-promoted.
+    #
+    # The AC3 property itself is order-INDEPENDENT (the sentinel is kept under
+    # every ordering); this pinning buys determinism in the forensic detail, not
+    # coverage, which is why it costs nothing to fix it this way.
+    _pin_staging_order(
+        monkeypatch,
+        engine_dir / ".staging",
+        ["chrome.exe", "some.dll", "locales"],
+    )
+
     real_move = updater.shutil.move
-    calls = {"n": 0}
 
     def failing_move(src, dst):
-        calls["n"] += 1
-        if calls["n"] > 1:
+        if os.path.basename(str(dst)) == "some.dll":
             raise OSError("No space left on device")
         return real_move(src, dst)
 
