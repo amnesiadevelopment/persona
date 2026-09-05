@@ -586,19 +586,22 @@ def main() -> int:
             f"stored bytes",
         )
     )
-    # The refusal check reads the file too, so under this sabotage its
-    # "previous value survived" clause cannot hold — what must survive is the
-    # SCREEN half: the page still refuses and still says why.
-    still_refuses = bool(
-        [m for m in broken["refusal_messages"] if m.startswith("not saved —")]
-    )
+    # The AC3 check reads the FILE as well as the screen, so under a sabotage
+    # that removes every write its "the previous value survived" clause cannot
+    # hold — reusing it whole would confuse "the write is broken" with "the
+    # refusal is broken". What must survive the sabotage is the SCREEN half:
+    # the page still refuses 'tor' and still says why, unchanged.
+    still_refuses = [
+        m for m in broken["refusal_messages"] if m.startswith("not saved —")
+    ]
     results.append(
         _report(
             "AC7 — and the SAVE-TIME REFUSAL is untouched by it (the sabotage "
             "is isolated to the write)",
-            still_refuses,
-            f"the page still refuses 'tor' and says why: "
-            f"{broken['refusal_messages']!r} ({r_detail})",
+            bool(still_refuses),
+            f"the page still refuses 'tor' and says why: {still_refuses!r} "
+            f"(the file half of the AC3 check cannot hold here by construction "
+            f"— this build writes nothing at all: {r_detail})",
         )
     )
 
