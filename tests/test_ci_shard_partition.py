@@ -191,6 +191,23 @@ def test_the_matrix_still_runs_every_platform_and_never_cancels_siblings(workflo
     )
 
 
+def _suite_step(workflow: dict) -> dict:
+    """The single pytest invocation in the `tests` job.
+
+    Shared by the two assertions below so they cannot disagree about WHICH step
+    they are talking about — one reads its command line, the other its `env:`.
+    """
+    steps = workflow["jobs"]["tests"]["steps"]
+    suite_steps = [s for s in steps if _INVOKES_PYTEST.search(str(s.get("run", "")))]
+    assert len(suite_steps) == 1, (
+        f"expected exactly one pytest invocation in the `tests` job, found "
+        f"{len(suite_steps)}: {[s.get('name') for s in suite_steps]!r}. A second "
+        f"invocation would run some other portion of the suite under this job's "
+        f"name, and the partition assertions above would not see it."
+    )
+    return suite_steps[0]
+
+
 def test_the_suite_step_runs_exactly_the_shard_marker(workflow):
     """The guards above read `matrix.shard[].marker`. The runner reads THIS line.
 
@@ -214,16 +231,7 @@ def test_the_suite_step_runs_exactly_the_shard_marker(workflow):
 
     So: the executed line must be the shard marker VERBATIM and nothing more.
     """
-    steps = workflow["jobs"]["tests"]["steps"]
-    suite_steps = [s for s in steps if _INVOKES_PYTEST.search(str(s.get("run", "")))]
-    assert len(suite_steps) == 1, (
-        f"expected exactly one pytest invocation in the `tests` job, found "
-        f"{len(suite_steps)}: {[s.get('name') for s in suite_steps]!r}. A second "
-        f"invocation would run some other portion of the suite under this job's "
-        f"name, and the partition assertions above would not see it."
-    )
-
-    run = str(suite_steps[0]["run"]).strip()
+    run = str(_suite_step(workflow)["run"]).strip()
     # `python -m pytest` carries its own `-m`, so split on the INVOCATION prefix
     # and read only what follows it. Scanning the whole line for `-m` reads
     # "pytest" as the marker expression — a green assertion measuring nothing.
@@ -238,6 +246,64 @@ def test_the_suite_step_runs_exactly_the_shard_marker(workflow):
         f"selector all have that effect. If this shard genuinely needs a different "
         f"invocation, change the MARKER in the matrix (where the partition tests "
         f"can see it), not this line."
+    )
+
+
+def test_the_ui_driver_shard_declares_the_capability_it_exists_to_run(workflow):
+    """The tier's own job must REFUSE a silent skip, and only where it can run.
+
+    The split creates a job whose entire population is the 15 ui_driver tests.
+    If `/usr/bin/chromium` left the runner image those 15 would skip and that
+    job would report GREEN having executed nothing — a whole named check
+    passing over an empty run. Under the old single job the same disappearance
+    was diluted across 5,500 other tests; the split is what makes it reachable,
+    so the split owns closing it.
+
+    `conftest.py` turns a skip into a FAILURE when the missing capability is
+    declared in PERSONA_REQUIRED_CAPABILITIES. Two things must therefore hold,
+    and BOTH are load-bearing:
+
+    1. `ui_driver` is declared for the shard that runs the tier — otherwise the
+       tier can vanish silently.
+    2. `browser` is STILL declared for every shard. `expand_capabilities` maps
+       "ui_driver" to ["ui_driver"] alone — it does NOT cover browser — so a
+       naive swap would stop policing browser skips across the main shard's
+       ~5,555 tests. That would move the silent-green hole rather than close
+       it, which is strictly worse than leaving it where it was.
+    """
+    matrix = workflow["jobs"]["tests"]["strategy"]["matrix"]
+    by_name = {s["name"]: s for s in matrix["shard"]}
+
+    for name, shard in by_name.items():
+        declared = str(shard.get("capabilities", "")).split(",")
+        assert "browser" in declared, (
+            f"shard {name!r} declares {shard.get('capabilities')!r}, which does not "
+            f"include `browser`. expand_capabilities('ui_driver') is ['ui_driver'] "
+            f"and does NOT imply browser, so dropping it stops policing browser "
+            f"skips for every test in this shard."
+        )
+
+    ui = by_name.get("ui-driver")
+    assert ui is not None, "no `ui-driver` shard — the tier has no job to be policed on"
+    assert "ui_driver" in str(ui["capabilities"]).split(","), (
+        f"the ui-driver shard declares {ui['capabilities']!r}. Without `ui_driver` "
+        f"a vanished /usr/bin/chromium skips all 15 tests and the job — whose only "
+        f"population IS those 15 — reports green having run nothing."
+    )
+
+    step = _suite_step(workflow)
+    env = str(step.get("env", {}).get("PERSONA_REQUIRED_CAPABILITIES", ""))
+    assert "matrix.shard.capabilities" in env, (
+        f"the suite step's capability declaration is {env!r}, which does not read "
+        f"the shard's own `capabilities`. A hardcoded value cannot differ between "
+        f"the two shards, and the whole point is that they differ."
+    )
+    assert "ubuntu-24.04" in env, (
+        f"the capability declaration {env!r} is not conditioned on the platform. "
+        f"/usr/bin/chromium exists only on the ubuntu runner, so the 15 tests "
+        f"legitimately SKIP on macOS and Windows — declaring ui_driver there turns "
+        f"an honest skip into a red job, failing the gate for a fact about the "
+        f"runner rather than about the code."
     )
 
 
