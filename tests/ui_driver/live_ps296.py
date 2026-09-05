@@ -158,15 +158,25 @@ async def _fake_geo(proxy_config, scheme, url):
 _pc._geo_via_socks = _fake_geo
 '''
 
-#: SABOTAGE A (AC6) — ``_meta_line`` restored to its pre-PS-296 body, verbatim:
-#: the country segment gated on the NAME, which renders nothing for a record
-#: whose provider had no name field. The Activity Log is untouched.
+#: SABOTAGE A (AC6) — ``_meta_line`` restored to its pre-PS-296 country gate,
+#: verbatim: the country segment gated on the NAME, which renders nothing for a
+#: record whose provider had no name field. The Activity Log is untouched.
+#:
+#: ⚠️ THE REST OF THE BODY IS PS-274'S, NOT PS-296'S BASE. PS-274 (PR #212)
+#: landed on ``main`` after this branch was cut and gave ``_meta_line`` a third
+#: parameter (``remedy``) plus the unlaunchable-note tail. Reverting to the
+#: literal pre-PS-296 two-arg body would make ``_proxy_row``'s three-arg call
+#: raise ``TypeError`` — a CRASH, which is not a falsification: a red that comes
+#: from an exception says nothing about whether the check reads the screen. So
+#: the sabotage restores ONLY the country gate this ticket changed and keeps
+#: PS-274's signature and tail intact, which is what makes the resulting red
+#: attributable to the country segment alone.
 _SABOTAGE_ROW = '''
 from src.ui.components import network_page as _np
 from src.utils.proxy_parser import split_proxy_url as _split
 from src.utils.timefmt import humanize_since as _since
 
-def _old_meta_line(proxy, now):
+def _old_meta_line(proxy, now, remedy):
     parts = [_split(proxy.url)["scheme"]]
     if proxy.country_name:
         code = f"[{proxy.country_code}] " if proxy.country_code else ""
@@ -179,6 +189,10 @@ def _old_meta_line(proxy, now):
         parts.append(f"checked {_since(proxy.checked_at, now)}")
     else:
         parts.append("not checked yet")
+    if remedy == _np.UNLAUNCHABLE_DECLARABLE:
+        parts.append(_np.UNLAUNCHABLE_NOTE)
+    elif remedy is not None:
+        parts.append(_np.UNSUPPORTED_COUNTRY_NOTE)
     return "  ·  ".join(parts)
 
 _np._meta_line = _old_meta_line
