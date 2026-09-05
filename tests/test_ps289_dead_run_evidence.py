@@ -1016,8 +1016,9 @@ def test_salvaged_material_does_not_nest_one_level_deeper_every_dispatch(tmp_pat
     `salvaged/record-from-run-unknown/salvaged/record-from-run-unknown/…`. That
     is not exotic: the PS-244 borrowed-control refusal exits before any
     provenance stamp is written, so a repeated refusal is a DESIGNED outcome.
-    Nothing is lost by excluding it — the earlier material already rode out on
-    the artifact of the dispatch that recovered it.
+    The flattening must be done by carrying the earlier salvage FORWARD, not by
+    dropping it — see the chained-deaths test below for why "it already rode out
+    on the recovering dispatch's artifact" is false when that dispatch died too.
     """
     journal_root = tmp_path / "journal"
     ws = tmp_path / "ws"
@@ -1036,10 +1037,194 @@ def test_salvaged_material_does_not_nest_one_level_deeper_every_dispatch(tmp_pat
         "salvaged material was carried into the next salvage, so the recovered "
         "tree nests one level deeper on every dispatch and becomes unreadable"
     )
-    # …and the LAST dispatch's own leftovers ARE still recovered: excluding
-    # `salvaged/` from the staging copy must not weaken the recovery itself.
+    # …and the LAST dispatch's own leftovers ARE still recovered: flattening
+    # `salvaged/` out of the staging copy must not weaken the recovery itself.
     assert (ws / "record" / "salvaged" / "record-from-run-unknown" /
             "refusal-9404.txt").is_file()
+    # ⚠️ THE ASSERTION ABOVE CANNOT TELL "FLATTENED" FROM "DELETED", which is
+    # exactly how a round of this PR shipped total evidence loss with this test
+    # green: `rm -rf ${stage}/salvaged` satisfies an absence-of-nesting check
+    # perfectly. So this test also pins the POSITIVE half — the earlier
+    # dispatches' bytes are still present, one level deep, not merely unnested.
+    # `test_a_chain_of_consecutive_deaths_does_not_lose_the_FIRST_run` below is
+    # the full scenario; this is the guard on this test's own blind spot.
+    flat = ws / "record" / "salvaged" / "record-from-run-unknown"
+    for earlier in ("refusal-9401.txt", "refusal-9402.txt", "refusal-9403.txt"):
+        assert (flat / earlier).is_file(), (
+            f"{earlier} was discarded rather than carried forward. Each of "
+            "these dispatches recovered its predecessor and then left an "
+            "unprovenanced record/ behind — i.e. it did not complete normally, "
+            "so it cannot be assumed to have uploaded what it recovered."
+        )
+
+
+@requires_posix_shell
+def test_a_chain_of_consecutive_deaths_does_not_lose_the_FIRST_run(tmp_path):
+    """A dies; B salvages A and ALSO dies; C salvages. A's bytes must survive.
+
+    ⚠️ THIS IS THE SCENARIO A `rm -rf record/salvaged` FLATTENING SILENTLY
+    DESTROYS, AND THE JUSTIFICATION FOR IT IS FALSE HERE. Dropping the previous
+    dispatch's `salvaged/` is defended by "the earlier material already rode out
+    on the artifact of the dispatch that recovered it" — true only when THAT
+    dispatch survived to reach its upload step. This whole file is about
+    dispatches that do not. When B dies, B never uploads, so A's environment
+    record, staged patch set and verified borrowed control exist in exactly ONE
+    place on disk: inside B's `record/salvaged/`. C deleting it as "already
+    shipped" is total loss of the run this ticket was written about.
+
+    And it fails SILENTLY in the worst way: C's summary reads "unfinished
+    journals recovered: 1 (`8002-1`)" — a reader is told a recovery happened,
+    with no hint that a whole earlier run was destroyed in the same step.
+
+    Two deaths in a row is not the tail case here. Two heterogeneous machines
+    answer the `persona-build` label and the dockerless macOS host kills
+    `prepare` in ~20 seconds, so consecutive deaths are the current normal.
+
+    The remedy is carrying forward, NOT restoring the nesting — the tree must
+    still be exactly one level deep, which
+    `test_salvaged_material_does_not_nest_one_level_deeper_every_dispatch`
+    pins from the other side.
+    """
+    journal_root = tmp_path / "journal"
+    ws = tmp_path / "ws"
+    (ws / "record").mkdir(parents=True)
+
+    # ── dispatch A (8001): the ticket's own scenario. Milestones through the
+    # script's real `mark` path, eight steps' worth of evidence, then death
+    # inside `prepare` before any `journal begin`. ──
+    for text in (
+        "environment recorded (pre-prepare) -> record/environment-patched.txt",
+        "staged 16 fingerprint patches into ungoogled's series",
+    ):
+        r = run_journal("mark", "patched", text, cwd=ws, journal_root=journal_root, run_id="8001")
+        assert r.returncode == 0, r.stderr
+    (ws / "record" / "prepare-patched.provenance").write_text(
+        "phase=prepare\ntree=patched\ngithub_run_id=8001\ngithub_run_attempt=1\n",
+        encoding="utf-8",
+    )
+    (ws / "record" / "environment-patched.txt").write_text("nproc: 32\n", encoding="utf-8")
+    (ws / "record" / "patches-staged.txt").write_text("# count: 16\n", encoding="utf-8")
+    (ws / "record" / "control-borrow-verification.txt").write_text(
+        "borrowed control VERIFIED\n", encoding="utf-8"
+    )
+
+    # ── dispatch B (8002): salvages A… ──
+    r = run_journal("salvage", cwd=ws, journal_root=journal_root, run_id="8002")
+    assert r.returncode == 0, r.stderr
+    assert (ws / "record" / "salvaged" / "record-from-run-8001" /
+            "control-borrow-verification.txt").is_file(), "precondition: B did not salvage A"
+
+    # …and then B dies too, before its upload step. It leaves its own leftovers
+    # (the dockerless-host shape: dead in seconds, no provenance stamp written).
+    r = run_journal("mark", "patched", "b reached prepare", cwd=ws,
+                    journal_root=journal_root, run_id="8002")
+    assert r.returncode == 0, r.stderr
+    (ws / "record" / "prepare-patched.log").write_text("docker: not found\n", encoding="utf-8")
+
+    # ── dispatch C (8003): salvages. Nothing here uploaded anything yet. ──
+    summary = tmp_path / "summary.md"
+    r = run_journal("salvage", cwd=ws, journal_root=journal_root, run_id="8003",
+                    GITHUB_STEP_SUMMARY=str(summary))
+    assert r.returncode == 0, r.stderr
+
+    salvaged = ws / "record" / "salvaged"
+
+    # THE ASSERTION: run 8001's bytes, not merely a mention of run 8002.
+    for name, needle in (
+        ("environment-patched.txt", "nproc: 32"),
+        ("patches-staged.txt", "# count: 16"),
+        ("control-borrow-verification.txt", "borrowed control VERIFIED"),
+    ):
+        p = salvaged / "record-from-run-8001" / name
+        assert p.is_file(), (
+            f"run 8001's {name} was destroyed by the dispatch AFTER its "
+            "recoverer died. It existed in exactly one place on disk and this "
+            "salvage deleted it as 'already shipped', although no dispatch in "
+            "the chain ever reached an upload step."
+        )
+        assert needle in p.read_text(encoding="utf-8")
+
+    assert (salvaged / "journals" / "journal-8001-1.txt").is_file(), (
+        "run 8001's own journal was lost as well: its sentinel was burned by "
+        "dispatch B, which never uploaded anything, so 'some dispatch copied "
+        "this once' was mistaken for 'a surviving dispatch carried it out'"
+    )
+    # B's own leftovers are recovered too — carrying forward must not displace
+    # the ordinary recovery of the immediately-previous dispatch.
+    assert (salvaged / "journals" / "journal-8002-1.txt").is_file()
+    assert (salvaged / "record-from-run-unknown" / "prepare-patched.log").is_file()
+
+    # Still exactly one level deep — carrying forward, not re-nesting.
+    assert not (salvaged / "record-from-run-8001" / "salvaged").exists()
+    assert not (salvaged / "record-from-run-unknown" / "salvaged").exists()
+
+    # And the legend describes THIS run, not the dispatch it was inherited from.
+    legend = (salvaged / "SALVAGE.md").read_text(encoding="utf-8")
+    assert "`8003`" in legend, (
+        "SALVAGE.md was carried forward verbatim, so it names the earlier "
+        "dispatch's run id and timestamp — a legend attributing this artifact "
+        "to the wrong run is worse than none"
+    )
+    assert "`8002`" not in legend
+
+
+@requires_posix_shell
+def test_a_journal_whose_copy_FAILED_is_not_marked_as_carried_out(tmp_path):
+    """The sentinel must record a RESULT, not an attempt.
+
+    `cp` is deliberately non-fatal here — journaling must never fail a build.
+    But writing the `.salvaged` sentinel unconditionally afterwards burns the
+    journal's one chance to be carried out even when nothing was copied, and
+    counts it into `orphans`, so the log line and the run summary both claim a
+    recovery that did not occur. An unreadable journal is the concrete case:
+    `[ -f ]` passes, `cp` fails, the sentinel lands, and the next dispatch skips
+    it forever.
+
+    This is the same defect as the chained-deaths one above — bookkeeping
+    conditioned on an attempt where the guarantee needs the bytes to have moved.
+    """
+    journal_root = tmp_path / "journal"
+    ws = tmp_path / "ws"
+    ws.mkdir()
+
+    dead = journal_root / "7001-1"
+    dead.mkdir(parents=True)
+    journal = dead / "journal.txt"
+    journal.write_text(
+        "# header\n"
+        "2026-09-01T00:00:00Z  BEGIN  patched/prepare\n"
+        '2026-09-01T00:09:00Z  ALIVE  patched/prepare  elapsed=540s  last="applying 011"\n',
+        encoding="utf-8",
+    )
+    journal.chmod(0o000)
+    if os.access(journal, os.R_OK):  # pragma: no cover — root, or a permissive FS
+        pytest.skip("this host can read a mode-000 file, so the copy cannot be made to fail")
+
+    r = run_journal("salvage", cwd=ws, journal_root=journal_root, run_id="7002")
+    assert r.returncode == 0, r.stderr
+
+    assert not (ws / "record" / "salvaged" / "journals" / "journal-7001-1.txt").exists(), (
+        "precondition: the copy was expected to fail on this host"
+    )
+    assert "salvaged 1 unfinished journal" not in r.stdout, (
+        "salvage reported recovering a journal it did not copy, so the log and "
+        f"the run summary both assert a recovery that did not happen: {r.stdout}"
+    )
+    assert not (dead / ".salvaged").exists(), (
+        "the sentinel was written although the copy failed, so this journal's "
+        "one chance to be carried out was spent on a copy that never happened"
+    )
+
+    # …and the NEXT dispatch, once the journal is readable again, still gets it.
+    journal.chmod(0o644)
+    r = run_journal("salvage", cwd=ws, journal_root=journal_root, run_id="7003")
+    assert r.returncode == 0, r.stderr
+    carried = ws / "record" / "salvaged" / "journals" / "journal-7001-1.txt"
+    assert carried.is_file(), (
+        "the journal was never retried: a transient copy failure permanently "
+        "consumed the one recovery the durable copy exists to provide"
+    )
+    assert "applying 011" in carried.read_text(encoding="utf-8")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
