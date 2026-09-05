@@ -178,4 +178,12 @@ fi
   fi
 } | tee "$OUT"
 
+# PS-289 — a durable MARK, so a run that dies later still shows it got this far.
+# Guarded on existence and never allowed to fail: recording progress must not be
+# the reason a build stops.
+JOURNAL_SH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/ps289_journal.sh"
+if [ -x "$JOURNAL_SH" ]; then
+  "$JOURNAL_SH" mark "$TREE" "environment recorded (${PHASE_LABEL}) -> ${OUT}" >/dev/null 2>&1 || true
+fi
+
 echo "recorded environment -> $OUT"
