@@ -234,9 +234,16 @@ def download_engine(tag: str, progress=None, log=None) -> bool:
     stays untouched until the new one is whole.
 
     Installing then prunes superseded builds, which would delete the build a
-    profile running on the PREVIOUS one is executing from; that prune defers
-    while any profile runs (see engine_install.set_in_use_provider), so a
-    running profile is left alone here too."""
+    profile running on the PREVIOUS one is executing from; that prune spares
+    the builds running profiles are actually executing from, so a running
+    profile is left alone here too — while a superseded build NONE of them is
+    on is reclaimed on this prune rather than being kept alive by an unrelated
+    open profile (PS-221). Two oracles, not one (see
+    engine_install.set_in_use_provider for the "is anything running?" gate and
+    set_in_use_builds_provider for the narrowing): when any running session
+    cannot be resolved to a build — a survivor, an indeterminate liveness
+    probe, an unwired narrowing provider — the answer is UNKNOWN and the prune
+    still defers WHOLESALE, exactly as it did before the narrowing existed."""
     from ..browser import invisible_launch as inv
 
     return inv.install_engine_build(tag, progress=progress, log=log)
