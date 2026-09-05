@@ -189,6 +189,75 @@ _MAX_TAG_PROBES = 5
 # both reach download_engine) so two extracts don't race into ENGINE_DIR.
 _install_lock = threading.Lock()
 
+# WHAT A FAILED INSTALL LEFT ON DISK — the side channel the three _install_*
+# helpers report their rollback outcome through, read by download_engine to
+# decide whether the in-progress sentinel may be cleared.
+#
+# A SIDE CHANNEL RATHER THAN A RICHER RETURN, and that is not a stylistic
+# choice. The helpers' bare-bool return is constrained from two directions at
+# once by the guard tests PS-24/PS-32 and PS-30/PS-38 left behind: they
+# monkeypatch the helpers with single-arg bool lambdas (`lambda p: False`), and
+# they assert IDENTITY on the real ones (`is False`, `is True`). A tuple or an
+# enum breaks the identity assertions; a download_engine that expects a richer
+# value breaks on a bare-bool patch. So the return stays exactly what it is and
+# the extra fact travels beside it.
+#
+# The two constraints happen to point the same way as the SAFETY rule, which is
+# the load-bearing part: a patched installer that returns a bare False and sets
+# nothing reads as UNKNOWN, and unknown KEEPS the sentinel. Defaulting to keep
+# is what makes the existing guard tests still pass, and it is also the only
+# direction that cannot turn this guard into a leak.
+#
+# Written and read under _install_lock, which download_engine already holds
+# across the whole install — so the two concurrent installers the lock exists to
+# serialise cannot read each other's outcome.
+INSTALL_OUTCOME_UNKNOWN = "unknown"
+# The previous, working build is what is on disk: the install failed and its
+# rollback is CONFIRMED complete. The only value that may clear the sentinel.
+INSTALL_OUTCOME_RESTORED = "restored"
+
+# Module-level rather than threaded through the helpers' arguments, for the same
+# reason the return type is untouched: the monkeypatched stand-ins take exactly
+# one positional argument, and adding a second would break them all.
+_last_install_outcome = INSTALL_OUTCOME_UNKNOWN
+
+
+def _reset_install_outcome() -> None:
+    """Clear the side channel before dispatching to an installer, so a stale
+    "restored" from an EARLIER failed install can never be read as this one's.
+    Defaults to unknown, which keeps the sentinel."""
+    global _last_install_outcome
+    _last_install_outcome = INSTALL_OUTCOME_UNKNOWN
+
+
+def _note_install_outcome(state: str) -> None:
+    """Record what a FAILED install left on disk. Only ever called on a failure
+    path — a success needs no outcome, because the sentinel is already cleared
+    by the ordinary success arm."""
+    global _last_install_outcome
+    _last_install_outcome = state
+
+
+def _previous_build_restored() -> bool:
+    """True only when the last install FAILED and its rollback verifiably put
+    the previous working build back.
+
+    Fails closed on purpose. Anything that is not a confirmed restore — a crash,
+    a partial restore, a first install with nothing to go back to, a stand-in
+    that reported nothing — is unknown, and unknown is indistinguishable from a
+    half-promoted tree. Launching that tree is the exact failure PS-24/PS-32
+    built the sentinel to prevent, so the doubtful case must keep it.
+
+    NOT SUFFICIENT ON ITS OWN to clear the sentinel, and the caller must not
+    treat it as such. Several installer arms report "restored" on the strength
+    of having written nothing outside a staging dir — true about that attempt,
+    and silent about what an EARLIER attempt left on disk. download_engine pairs
+    this with a `was_launchable` reading taken before its own writes, so a tree
+    an earlier failed promotion left mixed cannot be cleared by a later attempt
+    failing early and harmlessly."""
+    return _last_install_outcome == INSTALL_OUTCOME_RESTORED
+
+
 # The oracle an UNATTENDED install consults before replacing the tree — a
 # zero-arg callable returning True while any profile is running.
 #
@@ -864,8 +933,32 @@ def _install_linux(asset_path: str) -> bool:
 
     Via the shared atomic replace, so a failed swap restores the engine that was
     working instead of leaving none at all — the rollback the app updater always
-    had for its own AppImage and this path silently lacked."""
-    return atomic_replace(asset_path, ENGINE_BINARY, mode=0o755)
+    had for its own AppImage and this path silently lacked.
+
+    The swap's outcome is reported on the module side channel so download_engine
+    can tell a rollback that put the working engine back from a failure that left
+    a tree nothing should launch. The RETURN is untouched — still the plain bool
+    the guard tests assert identity on."""
+    outcome: dict = {}
+    ok = atomic_replace(asset_path, ENGINE_BINARY, mode=0o755, outcome=outcome)
+    if not ok:
+        state = outcome.get("state")
+        # Both of the helper's "dst is the previous working artifact" states
+        # count as restored, and the membership is asserted THERE rather than
+        # spelled out here — a caller re-listing the states is a caller that can
+        # get the list subtly wrong.
+        #
+        # AC6, decided rather than omitted: the couldn't-back-up arm
+        # (REPLACE_DST_UNTOUCHED) DOES count as restored. It returns before
+        # os.replace is ever attempted, so the engine binary was not written to
+        # at all and the bytes on disk are the same working build that was
+        # launchable a moment earlier — a STRONGER guarantee than the restore
+        # arm, which had to undo something. Excluding it would leave the
+        # sentinel over a tree provably never touched, which is the same
+        # self-inflicted brick this slice exists to remove.
+        if state in httpdl.REPLACE_PREVIOUS_INTACT:
+            _note_install_outcome(INSTALL_OUTCOME_RESTORED)
+    return ok
 
 
 def _install_windows(asset_path: str) -> bool:
@@ -874,11 +967,23 @@ def _install_windows(asset_path: str) -> bool:
 
     Extraction goes into a staging dir first, then the whole tree is moved into
     ENGINE_DIR — so chrome.exe never appears without the DLLs beside it, which
-    would let a launch pick up a half-extracted engine (#319)."""
+    would let a launch pick up a half-extracted engine (#319).
+
+    Rollback outcomes are reported on the module side channel (see
+    _note_install_outcome). Two distinct arms can report "restored": a failure
+    BEFORE promotion started, where the previous tree was provably never
+    touched, and a promotion that failed and whose rollback _promote_staging
+    CONFIRMED complete. A promotion whose rollback could not be completed
+    reports nothing and so stays unknown — the tree is then part old and part
+    new, which is exactly what must not be launched."""
     import zipfile
 
     staging = os.path.join(ENGINE_DIR, ".staging")
     shutil.rmtree(staging, ignore_errors=True)
+    # Everything up to _promote_staging writes only inside `staging`, which is a
+    # scratch subdirectory removed in the finally below. So while this is False
+    # the previously-installed tree is byte-for-byte as the operator left it.
+    promotion_started = False
     try:
         os.makedirs(staging, exist_ok=True)
         with zipfile.ZipFile(asset_path) as zf:
@@ -909,11 +1014,35 @@ def _install_windows(asset_path: str) -> bool:
                 with zf.open(m) as src, open(dest, "wb") as out:
                     out.write(src.read())
         if not os.path.isfile(os.path.join(staging, "chrome.exe")):
+            # A bad archive, refused BEFORE promotion. Nothing outside
+            # `staging` was written, so the installed tree is byte-for-byte as
+            # this install found it.
+            #
+            # NOTE THE SCOPE OF THAT CLAIM: it says this attempt changed
+            # nothing, NOT that what is there is a working build. An earlier
+            # failed promotion may have left the tree mixed. download_engine
+            # supplies the missing term — it required the tree to be launchable
+            # BEFORE the install began, which is a question no installer can
+            # answer about itself.
+            _note_install_outcome(INSTALL_OUTCOME_RESTORED)
             return False
+        promotion_started = True
         _promote_staging(staging)
         os.remove(asset_path)
         return os.path.isfile(ENGINE_BINARY)
     except (OSError, zipfile.BadZipFile):
+        if not promotion_started:
+            # The extract itself failed (a corrupt zip, a full disk while
+            # writing into staging). ENGINE_DIR's previous entries were never
+            # renamed aside, so the tree is byte-for-byte as this install found
+            # it — which is a claim about THIS attempt only. Whether what it
+            # found was launchable is download_engine's `was_launchable` term.
+            _note_install_outcome(INSTALL_OUTCOME_RESTORED)
+        # else: _promote_staging owns the verdict — it is the only code that
+        # knows whether its own rollback completed, and it reports "restored"
+        # itself. Saying anything here would either overwrite its finding or
+        # invent one, and the default (unknown → keep the sentinel) is the safe
+        # answer for a promotion whose state we cannot vouch for.
         return False
     finally:
         shutil.rmtree(staging, ignore_errors=True)
@@ -980,8 +1109,22 @@ def _promote_staging(staging: str) -> None:
             httpdl.discard_aside(dst)
         if fully_restored:
             httpdl.discard_aside(backup_root)  # nothing left in it to recover
+            # ...and REPORT it. This function already computed the exact fact
+            # download_engine needs and then threw it away: a tree confirmed
+            # back at the working build is launchable, and one that is part old
+            # and part new is not. Reported on the module side channel rather
+            # than returned, because the return type is pinned by the guard
+            # tests (see _note_install_outcome).
+            _note_install_outcome(INSTALL_OUTCOME_RESTORED)
         # else: LEAVE the backup. It holds the only copy of at least one file
         # of the working build, and an operator can put it back by hand.
+        #
+        # AND REPORT NOTHING, deliberately. This is the arm where inverting the
+        # guard would be worse than the defect it fixes: the tree here is part
+        # old and part new with the only good copy sitting in the backup dir, so
+        # clearing the sentinel would launch precisely the mixed engine this
+        # mechanism was built to prevent. Silence leaves the outcome unknown,
+        # and unknown keeps the sentinel.
         raise
     # The new build is fully in place; the old one is no longer needed.
     httpdl.discard_aside(backup_root)
@@ -993,19 +1136,31 @@ def _install_macos(asset_path: str) -> bool:
 
     ditto lands the .app in a staging path first, then it's swapped into place —
     so a launch never sees a partially-copied bundle (the previous engine stays
-    whole until the new one is ready)."""
+    whole until the new one is ready).
+
+    Rollback outcomes are reported on the module side channel (see
+    _note_install_outcome). NOT EXERCISED IN THIS CONTAINER — this path shells to
+    hdiutil/ditto and is macOS-only, so it is written to the same rule as the
+    other two rather than measured: report "restored" only where the previous
+    bundle is provably back (never moved aside, or restore_aside CONFIRMED it),
+    and stay silent everywhere else so the sentinel is kept."""
     import subprocess
     import tempfile
 
     mount = tempfile.mkdtemp(prefix="fpchrome-dmg-")
     staging = os.path.join(ENGINE_DIR, ".staging-Chromium.app")
     shutil.rmtree(staging, ignore_errors=True)
+    # Until the previous bundle is renamed aside, everything written lives in
+    # `staging` (removed in the finally) or on the mounted dmg, so the installed
+    # bundle is byte-for-byte as the operator left it.
+    promotion_started = False
     try:
         rc = subprocess.run(
             ["hdiutil", "attach", asset_path, "-nobrowse", "-mountpoint", mount],
             capture_output=True,
         ).returncode
         if rc != 0:
+            _note_install_outcome(INSTALL_OUTCOME_RESTORED)
             return False
         app_src = None
         for entry in os.listdir(mount):
@@ -1013,6 +1168,7 @@ def _install_macos(asset_path: str) -> bool:
                 app_src = os.path.join(mount, entry)
                 break
         if not app_src:
+            _note_install_outcome(INSTALL_OUTCOME_RESTORED)
             return False
         dest = os.path.join(ENGINE_DIR, "Chromium.app")
         # ditto preserves the code signature/resource forks/permissions that a
@@ -1026,6 +1182,7 @@ def _install_macos(asset_path: str) -> bool:
         # Gatekeeper refuses to launch, which is not a rollback.
         backup = os.path.join(ENGINE_DIR, BACKUP_NAME + "-Chromium.app")
         httpdl.discard_aside(backup)
+        promotion_started = True
         had_previous = httpdl.move_aside(dest, backup)
         # A backup is dropped only once it is provably redundant: the new
         # bundle is in place, or the previous one has been CONFIRMED restored.
@@ -1038,16 +1195,32 @@ def _install_macos(asset_path: str) -> bool:
         except OSError:
             if had_previous and httpdl.restore_aside(backup, dest):
                 httpdl.discard_aside(backup)
+                # CONFIRMED back: restore_aside returns True only when the
+                # previous bundle is genuinely at `dest`. A False there means
+                # the backup is still the last surviving copy, and reporting
+                # nothing is what keeps the sentinel over it.
+                _note_install_outcome(INSTALL_OUTCOME_RESTORED)
             return False
         if not ok and had_previous:
             # The new bundle landed but has no runnable binary inside it — a
             # broken engine is no better than a failed swap, so go back.
             if httpdl.restore_aside(backup, dest):
                 httpdl.discard_aside(backup)
+                _note_install_outcome(INSTALL_OUTCOME_RESTORED)
             return ok
         httpdl.discard_aside(backup)
         return ok
     except OSError:
+        if not promotion_started:
+            # Failed before the previous bundle was renamed aside — it is still
+            # exactly where this install found it. Same scope as the Windows
+            # arm: a statement about what THIS attempt wrote, not a warrant
+            # that the bundle is good. download_engine's `was_launchable` term
+            # is what supplies the second half.
+            _note_install_outcome(INSTALL_OUTCOME_RESTORED)
+        # else: a failure between the move_aside and the inner try's own
+        # handling. We cannot vouch for what is at `dest`, so say nothing and
+        # let unknown keep the sentinel.
         return False
     finally:
         subprocess.run(["hdiutil", "detach", mount], capture_output=True)
@@ -1230,6 +1403,28 @@ def download_engine(
             raise InstallDeferred(
                 "a profile is running — install deferred to a later check"
             )
+        # WAS THERE A LAUNCHABLE ENGINE HERE BEFORE WE STARTED? Read now, while
+        # the answer is still about the operator's tree rather than about our
+        # own bookkeeping — the two writes immediately below (marker cleared,
+        # sentinel set) both force this to False, so asking any later would only
+        # ever tell us what we just did.
+        #
+        # This is the term that keeps the rollback exception from becoming a
+        # bypass. An installer can honestly report that IT did not touch the
+        # tree; it cannot report that the tree was any good, and those are
+        # different claims. A tree left mixed by an EARLIER failed promotion
+        # already carries the sentinel and reads False here — so the next
+        # attempt, failing before it promotes anything, cannot clear that
+        # sentinel by pleading "I wrote nothing". Without this conjunct the
+        # guard survives one attempt and falls on the second, which is exactly
+        # the retry loop ensure_engine already performs (attempts=3).
+        #
+        # is_installed() rather than _install_complete(): "launchable" is the
+        # property being preserved, and it includes the binary actually being
+        # present and non-empty. A FIRST install reads False here and so can
+        # never clear the sentinel — correct, because there is no previous
+        # build to have been restored to.
+        was_launchable = is_installed()
         # Clear any prior completion marker so a failed install can't leave the
         # engine reading as "complete" — is_installed() must reflect the actual
         # on-disk state until we mark success below.
@@ -1247,6 +1442,11 @@ def download_engine(
                 f.write("installing")
         except OSError:
             pass
+        # Clear the outcome side channel immediately before dispatching, so an
+        # earlier failed install's "restored" can never be read as this one's.
+        # Inside the lock, beside the write it guards — the two must not split
+        # across it any more than the marker and the sentinel may.
+        _reset_install_outcome()
         if _platform.IS_WINDOWS:
             ok = _install_windows(asset_path)
         elif _platform.IS_MACOS:
@@ -1272,6 +1472,49 @@ def download_engine(
         # whole point: is_installed() stays False across the crash, so
         # ensure_engine re-installs on next start instead of launching a tree
         # that is part previous build, part new one.
+        #
+        # WITH ONE EXCEPTION, AND ONLY ONE: a failure whose rollback VERIFIABLY
+        # put the previous working build back. The reasoning above is about a
+        # CRASH, and it is right about a crash — but the installers return the
+        # same bare False for a half-promoted tree and for one restored to the
+        # build that was launchable minutes ago, so the sentinel was being left
+        # over both. Over the second, it converts a rollback that did its job
+        # perfectly into an engine nothing will launch.
+        #
+        # That is not merely untidy, because only a SUCCESSFUL install ever
+        # clears the sentinel: the way out requires a re-download, and with no
+        # usable network there is no way out at all. The operator is then told
+        # to "wait for the download to finish" about a download that cannot
+        # succeed and is not needed, while the engine sits on disk intact. The
+        # sentinel's own docstring calls its failure mode "a needless
+        # re-download, never a launch of a mixed engine" — true only where a
+        # re-download is possible.
+        #
+        # FAILS CLOSED, and the direction is non-negotiable: only a CONFIRMED
+        # restore clears it. A partial restore, a crash, a first install, an
+        # installer stand-in that reported nothing — all read as unknown, and
+        # unknown is indistinguishable from a half-promoted tree, so it keeps
+        # the sentinel exactly as before. The marker is deliberately NOT written
+        # here: this says "no install is in progress", not "a new build was
+        # installed", and version.txt still carries the build that is actually
+        # on disk.
+        #
+        # TWO CONJUNCTS, AND EACH ANSWERS A QUESTION THE OTHER CANNOT.
+        # `was_launchable` (captured above, before our own writes) says the tree
+        # this install started from was a working engine. `_previous_build_
+        # restored()` says the install put that same tree back. The installer
+        # can only ever establish the second: several of its arms report
+        # "restored" because they provably wrote nothing outside a staging dir,
+        # which is a true statement about THIS attempt and no statement at all
+        # about what an EARLIER attempt may have left behind. Requiring both is
+        # what keeps a mixed tree — sentinel already set by the failed
+        # promotion that made it — from being cleared by the very next attempt
+        # failing harmlessly and early.
+        elif was_launchable and _previous_build_restored():
+            try:
+                os.remove(_installing_file())
+            except OSError:
+                pass
         return ok
 
 

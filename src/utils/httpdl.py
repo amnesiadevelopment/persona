@@ -370,10 +370,28 @@ def verify_file(path: str, digest: str | None, allow_missing: bool = False) -> b
 
 # --- atomic replace, with rollback -------------------------------------------
 
+# The four states atomic_replace can end in, reported through its opt-in
+# `outcome` sink. The RETURN VALUE collapses the last three into a bare False,
+# which is correct for a caller that only asks "did the new artifact land?" and
+# useless for one that asks "is what is on disk launchable?" — a tree that is
+# half-new and a tree restored to the previous working build are the same False.
+#
+# REPLACE_DST_UNTOUCHED and REPLACE_RESTORED both mean `dst` IS THE PREVIOUS
+# WORKING ARTIFACT. REPLACE_NOT_RESTORED means it is not, or is not known to be,
+# and a caller reasoning about launchability must treat it as unusable.
+REPLACE_OK = "replaced"           # the new artifact is in place
+REPLACE_DST_UNTOUCHED = "dst_untouched"   # aborted before os.replace; dst never touched
+REPLACE_RESTORED = "restored"     # replace failed, previous artifact CONFIRMED back
+REPLACE_NOT_RESTORED = "not_restored"     # replace failed and the restore did not land
+
+# The two states in which `dst` is the previous working artifact. Named once,
+# here, so a caller cannot get the membership subtly wrong at its own site.
+REPLACE_PREVIOUS_INTACT = (REPLACE_DST_UNTOUCHED, REPLACE_RESTORED)
+
 
 def atomic_replace(
     src: str, dst: str, mode: int | None = 0o755, log=None,
-    retain_backup: bool = False,
+    retain_backup: bool = False, outcome: dict | None = None,
 ) -> bool:
     """Move `src` onto `dst` atomically, keeping a backup of `dst` so a failed
     swap restores the working artifact rather than losing it.
@@ -411,7 +429,31 @@ def atomic_replace(
     path, so each retention OVERWRITES the last rather than accumulating. That
     is the depth-not-duration policy the Firefox engine states in place at
     browser/engine_install.py:628-631.
+
+    `outcome` — OPT-IN, and the default None is what keeps this change invisible
+    to a caller that does not ask. Pass a dict and its "state" key is set to one
+    of REPLACE_OK / REPLACE_DST_UNTOUCHED / REPLACE_RESTORED /
+    REPLACE_NOT_RESTORED. It is a SIDE CHANNEL, not a richer return: the return
+    stays a plain bool with exactly today's values, because callers assert
+    identity on it.
+
+    Why it is needed: three of those four states return the SAME bare False, and
+    they say opposite things about the artifact on disk. The couldn't-back-up
+    arm returns BEFORE os.replace, so `dst` was provably never touched and the
+    working artifact is intact. The replace-failed arm restores the backup — and
+    that restore's own result used to be swallowed by a bare `except: pass`, so
+    a caller could not tell a tree restored to the working build from one left
+    half-new. Recovering that distinction is what lets an engine caller decide
+    whether what is on disk is launchable.
+
+    A caller that reads the outcome must default to the UNSAFE reading when it
+    is absent: an unset dict means nothing reported, which is not evidence the
+    previous artifact survived.
     """
+    if outcome is not None:
+        # Default to the state that grants nothing. A caller must never be able
+        # to read "restored" from a run that ended somewhere unforeseen.
+        outcome["state"] = REPLACE_NOT_RESTORED
 
     def say(msg: str) -> None:
         if log is not None:
@@ -448,6 +490,12 @@ def atomic_replace(
             except OSError:
                 pass
             say(f"Update: couldn't back up the current version ({e}); aborting.")
+            # We return BEFORE os.replace, so `dst` is untouched and still the
+            # working artifact. Distinct from the restore arm below: nothing was
+            # attempted on it, so its intactness is a fact about control flow,
+            # not about a recovery that might have half-worked.
+            if outcome is not None:
+                outcome["state"] = REPLACE_DST_UNTOUCHED
             return False
     try:
         # flush the staged bytes to disk before they become the live artifact
@@ -467,15 +515,29 @@ def atomic_replace(
             "restoring backup.")
         if had_previous:
             try:
+                # The restore's result is REPORTED, not swallowed. It used to
+                # end in a bare `except: pass`, which made a tree restored to
+                # the working build indistinguishable from one left half-new —
+                # the two states a caller most needs to tell apart on exactly
+                # this path. The except is still swallowing (a failed restore
+                # must not escalate a reported failure into a crash); what
+                # changed is that it now records WHICH state it ended in.
                 os.replace(backup, dst)
+                if outcome is not None:
+                    outcome["state"] = REPLACE_RESTORED
             except Exception:
                 pass
+        # else: a FIRST install has no previous artifact, so there is nothing
+        # intact to report. The default REPLACE_NOT_RESTORED stands, and it is
+        # the honest answer: `dst` is not a working build.
         return False
     if had_previous and not retain_backup:
         try:
             os.remove(backup)  # the new artifact is in place; drop the backup
         except OSError:
             pass
+    if outcome is not None:
+        outcome["state"] = REPLACE_OK
     return True
 
 
