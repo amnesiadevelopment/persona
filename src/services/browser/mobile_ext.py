@@ -41,8 +41,18 @@ __MOBILE_REALM_GUARD__
 
     function def(obj, prop, val) {
       try {
+        // A REAL ACCESSOR, not a function expression — see device_ext's def().
+        // An expression getter owns `prototype`/`arguments`/`caller` and reads
+        // `.name === ""` here; a native accessor owns exactly ["length","name"]
+        // with `.name === "get <prop>"`.
+        var getter = Object.getOwnPropertyDescriptor(
+          { get m() { return val; } }, 'm').get;
+        try {
+          Object.defineProperty(getter, 'name', { value: 'get ' + prop });
+          Object.defineProperty(getter, '__pnaName', { value: 'get ' + prop });
+        } catch (e) {}
         Object.defineProperty(obj, prop, {
-          get: function () { return val; }, configurable: true, enumerable: true,
+          get: getter, configurable: true, enumerable: true,
         });
       } catch (e) {}
     }
