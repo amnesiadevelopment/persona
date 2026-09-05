@@ -1117,10 +1117,39 @@ def test_a_partial_rollback_leaves_the_engine_unlaunchable_end_to_end(
         lambda path, *a, **k: (_copy_zip_to(zip_path, path), True)[1],
     )
     assert updater.download_engine("http://x/engine.zip", digest="sha256:aa") is False
-    monkeypatch.undo()
 
+    # ⚠️ BOTH ASSERTIONS RUN *BEFORE* `monkeypatch.undo()`, AND THAT ORDER IS THE
+    # WHOLE TEST. `undo()` drops the ENGINE_DIR / ENGINE_BINARY / MARKER_FILE /
+    # VERSION_FILE wiring along with the fakes, so an `is_installed()` evaluated
+    # after it reads the OPERATOR'S REAL ~/.persona/engine instead of this tmp
+    # tree — and then fails in two opposite directions at once:
+    #
+    #   * VACUOUS wherever it is green. With no engine at ~/.persona/engine the
+    #     gate returns False for that reason alone, so the assertion holds no
+    #     matter what the tmp tree contains. Measured: making the tmp tree fully
+    #     launchable right here (drop the sentinel, write the marker, write a
+    #     good binary) still passed — an assertion that cannot go red.
+    #   * RED on any host that HAS an engine installed, for a reason that has
+    #     nothing to do with the code under test. version.txt alone satisfies
+    #     _install_complete(), so a developer's own machine reddens this.
+    #
+    # The sentinel line hid it: `(engine_dir / ...).exists()` is a pathlib call
+    # on a captured local, so it is correct either way and sat next to a
+    # neighbour that was not.
+    #
+    # The sibling at test_a_second_attempt_cannot_clear_a_sentinel_left_by_a_
+    # failed_rollback solves this the other way — it re-wires via
+    # _wire_windows_engine() after the undo — because it genuinely needs the
+    # fakes dropped mid-test to run a SECOND attempt. Nothing here does, so the
+    # assertions simply stay inside the wiring.
+    #
+    # If you touch this, re-run the falsification: make the tmp tree launchable
+    # immediately before the is_installed() line and confirm the test goes RED.
+    # A green there means the assertion has stopped reading the tmp tree again.
     assert (engine_dir / ".engine-installing").exists()
     assert updater.is_installed() is False
+
+    monkeypatch.undo()
 
 
 def test_a_bad_archive_leaves_the_previous_build_launchable(monkeypatch, tmp_path):
