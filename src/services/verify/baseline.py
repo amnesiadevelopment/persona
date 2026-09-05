@@ -187,21 +187,25 @@ ENV_SENSITIVE_PROBES: tuple[str, ...] = (
     # under PS-314: `engine_build` identical (firefox-20), all 39 other keys
     # byte-identical, the seven probes already listed here byte-identical.
     #
-    # ⚠️ LISTED WITH A CAVEAT THE NEIGHBOURS ABOVE DO NOT CARRY. `probes.py`'s
-    # own comment on this probe says "an UNEXPECTED PRESENCE is as much a
-    # finding as an absence", so listing it here BUYS TOLERANCE ON A VECTOR THAT
-    # IS ALSO A REAL SIGNAL — a genuine stealth regression that switched one of
-    # these APIs on would now be absorbed as environment. That trade is made
-    # deliberately and narrowly: the alternative is a reference that reds on any
-    # host whose WebSerial gate differs, for a reason invisible in the artifact,
-    # which is the failure mode the block above says trains an operator to
-    # ignore the command.
+    # ⚠️ WHAT THIS LIST DOES AND DOES NOT DO — read before assuming either way.
+    # It is DOCUMENTATION, not a filter. `compare()` diffs every probe and
+    # consults this tuple NOWHERE; its only consumer is `provenance()`, which
+    # copies it into the artifact so a reader can tell "this row moved because
+    # the machine changed" from "this row moved because the product changed".
+    # Adding an entry therefore SUPPRESSES NOTHING: a future movement in
+    # `stealth.apiPresence` still reds `baseline.check` exactly as it would
+    # have before, and still has to be explained.
     #
-    # ⛔ SO THE SCOPE MATTERS: this entry excuses the WebSerial PAIR on a
-    # platform-gate difference. It does NOT license a re-record that moves other
-    # keys of this probe. If a future re-record moves anything here besides
-    # `Serial`/`navigator.serial`, that is a finding and must be stated, not
-    # absorbed.
+    # That is the right property for this particular probe, and it is why the
+    # entry is safe to add. `probes.py` says of it that "an UNEXPECTED PRESENCE
+    # is as much a finding as an absence" — so a vector that is ALSO a real
+    # stealth signal must not become tolerated by being named here, and it does
+    # not.
+    #
+    # ⛔ SCOPE, for the reader this note exists to inform: this entry explains
+    # the WebSerial PAIR under a platform-gate difference. It says nothing about
+    # any other key of this probe, and a re-record that moves one is a finding
+    # to be stated rather than a row that was already excused.
     "stealth.apiPresence",
 )
 
