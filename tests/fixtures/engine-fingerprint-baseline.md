@@ -116,17 +116,45 @@ profile dir, which is the path `spawn_browser` hands the child — between the
 `xulstore.json`, so the shipped seeding path defers to the pin byte-for-byte and
 needed no change.
 
-⛔ **This blinds nothing.** The probe still reports what it reads and still
-diffs; a genuine re-roll of window geometry still moves it, which is exactly the
-property `behaviour_checks.py` protects when it refuses to solve the same
-transient with an ignore list. What changed is that both sides of an engine
-comparison are now sized by *us*, so a difference between them is attributable
-to the engine.
+**Which recordings are pinned, and which are not.** `_pin_recording_window`
+honours the same deferral it relies on: it writes only when there is no
+`xulstore.json` already.
+
+| Recording | Pinned? | Why |
+|---|---|---|
+| `fresh=True` — **the gate**, always (`engine_gate.py`) | **yes**, every time | the rmtree just removed the tree, so the file cannot exist |
+| `fresh=False` — `baseline_cli --reuse-profile`, and the launch-backed behavioural checks | **no** (after the first) | `fresh=False` means *start from what the previous session left behind*, and that persisted state is what those checks are measuring |
+
+That second row is load-bearing rather than a caveat. An earlier round pinned
+unconditionally, which truncated a warm profile's own `xulstore.json` — losing
+`PersonalToolbar`, `sidebar-box` and the user's `main-window` — and so wrote
+over exactly the substrate `behaviour_checks.py`'s restart-continuity model
+observes. `test_a_warm_recording_leaves_the_profiles_own_window_state_alone`
+holds it, and `test_the_gate_path_is_still_pinned_despite_the_warm_deferral` is
+the positive control that the deferral did not leak into the gate's path.
+
+⛔ **This blinds nothing** — read with the scope above, which is what makes the
+claim true rather than merely reassuring. The probe still reports what it reads
+and still diffs; a genuine re-roll of window geometry still moves it, which is
+exactly the property `behaviour_checks.py` protects when it refuses to solve the
+same transient with an ignore list. What changed is that both sides of an
+**engine comparison** are now sized by *us*, so a difference between them is
+attributable to the engine.
+
+`provenance.window_size` is therefore **measured, not restated**: it reports the
+geometry read back off the profile's `xulstore.json` after the recording, so a
+warm recording states what it actually ran with instead of claiming the pin. The
+key is omitted entirely when nothing was recorded (the chromium arm never
+launches a window) — a missing field means *not recorded* and never stands in
+for a value nobody observed.
 
 The value is capped by `BASELINE_RESOLUTION`: a CSS `innerWidth` larger than
 `screen.width` is the #216 impossibility (no real un-maximized window is wider
 than its own screen), and `test_the_pinned_window_cannot_exceed_the_baselines_spoofed_screen`
 holds the invariant now that the pin pre-empts `_seed_window_size`'s own cap.
+Note `1280x800` is the **outer window in device px**, not the content area: live
+on the runner an 800px window records `innerHeight: 687`, chrome taking ~113px.
+Anyone raising this constant should reason from that ratio rather than from 800.
 
 ### What moved in the PS-304 re-record, and why
 
