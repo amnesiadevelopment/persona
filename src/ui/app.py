@@ -2920,10 +2920,19 @@ class App:
 
         The value the operator sees is the value the reveal belongs to, so the
         comparand is this control's ``.value`` at the moment the panel is
-        built. Returned as the control (not the string) because
-        ``_status_control`` needs the same object; a partially constructed app
-        that has neither gets an empty stand-in rather than an
-        ``AttributeError``.
+        built. Returned as the CONTROL rather than the string so the caller
+        can choose what to read off it — :meth:`_status_current` takes
+        ``.value``, and a future caller needing the bounds or the identity of
+        the live object has it without a second resolver. A partially
+        constructed app (``App.__new__(App)``, which every panel spec in this
+        tree uses) has neither attribute, and gets an empty stand-in rather
+        than an ``AttributeError``.
+
+        ⚠️ NOT a resolver for :meth:`_status_control`, despite the adjacent
+        names. That method is handed its control POSITIONALLY by
+        ``_build_engines_panel`` (``self._status_control(self.engine_text,
+        …)``) and never calls this one — so the two cannot disagree about
+        which object a row renders, because only one of them chooses.
         """
         attr = "engine_text" if which == "chromium" else "_engine2_text"
         control = getattr(self, attr, None)
