@@ -499,6 +499,17 @@ def _capture_launch_argv() -> list[str]:
         _mock.patch.object(_process, "write_window_entry", lambda name: None),
         _mock.patch.object(_process, "seed_bookmarks", lambda *a, **k: None),
         _mock.patch.object(_process, "seed_profile_prefs", lambda *a, **k: None),
+        # PS-356: a Chromium launch now REFUSES when the installed engine's
+        # version cannot be read, because omitting --fingerprint-brand-version
+        # does not mean "make no claim" — it means the engine falls back to its
+        # hardcoded 144.x table and advertises a version it is not. This
+        # container has no engine installed, so the version is stubbed here to
+        # keep these tests measuring what they are about (the engine NAME in the
+        # argv). The refusal itself is exercised in tests/test_ps356_brand_version.py.
+        _mock.patch.object(
+            _process, "installed_chromium_version",
+            lambda: _process.ChromiumVersion(full="152.0.7977.75"),
+        ),
         _mock.patch.object(_process, "popen_in_new_session", _recording_popen),
     ]
     for p in patches:

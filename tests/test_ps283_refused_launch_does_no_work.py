@@ -123,6 +123,14 @@ def launch_env(monkeypatch, tmp_path):
     data.mkdir()
     monkeypatch.setattr(process, "DATA_DIR", str(data))
     monkeypatch.setattr(process, "BookmarkStore", _Bookmarks)
+    # PS-356: a Chromium launch refuses when the installed engine version is
+    # unreadable (omitting --fingerprint-brand-version does not mean "no
+    # claim" — the engine falls back to a hardcoded 144.x table). This file
+    # is about launch-ordering residue, so stub it readable.
+    monkeypatch.setattr(
+        process, "installed_chromium_version",
+        lambda: process.ChromiumVersion(full="152.0.7977.75"),
+    )
 
     # The desktop entry is Linux-gated in the product; force it ON so the host
     # artifact is actually reachable on every CI platform. Without this the
@@ -410,6 +418,7 @@ _PRISTINE_ARGV = {
         "--fingerprint=<SEED>",
         "--fingerprint-platform=windows",
         "--fingerprint-brand=Chrome",
+        "--fingerprint-brand-version=152.0.7977.75",
         "--lang=de-DE",
         "--accept-lang=de-DE,de",
         (
@@ -459,6 +468,7 @@ _PRISTINE_ARGV = {
         "--fingerprint=<SEED>",
         "--fingerprint-platform=windows",
         "--fingerprint-brand=Chrome",
+        "--fingerprint-brand-version=152.0.7977.75",
         "--lang=de-DE",
         "--accept-lang=de-DE,de",
         (
@@ -496,6 +506,7 @@ _PRISTINE_ARGV = {
         "--fingerprint=<SEED>",
         "--fingerprint-platform=windows",
         "--fingerprint-brand=Chrome",
+        "--fingerprint-brand-version=152.0.7977.75",
         "--lang=de-DE",
         "--accept-lang=de-DE,de",
         (
