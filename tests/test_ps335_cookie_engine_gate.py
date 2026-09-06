@@ -270,6 +270,62 @@ def test_an_incoherent_firefox_record_that_will_LAUNCH_chromium_is_not_refused()
         asyncio.run(app._import_cookies_file("mac"))
 
 
+def test_the_legacy_camoufox_engine_name_is_refused_too():
+    """``camoufox`` is the retired Firefox engine name, mapped FORWARD by
+    ``normalize_engine`` so an old profile keeps launching. It resolves to
+    firefox, so it must be refused — and the refusal must NAME firefox, not
+    the stored string, because that is the engine the operator's profile
+    actually runs.
+
+    Worth a test of its own rather than folding into the firefox case: a gate
+    reading the raw ``profile.engine`` would see an unrecognised string here
+    and could fall either way, so this is a second, independent reason the
+    resolver has to be ``effective_engine``.
+    """
+    from src.services.browser.process import effective_engine
+
+    profile = Profile(name="old", engine="camoufox", os_type="windows")
+    assert effective_engine(profile) == "firefox", (
+        "premise: the retired engine name is mapped forward to firefox"
+    )
+
+    app = _app_with(profile)
+    msg = asyncio.run(app._import_cookies_file("old"))
+
+    assert msg is not None
+    assert "firefox" in msg.lower(), (
+        "the refusal should name the engine that LAUNCHES, not the stored "
+        f"legacy string: {msg!r}"
+    )
+    assert "camoufox" not in msg.lower()
+
+
+def test_the_refusal_does_not_delete_debris_left_by_an_earlier_import(tmp_path):
+    """A profile that was imported into BEFORE this fix carries a real
+    ``Default/Cookies``. It must still be refused — the gate is about the
+    engine, not about whether debris happens to exist — and the refusal must
+    NOT tidy up behind itself.
+
+    Deleting a file the operator may want to recover is a destructive act this
+    ticket did not authorise, and cleanup of pre-fix debris is a separate
+    decision with its own evidence. Pinning the restraint so a later 'helpful'
+    addition has to argue for itself.
+    """
+    default = tmp_path / "Default"
+    default.mkdir()
+    (default / "Cookies").write_bytes(b"OLD-CHROMIUM-DB")
+    (tmp_path / "cookies.sqlite").write_bytes(b"FIREFOX-JAR")
+    app = _app_with(
+        Profile(name="ff", engine="firefox", os_type="windows"), str(tmp_path)
+    )
+
+    msg = asyncio.run(app._import_cookies_file("ff"))
+
+    assert msg is not None
+    assert (default / "Cookies").read_bytes() == b"OLD-CHROMIUM-DB"
+    assert (tmp_path / "cookies.sqlite").read_bytes() == b"FIREFOX-JAR"
+
+
 def test_an_unknown_profile_name_is_not_refused_by_this_gate():
     """Not-found belongs to the manager, which already answers False from
     ``set_cookie_status``. Minting a second, differently-worded not-found here
