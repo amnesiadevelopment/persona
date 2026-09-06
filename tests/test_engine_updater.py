@@ -1363,3 +1363,375 @@ def test_a_first_install_with_no_previous_build_keeps_the_sentinel(
     assert updater.download_engine("http://x/engine.zip", digest="sha256:aa") is False
     assert (engine_dir / ".engine-installing").exists()
     assert updater.is_installed() is False
+
+
+# --- PS-310: the Windows member loop must confine every member to staging -----
+#
+# `_install_windows` does NOT call ZipFile.extractall — it walks `namelist()`
+# and writes each member by hand with `open(dest, "wb")`. So it inherits none of
+# the member-path sanitization CPython's extractall performs, and PS-228's
+# confinement (which covers the FIREFOX engine's `_extract_as`, a different file
+# and a different function) never reached this loop.
+#
+# Every assertion below is about FILES ON DISK OUTSIDE THE DESTINATION — never
+# that a helper was called, never a substring in the source. That discipline is
+# what tests/test_engine_archive_security.py states for the Firefox arm, applied
+# here to the Chromium one.
+#
+# THE ARCHIVE IS AUTHENTIC. It is sha256-verified against upstream's published
+# digest before it ever reaches this function (EngineUnverifiable, PS-49), and
+# that gate is not claimed broken. What a checksum attests is the TRANSFER, not
+# the CONTENTS — so this is prevention against a hostile member in an archive
+# that is genuinely what upstream published, exactly the posture PS-228 shipped
+# under for the Firefox engine.
+
+
+def _engine_dir_at(monkeypatch, tmp_path):
+    """An ENGINE_DIR NESTED under tmp_path, so a `../../x` member escaping
+    staging lands somewhere the test can still see it.
+
+    staging is `<engine_dir>/.staging`, so two `..` segments land in
+    `engine_dir.parent` — which is `home` here and is PERSONA_HOME in
+    production, where profiles.json / proxies.json / install_secret live."""
+    home = tmp_path / "home"
+    engine_dir = home / "engine"
+    engine_dir.mkdir(parents=True)
+    monkeypatch.setattr(updater, "ENGINE_DIR", str(engine_dir))
+    monkeypatch.setattr(updater, "ENGINE_BINARY", str(engine_dir / "chrome.exe"))
+    return engine_dir
+
+
+def _escaped(tmp_path, engine_dir, name):
+    """Every file called `name` that landed OUTSIDE the staging tree.
+
+    Deliberately NOT "outside engine_dir": staging is the destination this loop
+    writes to, so a member landing anywhere else — including directly in
+    ENGINE_DIR beside the working build — has escaped it. Excusing ENGINE_DIR
+    would make a member like `chrome-win/../x` (which resolves one level ABOVE
+    staging) read as confined, and that member is exactly the traversal being
+    guarded against.
+
+    Reported as paths relative to tmp_path so a failure names where it escaped
+    to, not merely that it did."""
+    staging = engine_dir / ".staging"
+    return [
+        str(q.relative_to(tmp_path))
+        for q in tmp_path.rglob(name)
+        if staging not in q.parents
+    ]
+
+
+def test_zipfile_extractall_confines_the_same_hostile_archive(tmp_path):
+    """THE CONTROL, and it is the load-bearing half of the pair.
+
+    A fixture that escapes nothing proves nothing — a bare escape below would be
+    indistinguishable from a badly-built archive. This drives CPython's
+    ZipFile.extractall over the SAME members and shows they are confined by the
+    library call, so the escape in the next test is a property of the
+    hand-rolled loop and not of the fixture.
+
+    This is also the exact premise `_extract_as`'s docstring rests on
+    (engine_install.py: "CPython's ZipFile.extractall already sanitizes member
+    paths"). It is TRUE — and it does not transfer to a loop that never calls
+    extractall."""
+    import zipfile
+
+    zip_path = tmp_path / "hostile.zip"
+    _make_windows_zip(
+        zip_path,
+        {
+            "chrome-win/chrome.exe": b"MZ" + b"\x00" * 100,
+            "chrome-win/../../../CONTROL_PWNED": b"escaped",
+            "chrome-win/sub/../../../../CONTROL_PWNED2": b"escaped deep",
+        },
+    )
+    dst = tmp_path / "home" / "engine" / ".staging"
+    dst.mkdir(parents=True)
+
+    with zipfile.ZipFile(zip_path) as zf:
+        zf.extractall(dst)
+
+    outside = [
+        str(q.relative_to(tmp_path))
+        for q in tmp_path.rglob("CONTROL_PWNED*")
+        if dst not in q.parents
+    ]
+    assert outside == [], (
+        "the control is broken: extractall did not confine this archive, so an "
+        f"escape from the shipped loop would prove nothing -> {outside}"
+    )
+
+
+def test_install_windows_traversal_member_is_not_written_outside_staging(
+    monkeypatch, tmp_path
+):
+    """AC1. A member resolving outside staging writes NOTHING outside it.
+
+    Everything is nested under `chrome-win/` because that is what engages the
+    prefix-flattening branch, which is the shape a real Chromium Windows asset
+    takes — a traversal tested without it would not exercise the code path the
+    real archive drives."""
+    _force_os(monkeypatch, win=True)
+    engine_dir = _engine_dir_at(monkeypatch, tmp_path)
+
+    zip_path = tmp_path / "hostile.zip"
+    _make_windows_zip(
+        zip_path,
+        {
+            "chrome-win/chrome.exe": b"MZ" + b"\x00" * 100,
+            "chrome-win/some.dll": b"\x00" * 50,
+            "chrome-win/../../../PWNED": b"escaped",
+        },
+    )
+
+    # Refusing the archive and skipping the member are both acceptable
+    # confinements; only the FILESYSTEM distinguishes a fix from the defect, so
+    # the return value is deliberately not asserted here (AC6 pins the chosen
+    # behaviour separately). Gating on it would make this a test about control
+    # flow in a file whose whole point is disk state.
+    updater._install_windows(str(zip_path))
+
+    escaped = _escaped(tmp_path, engine_dir, "PWNED")
+    assert escaped == [], f"traversal member escaped staging: {escaped}"
+
+
+def test_install_windows_confines_a_member_traversing_from_a_nested_path(
+    monkeypatch, tmp_path
+):
+    """AC3 — DEPTH, not just the top level, and it is a distinct case.
+
+    `os.path.join(staging, *rel.split("/"))` reassembles `..` at ANY depth, and
+    `os.makedirs(os.path.dirname(dest))` then CREATES the escaping directory
+    chain before the write. So a fix that only rejected a `..` sitting
+    immediately under the prefix would leave this one green-looking and open."""
+    _force_os(monkeypatch, win=True)
+    engine_dir = _engine_dir_at(monkeypatch, tmp_path)
+
+    zip_path = tmp_path / "hostile-deep.zip"
+    _make_windows_zip(
+        zip_path,
+        {
+            "chrome-win/chrome.exe": b"MZ" + b"\x00" * 100,
+            "chrome-win/sub/../../../../PWNED_DEEP": b"escaped deep",
+        },
+    )
+
+    updater._install_windows(str(zip_path))
+
+    escaped = _escaped(tmp_path, engine_dir, "PWNED_DEEP")
+    assert escaped == [], f"nested traversal member escaped staging: {escaped}"
+
+
+def test_install_windows_confines_a_backslash_separated_traversal_member(
+    monkeypatch, tmp_path
+):
+    """The loop normalises `\\` to `/` before deciding anything (`norm`), which
+    is what makes a Windows-authored member name reach the same join. A
+    confinement keyed to the RAW member name would miss this one; one keyed to
+    the RESOLVED destination cannot."""
+    _force_os(monkeypatch, win=True)
+    engine_dir = _engine_dir_at(monkeypatch, tmp_path)
+
+    zip_path = tmp_path / "hostile-bs.zip"
+    _make_windows_zip(
+        zip_path,
+        {
+            "chrome-win/chrome.exe": b"MZ" + b"\x00" * 100,
+            "chrome-win\\..\\..\\..\\PWNED_BS": b"escaped via backslashes",
+        },
+    )
+
+    updater._install_windows(str(zip_path))
+
+    escaped = _escaped(tmp_path, engine_dir, "PWNED_BS")
+    assert escaped == [], f"backslash traversal member escaped staging: {escaped}"
+
+
+def test_install_windows_does_not_overwrite_a_persona_home_file(
+    monkeypatch, tmp_path
+):
+    """What the escape actually REACHES, asserted as content rather than as a
+    path shape. staging is `<PERSONA_HOME>/engine/.staging`, so two `..`
+    segments land in PERSONA_HOME itself — where `install_secret` (the salt
+    behind a profile's presented machine) and `profiles.json` live. Overwriting
+    that file is the write that matters most in this tree."""
+    _force_os(monkeypatch, win=True)
+    engine_dir = _engine_dir_at(monkeypatch, tmp_path)
+    secret = engine_dir.parent / "install_secret"
+    secret.write_bytes(b"the real install secret")
+
+    zip_path = tmp_path / "hostile-secret.zip"
+    _make_windows_zip(
+        zip_path,
+        {
+            "chrome-win/chrome.exe": b"MZ" + b"\x00" * 100,
+            "chrome-win/../../install_secret": b"attacker-chosen salt",
+        },
+    )
+
+    updater._install_windows(str(zip_path))
+
+    assert secret.read_bytes() == b"the real install secret", (
+        "a hostile member overwrote a PERSONA_HOME file two directories above "
+        "staging"
+    )
+
+
+def test_install_windows_refuses_the_archive_and_promotes_nothing(
+    monkeypatch, tmp_path
+):
+    """AC6 — the chosen behaviour, pinned so it cannot drift by omission.
+
+    A hostile member ABORTS the install (`return False`); it is not skipped and
+    the rest installed. Two reasons, and the second is the one that decides it:
+
+    1. A member resolving outside its destination cannot occur in an honest
+       build, so its presence says the archive is not what it claims to be. The
+       right answer to "this archive is not what it claims" is to refuse it, not
+       to install the parts of it we happened to like.
+    2. Skipping would let `_promote_staging` run over a tree assembled from an
+       archive we have already judged hostile — a HALF-TREE from a rejected
+       archive moved into ENGINE_DIR over the working build, which is exactly
+       what AC6 forbids. Aborting keeps `chrome.exe` and every sibling out of
+       ENGINE_DIR entirely, and the existing `finally` then removes staging.
+
+    Note what refusing at WRITE time buys that cleanup cannot: the `finally`
+    removes staging, but it never removed what escaped — a failed install used
+    to tear down staging and leave every escaped file on disk, with the operator
+    told only that the update failed."""
+    _force_os(monkeypatch, win=True)
+    engine_dir = _engine_dir_at(monkeypatch, tmp_path)
+    previous = engine_dir / "chrome.exe"
+    previous.write_bytes(b"MZ-the-working-build")
+
+    zip_path = tmp_path / "hostile-promote.zip"
+    _make_windows_zip(
+        zip_path,
+        {
+            "chrome-win/chrome.exe": b"MZ-the-hostile-build",
+            "chrome-win/../../../PWNED_PROMOTE": b"escaped",
+        },
+    )
+
+    assert updater._install_windows(str(zip_path)) is False, (
+        "a hostile member must abort the install, not be skipped"
+    )
+
+    assert _escaped(tmp_path, engine_dir, "PWNED_PROMOTE") == []
+    # Nothing from the rejected archive was promoted, and the build that was
+    # working is untouched.
+    assert previous.read_bytes() == b"MZ-the-working-build"
+    assert not (engine_dir / ".staging").exists(), "staging survived the refusal"
+    assert zip_path.exists(), "a refused archive must not be consumed"
+
+
+def test_install_windows_still_installs_a_benign_engine_shaped_zip(
+    monkeypatch, tmp_path
+):
+    """AC4/AC5 regression guard, stated HERE as well as in the pinned
+    `test_install_windows_atomic_via_staging` — this file's own copy, so the
+    confinement is falsifiable in both directions from one place.
+
+    The prefix flattening is the thing most easily broken by a naive rewrite:
+    everything nested under `chrome-win/` must still land at `staging/chrome.exe`
+    (not `staging/chrome-win/chrome.exe`), because that flattening is why the
+    launcher's `ENGINE_DIR/chrome.exe` resolves after promotion."""
+    _force_os(monkeypatch, win=True)
+    engine_dir = _engine_dir_at(monkeypatch, tmp_path)
+
+    zip_path = tmp_path / "benign.zip"
+    _make_windows_zip(
+        zip_path,
+        {
+            "chrome-win/": b"",
+            "chrome-win/chrome.exe": b"MZ" + b"\x00" * 100,
+            "chrome-win/some.dll": b"\x00" * 50,
+            "chrome-win/locales/": b"",
+            "chrome-win/locales/en.pak": b"pak",
+            "chrome-win/swiftshader/vk_swiftshader.dll": b"\x00" * 8,
+        },
+    )
+
+    assert updater._install_windows(str(zip_path)) is True
+    assert (engine_dir / "chrome.exe").read_bytes().startswith(b"MZ")
+    assert (engine_dir / "some.dll").exists()
+    assert (engine_dir / "locales" / "en.pak").read_bytes() == b"pak"
+    assert (engine_dir / "swiftshader" / "vk_swiftshader.dll").exists()
+    # The flattening actually happened — the top-level folder is not a directory
+    # inside ENGINE_DIR.
+    assert not (engine_dir / "chrome-win").exists()
+    assert not any(p.name.startswith(".staging") for p in engine_dir.iterdir())
+
+
+def test_install_windows_installs_an_unnested_zip_unchanged(monkeypatch, tmp_path):
+    """The `prefix == ""` branch — a zip with chrome.exe at the top level, where
+    `rel` is the raw member name and the flattening never engages. Confinement
+    must not depend on a prefix having been resolved."""
+    _force_os(monkeypatch, win=True)
+    engine_dir = _engine_dir_at(monkeypatch, tmp_path)
+
+    zip_path = tmp_path / "flat.zip"
+    _make_windows_zip(
+        zip_path,
+        {
+            "chrome.exe": b"MZ" + b"\x00" * 100,
+            "locales/en.pak": b"pak",
+        },
+    )
+
+    assert updater._install_windows(str(zip_path)) is True
+    assert (engine_dir / "chrome.exe").read_bytes().startswith(b"MZ")
+    assert (engine_dir / "locales" / "en.pak").read_bytes() == b"pak"
+
+
+def test_install_windows_tolerates_a_dot_directory_member(monkeypatch, tmp_path):
+    """A benign shape the confinement must NOT refuse: a "./" directory entry
+    resolves to staging ITSELF, and makedirs of staging is a no-op. Equality
+    with the base is allowed on the directory arm for exactly that reason — and
+    only there, since a FILE written at the base path is a write nobody asked
+    for."""
+    _force_os(monkeypatch, win=True)
+    engine_dir = _engine_dir_at(monkeypatch, tmp_path)
+
+    zip_path = tmp_path / "dotdir.zip"
+    _make_windows_zip(
+        zip_path,
+        {
+            "./": b"",
+            "chrome.exe": b"MZ" + b"\x00" * 100,
+            "locales/en.pak": b"pak",
+        },
+    )
+
+    assert updater._install_windows(str(zip_path)) is True
+    assert (engine_dir / "chrome.exe").read_bytes().startswith(b"MZ")
+    assert (engine_dir / "locales" / "en.pak").read_bytes() == b"pak"
+
+
+def test_install_windows_confines_a_single_level_traversal_into_engine_dir(
+    monkeypatch, tmp_path
+):
+    """A traversal of exactly ONE level, which lands in ENGINE_DIR itself —
+    beside the working build rather than up in PERSONA_HOME.
+
+    Distinct from the two-level case above and worth its own test, because it is
+    the escape a confinement that merely keeps writes "somewhere under
+    ENGINE_DIR" would wave through. staging is the destination this loop writes
+    to; ENGINE_DIR is where _promote_staging moves that tree afterwards, and a
+    member that writes there directly has bypassed staging and the promotion's
+    rollback with it."""
+    _force_os(monkeypatch, win=True)
+    engine_dir = _engine_dir_at(monkeypatch, tmp_path)
+
+    zip_path = tmp_path / "one-level.zip"
+    _make_windows_zip(
+        zip_path,
+        {
+            "chrome-win/chrome.exe": b"MZ" + b"\x00" * 100,
+            "chrome-win/../SIBLING_PWNED": b"escaped one level",
+        },
+    )
+
+    updater._install_windows(str(zip_path))
+
+    assert _escaped(tmp_path, engine_dir, "SIBLING_PWNED") == []
