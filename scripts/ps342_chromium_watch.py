@@ -70,6 +70,25 @@ STATUSES AND THIS SCRIPT'S OWN EXIT CODE
                             KNOW. Nothing was measured.
     discovery_failed    2   we could not even ask what the newest tag is. Also
                             "we do not know", and reported as such.
+    invalid_tag         2   an input we were HANDED is not a tag, so there was
+                            nothing to look up. Also "we do not know" — but a
+                            DIFFERENT cause, and therefore a different status.
+
+⚠️ WHY `invalid_tag` IS ITS OWN STATUS RATHER THAN A SECOND USE OF
+`discovery_failed` — the three non-green "we do not know" cases are not
+interchangeable, and the reason is mechanical, not stylistic:
+
+  * `discovery_failed` means UPSTREAM DID NOT ANSWER. Its headline, its body
+    and its issue title all say so ("could not reach the ungoogled-chromium tag
+    list"), and every one of those sentences is FALSE when the real cause is a
+    dispatcher typing `152.0.7977.75` without the `-1` packaging revision: no
+    request was made at all.
+  * Worse, the issue title is the DEDUP KEY. The workflow's "File or update the
+    report issue" step matches an open issue by exact title and COMMENTS rather
+    than filing when it finds one. So a typo'd dispatch filing under the
+    outage's title would swallow a real googlesource outage that night into a
+    comment on a typo. Different news must own a different record; that is the
+    whole reason the title carries the status.
 
 The three exit values mirror the probe's own contract deliberately, so the
 distinction the probe is careful to preserve survives one more layer of wiring.
@@ -108,6 +127,11 @@ REJECTS = "rejects"
 UNMEASURED = "unmeasured"
 UP_TO_DATE = "up_to_date"
 DISCOVERY_FAILED = "discovery_failed"
+# An input WE WERE HANDED is not a tag. Non-green like DISCOVERY_FAILED and with
+# the same exit code, but a separate status because it has a separate CAUSE, a
+# separate remedy, and — load-bearing — a separate issue title, which is the
+# dedup key the workflow matches on.
+INVALID_TAG = "invalid_tag"
 
 # Which statuses mean "we know our patches are fine". Note what is NOT here:
 # UNMEASURED. This set is the single place that question is answered, and the
@@ -120,6 +144,7 @@ EXIT_FOR_STATUS = {
     REJECTS: 1,
     UNMEASURED: 2,
     DISCOVERY_FAILED: 2,
+    INVALID_TAG: 2,
 }
 
 
@@ -278,6 +303,7 @@ HEADLINE = {
     REJECTS: "A NEWER ungoogled-chromium exists, and our 16 patches DO NOT apply to it",
     UNMEASURED: "A NEWER ungoogled-chromium exists — WE COULD NOT MEASURE IT",
     DISCOVERY_FAILED: "COULD NOT ASK what the newest ungoogled-chromium is",
+    INVALID_TAG: "THE TAG WE WERE GIVEN IS NOT A TAG — nothing was looked up",
 }
 
 
@@ -288,10 +314,24 @@ def issue_title(result):
     `unmeasured` to `clean` is genuinely different news and deserves its own
     record, rather than quietly editing away the fact that we once could not
     measure it.
+
+    ⚠️ THIS TITLE IS THE DEDUP KEY. The workflow's issue step matches an OPEN
+    issue by EXACT title and comments on it instead of filing a new one. So two
+    unrelated causes sharing a title means the second one is SUPPRESSED into a
+    comment on the first. `INVALID_TAG` therefore gets its own line rather than
+    borrowing `DISCOVERY_FAILED`'s: a dispatcher's typo must not be able to
+    swallow that night's real googlesource outage.
+
+    `INVALID_TAG` deliberately does NOT interpolate the offending value into the
+    title. The value is by definition not a tag — it can carry newlines, and the
+    title is written into `$GITHUB_OUTPUT` as a bare `key=value` line. The bad
+    value belongs in the BODY, where it is already reported via `error`.
     """
     status = result["status"]
     if status == DISCOVERY_FAILED:
         return "[chromium-watch] could not reach the ungoogled-chromium tag list"
+    if status == INVALID_TAG:
+        return "[chromium-watch] the requested tag is not a valid ungoogled tag"
     return "[chromium-watch] ungoogled %s vs our %s — %s" % (
         result.get("newest_tag") or "?", result["current_tag"], status
     )
@@ -309,7 +349,8 @@ def headline(result):
     """
     status = result["status"]
     text = HEADLINE[status]
-    if result.get("forced") and status not in (UP_TO_DATE, DISCOVERY_FAILED):
+    if result.get("forced") and status not in (UP_TO_DATE, DISCOVERY_FAILED,
+                                               INVALID_TAG):
         newest, current = result.get("newest_tag"), result.get("current_tag")
         relation = "an OLDER" if (newest and current and is_newer(current, newest)) \
             else "a HAND-PICKED"
@@ -412,6 +453,29 @@ def render_report(result):
             "\"No newer tag\" and \"we could not look\" are the same silence from "
             "outside and completely different facts. This run is the second one."
         )
+    elif status == INVALID_TAG:
+        lines.append(
+            "⛔ **NOTHING WAS MEASURED — and nothing was even looked up.** The "
+            "tag this run was asked to measure is not an ungoogled tag, so no "
+            "request was made and no probe was run: `%s`" % result.get("error")
+        )
+        lines.append("")
+        lines.append(
+            "**This is not an upstream problem.** Upstream was never contacted. "
+            "The overwhelmingly likely cause is the `tag` box of a "
+            "`workflow_dispatch` — the usual slip is dropping the `-1` "
+            "packaging revision (`152.0.7977.75` instead of "
+            "`152.0.7977.75-1`). Re-dispatch with the full `N.N.N.N-N` form, or "
+            "leave the box blank for the normal watch."
+        )
+        lines.append("")
+        lines.append(
+            "It is reported non-green and exits `2` on purpose: a request we "
+            "could not act on established nothing about our patches. It is "
+            "filed under its OWN title rather than the tag-list-outage one so "
+            "that a typo here can never suppress a real upstream outage into a "
+            "comment on it."
+        )
 
     log = result.get("probe_log")
     if log:
@@ -453,18 +517,30 @@ def watch(current_tag, token=None, forced_tag=None, probe_timeout=2700,
         # is what makes a hand-run genuinely exercise the wiring the schedule
         # uses rather than a parallel one.
         #
-        # VALIDATE IT HERE, EVEN THOUGH main() ALREADY DID. This is the less
-        # trusted of the two inputs — it arrives from a workflow_dispatch box a
-        # human types into — and `read_current_tag()` has validated its own file
-        # since the first commit, so leaving the CLI value unchecked was exactly
-        # backwards. Unvalidated, an embedded newline forged additional step
-        # outputs: `--tag $'evil\ngreen=true'` reached `$GITHUB_OUTPUT` through
-        # issue_title(), where each line is written as `key=value` with no
-        # delimiter — so the dispatcher could hand themselves `green=true` on a
-        # run that measured nothing. Refusing is correct rather than sanitising:
-        # a tag that is not a tag is a mistake to report, not one to repair.
+        # VALIDATE IT HERE — this is the LAST line of defence, and `main()`
+        # now also refuses it at the argparse boundary (see `_validated_tag`).
+        # Both, deliberately: `watch()` is importable and is called directly by
+        # tests and by hand, so a guard that lived only in `main()` would be a
+        # guard the function itself does not have.
+        #
+        # This is the less trusted of the two inputs — it arrives from a
+        # workflow_dispatch box a human types into — and `read_current_tag()`
+        # has validated its own file since the first commit, so leaving the CLI
+        # value unchecked was exactly backwards. Unvalidated, an embedded
+        # newline forged additional step outputs: `--tag $'evil\ngreen=true'`
+        # reached `$GITHUB_OUTPUT` through issue_title(), where each line is
+        # written as `key=value` with no delimiter — so the dispatcher could
+        # hand themselves `green=true` on a run that measured nothing. Refusing
+        # is correct rather than sanitising: a tag that is not a tag is a
+        # mistake to report, not one to repair.
+        #
+        # The status is INVALID_TAG and NOT DISCOVERY_FAILED. The distinction is
+        # not cosmetic: DISCOVERY_FAILED's headline, body and — critically —
+        # ISSUE TITLE all say upstream did not answer, which is false here (no
+        # request was made), and that title is the dedup key, so borrowing it
+        # would let a typo suppress a real outage into a comment on itself.
         if not TAG_RE.match(forced_tag.strip()):
-            result["status"] = DISCOVERY_FAILED
+            result["status"] = INVALID_TAG
             result["error"] = (
                 "--tag %r is not a valid ungoogled tag; expected the "
                 "N.N.N.N-N shape, e.g. 152.0.7977.75-1. Nothing was measured."
@@ -498,6 +574,34 @@ def _utcnow():
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def invalid_tag_result(flag, value, current_tag=None, now=None):
+    """The result for "an input we were handed is not a tag".
+
+    Built here rather than raising, because the REPORT is this script's
+    deliverable: an `argparse` error would exit 2 with a usage message, write no
+    `$GITHUB_OUTPUT`, file no issue and upload no artifact — the run would be
+    red and silent, which is the failure mode this whole ticket exists to end.
+
+    ⚠️ Note what is NOT interpolated anywhere that reaches `$GITHUB_OUTPUT`: the
+    offending value. It is by definition not a tag, so it may contain newlines,
+    and outputs are bare `key=value` lines with no delimiter. It goes in
+    `error`, which is rendered into the issue BODY (a file, via `--body-file`)
+    and never into `title=`.
+    """
+    return {
+        "current_tag": current_tag if current_tag and parse_tag(current_tag) else "<unknown>",
+        "newest_tag": None,
+        "status": INVALID_TAG,
+        "probe_exit": None,
+        "probe_log": None,
+        "error": ("%s %r is not a valid ungoogled tag; expected the N.N.N.N-N "
+                  "shape, e.g. 152.0.7977.75-1. Nothing was measured."
+                  % (flag, value)),
+        "measured_at": now or _utcnow(),
+        "forced": False,
+    }
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -510,13 +614,36 @@ def main(argv=None):
     ap.add_argument("--github-output", help="append step outputs here ($GITHUB_OUTPUT)")
     args = ap.parse_args(argv)
 
-    current = args.current_tag or read_current_tag()
-    result = watch(
-        current,
-        token=os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN"),
-        forced_tag=args.tag,
-        probe_timeout=args.probe_timeout,
-    )
+    # EVERY TAG-SHAPED INPUT IS VALIDATED AT THE BOUNDARY, not just `--tag`.
+    #
+    # `--current-tag` was the last unvalidated route into `$GITHUB_OUTPUT`: it is
+    # written out verbatim as `current_tag=…` AND interpolated into `title=`, so
+    # `--current-tag $'x\ngreen=true'` forged a green step output on a run that
+    # measured nothing — the exact hole the `--tag` guard closed, surviving on
+    # the sibling flag. `read_current_tag()` has always validated the FILE form
+    # of this same value, so leaving the CLI override unchecked was inconsistent
+    # on top of unsafe.
+    #
+    # `--tag` is checked here too so the comment in `watch()` is true of the CLI
+    # as well; `watch()` keeps its own guard because it is importable and is
+    # called directly.
+    bad = None
+    if args.current_tag is not None and parse_tag(args.current_tag) is None:
+        bad = ("--current-tag", args.current_tag)
+    elif args.tag is not None and parse_tag(args.tag) is None:
+        bad = ("--tag", args.tag)
+
+    if bad is not None:
+        result = invalid_tag_result(bad[0], bad[1],
+                                    current_tag=args.current_tag)
+    else:
+        current = args.current_tag or read_current_tag()
+        result = watch(
+            current,
+            token=os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN"),
+            forced_tag=args.tag,
+            probe_timeout=args.probe_timeout,
+        )
 
     body = render_report(result)
     print("== PS-342 chromium upstream watch ==")

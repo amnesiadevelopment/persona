@@ -520,15 +520,6 @@ def test_up_to_date_does_not_file_an_issue(watch, tmp_path, monkeypatch):
     assert rc == 0
 
 
-
-    y = WORKFLOW.read_text(encoding="utf-8")
-    assert "unmeasured)" in y, "the verdict step must name the unmeasured case"
-    assert "NOTHING WAS MEASURED" in y
-    # and the catch-all must not be a pass
-    tail = y.split("unmeasured)", 1)[1]
-    assert "exit 1" in tail
-
-
 def test_workflow_verdict_step_treats_unmeasured_as_red():
     """The YAML's own branch must name the unmeasured case and exit non-zero."""
     y = WORKFLOW.read_text(encoding="utf-8")
@@ -639,9 +630,9 @@ def test_a_forced_tag_that_is_not_a_tag_is_refused_not_measured(watch):
     `green=true`, which the workflow's verdict step consumes. The dispatcher
     could hand themselves a green run that measured nothing.
 
-    Note what is asserted: the run is REFUSED (discovery_failed, not green) and
-    the newline never reaches a rendered output. Refusing beats sanitising — a
-    tag that is not a tag is a mistake to report, not one to silently repair.
+    Note what is asserted: the run is REFUSED (invalid_tag, not green) and the
+    newline never reaches a rendered output. Refusing beats sanitising — a tag
+    that is not a tag is a mistake to report, not one to silently repair.
     """
     result = watch.watch(
         "152.0.7977.75-1",
@@ -649,12 +640,140 @@ def test_a_forced_tag_that_is_not_a_tag_is_refused_not_measured(watch):
         runner=fake_runner(0),
     )
 
-    assert result["status"] == watch.DISCOVERY_FAILED
+    assert result["status"] == watch.INVALID_TAG
     assert watch.is_green(result["status"]) is False
+    assert watch.exit_code_for(result["status"]) == 2
     assert "not a valid ungoogled tag" in (result["error"] or "")
     assert "\n" not in watch.issue_title(result), (
         "a newline in the title forges step outputs in $GITHUB_OUTPUT"
     )
+
+
+# ── a typo'd tag is NOT an upstream outage, and must not be filed as one ──────
+
+
+def test_an_invalid_tag_does_not_report_itself_as_an_upstream_failure(watch):
+    """Round-2 MAJOR: the refusal above was reported as `discovery_failed`.
+
+    That status means ONE thing everywhere else in the file — upstream did not
+    answer — so its headline and the first sentence of its body asserted a fetch
+    failure that never happened. No request is made on this path at all. A false
+    sentence wrapped around a correct measurement is exactly the defect the
+    `headline()` correction fixed one function away, reintroduced at a new call
+    site.
+
+    Measured with the single most likely human error: dropping the `-1`.
+    """
+    result = watch.watch("152.0.7977.75-1", forced_tag="152.0.7977.75",
+                         runner=fake_runner(0))
+
+    assert result["status"] == watch.INVALID_TAG
+    line = watch.headline(result)
+    body = watch.render_report(result)
+
+    # It must not claim upstream was asked anything — it wasn't.
+    assert "COULD NOT ASK" not in line, line
+    assert "could not even retrieve" not in body.lower(), body
+    assert "tag list" not in line, line
+    # It must still be unambiguously "nothing was measured", never a pass.
+    assert "NOTHING WAS MEASURED" in body
+    assert not watch.is_green(result["status"])
+    # And it must name the actual cause, so the reader knows where to look.
+    assert "not an upstream problem" in body.lower(), body
+    assert "152.0.7977.75" in body
+
+
+def test_an_invalid_tag_files_under_a_different_title_than_an_outage(watch):
+    """The blast radius of the collision, asserted directly.
+
+    The workflow's issue step matches an OPEN issue by EXACT title and COMMENTS
+    instead of filing when it finds one. Sharing a title therefore means the
+    second cause is SUPPRESSED into a comment on the first: a dispatcher's typo
+    in the afternoon would swallow that night's real googlesource outage.
+    """
+    typo = watch.watch("152.0.7977.75-1", forced_tag="152.0.7977.75",
+                       runner=fake_runner(0))
+
+    def dead_opener(req, timeout=None):
+        raise OSError("googlesource is down")
+
+    outage = watch.watch("152.0.7977.75-1", opener=dead_opener)
+
+    assert typo["status"] == watch.INVALID_TAG
+    assert outage["status"] == watch.DISCOVERY_FAILED
+    assert watch.issue_title(typo) != watch.issue_title(outage), (
+        "two unrelated causes sharing a title means one silently suppresses "
+        "the other through the workflow's exact-title dedup"
+    )
+    # And the outage title must keep saying what it always said.
+    assert "could not reach" in watch.issue_title(outage)
+    assert "could not reach" not in watch.issue_title(typo)
+
+
+def test_invalid_tag_is_not_green_and_joins_no_green_set(watch):
+    """A new status must not be able to quietly join the green set."""
+    assert watch.INVALID_TAG not in watch.GREEN_STATUSES
+    assert not watch.is_green(watch.INVALID_TAG)
+    assert watch.exit_code_for(watch.INVALID_TAG) == 2
+    assert watch.HEADLINE[watch.INVALID_TAG] != watch.HEADLINE[watch.DISCOVERY_FAILED]
+
+
+def test_current_tag_cannot_forge_step_outputs_either(watch, tmp_path):
+    """`--current-tag` was the LAST unvalidated route into `$GITHUB_OUTPUT`.
+
+    It is written verbatim as `current_tag=…` and interpolated into `title=`, so
+    an embedded newline forges `green=true` on a run that measured nothing —
+    the same hole the `--tag` guard closed, surviving on the sibling flag. Not
+    reachable from the workflow today (nothing passes `--current-tag`), which is
+    precisely why it needs a test rather than an argument.
+    """
+    out = tmp_path / "out"
+    rc = watch.main(["--current-tag", "x\ngreen=true",
+                     "--github-output", str(out)])
+
+    text = out.read_text(encoding="utf-8")
+    assert "green=true" not in text, text
+    assert "green=false" in text
+    assert "status=invalid_tag" in text
+    assert rc == 2
+    # every line of the outputs file must still be a single key=value
+    for line in text.splitlines():
+        assert "=" in line, line
+
+
+def test_an_invalid_input_still_produces_a_report_rather_than_a_silent_red(
+        watch, tmp_path):
+    """Refusing at the boundary must not mean refusing to REPORT.
+
+    An `argparse.error()` would exit 2 with a usage string, write no outputs,
+    file no issue and upload no artifact — red and silent, which is the exact
+    failure mode this whole watcher exists to end. So the refusal travels the
+    normal reporting path.
+    """
+    out, md, js = tmp_path / "out", tmp_path / "r.md", tmp_path / "r.json"
+    rc = watch.main(["--tag", "nonsense", "--github-output", str(out),
+                     "--report-md", str(md), "--report-json", str(js)])
+
+    assert rc == 2
+    text = out.read_text(encoding="utf-8")
+    assert "report=true" in text, "the refusal must still reach a human"
+    assert "green=false" in text
+    assert "NOTHING WAS MEASURED" in md.read_text(encoding="utf-8")
+    assert json.loads(js.read_text(encoding="utf-8"))["status"] == "invalid_tag"
+
+
+def test_workflow_verdict_step_names_the_invalid_tag_case(watch):
+    """A status the YAML does not name falls to the catch-all.
+
+    The catch-all is red, so this is not a laundering risk — but it prints "the
+    watch step produced no status at all", which is false and sends the reader
+    looking for a broken step instead of a typo'd input.
+    """
+    y = WORKFLOW.read_text(encoding="utf-8")
+    assert "invalid_tag)" in y, "the verdict step must name the invalid-tag case"
+    tail = y.split("invalid_tag)", 1)[1]
+    assert "exit 1" in tail, "invalid_tag must fail the run, not fall through green"
+    assert "NOT an upstream outage" in y
 
 
 def test_a_valid_forced_tag_still_measures(watch):

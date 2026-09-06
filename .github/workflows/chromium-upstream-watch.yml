@@ -257,6 +257,9 @@ jobs:
             discovery_failed)
               echo "::error::Could not retrieve the ungoogled-chromium tag list, so we do not know whether a newer release exists. NOTHING WAS MEASURED."
               ;;
+            invalid_tag)
+              echo "::error::The tag this run was asked to measure is not an ungoogled tag, so nothing was looked up and NOTHING WAS MEASURED. This is NOT an upstream outage — re-dispatch with the full N.N.N.N-N form (the usual slip is dropping the -1 packaging revision)."
+              ;;
             *)
               echo "::error::the watch step produced no status at all — treat this as UNMEASURED, never as a pass."
               ;;
