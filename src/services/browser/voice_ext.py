@@ -164,7 +164,12 @@ __REALM_GUARD__
     return o;
   });
   const ss = G.speechSynthesis;
-  const gv = function () { return voices.slice(); };
+  // A real method shorthand, not a function expression: an expression owns
+  // `prototype`/`arguments`/`caller` where a native method owns exactly
+  // ["length","name"]. getVoices is nullary, and the literal 0 is safe here
+  // (unlike a wrapped built-in's arity) because this override IS the reference
+  // implementation — there is no original whose arity could differ.
+  const gv = ({ getVoices() { return voices.slice(); } }).getVoices;
   // Read as native under the native_ext Function.prototype.toString patch.
   try { Object.defineProperty(gv, '__pnaName', {value: 'getVoices'}); } catch (e) {}
   try { Object.defineProperty(gv, 'name', {value: 'getVoices'}); } catch (e) {}

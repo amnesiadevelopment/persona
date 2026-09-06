@@ -367,7 +367,7 @@ def test_the_per_realm_probe_inventory_for_window_and_worker_is_unchanged():
     the latter would add its id to ``probes_for_realm("window")`` and trip that
     guard for a reading the window realm already has under the other id.
 
-    THE CHILD-FRAME COUNT IS A CHARACTERIZATION, NOT A GUARD. The 49 and 36
+    THE CHILD-FRAME COUNT IS A CHARACTERIZATION, NOT A GUARD. The 52 and 38
     beside it are the load-bearing half — they are this test's whole purpose,
     and they must not move when a child-realm record is added. The child-frame
     number simply records how many records the realm held at the moment it was
@@ -376,9 +376,20 @@ def test_the_per_realm_probe_inventory_for_window_and_worker_is_unchanged():
     ``realm.seedRecoverable.childFrame``), taking it from 2 to 4 while leaving
     window and worker exactly where PS-232 found them — which is this test
     passing, not this test being edited around.
+
+    PS-314 re-points the window/worker counts in the OTHER direction, and the
+    distinction matters: 49 -> 52 and 36 -> 38 because it deliberately adds
+    window/worker probes (the own-property SHAPE axis, which no existing probe
+    could read). That is the case this guard exists to make visible, and the
+    committed baseline WAS re-recorded against a real firefox-20 engine in the
+    same change — so the numbers move together with the artifact rather than
+    the guard being relaxed to accommodate them. The window realm gains three
+    (``masking.shapeWebglGetParameter``, ``masking.shapeGetChannelData``,
+    ``masking.shapeScreenWidthAccessor``) and the worker two — the accessor
+    probe is WINDOW_ONLY, since a worker realm has no ``screen``.
     """
-    assert len(probes.probes_for_realm(probes.WINDOW)) == 49
-    assert len(probes.probes_for_realm(probes.WORKER)) == 36
+    assert len(probes.probes_for_realm(probes.WINDOW)) == 52
+    assert len(probes.probes_for_realm(probes.WORKER)) == 38
     assert len(probes.probes_for_realm(probes.CHILD_FRAME)) == 4
 
     # The new id is in the child realm and NOWHERE else — the assertion the

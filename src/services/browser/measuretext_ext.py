@@ -142,9 +142,26 @@ __MT_REALM_SLOT__
         return m;
       }
       try {
-        Object.defineProperty(measureText, 'name', { value: 'measureText' });
-        Object.defineProperty(measureText, '__pnaName', { value: 'measureText' });
-      } catch (e) {}
+        // Re-house the declaration inside a real method shorthand: a function
+        // DECLARATION owns `prototype`/`arguments`/`caller` exactly as an
+        // expression does, where a native method owns ["length","name"].
+        //
+        // `inner` captures the binding BEFORE it is rebound. Without it the
+        // shorthand would close over `measureText`, which the assignment then
+        // points AT THE SHORTHAND — so calling it recurses until the stack
+        // blows (RangeError, reproduced).
+        var inner = measureText;
+        var shell = ({ m() { return inner.apply(this, arguments); } }).m;
+        Object.defineProperty(shell, 'length', { value: orig.length });
+        Object.defineProperty(shell, 'name', { value: 'measureText' });
+        Object.defineProperty(shell, '__pnaName', { value: 'measureText' });
+        measureText = shell;
+      } catch (e) {
+        try {
+          Object.defineProperty(measureText, 'name', { value: 'measureText' });
+          Object.defineProperty(measureText, '__pnaName', { value: 'measureText' });
+        } catch (e2) {}
+      }
       try { target.measureText = measureText; } catch (e) {}
     }
 

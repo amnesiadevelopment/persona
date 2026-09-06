@@ -260,11 +260,19 @@ def test_firefox_cloak_emits_spidermonkeys_native_form_not_v8s(tmp_path):
 
 
 def test_firefox_cloak_adds_no_own_property_to_wrappers(tmp_path):
-    """The Firefox cloak must not tag wrappers with an enumerable marker.
+    """The Firefox wrapper must own EXACTLY what a native method owns.
 
-    Nothing on the Firefox path reads native_ext's ``__pnaName`` (no persona
-    extension is loaded there), so such a property would not be a cloak — just
-    an own property on every wrapper that a page can enumerate.
+    Two independent claims, and the second is the one that was missing until
+    PS-314:
+
+    1. The cloak must not tag wrappers with a marker property. Nothing on the
+       Firefox path reads native_ext's ``__pnaName`` (no persona extension is
+       loaded there), so such a property would not be a cloak — just an own
+       property on every wrapper that a page can enumerate.
+    2. The wrapper's own-property SET must be the native one, ``["length",
+       "name"]``. A function expression owns `prototype`/`arguments`/`caller`
+       and a native method does not, so the set answers "is this a wrapper?"
+       without calling anything, and independently of the toString cloak above.
 
     Asserted by ENUMERATING THE WRAPPER in the child realm, not by grepping the
     source: the property's absence from the text and its absence from the live
@@ -279,14 +287,29 @@ def test_firefox_cloak_adds_no_own_property_to_wrappers(tmp_path):
     assert "__pnaName" not in names, (
         f"the wrapper carries an enumerable marker a page can sweep for: {names}"
     )
-    # Deliberately NOT an exact-list assertion. The legitimate own-property set
-    # is ENGINE-SPECIFIC — a sloppy-mode function carries legacy
-    # `arguments`/`caller` under this harness, while the live Firefox reading
-    # recorded on this ticket was [length, name, prototype]. Pinning either
-    # literal would make this test fail on the other engine for a reason that
-    # has nothing to do with masking. What must hold on every engine is that
-    # NOTHING persona-shaped is present.
-    legitimate = {"length", "name", "prototype", "arguments", "caller"}
+    # AN EXACT-SET ASSERTION, and the exactness is the point (PS-314).
+    #
+    # This previously admitted `prototype`/`arguments`/`caller` as "legitimate",
+    # on the reasoning that the legitimate set is engine-specific and pinning a
+    # literal would fail on the other engine. That reasoning was wrong in a way
+    # worth recording, because it made this the only own-props test on the
+    # Firefox engine AND made it unable to fail on the axis it guards:
+    #
+    #   * Those three names are NOT engine variation. They are what a sloppy-mode
+    #     function EXPRESSION owns, on every engine — the FORM the author typed,
+    #     not a property of the host. A native method owns exactly
+    #     ["length","name"], and `prototype` is present on an expression in
+    #     strict mode too (measured), so mode does not explain it either.
+    #   * So the allowlist did not absorb engine noise; it absorbed the defect.
+    #     The wrapper was built as a function expression and this test was
+    #     GREEN over it for exactly as long as it existed.
+    #
+    # The Firefox helper carries its cloak marker in a WeakMap rather than as an
+    # own property, so there is nothing persona-shaped to tolerate here and the
+    # native set is reachable exactly. If this ever fails with `prototype` in the
+    # leak list, the wrapper has regressed to a function expression — that is the
+    # tell, not a portability problem.
+    legitimate = {"length", "name"}
     leaked = sorted(set(names.split(",")) - legitimate)
     assert not leaked, (
         f"the wrapper carries own properties a native function would not have, "

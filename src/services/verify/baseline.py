@@ -174,6 +174,39 @@ ENV_SENSITIVE_PROBES: tuple[str, ...] = (
     "webgl.parameters",
     "webgl.readback",
     "webgl.unmasked",
+    # PS-314. WebSerial is gated on the HOST PLATFORM, not on anything persona
+    # does: `stealth_ext` never touches `Serial` or `navigator.serial` (grep it
+    # — zero hits), and the two keys are the ONLY movement in a probe that
+    # reports 41 of them. Firefox ships WebSerial behind a platform gate, so a
+    # re-record on a different host flips exactly this pair:
+    #
+    #     window + worker   Serial:           undefined -> function
+    #                       navigator.serial: undefined -> object
+    #
+    # Measured on this project's own artifact when the reference was re-recorded
+    # under PS-314: `engine_build` identical (firefox-20), all 39 other keys
+    # byte-identical, the seven probes already listed here byte-identical.
+    #
+    # ⚠️ WHAT THIS LIST DOES AND DOES NOT DO — read before assuming either way.
+    # It is DOCUMENTATION, not a filter. `compare()` diffs every probe and
+    # consults this tuple NOWHERE; its only consumer is `provenance()`, which
+    # copies it into the artifact so a reader can tell "this row moved because
+    # the machine changed" from "this row moved because the product changed".
+    # Adding an entry therefore SUPPRESSES NOTHING: a future movement in
+    # `stealth.apiPresence` still reds `baseline.check` exactly as it would
+    # have before, and still has to be explained.
+    #
+    # That is the right property for this particular probe, and it is why the
+    # entry is safe to add. `probes.py` says of it that "an UNEXPECTED PRESENCE
+    # is as much a finding as an absence" — so a vector that is ALSO a real
+    # stealth signal must not become tolerated by being named here, and it does
+    # not.
+    #
+    # ⛔ SCOPE, for the reader this note exists to inform: this entry explains
+    # the WebSerial PAIR under a platform-gate difference. It says nothing about
+    # any other key of this probe, and a re-record that moves one is a finding
+    # to be stated rather than a row that was already excused.
+    "stealth.apiPresence",
 )
 
 # Repo-relative location of the committed artifact. Beside the iOS WebGL
