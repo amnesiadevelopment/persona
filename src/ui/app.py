@@ -5,6 +5,7 @@ import os
 import sys
 import threading
 import time
+from collections.abc import Callable
 
 import flet as ft
 
@@ -475,12 +476,24 @@ class App:
         # for a situation that already has exactly one, free to drift from it.
         self._engine_unverifiable_msg: str = ""
         self._engines_open = False
-        # Whether each engine's status line is currently REVEALED (wrapped to
-        # _STATUS_EXPANDED_MAX_LINES) rather than ellipsised to one line. Per
-        # engine, not one shared flag: an operator reading a Firefox error must
-        # not have the Chromium row silently change height underneath them.
-        self._engine_status_expanded = False
-        self._engine2_status_expanded = False
+        # WHICH status string is currently REVEALED (wrapped to
+        # _STATUS_EXPANDED_MAX_LINES) rather than ellipsised to one line, held
+        # as the string itself rather than as a bool — the same mechanism, and
+        # the same reasoning, as _app_status_revealed on the version panel next
+        # door. A reveal belongs to the message it was opened on: the operator
+        # opens "couldn't go back — see the log" to read its actionable tail,
+        # one of ~38 status writer sites then overwrites it, and the new
+        # sentence must arrive COLLAPSED rather than inheriting an open row it
+        # never asked for. A bool could not express that — nothing in the file
+        # ever cleared it, so "downloading..." (14 chars, inside the 17-char
+        # cell) rendered at three lines and grew a chevron on a line that fits.
+        # Compared, never trusted — see _status_expanded.
+        #
+        # Per engine, not one shared flag: an operator reading a Firefox error
+        # must not have the Chromium row silently change height underneath
+        # them.
+        self._engine_status_revealed: str = ""
+        self._engine2_status_revealed: str = ""
         # An onboarding/changelog dialog owns the screen at startup; a staged
         # update that lands while it's open is held here and offered once the
         # onboarding closes, so the two dialogs never stack (#226).
@@ -885,46 +898,22 @@ class App:
         self._refresh_sidebar()
 
     def _app_status_reveal_button(self, expanded: bool) -> ft.Control:
-        """The gesture that shows a truncated app status in full.
+        """The version panel's reveal chevron — the SHARED control, bound to
+        this panel's toggle.
 
-        THE SAME AFFORDANCE THE ENGINE STATUSES ALREADY HAVE, deliberately
-        identical rather than merely similar: two panels in one rail that
-        truncate the same way must not recover differently, which is this
-        ticket's whole thesis. See :meth:`_status_reveal_button` for why it is
-        expand-in-place and not a tooltip — invisible in a screenshot, needs a
-        hover a trackpad operator may never perform, and the tooltip gesture on
-        the rollback row already means something else.
+        THE SAME AFFORDANCE THE ENGINE STATUSES ALREADY HAVE, and since PS-331
+        literally the same function rather than a byte-identical copy of it:
+        two panels in one rail that truncate the same way must not recover
+        differently, and the surest way to keep two implementations in
+        agreement is to have one. See :meth:`_status_reveal_button` for why it
+        is expand-in-place and not a tooltip, and for why the status line needs
+        it at all.
 
-        WHY THE STATUS LINE NEEDS IT AT ALL, which is the half a bound alone
-        does not supply. ``_on_app_rollback``'s own docstring argues that a
-        refusal must be VISIBLE because ``_log`` is not a surface — the sidebar
-        log renders only while expanded. Ellipsised into ~22 characters,
-        "couldn't go back — see the log" reaches the operator as roughly
-        "couldn't go back — s…", and *see the log* is the entire actionable
-        half of the sentence. Bounded-and-recoverable is the fix; bounded alone
-        would trade an overflow for a silent truncation of the one channel the
-        refusal has.
-
-        IT IS ITS OWN CONTROL, not the status line's click, for the same reason
-        the engine one is: the row above already owns a click that reverts the
-        application.
+        Kept as a named method rather than inlined at the call site because
+        ``tests/test_ps271_version_panel_rail.py`` is held UNMODIFIED and the
+        panel reads better naming its own gesture.
         """
-        return ft.Container(
-            on_click=lambda _: self._toggle_app_status(),
-            ink=True,
-            width=16,
-            height=16,
-            border_radius=3,
-            alignment=ft.Alignment.CENTER,
-            tooltip=(
-                "Hide the full status" if expanded else "Show the full status"
-            ),
-            content=ft.Icon(
-                ft.Icons.UNFOLD_LESS if expanded else ft.Icons.UNFOLD_MORE,
-                size=12,
-                color=COLORS["text_dim"],
-            ),
-        )
+        return self._status_reveal_button(expanded, self._toggle_app_status)
 
     def _on_app_resume_updates(self) -> None:
         """Clear the app-update hold: the operator saying "go forward again".
@@ -2905,12 +2894,44 @@ class App:
 
     @staticmethod
     def _status_expanded_attr(which: str) -> str:
-        """The instance attribute holding one engine's reveal flag."""
+        """The instance attribute holding one engine's reveal flag.
+
+        It holds the STRING the reveal was opened on, not a bool — see
+        :meth:`_status_expanded` for why.
+        """
         return (
-            "_engine_status_expanded"
+            "_engine_status_revealed"
             if which == "chromium"
-            else "_engine2_status_expanded"
+            else "_engine2_status_revealed"
         )
+
+    def _status_text_control(self, which: str) -> ft.Text:
+        """The long-lived ``ft.Text`` one engine row actually renders.
+
+        THE COMPARAND IS THE RENDERED VALUE, not ``_engine_status``, and the
+        distinction is the whole reason this helper exists rather than a plain
+        attribute read. ``_engine_status`` is only ONE of the things the row
+        can display: ``_build_engines_panel``'s neighbouring code assigns
+        ``engine_text.value`` a download status, a shortened latest-version
+        string, ``_engine_status``, or the current version depending on the
+        branch. Comparing a reveal against ``_engine_status`` would therefore
+        leave it INHERITED across every state that does not flow through that
+        attribute — the same defect in a smaller box.
+
+        The value the operator sees is the value the reveal belongs to, so the
+        comparand is this control's ``.value`` at the moment the panel is
+        built. Returned as the control (not the string) because
+        ``_status_control`` needs the same object; a partially constructed app
+        that has neither gets an empty stand-in rather than an
+        ``AttributeError``.
+        """
+        attr = "engine_text" if which == "chromium" else "_engine2_text"
+        control = getattr(self, attr, None)
+        return control if isinstance(control, ft.Text) else ft.Text("")
+
+    def _status_current(self, which: str) -> str:
+        """The status string one engine row is displaying right now."""
+        return self._status_text_control(which).value or ""
 
     def _status_expanded(self, which: str) -> bool:
         """Whether one engine's status line is currently revealed.
@@ -2924,21 +2945,49 @@ class App:
         ``AttributeError`` on every one of them, and would do so again for any
         future partial construction.
 
-        The default is ``False`` — COLLAPSED — which is also the safe
-        direction: collapsed is the state that keeps the long-lived control
-        the download-progress callback writes to, so a panel built without
+        THE FLAG IS COMPARED, NOT TRUSTED — identical to
+        :meth:`_app_status_expanded`, because two panels in one rail that
+        truncate the same way must not recover differently. It holds the string
+        it was opened on, so a reveal cannot outlive its own message: the
+        operator opens "couldn't go back — see the log" to read the actionable
+        tail, one of the ~38 status-writer sites overwrites it, and the new
+        sentence arrives COLLAPSED rather than inheriting an open row it never
+        asked for. A bool could not express that, and did not: nothing in this
+        file ever cleared it, so ``"downloading..."`` — 14 characters inside a
+        17-character cell, a line that FITS — rendered at three lines and grew
+        a chevron that ``test_a_status_that_already_fits_draws_no_reveal_control``
+        exists to forbid.
+
+        The default is ``""`` — COLLAPSED — which is also the safe direction:
+        collapsed is the state that keeps the long-lived control the
+        download-progress callback writes to, so a panel built without
         ``__init__`` renders the live row rather than a frozen snapshot.
         """
-        return bool(getattr(self, self._status_expanded_attr(which), False))
+        current = self._status_current(which)
+        return bool(current) and getattr(
+            self, self._status_expanded_attr(which), ""
+        ) == current
 
     def _toggle_engine_status(self, which: str) -> None:
         """Reveal / re-collapse one engine's full status text in place."""
-        attr = self._status_expanded_attr(which)
-        setattr(self, attr, not self._status_expanded(which))
+        setattr(
+            self,
+            self._status_expanded_attr(which),
+            "" if self._status_expanded(which) else self._status_current(which),
+        )
         self._refresh_sidebar()
 
-    def _status_reveal_button(self, which: str, expanded: bool) -> ft.Control:
-        """The gesture that shows a truncated status in full.
+    def _status_reveal_button(
+        self, expanded: bool, on_toggle: Callable[[], None]
+    ) -> ft.Control:
+        """The gesture that shows a truncated sidebar status in full.
+
+        ONE FUNCTION FOR ALL THREE ROWS — the two engines and the app version
+        panel. It was two byte-identical bodies differing only in which toggle
+        the click called; an affordance that must be "deliberately identical
+        rather than merely similar" across panels in one rail is better served
+        by being literally the same control than by two copies that agree
+        today.
 
         WHY EXPAND-IN-PLACE AND NOT A TOOLTIP. A tooltip was the cheaper
         answer and is the wrong one here for three reasons: it is invisible in
@@ -2948,13 +2997,23 @@ class App:
         second, different meaning on the same gesture would collide with it.
         Expanding in place is visible, clickable, and reversible.
 
-        IT IS ITS OWN CONTROL, NOT THE ROW'S CLICK. The row's ``on_click``
-        already means "check / update this engine" — a download over Tor on the
-        Chromium row. Overloading that gesture with "show me the text" would
-        make reading an error message start a hundreds-of-megabyte transfer.
+        IT IS ITS OWN CONTROL, NOT THE ROW'S CLICK. The engine row's
+        ``on_click`` already means "check / update this engine" — a download
+        over Tor on the Chromium row — and the version panel's row above
+        already owns a click that reverts the application. Overloading either
+        gesture with "show me the text" would make reading an error message
+        start a hundreds-of-megabyte transfer.
+
+        WHY THE STATUS LINE NEEDS IT AT ALL, which is the half a bound alone
+        does not supply. Ellipsised into ~22 characters of rail, "couldn't go
+        back — see the log" reaches the operator as roughly "couldn't go back
+        — s…", and *see the log* is the entire actionable half of the
+        sentence; ``_on_app_rollback``'s docstring is explicit that ``_log`` is
+        not a visible surface. Bounded-and-recoverable is the fix; bounded
+        alone would trade an overflow for a silent truncation.
         """
         return ft.Container(
-            on_click=lambda _: self._toggle_engine_status(which),
+            on_click=lambda _: on_toggle(),
             ink=True,
             width=16,
             height=16,
@@ -3096,7 +3155,9 @@ class App:
         But it means the reveal flag cannot be expressed by constructing the
         control differently: the object the panel renders is the same object
         every rebuild, carrying whatever bounds it was born with. Toggling
-        ``_engine_status_expanded`` therefore flipped the chevron's icon and
+        ``_engine_status_expanded`` (the engine reveal flag as it then was;
+        PS-331 made it the compared string ``_engine_status_revealed``)
+        therefore flipped the chevron's icon and
         tooltip and changed NOTHING about the text — the row still ellipsised
         to one line, so the reveal was a control that appeared to work and did
         not. Caught by looking at the render, not at the semantics tree, which
@@ -3220,7 +3281,8 @@ class App:
                         dot=self._engine_update_available(),
                         reveal=(
                             self._status_reveal_button(
-                                "chromium", self._status_expanded("chromium")
+                                self._status_expanded("chromium"),
+                                lambda: self._toggle_engine_status("chromium"),
                             )
                             if self._status_needs_reveal(
                                 self.engine_text.value or "",
@@ -3262,7 +3324,8 @@ class App:
                         dot=self._engine2_update_available(),
                         reveal=(
                             self._status_reveal_button(
-                                "firefox", self._status_expanded("firefox")
+                                self._status_expanded("firefox"),
+                                lambda: self._toggle_engine_status("firefox"),
                             )
                             if self._status_needs_reveal(
                                 self._engine2_text.value or "",
