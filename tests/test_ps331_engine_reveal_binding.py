@@ -376,3 +376,88 @@ def test_the_shared_button_fires_the_toggle_it_was_handed():
     button.on_click(None)
 
     assert fired == ["clicked"]
+
+
+# --- the comparand choice, exercised on the branch that discriminates -------
+
+
+def test_the_reveal_is_bound_to_the_RENDERED_line_not_to_engine2_status():
+    """THE COMPARAND CHOICE, ASSERTED WHERE IT ACTUALLY DIFFERS — and the only
+    test in this file that would still pass if the fix had compared against
+    ``_engine2_status`` instead of the rendered value.
+
+    Every other test here writes a status and reads it back, so the rendered
+    line and ``_engine2_status`` carry the SAME string and either comparand
+    answers identically. That makes them all silent about the one design
+    decision the ticket asked to be justified in the PR. This test drives the
+    state where the two DISAGREE.
+
+    ``_build_engines_panel`` does not render ``_engine2_status``; it recomputes
+    the Firefox line every rebuild from :meth:`_engine2_status_text`, which has
+    four branches — ``"checking..."``, ``_engine2_status``, a shortened latest
+    version, or the current version. Only the second is that attribute. So a
+    row can be displaying ``"checking..."`` while ``_engine2_status`` still
+    holds the refusal the operator revealed a moment ago:
+
+        rendered            'checking...'
+        _engine2_status     "couldn't go back — see the log"   <-- unchanged
+
+    A reveal compared against ``_engine2_status`` matches there and stays open,
+    inheriting onto a line the operator never revealed — the same defect this
+    file exists to close, in a smaller box. Compared against the RENDERED
+    value it collapses, which is what the operator's eyes actually justify.
+
+    ⚠️ This test deliberately DELETES the fixture's ``_engine2_status_text``
+    stub and runs the real method. The stub is what makes every other test in
+    this file readable, and it is also what would hide this branch entirely.
+
+    The final step is the negative control: coming back off the ``checking``
+    branch restores the very same sentence, and the reveal legitimately
+    re-applies — the flag is COMPARED, not cleared, so returning to a message
+    still carrying its own reveal is correct rather than a leak.
+    """
+    app = _engines_app(which="firefox", status=LONG_STATUS)
+    # Unstub: exercise the shipped recompute, not the fixture's stand-in.
+    del app._engine2_status_text
+    app._engine2_latest = ""
+    app._engine2_version = ""
+    app._engine2_status = LONG_STATUS
+
+    _reveal_buttons(app._build_engines_panel())[0].on_click(None)
+    assert app._status_expanded("firefox") is True
+    assert app._engine2_text.value == LONG_STATUS
+
+    # Flip to the "checking..." branch WITHOUT touching _engine2_status.
+    app._engine2_checking = True
+    tree = app._build_engines_panel()
+
+    assert app._engine2_text.value == "checking...", (
+        "the premise: the rendered line must have left _engine2_status behind"
+    )
+    assert app._engine2_status == LONG_STATUS, (
+        "the premise: _engine2_status must be UNCHANGED, or the two comparands "
+        "do not disagree here and this test proves nothing"
+    )
+    assert app._engine2_status_revealed == app._engine2_status, (
+        "the counterfactual: comparing against _engine2_status WOULD have "
+        "matched here and inherited the reveal"
+    )
+
+    assert app._status_expanded("firefox") is False, (
+        "the reveal inherited onto a line the operator never revealed — the "
+        "comparand is following _engine2_status rather than the rendered value"
+    )
+    assert _reveal_buttons(tree) == [], (
+        f"'checking...' is {len('checking...')} characters against a "
+        f"{app_mod._VERSION_MAX_CHARS}-character cell: it fits, so it must "
+        "draw no chevron"
+    )
+
+    # Negative control: the same sentence returns, and so does its reveal.
+    app._engine2_checking = False
+    app._build_engines_panel()
+    assert app._engine2_text.value == LONG_STATUS
+    assert app._status_expanded("firefox") is True, (
+        "returning to the revealed message collapsed it — the flag is being "
+        "cleared somewhere rather than compared"
+    )
