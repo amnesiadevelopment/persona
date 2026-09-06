@@ -105,6 +105,27 @@ there is nowhere to put our leaf. Suppressing registration outright would close
 the leak and break every site that needs a service worker — a product decision,
 not this module's to take. See PS-189 for the full record.
 
+⭐ UPDATE (PS-354): THE hardwareConcurrency HALF OF THIS REALM NOW HAS AN
+AUTHOR, AND IT IS NOT THIS MODULE. ``process.py`` passes the engine
+``--fingerprint-hardware-concurrency=<the page realm's own pick>``, and the
+engine authors that value before any of our JS runs — so it reaches every realm
+INCLUDING the service worker natively. Measured live on the shipped engine
+(host cores = 8): with no flag the page and the service worker both reported 8
+(the HOST's value); with the flag they reported 13 and 13, then 4 and 4.
+
+⛔ SO DO NOT "FINISH THE JOB" BY CHAINING ServiceWorker HERE. The paragraph
+above still describes this module correctly — there is still no delivery
+technique — but the conclusion has changed: the realm is covered by the engine,
+so a JS author here would be a SECOND author racing the first, and it would add
+observable surface to a realm nothing of ours currently touches. That is the
+route PS-354 considered and rejected.
+``tests/test_ps189_service_worker_realm.py`` pins both halves: that this module
+still does not reach the realm, and that ``process.py`` still does.
+
+⚠️ THE GPU HALF OF THIS REALM IS STILL UNAUTHORED. PS-354 closed
+``hardwareConcurrency`` only; the SwiftShader / Apple-M2 readings above are
+untouched and remain open.
+
 Worker scheme (proven by locale_ext): blob:/data: workers are re-blobbed under
 the same scheme (the site's CSP already allows that scheme, so it stays allowed)
 with the fragment prepended; http(s) workers get an importScripts shim. Module

@@ -412,6 +412,21 @@ def _normalise(argv, profile_dir, data_dir):
 #: with the same four platform seams pinned that ``Env.pin_platform`` pins; all
 #: three came back byte-identical to the post-hoist tree, which is the AC4
 #: measurement itself.
+#:
+#: ⭐ AMENDED ONCE, DELIBERATELY, BY PS-354 — and the amendment is recorded here
+#: because a pinned-argv ratchet edited without a reason is how the reason gets
+#: lost. ``--fingerprint-hardware-concurrency=<n>`` was ADDED to all three arms.
+#: It is a real, intended change to what is launched: it gives the
+#: ServiceWorker realm its only author (that realm is reached by neither of
+#: persona's JS identity authors, so it previously fell through to the engine's
+#: seed default or to the HOST — PS-189 measured the leak directly).
+#:
+#: ⚠️ THE VALUE 8 HERE IS THIS FIXTURE PROFILE'S OWN PICK, NOT A CONSTANT THE
+#: PRODUCT EMITS. It is the generation-filtered ``CORES_MEMORY`` entry this
+#: seed resolves to; other profiles legitimately launch with 4, 6, 12 or 16.
+#: So do NOT read this line as "persona always passes 8" and do not copy it as
+#: an expected value anywhere else — ``test_ps354_service_worker_cores.py``
+#: pins the resolver against the real emitted ``device.js`` for many seeds.
 _PRISTINE_ARGV = {
     "linux": [
         "<ENGINE>",
@@ -421,6 +436,7 @@ _PRISTINE_ARGV = {
         "--fingerprint-platform=windows",
         "--fingerprint-brand=Chrome",
         "--fingerprint-brand-version=152.0.7977.75",
+        "--fingerprint-hardware-concurrency=8",
         "--lang=de-DE",
         "--accept-lang=de-DE,de",
         (
@@ -471,6 +487,7 @@ _PRISTINE_ARGV = {
         "--fingerprint-platform=windows",
         "--fingerprint-brand=Chrome",
         "--fingerprint-brand-version=152.0.7977.75",
+        "--fingerprint-hardware-concurrency=8",
         "--lang=de-DE",
         "--accept-lang=de-DE,de",
         (
@@ -509,6 +526,7 @@ _PRISTINE_ARGV = {
         "--fingerprint-platform=windows",
         "--fingerprint-brand=Chrome",
         "--fingerprint-brand-version=152.0.7977.75",
+        "--fingerprint-hardware-concurrency=8",
         "--lang=de-DE",
         "--accept-lang=de-DE,de",
         (

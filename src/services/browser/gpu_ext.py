@@ -52,6 +52,14 @@ every realm — which is why a green windows reading says nothing about realm
 coverage on the other arms. The blind spot is stated in full, with the refused
 fix techniques, in ``worker_wrap``'s header; do not re-derive it from here.
 
+⚠️ SCOPE UPDATE (PS-354): the readings above are about the GPU pair and THEY
+STILL STAND — that half of this realm remains unauthored. What changed is a
+DIFFERENT vector: ``hardwareConcurrency`` now has an author in that realm
+(``process.py`` passes ``--fingerprint-hardware-concurrency``, which the engine
+applies before any of our JS runs, verified live on the shipped engine). So
+"one realm has no author at all" is now too strong as a blanket statement —
+read it as scoped to the identity pair THIS module owns.
+
 This extension picks one real desktop GPU deterministically from the seed and
 overrides gl.getParameter() (plus getExtension for the WEBGL_debug_renderer_info
 constants) on both WebGLRenderingContext and WebGL2RenderingContext so the
