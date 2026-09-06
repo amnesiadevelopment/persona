@@ -716,7 +716,24 @@ def test_the_committed_baseline_carries_its_own_provenance():
     # The recorded provenance must match the profile the code would build now:
     # if someone edits the pinned profile, this fails rather than letting the
     # artifact and its stated origin drift apart.
-    assert prov == baseline.provenance(baseline.baseline_profile())
+    #
+    # `window_size` is passed back in rather than re-derived, because it is a
+    # MEASUREMENT of the recording that produced this artifact, not a property
+    # of the profile: `provenance` reports what the recorder read off disk (see
+    # `_effective_window_size`), and this process launched nothing. Asserting it
+    # separately below is what keeps that honest — folding it into the equality
+    # here would only check that the constant equals itself.
+    assert prov == baseline.provenance(
+        baseline.baseline_profile(), window_size=prov.get("window_size")
+    )
+
+    # ...and the committed artifact is a FRESH recording, so the geometry it ran
+    # with must be the pin. A warm recording would legitimately carry something
+    # else; this artifact may not.
+    assert prov["window_size"] == list(baseline.BASELINE_WINDOW_SIZE), (
+        "the committed baseline was recorded with a window geometry that is "
+        "not the recorder's pin — it is either stale or was not recorded fresh"
+    )
 
 
 def test_the_committed_baseline_compares_clean_against_itself():
@@ -1623,6 +1640,164 @@ def test_the_window_pin_survives_a_fresh_recording(monkeypatch, tmp_path):
     )
 
 
+def test_a_warm_recording_leaves_the_profiles_own_window_state_alone(
+    monkeypatch, tmp_path
+):
+    """THE ARM ROUND 1 DID NOT HAVE, and the defect it would have caught.
+
+    Round 1 called `_pin_recording_window` unconditionally, so every
+    `fresh=False` recording truncated the profile's own `xulstore.json` — a file
+    a previous launch wrote and that the profile's next launch reads. Executed
+    against realistic persisted state, it destroyed `PersonalToolbar` and
+    `sidebar-box` and rewrote a user's `main-window`. Every round-1 test used
+    `fresh=True` or called the helper on a clean tree, so the whole leaked
+    surface was untested and the suite was green while the claim was false.
+
+    ⚠️ WHY THIS IS NOT A STYLE POINT. `fresh=False` MEANS "do not wipe the data
+    dir; start from what the previous session left behind" — it is the documented
+    contract of `baseline_cli --reuse-profile`, and it is the substrate the
+    launch-backed behavioural checks measure. `behaviour_checks.py`'s
+    restart-continuity model is a question ABOUT that persisted state, so a
+    recorder that rewrites it on every launch is writing over the thing being
+    observed. This ticket scoped the pin to the GATE's recording, and the gate
+    records `fresh=True` unconditionally.
+
+    FALSIFIED against the round-1 shape: remove the `os.path.exists` guard from
+    `_pin_recording_window` and this goes red on the surviving-state assertions,
+    with its own message. The premise assertion below is what stops it passing
+    vacuously — if the file were absent, "the user's state survived" would be
+    trivially true of nothing.
+    """
+    from src.models.profile import Profile
+    from src.services.verify import baseline as bl
+
+    monkeypatch.setattr("src.core.config.DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(bl, "_require_display", lambda: None)
+    monkeypatch.setattr(bl, "_await_started", lambda proc, timeout: None)
+    monkeypatch.setattr(bl, "_teardown", lambda proc, name: None)
+
+    # A SCRATCH profile, not the baseline — this is the population the pin was
+    # never meant to touch.
+    profile = Profile(name="ps304-warm-scratch", engine="firefox")
+    inner = os.path.join(str(tmp_path), profile.name, ".invisible-profile")
+    os.makedirs(inner, exist_ok=True)
+    path = os.path.join(inner, "xulstore.json")
+    persisted = {
+        "chrome://browser/content/browser.xhtml": {
+            "main-window": {
+                "width": "1900",
+                "height": "1180",
+                "sizemode": "normal",
+            },
+            "PersonalToolbar": {"collapsed": "false"},
+            "sidebar-box": {"width": "310"},
+        }
+    }
+    raw = json.dumps(persisted)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(raw)
+
+    seen = {}
+
+    def _spawn(prof, in_process=False):
+        seen["body"] = open(path, encoding="utf-8").read()
+        return object()
+
+    monkeypatch.setattr("src.services.browser.process.spawn_browser", _spawn)
+    monkeypatch.setattr(
+        "src.services.browser.invisible_launch.get_ff_eval",
+        lambda name: {"eval": lambda expr: {"v": "FF"}},
+    )
+
+    bl.record_snapshot(profile=profile, fresh=False, realms=("window",))
+
+    # NOT VACUOUS: the launch really did observe a file. Without this, an
+    # absent xulstore.json would satisfy every assertion below by having no
+    # state to destroy.
+    assert seen.get("body"), "the launch saw no xulstore.json at all"
+
+    assert seen["body"] == raw, (
+        "a warm recording rewrote the profile's own persisted window state. "
+        "`fresh=False` means start from what the previous session left behind, "
+        "and the behavioural checks measure exactly that state.\n"
+        f"  before: {raw}\n  at launch: {seen['body']}"
+    )
+
+    chrome = json.loads(seen["body"])["chrome://browser/content/browser.xhtml"]
+    assert "PersonalToolbar" in chrome and "sidebar-box" in chrome, (
+        "the pin clobbered chrome state it does not own — it overwrites the "
+        "whole document rather than merging, so every sibling key is lost"
+    )
+    assert chrome["main-window"]["width"] == "1900", (
+        "the user's own window geometry was overridden by the pin, which is "
+        "the one write in this path that must defer to it"
+    )
+
+
+def test_the_gate_path_is_still_pinned_despite_the_warm_deferral(
+    monkeypatch, tmp_path
+):
+    """THE POSITIVE CONTROL for the guard above, and the reason it is safe.
+
+    A deferral that also stopped pinning the GATE would satisfy the warm test
+    and silently restore the original defect. It cannot here — `fresh=True`
+    rmtree's the tree first, so the file never exists and the pin always writes
+    — but "cannot" is worth asserting rather than reasoning about, because it is
+    the property every one of ACs 1-7 rests on.
+
+    Deliberately driven through `record_snapshot(fresh=True)` (the gate's own
+    call shape, `engine_gate.py:634`) rather than by calling the helper, so it
+    measures the path the gate takes.
+    """
+    from src.services.verify import baseline as bl
+
+    monkeypatch.setattr("src.core.config.DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(bl, "_require_display", lambda: None)
+    monkeypatch.setattr(bl, "_await_started", lambda proc, timeout: None)
+    monkeypatch.setattr(bl, "_teardown", lambda proc, name: None)
+
+    profile = bl.baseline_profile()
+    inner = os.path.join(str(tmp_path), profile.name, ".invisible-profile")
+    os.makedirs(inner, exist_ok=True)
+    path = os.path.join(inner, "xulstore.json")
+    # A PRE-EXISTING file the deferral would honour on a warm recording. The
+    # gate's `fresh=True` must wipe it and pin anyway; if the guard leaked into
+    # the fresh path, this stale geometry would survive and the gate would be
+    # back to comparing engine defaults.
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(
+            {
+                "chrome://browser/content/browser.xhtml": {
+                    "main-window": {"width": "999", "height": "999"}
+                }
+            },
+            fh,
+        )
+
+    seen = {}
+
+    def _spawn(prof, in_process=False):
+        seen["body"] = open(path, encoding="utf-8").read()
+        return object()
+
+    monkeypatch.setattr("src.services.browser.process.spawn_browser", _spawn)
+    monkeypatch.setattr(
+        "src.services.browser.invisible_launch.get_ff_eval",
+        lambda name: {"eval": lambda expr: {"v": "FF"}},
+    )
+
+    bl.record_snapshot(profile=profile, fresh=True, realms=("window",))
+
+    w, h = bl.BASELINE_WINDOW_SIZE
+    win = json.loads(seen["body"])["chrome://browser/content/browser.xhtml"][
+        "main-window"
+    ]
+    assert (win["width"], win["height"]) == (str(w), str(h)), (
+        "the gate's fresh recording was NOT pinned — the warm deferral leaked "
+        "into the fresh path and the gate is comparing engine defaults again"
+    )
+
+
 def test_the_pinned_window_cannot_exceed_the_baselines_spoofed_screen():
     """AC7. A CSS innerWidth larger than `screen.width` is impossible.
 
@@ -1642,39 +1817,150 @@ def test_the_pinned_window_cannot_exceed_the_baselines_spoofed_screen():
     )
 
 
-def test_provenance_states_the_pinned_window_geometry():
-    """The pin is an INPUT, so it belongs in provenance.
+def test_provenance_states_the_window_geometry_the_recording_ACTUALLY_used():
+    """The pin is an INPUT, so it belongs in provenance — but the field must
+    report what the recording RAN WITH, not what the pin would have written.
 
     Before the pin the geometry was the engine's own default — an observation —
     and could not honestly have been recorded here. A reader of a red
     `window.innerSize` diff can now tell "we changed the pin" from "the engine
     changed" from the artifact alone.
+
+    ⚠️ AND THE FIELD IS NOT `BASELINE_WINDOW_SIZE` RESTATED. Round 1 wrote the
+    constant unconditionally, which was honest only while the pin also wrote
+    unconditionally. Now that the pin defers to a profile's own persisted
+    geometry, a warm recording runs with something else — so a provenance field
+    naming the constant would claim an input that recording did not use. All
+    three arms are asserted here, because the omission case is the one a reader
+    must be able to trust: a MISSING field means "not recorded", and must never
+    stand in for a value nobody observed.
     """
     from src.services.verify import baseline as bl
 
+    # 1. Unknown (nothing launched, nothing pinned) -> the key is OMITTED.
+    #    Not None, not the constant: absent.
     prov = bl.provenance(bl.baseline_profile())
-    assert prov["window_size"] == list(bl.BASELINE_WINDOW_SIZE)
+    assert "window_size" not in prov, (
+        "provenance invented a window geometry for a recording that never "
+        f"reported one: {prov.get('window_size')!r}"
+    )
+
+    # 2. A fresh recording's measured geometry — the pin.
+    prov = bl.provenance(bl.baseline_profile(), window_size=[1280, 800])
+    assert prov["window_size"] == [1280, 800]
+
+    # 3. A WARM recording that deferred to the profile's own persisted window.
+    #    The field must follow the measurement, not the constant.
+    prov = bl.provenance(bl.baseline_profile(), window_size=[1900, 1180])
+    assert prov["window_size"] == [1900, 1180], (
+        "provenance reported the pin for a recording that deferred to the "
+        "profile's own geometry — the artifact claims an input it did not use"
+    )
+    assert prov["window_size"] != list(bl.BASELINE_WINDOW_SIZE)
 
 
-def test_the_pin_path_cannot_drift_from_the_dir_the_launch_is_handed():
-    """The pin is only correct while it names the SAME dir `process.py` passes.
+def test_the_measured_window_size_is_read_off_the_file_the_launch_reads(tmp_path):
+    """`_effective_window_size` must read the SAME file the pin writes and the
+    launch consults, and must answer None rather than guessing.
 
-    `spawn_browser` builds the child's `profile_dir` as
+    This is what makes provenance a measurement instead of a restatement, so it
+    is asserted on the real file rather than by monkeypatching the reader.
+    """
+    import os
+
+    from src.models.profile import Profile
+    from src.services.verify import baseline as bl
+
+    # Nothing on disk -> unknown, NOT the constant.
+    absent = Profile(name="ps304-prov-absent")
+    assert bl._effective_window_size(absent) is None
+
+    # The pin's own file is what it reads back.
+    pinned = Profile(name="ps304-prov-pinned")
+    bl._pin_recording_window(pinned)
+    assert bl._effective_window_size(pinned) == list(bl.BASELINE_WINDOW_SIZE)
+
+    # A profile carrying its OWN persisted geometry reads back THAT, which is
+    # the warm case provenance must not misreport.
+    warm = Profile(name="ps304-prov-warm")
+    path = bl._pin_recording_window(warm)
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(
+            {
+                "chrome://browser/content/browser.xhtml": {
+                    "main-window": {"width": "1900", "height": "1180"}
+                }
+            },
+            fh,
+        )
+    assert bl._effective_window_size(warm) == [1900, 1180]
+
+    # A malformed file is not a geometry: answer None rather than half-read it.
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("{not json")
+    assert bl._effective_window_size(warm) is None
+    assert os.path.exists(path)
+
+
+def test_the_pin_path_cannot_drift_from_the_dir_the_launch_is_handed(
+    monkeypatch, tmp_path
+):
+    """The pin is only correct while it names the SAME dir the launch is handed.
+
+    `_spawn_invisible` builds the child's `profile_dir` as
     `os.path.join(profile_dir, ".invisible-profile")` with that string spelled
     inline (process.py:493), while `_pin_recording_window` reaches for
     `invisible_launch._INVISIBLE_SUBDIR`. Two spellings of one path is exactly
-    how a pin ends up written somewhere nothing reads, so this holds them equal
-    by reading the launcher's own source rather than by restating the literal a
-    third time.
+    how a pin ends up written somewhere nothing reads, so the two must be held
+    equal.
+
+    ⚠️ THIS ASSERTS ON BEHAVIOUR, NOT ON SOURCE TEXT, and that is a round-2 fix
+    rather than a preference. Round 1 asserted the literal substring
+    `'os.path.join(profile_dir, "…")'` was present in `inspect.getsource(...)`.
+    Reformatting that one call across two lines — a change any formatter makes,
+    with no semantic effect whatsoever — turned the test RED with the message
+    "the launcher no longer joins the subdir the pin writes into", which would
+    be FALSE. A false red carrying a confident, wrong explanation is worse than
+    no guard: it sends the next reader hunting a bug that does not exist. It is
+    also the exact shape PS-11 warns about — a test asserting on text rather
+    than on the behaviour the text happens to produce.
+
+    So the launcher is RUN, with its own `spawn` stubbed, and the `profile_dir`
+    it actually hands the engine is compared against the directory the pin
+    actually writes into. `black` cannot break this; genuinely moving the
+    engine's profile dir will.
     """
-    import inspect
-
     from src.services.browser import invisible_launch, process
+    from src.services.verify import baseline as bl
 
-    src = inspect.getsource(process._spawn_invisible)
-    assert (
-        f'os.path.join(profile_dir, "{invisible_launch._INVISIBLE_SUBDIR}")' in src
-    ), (
-        "the launcher no longer joins the subdir the pin writes into; "
-        "_pin_recording_window would be writing where nothing reads"
+    monkeypatch.setattr("src.core.config.DATA_DIR", str(tmp_path))
+
+    handed = {}
+
+    def _spawn(cfg, **kwargs):
+        handed["profile_dir"] = cfg["profile_dir"]
+        raise RuntimeError("stop here: the cfg is all this test needs")
+
+    monkeypatch.setattr(invisible_launch, "spawn", _spawn)
+    monkeypatch.setattr(invisible_launch, "is_invisible_installed", lambda: True)
+
+    profile = bl.baseline_profile()
+    outer = os.path.join(str(tmp_path), profile.name)
+    with pytest.raises(RuntimeError):
+        process._spawn_invisible(profile, outer)
+
+    # NOT VACUOUS: the launcher really reached the spawn call and really built a
+    # profile_dir. Without this, a launcher that raised earlier would leave the
+    # dict empty and the comparison below would be between two absent values.
+    assert handed.get("profile_dir"), (
+        "the launcher never reached its spawn call, so it produced no "
+        "profile_dir to compare the pin against"
+    )
+
+    pinned_file = bl._pin_recording_window(profile)
+    assert os.path.dirname(pinned_file) == handed["profile_dir"], (
+        "the pin writes into a different directory than the one the launch is "
+        "handed, so the engine will never read it.\n"
+        f"  launch reads: {handed['profile_dir']}\n"
+        f"  pin writes  : {os.path.dirname(pinned_file)}"
     )
