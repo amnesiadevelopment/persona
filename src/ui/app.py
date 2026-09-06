@@ -2691,6 +2691,21 @@ class App:
         from ..services.cookie.store import import_cookies, parse_cookies_json
 
         assert self.refs is not None
+        # ENGINE GATE, BEFORE THE PICKER. The cookie store is Chromium-shaped
+        # end to end -- it writes Default/Cookies and encrypts values with
+        # Chromium's v10/AES scheme (services/cookie/codec.py). A Firefox
+        # profile's jar is cookies.sqlite at the profile root (this project's
+        # own behaviour_checks names it so), and both engines share one data
+        # dir, so importing here would MKDIR a Chromium tree the engine never
+        # opens, return a non-zero count for it, and persist that count as
+        # "imported N cookies" on the profile.
+        #
+        # Refusing BEFORE the file picker is deliberate: asking an operator to
+        # choose a file and only then declining is a worse gesture than
+        # declining up front, and it cannot half-write anything.
+        refusal = self._cookie_engine_refusal(profile_name, "import")
+        if refusal is not None:
+            return refusal
         files = await self.refs.file_picker.pick_files(
             allow_multiple=False,
             allowed_extensions=["json"],
@@ -2713,12 +2728,69 @@ class App:
         self._log(f"[{profile_name}] imported {n} cookies from {fname}")
         return f"imported {status}"
 
+    def _cookie_engine_refusal(self, profile_name: str, verb: str) -> str | None:
+        """The refusal string for a cookie transfer this engine cannot use, or
+        ``None`` when the profile's engine is the one the store is built for.
+
+        THE COOKIE STORE IS CHROMIUM-SHAPED END TO END and, until this gate,
+        received no engine at all: ``import_cookies``/``export_cookies`` take a
+        bare ``profile_dir`` string. Both engines share one data dir
+        (``process.py`` computes it BEFORE branching on the engine), so nothing
+        downstream could tell the two apart. Two independent facts make the
+        Chromium path useless to Firefox -- the jar is ``cookies.sqlite`` at the
+        profile root rather than ``Default/Cookies``, and values are encrypted
+        with Chromium's v10/AES scheme, which Firefox would not read even at the
+        right path. Fixing only the path would produce a file the engine opens
+        and cannot decrypt, which is a worse failure than this one.
+
+        ⭐ THE ENGINE IS RESOLVED WITH :func:`effective_engine`, NOT the stored
+        ``profile.engine`` field. A profile can carry an incoherent pair (a
+        mobile Firefox record, say), which the coherence rules reconcile toward
+        chromium at launch. Reading the raw field would let this gate refuse a
+        profile that will in fact LAUNCH Chromium -- the refusal and the launch
+        must not answer the same question differently.
+
+        ⚠️ THE WORDING IS LOAD-BEARING, and this is the trap the ticket names.
+        ``dialogs/profile.py``'s handlers colour the result by SUBSTRING --
+        ``ok="imported" in msg.lower()`` and ``ok="exported" in msg.lower()`` --
+        so a refusal reading "cookies are not imported on Firefox profiles"
+        would render in the SUCCESS colour: the exact false affirmative this
+        ticket exists to remove, re-introduced by its own fix. Hence
+        "cookie import" / "cookie export" (the NOUN, which contains neither
+        past participle) and never "not imported"/"cannot be exported". The
+        guard test pins this so a later reword cannot silently re-break it.
+
+        Returns ``None`` for an unknown profile name rather than refusing: the
+        manager owns that error (``set_cookie_status`` already answers False),
+        and inventing a second, differently-worded not-found here would put two
+        answers in the tree for one question.
+        """
+        from ..services.browser.process import effective_engine
+
+        profile = self.pm.profiles.get(profile_name)
+        if profile is None:
+            return None
+        engine = effective_engine(profile)
+        if engine == "chromium":
+            return None
+        return (
+            f"cookie {verb} is unavailable for {engine} profiles — "
+            "the cookie store is Chromium-only"
+        )
+
     async def _export_cookies_file(self, profile_name: str) -> str | None:
         import json
 
         from ..services.cookie.store import export_cookies
 
         assert self.refs is not None
+        # Same gate, same reason -- see _import_cookies_file. Export off a
+        # Firefox profile reads a Chromium path that is absent (or holds only
+        # what a previous unrefused import wrongly wrote), so it returns [] and
+        # the old code logged "exported 0 cookies" as a success.
+        refusal = self._cookie_engine_refusal(profile_name, "export")
+        if refusal is not None:
+            return refusal
         path = await self.refs.file_picker.save_file(
             dialog_title=f"Export cookies from {profile_name}",
             file_name=f"{profile_name}-cookies.json",
