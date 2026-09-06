@@ -85,11 +85,121 @@ The exact inputs are also embedded in the artifact itself under `provenance`:
 | proxy | **none** | a proxy makes locale/timezone follow a geo lookup, and variance the network introduced would read exactly like variance the engine introduced. With no proxy the launcher pins `en-US` + `America/New_York` |
 | bookmarks | **explicitly cleared** (`[]`, not `None`) | `None` means "use the store's defaults", which would make the reading depend on the operator's bookmark store |
 | certificate | none | an mTLS session would add a terminator to the launch path |
+| `window_size` | `1280x800` device px | **PS-304.** The recorder writes this into the profile's `xulstore.json` before the launch, so the main-window geometry is an *input* to the recording rather than whatever default the engine chose for itself. See below |
 | realms | `window` **and** `worker` | a spoof that lands on the page but not inside a Web Worker is the historically load-bearing leak, and it is invisible unless the worker realm is read |
 
 The profile is constructed as a plain dataclass and is **never written to the
 profile store**, so the baseline identity cannot be edited by a human out from
 under the artifact.
+
+### Why the window geometry is pinned (PS-304)
+
+`window.innerSize` is not seed-derived and is not an identity vector — its own
+note in `probes.py` says *"Window chrome geometry; differs with a resized
+window, not a spoof change."* Nothing in the recording path used to fix it.
+`_seed_window_size` (`invisible_launch.py`) looks like it would, but it **cannot
+fire on Linux or macOS**: `_work_area()` returns `(0, 0)` off Windows and the
+helper bails on `if not (aw and ah)`. The CI gate runs `ubuntu-24.04` under
+`xvfb-run`, so the recorded geometry was simply the engine's own default.
+
+firefox-21 changed that default (1152 → 1280 CSS px) and every later build kept
+the new value, so `engine_gate compare` reported a moved probe on **every** bump
+from firefox-20 onwards — permanently, for no security reason, and beside two
+genuine `canvas.readback` findings. `engine_gate.py` states the cost in its own
+words: *"a gate that is always red is a gate people learn to ignore, which is
+worse than no gate."*
+
+`baseline._pin_recording_window` now writes a fixed `main-window` size into
+`DATA_DIR/<profile>/.invisible-profile/xulstore.json` — the engine's **inner**
+profile dir, which is the path `spawn_browser` hands the child — between the
+`fresh` wipe and the launch. `_seed_window_size` early-returns on an existing
+`xulstore.json`, so the shipped seeding path defers to the pin byte-for-byte and
+needed no change.
+
+⛔ **This blinds nothing.** The probe still reports what it reads and still
+diffs; a genuine re-roll of window geometry still moves it, which is exactly the
+property `behaviour_checks.py` protects when it refuses to solve the same
+transient with an ignore list. What changed is that both sides of an engine
+comparison are now sized by *us*, so a difference between them is attributable
+to the engine.
+
+The value is capped by `BASELINE_RESOLUTION`: a CSS `innerWidth` larger than
+`screen.width` is the #216 impossibility (no real un-maximized window is wider
+than its own screen), and `test_the_pinned_window_cannot_exceed_the_baselines_spoofed_screen`
+holds the invariant now that the pin pre-empts `_seed_window_size`'s own cap.
+
+### What moved in the PS-304 re-record, and why
+
+Re-recording is a deliberate act (see "When to re-record" below), so the diff is
+stated here rather than left to be reconstructed. **Three probes moved and none
+of them is a masking change**; every canvas, WebGL and font reading is
+byte-identical to the previous artifact.
+
+| Moved | Cause |
+|---|---|
+| `window.innerSize` (window realm) | **This ticket.** inner 1152x808 / outer 1166x927 → inner 1280x687 / outer 1294x806, i.e. the pin — measured, not predicted |
+| `stealth.apiPresence` → `Serial`, `navigator.serial` (both realms) | **The host, not the pin.** `function`/`object` → `undefined`/`undefined` |
+| `app_version` | routine: 3.0.2 → 3.1.0 |
+
+The WebSerial pair is the *already-documented* platform-gate movement — it is
+named in `ENV_SENSITIVE_PROBES` for exactly this, recorded under PS-314 when the
+flip ran the other way. It is attributed to the host rather than to the pin on
+evidence: a recording taken on this host **before any code change**, on the same
+`firefox-20` build, already differed from the committed artifact on precisely
+these two keys and on nothing else. The container simply does not expose
+WebSerial where the PS-314 host did.
+
+The pin's own effect was isolated by diffing that pre-change recording against a
+post-change one — same host, same engine build, same profile — and it is exactly
+one probe: `window.innerSize`. Nothing else moved.
+
+### The pin makes the recording reproducible — measured
+
+Two independent fresh recordings after the pin (each wiping the profile dir and
+launching a real browser under `xvfb-run`) produced the identical geometry —
+inner 1280x687, outer 1294x806 — and `diff_snapshots` over the two full
+snapshots reported **no differences** at all.
+
+### ⚠️ The `outerHeight − innerHeight` offset SURVIVED the pin
+
+PS-290 measured this offset at 119 against `_outer_size_override_script`'s own
+constant of 91 and could not explain the extra 28px. The pin was predicted to
+drive it to 0. **It did not, and that is reported rather than quietly dropped:**
+the offset is still exactly 119 after pinning, on both fresh runs.
+
+That is more informative than the predicted outcome, because moving the window
+turned the question into a controlled experiment. The inner height changed
+(808 → 687) and `outerHeight − 91` tracked it exactly (836 → 715), holding a
+**constant 28px** above the probe-time inner height on both geometries. A frozen
+number could not have tracked a change; a live recomputation could not have
+stayed 28 off. So the getter is capturing a real inner height that is 28px
+larger than the one the probe later reads — the window settles between the init
+script and the probe read.
+
+This also **settles the contested premise** in the ticket's own brief, live and
+on the accessor's signature rather than on its value:
+
+```
+Object.getOwnPropertyDescriptor(window,'outerWidth').get.toString()
+  -> "function outerWidth() {\n    [native code]\n}"
+  -> .name === "get outerWidth"
+live: innerWidth 1152, outerWidth 1166, screen.width 1920
+```
+
+`outerWidth` reports **inner + 14**, *not* the spoofed screen width of 1920.
+Under the competing account (the spoof never ran on fx-20) the native accessor
+would have reported 1920 and produced the `inner < outer == screen` tell the
+override exists to remove. It reported 1166. **The spoof ran.** The
+`[native code]` source text is the cloak's own output — `_native_cloak_js`
+rewrites registered functions' `toString`, and the `.name` of `"get outerWidth"`
+is what the cloak sets. So this is instrument staleness, not a masking defect,
+and the memory recording the opposite reading (`9f50f0f4`) is wrong on this
+point.
+
+The staleness is a **separate, pre-existing defect** and is deliberately not
+fixed here: a page that resizes its window reads a stale `outerWidth`. It is
+untouched by the pin in either direction — 119 before, 119 after — so it is not
+a regression this change introduces.
 
 ## Verification performed when this landed
 

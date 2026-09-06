@@ -1,5 +1,5 @@
 {
-  "app_version": "3.0.2",
+  "app_version": "3.1.0",
   "engine": "firefox",
   "engine_build": "firefox-20",
   "probes": {
@@ -235,7 +235,7 @@
           "OffscreenCanvas": "function",
           "PaymentRequest": "undefined",
           "Scheduler": "function",
-          "Serial": "function",
+          "Serial": "undefined",
           "ServiceWorkerRegistration": "function",
           "SharedWorker": "function",
           "SpeechSynthesis": "function",
@@ -255,7 +255,7 @@
           "navigator.permissions": "object",
           "navigator.presentation": "undefined",
           "navigator.scheduling": "undefined",
-          "navigator.serial": "object",
+          "navigator.serial": "undefined",
           "navigator.serviceWorker": "object",
           "navigator.share": "undefined",
           "navigator.storage": "object",
@@ -358,10 +358,10 @@
       },
       "window.innerSize": {
         "value": {
-          "innerHeight": 808,
-          "innerWidth": 1152,
-          "outerHeight": 927,
-          "outerWidth": 1166
+          "innerHeight": 687,
+          "innerWidth": 1280,
+          "outerHeight": 806,
+          "outerWidth": 1294
         }
       }
     },
@@ -534,7 +534,7 @@
           "OffscreenCanvas": "function",
           "PaymentRequest": "undefined",
           "Scheduler": "function",
-          "Serial": "function",
+          "Serial": "undefined",
           "ServiceWorkerRegistration": "function",
           "SharedWorker": "undefined",
           "SpeechSynthesis": "undefined",
@@ -554,7 +554,7 @@
           "navigator.permissions": "object",
           "navigator.presentation": "undefined",
           "navigator.scheduling": "undefined",
-          "navigator.serial": "object",
+          "navigator.serial": "undefined",
           "navigator.serviceWorker": "object",
           "navigator.share": "undefined",
           "navigator.storage": "object",
@@ -666,7 +666,11 @@
       "worker"
     ],
     "resolution": "1920x1080",
-    "search_engine": "duckduckgo"
+    "search_engine": "duckduckgo",
+    "window_size": [
+      1280,
+      800
+    ]
   },
   "realms": [
     "window",
