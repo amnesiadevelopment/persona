@@ -40,6 +40,11 @@ def _launch_cfg(monkeypatch, tmp_path, calls):
     )
     monkeypatch.setattr(process, "ProxyStore", _Store)
     monkeypatch.setattr(process, "BookmarkStore", _Bookmarks)
+    # PS-356: stub the engine version readable — see the note above.
+    monkeypatch.setattr(
+        process, "installed_chromium_version",
+        lambda: process.ChromiumVersion(full="152.0.7977.75"),
+    )
     profile = Profile(name="seed-check", engine="firefox")
     process._spawn_invisible(profile, str(tmp_path))
     return profile, captured[0]
@@ -98,6 +103,11 @@ def test_ff_cert_starts_terminator_sets_proxy_and_ca(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(process, "ProxyStore", _Store)
     monkeypatch.setattr(process, "BookmarkStore", _Bookmarks)
+    # PS-356: stub the engine version readable — see the note above.
+    monkeypatch.setattr(
+        process, "installed_chromium_version",
+        lambda: process.ChromiumVersion(full="152.0.7977.75"),
+    )
     monkeypatch.setattr(process, "CertStore", _CertStore)
     import src.services.cert.manager as cm
     monkeypatch.setattr(cm, "start_cert_session", fake_start)
@@ -175,6 +185,11 @@ def test_firefox_refuses_when_the_proxy_has_no_geography(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(process, "ProxyStore", _StoreWithGeolessProxy)
     monkeypatch.setattr(process, "BookmarkStore", _Bookmarks)
+    # PS-356: stub the engine version readable — see the note above.
+    monkeypatch.setattr(
+        process, "installed_chromium_version",
+        lambda: process.ChromiumVersion(full="152.0.7977.75"),
+    )
     # Patch on launch_policy, not process: _proxy_timezone lives there too and
     # resolves _host_timezone in its OWN namespace, so a patch on the process
     # re-export alias is silently bypassed (real host zone would be read).
@@ -204,6 +219,14 @@ def test_chromium_refuses_when_the_proxy_has_no_geography(monkeypatch, tmp_path)
     monkeypatch.setattr(process, "ProxyStore", _StoreWithGeolessProxy)
     monkeypatch.setattr(process, "BookmarkStore", _Bookmarks)
     monkeypatch.setattr(process, "write_window_entry", lambda name: None)
+    # PS-356: a Chromium launch now refuses when the installed engine's
+    # version cannot be read (omitting --fingerprint-brand-version makes
+    # the engine advertise its hardcoded 144.x fallback, not "no claim").
+    # This harness tests something else, so the version is stubbed readable.
+    monkeypatch.setattr(
+        process, "installed_chromium_version",
+        lambda: process.ChromiumVersion(full="152.0.7977.75"),
+    )
     monkeypatch.setattr(process._platform, "IS_LINUX", False)
     # Patch on launch_policy, not process: _proxy_timezone lives there too and
     # resolves _host_timezone in its OWN namespace, so a patch on the process
@@ -232,6 +255,11 @@ def test_chromium_keeps_window_visible_so_overlays_render(monkeypatch, tmp_path)
     monkeypatch.setattr(process, "DATA_DIR", str(tmp_path))
     monkeypatch.setattr(process, "ProxyStore", _Store)
     monkeypatch.setattr(process, "BookmarkStore", _Bookmarks)
+    # PS-356: stub the engine version readable — see the note above.
+    monkeypatch.setattr(
+        process, "installed_chromium_version",
+        lambda: process.ChromiumVersion(full="152.0.7977.75"),
+    )
     monkeypatch.setattr(process.subprocess, "Popen", _FakePopen)
     process.spawn_browser(Profile(name="vis-chromium"))
     args = captured["args"]
@@ -260,6 +288,14 @@ def test_linux_chromium_env_keeps_system_fontconfig(monkeypatch, tmp_path):
     monkeypatch.setattr(process, "ProxyStore", _Store)
     monkeypatch.setattr(process, "BookmarkStore", _Bookmarks)
     monkeypatch.setattr(process, "write_window_entry", lambda name: None)
+    # PS-356: a Chromium launch now refuses when the installed engine's
+    # version cannot be read (omitting --fingerprint-brand-version makes
+    # the engine advertise its hardcoded 144.x fallback, not "no claim").
+    # This harness tests something else, so the version is stubbed readable.
+    monkeypatch.setattr(
+        process, "installed_chromium_version",
+        lambda: process.ChromiumVersion(full="152.0.7977.75"),
+    )
     monkeypatch.setattr(process._platform, "IS_LINUX", True)
     monkeypatch.setattr(process.subprocess, "Popen", _FakePopen)
     monkeypatch.delenv("FONTCONFIG_FILE", raising=False)
@@ -284,6 +320,14 @@ def _spawn_chromium_args(monkeypatch, tmp_path, profile, linux=False, store=_Sto
     monkeypatch.setattr(process, "ProxyStore", store)
     monkeypatch.setattr(process, "BookmarkStore", _Bookmarks)
     monkeypatch.setattr(process, "write_window_entry", lambda name: None)
+    # PS-356: a Chromium launch now refuses when the installed engine's
+    # version cannot be read (omitting --fingerprint-brand-version makes
+    # the engine advertise its hardcoded 144.x fallback, not "no claim").
+    # This harness tests something else, so the version is stubbed readable.
+    monkeypatch.setattr(
+        process, "installed_chromium_version",
+        lambda: process.ChromiumVersion(full="152.0.7977.75"),
+    )
     monkeypatch.setattr(process.subprocess, "Popen", _FakePopen)
     # Pin IS_LINUX to the case under test regardless of the host running the
     # suite — a non-linux case left the real platform in place, so the VA-API
@@ -484,6 +528,14 @@ def test_failed_launch_stops_bridge_no_orphan(monkeypatch, tmp_path):
     monkeypatch.setattr(process, "ProxyStore", _StoreWithAuthProxy)
     monkeypatch.setattr(process, "BookmarkStore", _Bookmarks)
     monkeypatch.setattr(process, "write_window_entry", lambda name: None)
+    # PS-356: a Chromium launch now refuses when the installed engine's
+    # version cannot be read (omitting --fingerprint-brand-version makes
+    # the engine advertise its hardcoded 144.x fallback, not "no claim").
+    # This harness tests something else, so the version is stubbed readable.
+    monkeypatch.setattr(
+        process, "installed_chromium_version",
+        lambda: process.ChromiumVersion(full="152.0.7977.75"),
+    )
     monkeypatch.setattr(process, "ProxyBridge", _FakeBridge)
     monkeypatch.setattr(process.subprocess, "Popen", _boom)
     monkeypatch.setattr(process._platform, "IS_LINUX", False)
@@ -529,6 +581,14 @@ def test_failed_launch_stops_cert_terminator_before_popen(monkeypatch, tmp_path)
     monkeypatch.setattr(process, "ProxyStore", _Store)
     monkeypatch.setattr(process, "BookmarkStore", _Bookmarks)
     monkeypatch.setattr(process, "write_window_entry", lambda name: None)
+    # PS-356: a Chromium launch now refuses when the installed engine's
+    # version cannot be read (omitting --fingerprint-brand-version makes
+    # the engine advertise its hardcoded 144.x fallback, not "no claim").
+    # This harness tests something else, so the version is stubbed readable.
+    monkeypatch.setattr(
+        process, "installed_chromium_version",
+        lambda: process.ChromiumVersion(full="152.0.7977.75"),
+    )
     monkeypatch.setattr(process, "_cert_session_for", lambda *a, **k: _CertSession())
     monkeypatch.setattr(process._platform, "IS_LINUX", False)
     # make an extension build (after the terminator started) blow up
@@ -604,6 +664,11 @@ def test_chromium_no_proxy_timezone_matches_en_us_language(monkeypatch, tmp_path
     monkeypatch.setattr(process, "DATA_DIR", str(tmp_path))
     monkeypatch.setattr(process, "ProxyStore", _Store)
     monkeypatch.setattr(process, "BookmarkStore", _Bookmarks)
+    # PS-356: stub the engine version readable — see the note above.
+    monkeypatch.setattr(
+        process, "installed_chromium_version",
+        lambda: process.ChromiumVersion(full="152.0.7977.75"),
+    )
     # Patch on launch_policy, not process: _proxy_timezone lives there too and
     # resolves _host_timezone in its OWN namespace, so a patch on the process
     # re-export alias is silently bypassed (real host zone would be read).
@@ -642,6 +707,14 @@ def test_assigned_but_unresolvable_proxy_fails_closed(monkeypatch, tmp_path):
     monkeypatch.setattr(process, "ProxyStore", _StoreNoResolve)
     monkeypatch.setattr(process, "BookmarkStore", _Bookmarks)
     monkeypatch.setattr(process, "write_window_entry", lambda name: None)
+    # PS-356: a Chromium launch now refuses when the installed engine's
+    # version cannot be read (omitting --fingerprint-brand-version makes
+    # the engine advertise its hardcoded 144.x fallback, not "no claim").
+    # This harness tests something else, so the version is stubbed readable.
+    monkeypatch.setattr(
+        process, "installed_chromium_version",
+        lambda: process.ChromiumVersion(full="152.0.7977.75"),
+    )
     monkeypatch.setattr(process._platform, "IS_LINUX", False)
     monkeypatch.setattr(process.subprocess, "Popen",
                         lambda *a, **k: spawned.append(True))
@@ -680,6 +753,14 @@ def test_named_proxy_with_unparseable_url_fails_closed(monkeypatch, tmp_path):
     monkeypatch.setattr(process, "ProxyStore", _StoreBrokenUrl)
     monkeypatch.setattr(process, "BookmarkStore", _Bookmarks)
     monkeypatch.setattr(process, "write_window_entry", lambda name: None)
+    # PS-356: a Chromium launch now refuses when the installed engine's
+    # version cannot be read (omitting --fingerprint-brand-version makes
+    # the engine advertise its hardcoded 144.x fallback, not "no claim").
+    # This harness tests something else, so the version is stubbed readable.
+    monkeypatch.setattr(
+        process, "installed_chromium_version",
+        lambda: process.ChromiumVersion(full="152.0.7977.75"),
+    )
     monkeypatch.setattr(process._platform, "IS_LINUX", False)
     monkeypatch.setattr(process.subprocess, "Popen",
                         lambda *a, **k: spawned.append(True))
@@ -708,6 +789,14 @@ def test_no_proxy_profile_still_launches(monkeypatch, tmp_path):
     monkeypatch.setattr(process, "ProxyStore", _Store)
     monkeypatch.setattr(process, "BookmarkStore", _Bookmarks)
     monkeypatch.setattr(process, "write_window_entry", lambda name: None)
+    # PS-356: a Chromium launch now refuses when the installed engine's
+    # version cannot be read (omitting --fingerprint-brand-version makes
+    # the engine advertise its hardcoded 144.x fallback, not "no claim").
+    # This harness tests something else, so the version is stubbed readable.
+    monkeypatch.setattr(
+        process, "installed_chromium_version",
+        lambda: process.ChromiumVersion(full="152.0.7977.75"),
+    )
     monkeypatch.setattr(process._platform, "IS_LINUX", False)
 
     class _Proc:

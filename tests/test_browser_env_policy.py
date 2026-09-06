@@ -82,6 +82,14 @@ def _spawn_chromium(monkeypatch, tmp_path, profile, linux=False):
     monkeypatch.setattr(process, "ProxyStore", _Store)
     monkeypatch.setattr(process, "BookmarkStore", _Bookmarks)
     monkeypatch.setattr(process, "write_window_entry", lambda name: None)
+    # PS-356: a Chromium launch now refuses when the installed engine's
+    # version cannot be read (omitting --fingerprint-brand-version makes
+    # the engine advertise its hardcoded 144.x fallback, not "no claim").
+    # This harness tests something else, so the version is stubbed readable.
+    monkeypatch.setattr(
+        process, "installed_chromium_version",
+        lambda: process.ChromiumVersion(full="152.0.7977.75"),
+    )
     monkeypatch.setattr(process.subprocess, "Popen", _FakePopen)
     monkeypatch.setattr(process._platform, "IS_LINUX", bool(linux))
     process.spawn_browser(profile)
