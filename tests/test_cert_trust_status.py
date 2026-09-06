@@ -15,6 +15,7 @@ import threading
 import pytest
 
 import src.services.browser.launcher as launcher_mod
+from src.core.strings import CHROMIUM_ENGINE_NAME
 from src.models.profile import Profile
 from src.services.browser.launcher import (
     BrowserLauncher,
@@ -26,10 +27,18 @@ from src.services.profile.manager import ProfileManager
 # (:2305 / :2312 / :2316). AC6 freezes these: if a change to the engine makes a
 # literal below stop matching, the capture has silently broken and these tests
 # are the alarm — do not "fix" them by loosening the match.
+#
+# ⚠️ PS-318: the UNSUPPORTED message now INTERPOLATES our Chromium engine's
+# display name rather than typing "Chromium", because it is operator-facing text
+# and an operator must read ONE name for that engine everywhere. The literal is
+# therefore built here the same way the engine builds it — sourced from the same
+# constant, NOT retyped — so this stays a real contract: rename the constant and
+# both sides move together, but change the SENTENCE in the engine and this still
+# fails loudly, which is the property AC6 is protecting.
 MSG_TRUSTED = "MTLS_CA_TRUSTED"
 MSG_UNSUPPORTED = (
-    "MTLS_UNSUPPORTED: Firefox certificates aren't available on this "
-    "OS yet (use the Chromium engine for this profile)"
+    "MTLS_UNSUPPORTED: Firefox certificates aren't available on "
+    f"this OS yet (use the {CHROMIUM_ENGINE_NAME} engine for this profile)"
 )
 MSG_FAILED = "MTLS_CA_IMPORT_FAILED: opening without certificate trust"
 
@@ -49,7 +58,16 @@ def test_engine_still_emits_the_three_messages_this_feature_binds_to():
         launcher_mod.__file__
     ).parent.joinpath("invisible_launch.py").read_text(encoding="utf-8")
     assert 'emit("MTLS_CA_TRUSTED")' in src_text
-    assert "MTLS_UNSUPPORTED: Firefox certificates aren't available on this " in src_text
+    # The invariant part of the sentence — everything up to the interpolated
+    # engine name. Asserted as the PREFIX rather than the whole line because the
+    # name now arrives at runtime; the suffix is asserted through the real
+    # mapping below, which exercises the assembled string end to end.
+    assert "MTLS_UNSUPPORTED: Firefox certificates aren't available on " in src_text
+    # The engine name is SOURCED, not typed: assert the interpolation call is
+    # what builds the rest of the sentence. This is strictly stronger than
+    # matching a prose fragment — it pins the PS-318 property (one name,
+    # sourced from one constant) as well as the message's continued existence.
+    assert "engine_display_name()} engine for this " in src_text
     assert 'emit("MTLS_CA_IMPORT_FAILED: opening without certificate trust")' in src_text
 
 
