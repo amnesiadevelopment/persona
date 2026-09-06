@@ -2760,6 +2760,19 @@ class App:
         past participle) and never "not imported"/"cannot be exported". The
         guard test pins this so a later reword cannot silently re-break it.
 
+        ⚠️ THE ENGINE NAME IS SOURCED, NOT TYPED. This is operator-facing text,
+        so the Chromium engine must be named by ``CHROMIUM_ENGINE_NAME`` rather
+        than spelled out -- PS-318's rule, enforced by
+        ``tests/test_ps224_engine_name.py::test_no_operator_string_literal_TYPES_the_engine_name_instead_of_SOURCING_it``.
+        Round 1 of this gate typed "Chromium-only" and reddened that ratchet: our
+        engine is *Personium* to an operator, so the typed spelling also showed a
+        product name we do not use. Note the value is safe to interpolate HERE
+        precisely because this is UI text -- the same name must never reach an
+        argv, a UA, or an injected extension, which is what the PS-224 import
+        fence over ``services/browser`` and ``services/engine`` protects.
+        Re-checked after the reword: "Personium" contains neither ``imported``
+        nor ``exported``, so the colour property above is preserved.
+
         Returns ``None`` for an unknown profile name rather than refusing: the
         manager owns that error (``set_cookie_status`` already answers False),
         and inventing a second, differently-worded not-found here would put two
@@ -2775,7 +2788,7 @@ class App:
             return None
         return (
             f"cookie {verb} is unavailable for {engine} profiles — "
-            "the cookie store is Chromium-only"
+            f"the cookie store is {CHROMIUM_ENGINE_NAME}-only"
         )
 
     async def _export_cookies_file(self, profile_name: str) -> str | None:
