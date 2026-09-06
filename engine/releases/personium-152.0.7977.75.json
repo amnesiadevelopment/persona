@@ -1,0 +1,333 @@
+{
+  "schema": "persona.engine.release-provenance/1",
+  "tag": "personium-152.0.7977.75",
+  "release_url": "https://github.com/amnesiadevelopment/persona/releases/tag/personium-152.0.7977.75",
+  "published_at": "2026-09-06T11:30:58Z",
+  "prerelease": true,
+  "recorded": {
+    "by": "PS-343",
+    "at": "2026-09-06",
+    "repo_commit": "f5b17437e1536b772aca7934c4121e83a663c0f3",
+    "method": "RETROACTIVE. This release was already published when the record was written. Every field below was either re-derived from the downloaded assets themselves, read out of this repository, or recorded as unknown. No field was inferred from another.",
+    "verifier": "scripts/ps343_verify_release_provenance.py"
+  },
+  "base": {
+    "project": {
+      "value": "ungoogled-chromium-portablelinux",
+      "confidence": "from_repository",
+      "note": "The engine is ungoogled-chromium plus our 16 fingerprint patches — see PS-18 and engine/patches/fingerprint/REBASING.md."
+    },
+    "ungoogled_tag": {
+      "value": "152.0.7977.75-1",
+      "confidence": "derived_from_artifact",
+      "note": "Re-derived from the Linux AppImage's own .desktop (X-AppImage-Version), which carries the PACKAGING revision (-1) that the bare Chromium version does not. Not derivable from the Windows or macOS assets — neither carries the packaging tag."
+    },
+    "chromium_version": {
+      "value": "152.0.7977.75",
+      "confidence": "derived_from_artifact",
+      "note": "The Linux and Windows assets. NOT the macOS one — see assets[].derived.bundle_short_version and discrepancies[] below."
+    },
+    "ungoogled_revision": {
+      "value": null,
+      "confidence": "unknown",
+      "note": "revision.txt is written into the build tree by upstream's prepare step and is not carried in any shipped asset. Nothing in this repository built these binaries, so there is no in-repo record of it either."
+    }
+  },
+  "patch_set": {
+    "count": {
+      "value": 16,
+      "confidence": "from_repository"
+    },
+    "source": {
+      "value": "fingerprint-chromium, rebased onto ungoogled 152.0.7977.75-1 under PS-299 and compile-fixed under PS-309",
+      "confidence": "from_repository"
+    },
+    "repo_commit": {
+      "value": "8c4b2523ae07df4ef1115554ad7064df472e602e",
+      "confidence": "from_repository",
+      "note": "The most recent commit touching engine/patches/fingerprint/ at or before this release. THIS IS A STATEMENT ABOUT THE REPOSITORY, NOT AN ATTESTATION ABOUT THE BUILD: nothing in this repo built these assets, so we cannot say the tree at this commit is the tree that was compiled. What IS attested is the switch list below, which was re-derived from all three shipped binaries."
+    },
+    "patches": {
+      "value": [
+        {
+          "file": "engine/patches/fingerprint/000-add-fingerprint-switches.patch",
+          "sha256": "d68d8f971bc7882a38512ade7be5f3d3b5871bf04daec933a31687965e64cb46"
+        },
+        {
+          "file": "engine/patches/fingerprint/001-disable-runtime.enable.patch",
+          "sha256": "e1491f02e109389ae493c28584316f249a2afff0d81cb553b5088102ca20e9a9"
+        },
+        {
+          "file": "engine/patches/fingerprint/002-user-agent-fingerprint.patch",
+          "sha256": "a775179c267cb8541696b2ebac796448133853e8fda19fc078f3e0914183bbb6"
+        },
+        {
+          "file": "engine/patches/fingerprint/003-audio-fingerprint.patch",
+          "sha256": "4463ff1fc0fa2d75ed1d5ca9421ae81a222109e81f9bcdd1b2b2823493064172"
+        },
+        {
+          "file": "engine/patches/fingerprint/005-hardware-concurrency-fingerprint.patch",
+          "sha256": "dfab43faf99b95439d914fda4122ae83129001093a3c209207e16e18b4960f80"
+        },
+        {
+          "file": "engine/patches/fingerprint/006-font-fingerprint.patch",
+          "sha256": "3081e849f26a0d2d5ec83c0b51f60bceff12640d286be87bf1b1a123060bebb2"
+        },
+        {
+          "file": "engine/patches/fingerprint/007-shadow-root.patch",
+          "sha256": "4f49b4bdb6377f4bcdc3d4b7b30bebe2f23a193f1e9f10a05cdebc5196316daf"
+        },
+        {
+          "file": "engine/patches/fingerprint/009-webdriver.patch",
+          "sha256": "242b88b7272d8e1272851448bfbb68690cbd8f64f4b4e6cd0eecdd7ec2951a67"
+        },
+        {
+          "file": "engine/patches/fingerprint/010-headless.patch",
+          "sha256": "ca4a1c9cd2d8aa498a138a2b8e1e18be900a610977bd99d1936f103991d679da"
+        },
+        {
+          "file": "engine/patches/fingerprint/011-gpu-info.patch",
+          "sha256": "75a6511d0d46c9cffb1f5c975752df4e3454b187f7e3768131c65213a287d073"
+        },
+        {
+          "file": "engine/patches/fingerprint/012-canvas-get-image-data.patch",
+          "sha256": "cbf0a15b2c2b443bbd7efae445a4ac360bc1fdb007db6f3399b058eac2ed98fa"
+        },
+        {
+          "file": "engine/patches/fingerprint/013-canvas-toDataURL.patch",
+          "sha256": "aef18b68d9199ac288087da2f18ee288183db5d6680fc8c2917a959a781cfb47"
+        },
+        {
+          "file": "engine/patches/fingerprint/014-client-rects.patch",
+          "sha256": "9b319ef42175e8df863ab14a2c2d8a9cd41111449dc2bfabed19f2934e4bd15a"
+        },
+        {
+          "file": "engine/patches/fingerprint/015-canvas-measure-text.patch",
+          "sha256": "773a27ced787aec2c67be1cbd50427558931fee217ef2aa6a93782df2fa70c3e"
+        },
+        {
+          "file": "engine/patches/fingerprint/016-webgl-readPixels.patch",
+          "sha256": "1781b85f6e0456805229670656482a4533eb3d7127e74d20f1c880d38a9a19f2"
+        },
+        {
+          "file": "engine/patches/fingerprint/018-timezone.patch",
+          "sha256": "3e2929e5ecf0727c80f2c1b120fddfd4711f9725274cea1df569c0223d913593"
+        }
+      ],
+      "confidence": "from_repository",
+      "note": "Per-file sha256 of the patch set as it stands at recorded.repo_commit. Lets a future reader tell an unchanged patch set from a drifted one; it does not by itself prove these are the patches that were compiled."
+    },
+    "switches_introduced": {
+      "value": [
+        {
+          "value": "fingerprint",
+          "confidence": "derived_from_artifact"
+        },
+        {
+          "value": "fingerprint-brand",
+          "confidence": "derived_from_artifact"
+        },
+        {
+          "value": "fingerprint-brand-version",
+          "confidence": "derived_from_artifact"
+        },
+        {
+          "value": "fingerprint-device-scale-factor",
+          "confidence": "derived_from_artifact"
+        },
+        {
+          "value": "fingerprint-hardware-concurrency",
+          "confidence": "derived_from_artifact"
+        },
+        {
+          "value": "fingerprint-location",
+          "confidence": "derived_from_artifact"
+        },
+        {
+          "value": "fingerprint-platform",
+          "confidence": "derived_from_artifact"
+        },
+        {
+          "value": "fingerprint-platform-version",
+          "confidence": "derived_from_artifact"
+        },
+        {
+          "value": "fingerprint-screen-height",
+          "confidence": "derived_from_artifact"
+        },
+        {
+          "value": "fingerprint-screen-width",
+          "confidence": "derived_from_artifact"
+        },
+        {
+          "value": "fingerprinting-canvas-image-data-noise",
+          "confidence": "derived_from_artifact"
+        }
+      ],
+      "confidence": "derived_from_artifact",
+      "note": "The command-line switches 000-add-fingerprint-switches.patch declares. All eleven were found in the shipped machine code of ALL THREE assets — this is the load-bearing content-level link between the patch set in this repo and the binaries that were published."
+    }
+  },
+  "build": {
+    "produced_by": {
+      "value": null,
+      "confidence": "unknown",
+      "note": "No workflow in this repository produced these assets. RELEASING.md states plainly that building and packaging the engine artifacts is not automated. Who built them, on what host, from what tree, is not established — and is recorded as unknown rather than guessed."
+    },
+    "workflow_run": {
+      "value": null,
+      "confidence": "unknown"
+    },
+    "host": {
+      "value": null,
+      "confidence": "unknown"
+    },
+    "toolchain": {
+      "value": null,
+      "confidence": "unknown"
+    },
+    "reproducible": {
+      "value": false,
+      "confidence": "from_repository",
+      "note": "There is no build recipe in this repository that reproduces these bytes. scripts/ps218_build.sh builds a TRIAL tree on a self-hosted runner; it did not produce these assets and its records expire after 30 days."
+    }
+  },
+  "assets": [
+    {
+      "name": "personium-152.0.7977.75-linux-x86_64.AppImage",
+      "os": "linux",
+      "arch": "x86_64",
+      "format": "linux-appimage",
+      "size_bytes": 202193400,
+      "sha256": "6ddb7bbea0a2063b7a3618e6b5d4ebc96301cd80f8b0d6eae486af46a30bb4c3",
+      "digest_source": "GitHub release API `digest` field — the same value src/services/engine/updater.py verifies a download against.",
+      "derived": {
+        "appimage_version": {
+          "value": "152.0.7977.75-1",
+          "confidence": "derived_from_artifact",
+          "note": "X-AppImage-Version from the extracted .desktop."
+        },
+        "fingerprint_switches_present": {
+          "value": [
+            "fingerprint",
+            "fingerprint-brand",
+            "fingerprint-brand-version",
+            "fingerprint-device-scale-factor",
+            "fingerprint-hardware-concurrency",
+            "fingerprint-location",
+            "fingerprint-platform",
+            "fingerprint-platform-version",
+            "fingerprint-screen-height",
+            "fingerprint-screen-width",
+            "fingerprinting-canvas-image-data-noise"
+          ],
+          "confidence": "derived_from_artifact",
+          "note": "All eleven found in the extracted opt/ungoogled-chromium/chrome."
+        }
+      },
+      "execution": {
+        "executed": true,
+        "note": "THE BINARY WAS RUN, not only hashed. `chrome --version` printed 'Chromium 152.0.7977.75'. A headless page read navigator.hardwareConcurrency as 7 under --fingerprint-hardware-concurrency=7 on an 8-core host, and as 8 with the switch absent — so the patch layer is not merely present in the file, it is LIVE in the shipped build. Separately, canvas measureText returned NEGATIVE widths under --fingerprint (e.g. -2.2270e-5 where the unpatched run gives 3.8664e+1), reproducing the PS-301 patch-015 defect in the SHIPPED engine rather than only in a trial build."
+      }
+    },
+    {
+      "name": "personium-152.0.7977.75-windows-x86_64.zip",
+      "os": "windows",
+      "arch": "x86_64",
+      "format": "windows-zip",
+      "size_bytes": 197559435,
+      "sha256": "997c72754c3cedc94bca4ebb7dc5337e3f5c65d02bbb109f8ab25e00beaa5259",
+      "digest_source": "GitHub release API `digest` field.",
+      "derived": {
+        "version_dir": {
+          "value": "152.0.7977.75",
+          "confidence": "derived_from_artifact",
+          "note": "The Chrome-bin/<version>/ directory inside the zip."
+        },
+        "manifest_version": {
+          "value": "152.0.7977.75",
+          "confidence": "derived_from_artifact",
+          "note": "assemblyIdentity/@version in Chrome-bin/152.0.7977.75/152.0.7977.75.manifest — a second, independent statement of the version inside the same archive."
+        },
+        "fingerprint_switches_present": {
+          "value": [
+            "fingerprint",
+            "fingerprint-brand",
+            "fingerprint-brand-version",
+            "fingerprint-device-scale-factor",
+            "fingerprint-hardware-concurrency",
+            "fingerprint-location",
+            "fingerprint-platform",
+            "fingerprint-platform-version",
+            "fingerprint-screen-height",
+            "fingerprint-screen-width",
+            "fingerprinting-canvas-image-data-noise"
+          ],
+          "confidence": "derived_from_artifact",
+          "note": "All eleven found in Chrome-bin/152.0.7977.75/chrome.dll."
+        }
+      },
+      "execution": {
+        "executed": false,
+        "note": "NOT executed. This record was produced on Linux and no Windows host was available. The switch list under `derived` is a CONTENT check on the shipped chrome.dll, which is strictly weaker than execution: it establishes that the patched strings are in the binary, not that the code behind them runs."
+      }
+    },
+    {
+      "name": "personium-152.0.7977.75-macos-arm64.dmg",
+      "os": "macos",
+      "arch": "arm64",
+      "format": "macos-dmg",
+      "size_bytes": 185613026,
+      "sha256": "591572b344dd9cb033774f901a4effd282ae344a268963c19d4c1f0a3ef370bb",
+      "digest_source": "GitHub release API `digest` field.",
+      "derived": {
+        "bundle_short_version": {
+          "value": "152.0.7977.64",
+          "confidence": "derived_from_artifact",
+          "note": "⚠️ CFBundleShortVersionString of the org.chromium.Chromium browser bundle inside the image. THIS DOES NOT MATCH THE RELEASE TAG. See discrepancies[0]."
+        },
+        "fingerprint_switches_present": {
+          "value": [
+            "fingerprint",
+            "fingerprint-brand",
+            "fingerprint-brand-version",
+            "fingerprint-device-scale-factor",
+            "fingerprint-hardware-concurrency",
+            "fingerprint-location",
+            "fingerprint-platform",
+            "fingerprint-platform-version",
+            "fingerprint-screen-height",
+            "fingerprint-screen-width",
+            "fingerprinting-canvas-image-data-noise"
+          ],
+          "confidence": "derived_from_artifact",
+          "note": "All eleven found in the decompressed APFS image."
+        }
+      },
+      "execution": {
+        "executed": false,
+        "note": "NOT executed. No macOS host was available, and an arm64 binary cannot run on the x86_64 Linux box this record was produced on."
+      }
+    }
+  ],
+  "discrepancies": [
+    {
+      "id": "macos-version-mismatch",
+      "severity": "high",
+      "asset": "personium-152.0.7977.75-macos-arm64.dmg",
+      "claim": "The macOS asset is named and tagged 152.0.7977.75 and contains 152.0.7977.64.",
+      "evidence": "The browser bundle's CFBundleShortVersionString reads 152.0.7977.64, and 7977.64 is the ONLY 7977.x version string anywhere in the 457 MB decompressed APFS image — there is no occurrence of 7977.75 in it at all. Measured, not reported.",
+      "consequence": "An operator on macOS is running a build one upstream point release behind what the tag says. The engine updater records and compares TAGS, so a machine on this asset believes it is on .75. Any security claim resting on '.75' does not hold for macOS.",
+      "resolution": "Not resolved by this ticket, which records provenance rather than rebuilds engines. Recorded here so it cannot be lost, and so the next macOS engine release is cut knowingly."
+    },
+    {
+      "id": "no-build-attestation",
+      "severity": "high",
+      "asset": "all three",
+      "claim": "Nothing in this repository built any of these assets, so no field under build{} can be established.",
+      "evidence": "RELEASING.md: 'Building and packaging the engine artifacts is not automated yet.' No workflow in .github/workflows produces an engine asset; engine-trial-build.yml builds a trial tree and retains its records for 30 days.",
+      "consequence": "The patch-set link is established at the level of CONTENT (all eleven of our switches are in all three binaries) and NOT at the level of a build attestation. A reader may conclude these binaries carry our patch layer; a reader may NOT conclude they were built from this exact tree.",
+      "resolution": "Closing this needs an automated engine build that emits its own manifest into the release. Out of scope here."
+    }
+  ]
+}
