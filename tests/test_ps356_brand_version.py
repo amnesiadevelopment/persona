@@ -1,4 +1,5 @@
-"""PS-356: the Client Hints version must be the engine's, and must REFUSE.
+"""PS-356: the Client Hints version must be the engine's — and when it cannot be
+read, the flag is SKIPPED rather than refused.
 
 THE DEFECT, IN ONE SENTENCE
 ──────────────────────────
@@ -15,6 +16,26 @@ while its reduced user agent said **152**. Three independent checkers read that
 as a lie — pixelscan reports *"masking detected"*, which is a positive
 identification that this is a masking tool rather than a lost point.
 
+⭐ THE UNREADABLE CASE: SKIP, NOT REFUSE (owner ruling, 2026-09-06)
+──────────────────────────────────────────────────────────────────
+An earlier round of this ticket failed CLOSED here, mirroring
+`_mobile_chromium_version`. That was REVERSED, and the reasoning is worth
+keeping because the two arms look inconsistent unless you know why:
+
+An absent `version.txt` is a REACHABLE TRANSIENT STATE — the error's own
+docstring says so — which a profile launched mid-update sees. Failing closed
+converts that self-healing condition into "no Chromium profile launches at all"
+for ~99% of launches.
+
+And the skip is SAFE ON THIS ARM SPECIFICALLY: with no flag, the engine answers
+all three shapes from its own built-in default, so UA / brands / uaFullVersion
+still agree WITH EACH OTHER. The tell this ticket closes is the DISAGREEMENT,
+and skipping does not reintroduce it — the claim is merely less current. On the
+MOBILE arm the same skip would make the layer TYPE a version the engine does not
+match, a genuine contradiction, so `_mobile_chromium_version` still refuses.
+⛔ That asymmetry is deliberate and is pinned by
+`test_android_still_fails_closed_the_asymmetry_is_deliberate`.
+
 WHAT THESE TESTS PIN, AND WHY EACH IS A REAL FALSIFIER
 ──────────────────────────────────────────────────────
 1. **The flag is present, with the `.full` shape.** Asserted against the argv a
@@ -26,9 +47,10 @@ WHAT THESE TESTS PIN, AND WHY EACH IS A REAL FALSIFIER
    for a *different* flag than the one it appears to serve, and dropping it
    fails SILENTLY — no error, no log, the profile just reverts to 144. Nothing
    else in the suite would catch that, which is exactly why it is pinned here.
-3. **An unreadable version REFUSES.** Skipping the flag is not a safe
-   degradation; it IS the defect, because omission falls back to the 144 table
-   rather than to "no claim".
+3. **An unreadable version SKIPS — passing NO flag, never a constant, and
+   loudly.** A fallback literal would re-create the duplication
+   `engine_version.py` exists to remove; a silent skip would leave an operator
+   with nothing to find. Both are pinned separately.
 4. **The three shapes are derived correctly.** `.reduced` in this flag would
    land verbatim in `uaFullVersion` — the tell `engine_version.parse()` already
    refuses.
@@ -41,6 +63,7 @@ evidence for it. See the PR for the live reading and its venue.
 
 from __future__ import annotations
 
+import re
 import unittest.mock as mock
 
 import pytest
@@ -91,14 +114,23 @@ def test_passing_reduced_would_reproduce_the_tell_the_parser_refuses():
 
 
 # ── the argv, read off a real launch ────────────────────────────────────────
-def _argv_with(version: ChromiumVersion | None = None, **overrides) -> list[str]:
+def _argv_with(version: ChromiumVersion | None = None, skip_version: bool = False,
+               **overrides) -> list[str]:
     """The argv a real child process received, via the PS-224 recorder seam.
 
     ⚠️ The seam patches `installed_chromium_version` ITSELF (it has to — this
-    container has no engine installed and the launch now refuses without one),
-    so an outer patch here is shadowed by the inner one. Patching `parse`
-    instead puts the value UPSTREAM of the seam's own stub, which is what lets
-    this helper drive the launch at an arbitrary version.
+    container has no engine installed), so an outer patch of that name here
+    would be SHADOWED by the seam's inner one. This helper therefore patches
+    `_process.ChromiumVersion`, the constructor the seam's stub calls to build
+    its return value: the seam resolves that attribute at call time, so the
+    override reaches it and the launch runs at an arbitrary version.
+    ⛔ Do not "simplify" this into an outer patch of `installed_chromium_version`
+    — it will be silently overwritten and the test will assert on the seam's
+    default rather than on the version you asked for.
+
+    `skip_version=True` is the unreadable-engine path: the CALLER supplies the
+    raising patch (so the same stub drives the helper under test and this
+    launch), and this helper simply does not install a version override.
     """
     import importlib.util
     import sys
@@ -114,6 +146,9 @@ def _argv_with(version: ChromiumVersion | None = None, **overrides) -> list[str]
     mod = importlib.util.module_from_spec(spec)
     sys.modules["_ps224"] = mod
     spec.loader.exec_module(mod)
+
+    if skip_version:
+        return mod._capture_launch_argv(stub_engine_version=False)
 
     if version is None or version == ENGINE:
         return mod._capture_launch_argv()
@@ -177,71 +212,157 @@ def test_the_flag_tracks_the_engine_rather_than_a_constant():
     assert not any("144." in a for a in argv if "brand-version" in a)
 
 
-# ── the refusal ─────────────────────────────────────────────────────────────
-def test_an_unreadable_version_refuses_rather_than_skipping_the_flag():
-    """AC3. Omitting the flag is NOT a safe degradation — it falls back to the
-    engine's 144 table, i.e. to advertising a version the engine is not. So the
-    unreadable case must refuse, exactly as `_mobile_chromium_version` does."""
+# ── the skip (owner ruling 2026-09-06: desktop skips, mobile still refuses) ──
+def test_an_unreadable_version_skips_the_flag_rather_than_refusing():
+    """AC3, as REVERSED by the owner on 2026-09-06.
+
+    An unreadable version.txt is a REACHABLE TRANSIENT STATE mid-update —
+    `EngineVersionUnreadableError`'s own docstring says the file may be "absent
+    (a reachable state)". Failing closed here would convert that transient,
+    self-healing condition into "no Chromium profile launches at all" for ~99%
+    of launches.
+
+    Skipping is safe on THIS arm specifically: the engine then answers all three
+    shapes from its own built-in default, so UA / brands / uaFullVersion still
+    agree WITH EACH OTHER. The tell this ticket closes is the DISAGREEMENT, and
+    skipping does not reintroduce it — it only makes the claim less current.
+    """
     with mock.patch.object(
         _process,
         "installed_chromium_version",
         mock.Mock(side_effect=EngineVersionUnreadableError("version.txt absent")),
     ):
+        assert _process._chromium_brand_version(Profile(name="ps356-skip")) is None
+
+
+def test_the_skip_passes_no_flag_rather_than_a_fallback_constant():
+    """⛔ THE TRAP THE OWNER NAMED EXPLICITLY.
+
+    "Skip" must mean PASS NO FLAG. Substituting a literal like "152.0.7977.75"
+    would re-create, in a new place, the hand-written duplication
+    `engine_version.py` exists to remove — and it would go stale INVISIBLY the
+    moment the engine moves, which is this ticket's entire subject.
+
+    Asserted on a REAL launch's argv (not a rebuilt list): no
+    --fingerprint-brand-version at all, and no version-shaped literal smuggled
+    in beside it.
+    """
+    with mock.patch.object(
+        _process,
+        "installed_chromium_version",
+        mock.Mock(side_effect=EngineVersionUnreadableError("version.txt absent")),
+    ):
+        args = _argv_with(None, skip_version=True)
+
+    assert not any(a.startswith("--fingerprint-brand-version") for a in args), (
+        "the skip must omit the flag entirely, not pass an empty or default value"
+    )
+    # and no hardcoded engine version anywhere in argv
+    assert not re.search(r"\b\d+\.0\.\d{4}\.\d+\b", " ".join(args)), (
+        "a fallback CONSTANT was smuggled into argv — that is the duplication "
+        "engine_version.py exists to remove"
+    )
+
+
+def test_the_skip_is_logged_because_it_is_a_degraded_state():
+    """⚠️ The owner required the skip be VISIBLE, and that it carry a REASON
+    rather than being a bare boolean.
+
+    A profile launching without this flag advertises the engine's built-in
+    version rather than its real one. An operator wondering why their Client
+    Hints look old must have something to find.
+    """
+    with mock.patch.object(
+        _process,
+        "installed_chromium_version",
+        mock.Mock(side_effect=EngineVersionUnreadableError("version.txt absent")),
+    ):
+        with mock.patch.object(_process.logger, "warning") as warn:
+            _process._chromium_brand_version(Profile(name="ps356-loud"))
+
+    assert warn.called, "a silent skip leaves an operator with nothing to find"
+    rendered = (warn.call_args[0][0] % warn.call_args[0][1:]).lower()
+    assert "ps356-loud" in rendered, "the log must name the profile"
+    assert "version.txt absent" in rendered, (
+        "the log must carry the REASON (the underlying read failure), not just "
+        "the fact that something was skipped"
+    )
+    assert "engine check" in rendered, "the log must name the remedy"
+
+
+def test_the_brand_flag_survives_the_skip():
+    """⛔ --fingerprint-brand=Chrome is NOT contingent on the version.
+
+    It is the gate the version flag needs when the version IS readable, and the
+    brand claim ("presents as Chrome and nothing else") stands on its own. If a
+    later refactor were to make the pair conditional as a unit, a transient
+    unreadable version would silently change the profile's BRAND too.
+    """
+    with mock.patch.object(
+        _process,
+        "installed_chromium_version",
+        mock.Mock(side_effect=EngineVersionUnreadableError("version.txt absent")),
+    ):
+        args = _argv_with(None, skip_version=True)
+
+    assert "--fingerprint-brand=Chrome" in args, (
+        "the brand flag must be passed unconditionally, skip or no skip"
+    )
+
+
+def test_android_still_fails_closed_the_asymmetry_is_deliberate():
+    """⭐⭐ THE ASYMMETRY, PINNED SO NOBODY "FIXES" IT.
+
+    Desktop skips; Android REFUSES. That is not an inconsistency to tidy — the
+    two arms have different failure modes:
+
+      * desktop skip -> the engine answers from its own default, so UA, brands
+        and full-version still agree with each other. Coherent, less current.
+      * mobile skip  -> the layer would TYPE a version into --user-agent that
+        the engine underneath does not match. A genuine contradiction, and
+        permanently seen by whatever pages saw it.
+
+    `_mobile_chromium_version` is deliberately untouched by PS-356. This test
+    fails if someone unifies the two behaviours in either direction.
+    """
+    android = Profile(name="ps356-android")
+    preset = mock.Mock(os_type="android")
+
+    with mock.patch.object(
+        _process,
+        "installed_chromium_version",
+        mock.Mock(side_effect=EngineVersionUnreadableError("version.txt absent")),
+    ):
+        # mobile: still refuses
         with pytest.raises(EngineVersionUnreadableError) as exc:
-            _process._chromium_brand_version(Profile(name="ps356-refuse"))
+            _process._mobile_chromium_version(android, preset)
+        # desktop: skips
+        assert _process._chromium_brand_version(android) is None
 
     assert "engine check" in str(exc.value), (
-        "the refusal must name the remedy, matching _mobile_chromium_version's "
-        "wording and spirit"
-    )
-    assert "ps356-refuse" in str(exc.value), "the refusal must name the profile"
-
-
-def test_the_refusal_is_not_scoped_to_mobile():
-    """⭐ THE SCOPE DECISION, STATED AS A TEST.
-
-    `_mobile_chromium_version` is Android-scoped because only a mobile profile
-    is passed `--user-agent` at all. Client Hints are NOT: the engine emits
-    sec-ch-ua on EVERY profile, so a desktop launch was exactly as exposed to
-    the 144 table — and desktop is in fact what was reported. Inheriting the
-    mobile scope here would have left the reported defect open on the very
-    profiles that reported it.
-
-    A plain desktop Profile (no mobile preset) must therefore refuse too.
-    """
-    desktop = Profile(name="ps356-desktop")
-    assert _process._mobile_chromium_version(desktop, None) is None, (
-        "precondition: a desktop profile has no mobile UA version"
+        "the mobile refusal must keep naming the remedy"
     )
 
-    with mock.patch.object(
-        _process,
-        "installed_chromium_version",
-        mock.Mock(side_effect=EngineVersionUnreadableError("version.txt absent")),
-    ):
-        with pytest.raises(EngineVersionUnreadableError):
-            _process._chromium_brand_version(desktop)
 
-
-def test_a_readable_version_does_not_refuse():
-    """The guard must not refuse the ordinary case it sits in front of."""
+def test_a_readable_version_is_returned_unchanged():
+    """The skip must not swallow the ordinary case it sits in front of."""
     with mock.patch.object(
         _process, "installed_chromium_version", lambda: ENGINE
     ):
         assert _process._chromium_brand_version(Profile(name="ok")) == ENGINE
 
 
-def test_the_firefox_arm_is_untouched_by_the_refusal():
-    """A Firefox profile must not be refused for a CHROMIUM engine version it
-    never advertises. `spawn_browser` returns on the firefox arm before any of
-    this runs; asserted so a later refactor cannot move the resolution above
-    that early return and start refusing Firefox launches."""
+def test_the_firefox_arm_never_resolves_a_chromium_version():
+    """A Firefox profile must not resolve — or log about — a CHROMIUM engine
+    version it never advertises. `spawn_browser` returns on the firefox arm
+    before any of this runs; asserted so a later refactor cannot move the
+    resolution above that early return."""
     import inspect
 
     src = inspect.getsource(_process.spawn_browser)
     firefox_at = src.index('if engine == "firefox"')
     brand_at = src.index("_chromium_brand_version(")
     assert firefox_at < brand_at, (
-        "the Chromium version is resolved BEFORE the firefox early return, so "
-        "an unreadable Chromium version would refuse a Firefox launch"
+        "the Chromium version is resolved BEFORE the firefox early return, so a "
+        "Firefox launch would resolve (and log about) a version it never uses"
     )
