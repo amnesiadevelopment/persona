@@ -1477,3 +1477,204 @@ def test_an_engine_this_recorder_cannot_speak_is_refused_never_read(
     msg = str(exc.value)
     assert stored in msg, "the refusal must name the engine it could not speak"
     assert "nothing is certified" in msg.lower()
+
+
+# --- PS-304: the recorder pins its own window geometry ----------------------
+#
+# The gate used to compare whatever main-window size each Firefox build chose
+# for itself: `window.innerSize` is not seed-derived, nothing in the recording
+# path fixed it, and `_seed_window_size` is a Windows-only no-op on the CI
+# runner (`_work_area()` returns (0, 0) off Windows and the helper bails). So
+# firefox-21's change of that default (1152 -> 1280 CSS px) made the gate refuse
+# every subsequent bump, permanently, beside two genuine canvas findings.
+#
+# These tests pin the two properties that make the fix real rather than
+# plausible: the pin lands where the LAUNCH reads it, and it survives the
+# `fresh` wipe. Both are falsifiable — see the docstrings.
+
+
+def test_the_window_pin_is_written_where_the_launch_actually_reads_it(
+    monkeypatch, tmp_path
+):
+    """AC2. The pin must land in the ENGINE's inner profile dir.
+
+    `spawn_browser` makes `DATA_DIR/<name>/` and hands the child
+    `os.path.join(profile_dir, ".invisible-profile")` (process.py:493), and it
+    is THAT path `_seed_window_size` is called with. A pin written to the outer
+    directory is never read by anything, and — this is the trap — a test that
+    only asserted "a xulstore.json exists somewhere under the profile" would
+    pass against exactly that mistake. So this asserts the FULL path.
+
+    It also asserts the geometry comes from the named constant rather than from
+    a literal, which is what makes "what the gate pins" readable in one place.
+    """
+    from src.services.verify import baseline as bl
+
+    monkeypatch.setattr("src.core.config.DATA_DIR", str(tmp_path))
+
+    profile = bl.baseline_profile()
+    written = bl._pin_recording_window(profile)
+
+    expected = os.path.join(
+        str(tmp_path), profile.name, ".invisible-profile", "xulstore.json"
+    )
+    assert written == expected, (
+        "the pin must go in the engine's inner profile dir; a file one level up "
+        "is read by nothing"
+    )
+    assert os.path.exists(expected)
+
+    win = json.loads(open(expected, encoding="utf-8").read())[
+        "chrome://browser/content/browser.xhtml"
+    ]["main-window"]
+    w, h = bl.BASELINE_WINDOW_SIZE
+    assert (win["width"], win["height"]) == (str(w), str(h))
+    assert win["sizemode"] == "normal"
+
+
+def test_the_shipped_window_seeder_defers_to_the_recorders_pin(monkeypatch, tmp_path):
+    """AC2's second half: `_seed_window_size` leaves the pin untouched.
+
+    The existing `test_window_size_seed_keeps_existing_xulstore` establishes the
+    deferral in the abstract, with a hand-written `{"user": "sized"}` payload.
+    This one establishes it for the ARTIFACT THE RECORDER ACTUALLY WRITES, at
+    the path the launch passes, with the work area FORCED NON-ZERO so the helper
+    would genuinely have written a competing size had it not deferred.
+
+    That last clause is the whole test. On the CI runner `_work_area()` returns
+    (0, 0) and the helper is a no-op, so a version of this test that did not
+    monkeypatch it would pass on a `return` that never reached the deferral —
+    green, and blind to whether the deferral works at all.
+    """
+    from src.services.browser import invisible_launch
+    from src.services.verify import baseline as bl
+
+    monkeypatch.setattr("src.core.config.DATA_DIR", str(tmp_path))
+    profile = bl.baseline_profile()
+    path = bl._pin_recording_window(profile)
+    before = open(path, "rb").read()
+
+    # A real work area, so the helper is NOT short-circuiting on (0, 0): it
+    # reaches the "file already exists" branch and returns from there.
+    monkeypatch.setattr(invisible_launch, "_work_area", lambda: (3840, 2088))
+    invisible_launch._seed_window_size(
+        os.path.dirname(path), screen=(1920, 1080), dpr=1.0
+    )
+
+    assert open(path, "rb").read() == before, (
+        "the launcher must hand the recorder's pin to the engine byte-for-byte"
+    )
+
+
+def test_the_window_pin_survives_a_fresh_recording(monkeypatch, tmp_path):
+    """AC3. `fresh=True` wipes the profile dir; the pin must outlive that.
+
+    FALSIFIED, not assumed: this asserts the pin is present AT THE MOMENT
+    `spawn_browser` is called, by capturing the file inside a fake spawn. That
+    ordering is the only thing being tested, and it genuinely fails against the
+    wrong one — moving `_pin_recording_window` above the `shutil.rmtree` in
+    `_record_on_firefox` makes `seen["exists"]` False and this test red. A test
+    that instead checked the file after `record_snapshot` returned would pass
+    against the broken ordering too, because nothing deletes the pin afterwards.
+    """
+    from src.services.verify import baseline as bl
+
+    monkeypatch.setattr("src.core.config.DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(bl, "_require_display", lambda: None)
+    monkeypatch.setattr(bl, "_await_started", lambda proc, timeout: None)
+    monkeypatch.setattr(bl, "_teardown", lambda proc, name: None)
+
+    profile = bl.baseline_profile()
+    # Pre-existing junk in the profile dir, so the wipe has something to do and
+    # a "fresh recording that forgot to wipe" cannot masquerade as a pass.
+    stale_dir = os.path.join(str(tmp_path), profile.name, ".invisible-profile")
+    os.makedirs(stale_dir, exist_ok=True)
+    with open(os.path.join(stale_dir, "xulstore.json"), "w", encoding="utf-8") as fh:
+        fh.write('{"stale": "from a previous session"}')
+
+    seen = {}
+
+    def _spawn(prof, in_process=False):
+        path = os.path.join(stale_dir, "xulstore.json")
+        seen["exists"] = os.path.exists(path)
+        seen["body"] = open(path, encoding="utf-8").read() if seen["exists"] else None
+        return object()
+
+    monkeypatch.setattr("src.services.browser.process.spawn_browser", _spawn)
+    monkeypatch.setattr(
+        "src.services.browser.invisible_launch.get_ff_eval",
+        lambda name: {"eval": lambda expr: {"v": "FF"}},
+    )
+
+    bl.record_snapshot(profile=profile, fresh=True, realms=("window",))
+
+    assert seen["exists"], (
+        "the pin must be in place when the launch happens — writing it before "
+        "the fresh rmtree deletes it and silently restores the unpinned reading"
+    )
+    w, h = bl.BASELINE_WINDOW_SIZE
+    win = json.loads(seen["body"])["chrome://browser/content/browser.xhtml"][
+        "main-window"
+    ]
+    assert (win["width"], win["height"]) == (str(w), str(h))
+    assert "stale" not in seen["body"], (
+        "the wipe must still have happened: a pin that survives BECAUSE nothing "
+        "was wiped is not evidence of correct ordering"
+    )
+
+
+def test_the_pinned_window_cannot_exceed_the_baselines_spoofed_screen():
+    """AC7. A CSS innerWidth larger than `screen.width` is impossible.
+
+    `_seed_window_size` caps against exactly this (#216): a window wider than
+    its own screen is a tell no real un-maximized browser shows. The pin
+    bypasses that helper by pre-empting it, so the constant has to carry the
+    invariant itself — this is the check that would catch someone later raising
+    BASELINE_WINDOW_SIZE past the spoofed resolution.
+    """
+    from src.services.verify import baseline as bl
+
+    w, h = bl.BASELINE_WINDOW_SIZE
+    sw, sh = (int(p) for p in bl.BASELINE_RESOLUTION.split("x"))
+    assert w < sw and h < sh, (
+        f"pinned window {w}x{h} must fit inside the spoofed screen {sw}x{sh}, "
+        "with room for window chrome"
+    )
+
+
+def test_provenance_states_the_pinned_window_geometry():
+    """The pin is an INPUT, so it belongs in provenance.
+
+    Before the pin the geometry was the engine's own default — an observation —
+    and could not honestly have been recorded here. A reader of a red
+    `window.innerSize` diff can now tell "we changed the pin" from "the engine
+    changed" from the artifact alone.
+    """
+    from src.services.verify import baseline as bl
+
+    prov = bl.provenance(bl.baseline_profile())
+    assert prov["window_size"] == list(bl.BASELINE_WINDOW_SIZE)
+
+
+def test_the_pin_path_cannot_drift_from_the_dir_the_launch_is_handed():
+    """The pin is only correct while it names the SAME dir `process.py` passes.
+
+    `spawn_browser` builds the child's `profile_dir` as
+    `os.path.join(profile_dir, ".invisible-profile")` with that string spelled
+    inline (process.py:493), while `_pin_recording_window` reaches for
+    `invisible_launch._INVISIBLE_SUBDIR`. Two spellings of one path is exactly
+    how a pin ends up written somewhere nothing reads, so this holds them equal
+    by reading the launcher's own source rather than by restating the literal a
+    third time.
+    """
+    import inspect
+
+    from src.services.browser import invisible_launch, process
+
+    src = inspect.getsource(process._spawn_invisible)
+    assert (
+        f'os.path.join(profile_dir, "{invisible_launch._INVISIBLE_SUBDIR}")' in src
+    ), (
+        "the launcher no longer joins the subdir the pin writes into; "
+        "_pin_recording_window would be writing where nothing reads"
+    )
