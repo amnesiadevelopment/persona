@@ -150,24 +150,14 @@ def verdict(observed: dict[str, float], stock: dict[str, float]) -> tuple[int, s
 
 
 # ── reading the committed harness JSON ───────────────────────────────────────
-
-def _cell(doc: dict, seed: int, layer: str) -> dict | None:
-    for r in doc.get("records", []):
-        if r.get("seed") == seed and r.get("masking_layer") == layer:
-            return r
-    return None
-
-
-def _widths_from_reading(rec: dict, realm: str) -> dict[str, float]:
-    """The harness records ONE string per realm, under a fixed key.
-
-    That is why this path can only ever yield a single sample and therefore
-    returns INDETERMINATE on its own — the multi-string comparison lives in the
-    shell repro's transcript. Kept explicit rather than silently degrading.
-    """
-    canvas = rec.get("reading", {}).get("realms", {}).get(realm, {}).get("canvas", {})
-    w = canvas.get("measuretext_width")
-    return {"<harness single sample>": w} if w is not None else {}
+#
+# There is deliberately no reader for the harness JSON here. The harness records
+# ONE string per realm, so that path can only ever yield a single sample and
+# would return INDETERMINATE on its own; the multi-string comparison this guard
+# needs lives in the shell repro's transcript, parsed below. Two helpers that
+# read the harness shape (`_cell`, `_widths_from_reading`) were carried here
+# with no caller in the whole repo and are removed rather than left to read as
+# a supported path — the self-test covers the single-sample case directly.
 
 
 def from_transcript(path: pathlib.Path) -> dict[str, dict[str, float]]:

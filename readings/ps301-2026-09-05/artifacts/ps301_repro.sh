@@ -140,7 +140,18 @@ echo "=== 2b. THE VERDICT — and this one can FAIL ==================="
 # exits non-zero when the defect is present. See ps301_measuretext_repro.py,
 # whose --self-test demonstrates it reaching DEFECT, PLAUSIBLE and INDETERMINATE.
 VERDICT_PY="$(dirname "$0")/../../../scripts/ps301_measuretext_repro.py"
-[ -f "$VERDICT_PY" ] || VERDICT_PY="$(dirname "$0")/ps301_measuretext_repro.py"
+if [ ! -f "$VERDICT_PY" ]; then
+  # FALL BACK TO THE SIBLING COPY, BUT SAY SO. This script is committed in two
+  # places (scripts/ and this readings/ artifact tree) and the two are currently
+  # byte-identical. A SILENT fallback would mean that the day they drift, a
+  # runner outside the repo quietly gets the STALE copy of the guard and never
+  # learns it. Announcing it costs one line and makes the drift visible at the
+  # moment it matters.
+  VERDICT_PY="$(dirname "$0")/ps301_measuretext_repro.py"
+  echo "note: scripts/ps301_measuretext_repro.py not found; using the sibling" \
+       "copy in this artifact tree. If the two have drifted, this is the older" \
+       "one." >&2
+fi
 MT_RC=0
 if [ -f "$VERDICT_PY" ]; then
   # Re-capture section 2 into a transcript the verdict can parse, then judge it.
