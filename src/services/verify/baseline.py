@@ -1101,6 +1101,7 @@ __all__ = [
     "BASELINE_ENGINE",
     "BASELINE_PROFILE_NAME",
     "BASELINE_REALMS",
+    "BASELINE_WINDOW_SIZE",
     "BaselineResult",
     "BaselineUnavailable",
     "baseline_profile",

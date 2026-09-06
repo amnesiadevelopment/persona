@@ -1004,12 +1004,25 @@ def test_a_chromium_effective_profile_is_recorded_through_the_chromium_channel(
     assert transport.closed, "the transport must be closed after recording"
 
 
-def test_the_firefox_arm_still_launches_in_process_and_reads_its_hook(monkeypatch):
+def test_the_firefox_arm_still_launches_in_process_and_reads_its_hook(
+    monkeypatch, tmp_path
+):
     """AC5. The pinned baseline profile is windows/desktop/firefox, so it must
     take the byte-identical path it always did — launch in-process, read the
-    per-process eval hook, tear the session down."""
+    per-process eval hook, tear the session down.
+
+    ⚠️ THE `DATA_DIR` REDIRECT IS NEW WITH THE PIN, AND IT IS THIS PR'S DEBT.
+    This test is PS-237's and predates the pin; it was clean at the merge-base
+    and became a writer of the operator's real ``~/.persona/persona_data`` the
+    moment ``_pin_recording_window`` was added to ``_record_on_firefox``, because
+    ``record_snapshot`` is driven here for real with only the SPAWN stubbed. It
+    left a ``xulstore.json`` inside a real ``persona-fingerprint-baseline``
+    profile — a name an operator's tree can genuinely hold — which would move
+    that profile's next window. Nothing about what this test asserts changes.
+    """
     from src.services.verify import baseline as bl
 
+    monkeypatch.setattr("src.core.config.DATA_DIR", str(tmp_path))
     monkeypatch.setattr(bl, "_require_display", lambda: None)
     monkeypatch.setattr(bl, "_await_started", lambda proc, timeout: None)
 
@@ -1859,17 +1872,46 @@ def test_provenance_states_the_window_geometry_the_recording_ACTUALLY_used():
     assert prov["window_size"] != list(bl.BASELINE_WINDOW_SIZE)
 
 
-def test_the_measured_window_size_is_read_off_the_file_the_launch_reads(tmp_path):
+def test_the_measured_window_size_is_read_off_the_file_the_launch_reads(
+    monkeypatch, tmp_path
+):
     """`_effective_window_size` must read the SAME file the pin writes and the
     launch consults, and must answer None rather than guessing.
 
     This is what makes provenance a measurement instead of a restatement, so it
     is asserted on the real file rather than by monkeypatching the reader.
+
+    ⚠️ THE `DATA_DIR` REDIRECT IS LOAD-BEARING, NOT HOUSEKEEPING. This test
+    drives a REAL write path (`_pin_recording_window`) against a real directory,
+    and the round-2 shape took a `tmp_path` it never used — so the pin resolved
+    the operator's actual ``~/.persona/persona_data`` and left three profile
+    dirs behind, one of them holding a deliberately corrupt ``"{not json"``.
+    That is the class ``tests/conftest.py`` exists for, on a third real file.
+
+    But the reason it is a CORRECTNESS bug rather than only a tidiness one is
+    the deferral: the pin early-returns when ``xulstore.json`` already exists,
+    so residue from a PREVIOUS run becomes the INPUT to the next one and the
+    verdict depends on whether anyone ran the test before. Executed both ways
+    against the unisolated shape:
+
+        gut the pin (write nothing), CLEAN dir   -> RED    (correct)
+        gut the pin (write nothing), DIRTY dir   -> GREEN  *** FALSE GREEN ***
+        BASELINE_WINDOW_SIZE=(1024,768), CLEAN   -> GREEN  (correct: round-trip)
+        run at HEAD first, THEN mutate, DIRTY    -> RED    *** FALSE RED ***
+
+    The false green is the worse half: it certifies that
+    ``_effective_window_size`` reads the pin *while the pin has been deleted
+    from the source*. With the redirect below, both arms become unconditional —
+    gutting the pin is RED whatever is on disk, and moving the constant is GREEN
+    whatever is on disk, because what this test asserts is a ROUND TRIP through
+    the file and not the value of the constant.
     """
     import os
 
     from src.models.profile import Profile
     from src.services.verify import baseline as bl
+
+    monkeypatch.setattr("src.core.config.DATA_DIR", str(tmp_path))
 
     # Nothing on disk -> unknown, NOT the constant.
     absent = Profile(name="ps304-prov-absent")
