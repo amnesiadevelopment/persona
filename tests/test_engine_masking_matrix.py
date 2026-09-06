@@ -39,10 +39,16 @@ therefore carries one of five positions, and the fifth is the deliverable:
                          so, and a test below asserts that constraint still holds.
 * ``NOT_ESTABLISHED``  — NOTHING IN THE TREE RECORDS A POSITION. An honest
                          unknown, and never a claim of coverage. These cells are
-                         the actual finding: ``stealth``, ``measuretext``,
-                         ``geo``, half of ``device``, and — running the OTHER
-                         direction — Chromium's position on Firefox's
-                         ``outer-size``.
+                         the actual finding: ``stealth``, ``measuretext``, and
+                         half of ``device``. Two names left this list on the day
+                         both were established BY MEASUREMENT — ``geo`` (PS-312,
+                         now NOT_COVERED_RECORDED) and, running the OTHER
+                         direction, Chromium's position on Firefox's
+                         ``outer-size`` (#327, now COVERED_ELSEWHERE via a
+                         launch argument rather than a spoof). The list shrinks
+                         only against a reading; ``test_the_open_cells_are_the_
+                         deliverable_and_are_named`` pins what is left AS DATA
+                         so this sentence cannot quietly disagree with it.
 
 This is a CHARACTERIZATION test, on exactly the terms its network sibling states:
 it pins the matrix AS IT IS TODAY, unknowns included, and is green on day one —
@@ -93,8 +99,8 @@ The matrix, for ONE profile per column:
 | webgl       | build_webgl_extension (always)        | COVERED: _install_spoof("webgl")  |
 | gpu         | build_gpu_extension (always; PER ARM) | engine-authored arm (per-arm)     |
 | canvas_ctx  | build_canvas_ctx_extension (always)   | NOT APPLICABLE (coherence)       |
-| geo         | build_geo_extension (proxy only)      | ⭐ POSITION NOT ESTABLISHED       |
-| outer-size  | ⭐ POSITION NOT ESTABLISHED           | COVERED (resolution chosen only)  |
+| geo         | build_geo_extension (proxy only)      | NOT COVERED, reason recorded      |
+| outer-size  | ELSEWHERE: --window-size launch arg   | COVERED (resolution chosen only)  |
 """
 
 import ast
@@ -348,27 +354,82 @@ MATRIX = {
     "outer-size": {
         "chromium": (
             COVERED_ELSEWHERE,
-            "COVERED, but NOT by a builder of its own — window.outerWidth/"
-            "outerHeight are pinned inside build_device_extension's "
-            "applyScreenPatch, in the same realm and the same pass that pins "
-            "screen.*, clamped so the reported window fits the reported "
-            "screen. So the route is the DEVICE builder and there is no "
-            "`outer_size` census key; the position is COVERED_ELSEWHERE "
-            "rather than COVERED for exactly the reason that status exists — "
-            "it names a different route. #327 ESTABLISHED the cell by "
-            "measurement before any spoof was written: a real headful "
-            "chromium under Xvfb at 1920x1080 with an operator-picked "
-            "1280x720 read outer 1919x1079 against screen 1280x720 (an "
-            "impossible pair, BOTH axes), while the AUTO branch on the same "
-            "seed and window read outer 1919x1079 against screen 2560x1440 "
-            "and was already coherent — AUTO being the positive control that "
-            "makes the FORCED reading a finding rather than a category. "
-            "After the pin, FORCED reads outer 1280x680 against screen "
-            "1280x720 and AUTO is byte-identical to before. The pin cannot "
-            "re-open #167 (the render-scale leak that made FORCED "
-            "unconditional): that leak was FORCED falling through to the "
-            "auto-pick and reporting ~4K, and this code never participates "
-            "in choosing W/H — it runs after they are fixed and reads them.",
+            "COVERED, but NOT by a spoof at all — and that is what makes this "
+            "cell COVERED_ELSEWHERE rather than COVERED. THE ROUTE IS A "
+            "LAUNCH ARGUMENT: spawn_browser's `elif desktop_resolution is not "
+            "None:` arm in src/services/browser/process.py emits "
+            "--window-size=<pick> on a DESKTOP profile whose operator chose a "
+            "custom resolution, so the real window is created at the size the "
+            "spoofed screen claims. There is no build_outer_size_extension "
+            "and no `outer_size` census key, and device_ext.py is BYTE-"
+            "IDENTICAL to base — applyScreenPatch pins screen.* and does not "
+            "touch outerWidth/outerHeight. "
+            "THE POSITION WAS RE-DECIDED DELIBERATELY when the route moved "
+            "from the extension to the launch layer, because the ground it "
+            "was first chosen on had shifted. COVERED is wrong twice over: "
+            "test_no_cell_claims_coverage_without_a_route requires a COVERED "
+            "Chromium cell to name a builder in the census and there is none "
+            "to name, and COVERED is defined above as installing a spoof "
+            "'through its own route' — nothing here installs a spoof at all. "
+            "NOT_COVERED_RECORDED is wrong because the vector IS covered, not "
+            "declined. NOT_ESTABLISHED is wrong because a reading exists. "
+            "COVERED_ELSEWHERE survives on its own stated terms — 'covered, "
+            "but NOT through this engine's spoof route; the route is named in "
+            "the cell' — and a launch argument is about as far from the spoof "
+            "route as a route can be while still being one. Note that status "
+            "is deliberately NOT machine-checked (a route outside the census "
+            "cannot be), so the truth of this prose is its only compensating "
+            "control; #327 round 2 left this note describing a mechanism it "
+            "had just deleted, and that is exactly the failure the file's "
+            "'INTENTIONAL vs UNNOTICED' premise exists to refuse. "
+            "test_a_forced_desktop_launch_really_carries_the_window_cap below "
+            "now holds the load-bearing half of it against real argv. "
+            "#327 ESTABLISHED the cell by measurement before any spoof was "
+            "written: real headful chromium under Xvfb at 1920x1080, with an "
+            "operator-picked 1280x720, read outer 1919x1079 against screen "
+            "1280x720 — an impossible pair on BOTH axes — while the AUTO "
+            "branch on the same seed and the same window read outer 1919x1079 "
+            "against screen 2560x1440 and was already coherent. AUTO is the "
+            "positive control that makes the FORCED reading a finding rather "
+            "than a category. "
+            "WHY THE WINDOW AND NOT THE REPORTED SIZE, which is the reasoning "
+            "a future agent will come here for. Three relations a real "
+            "browser always satisfies: R1 outer >= inner, R2 inner <= screen, "
+            "R3 outer <= screen. With live inner 1919 and a 1280 pick, R1 "
+            "needs outer >= 1919 and R3 needs outer <= 1280 — an EMPTY "
+            "interval. So NO value the reporting layer can emit satisfies "
+            "both, and clamping outer down to the screen (which #327 tried "
+            "first, in device_ext, and deleted) only chooses R1's violation "
+            "instead of R3's: it reported a window smaller than its own "
+            "content, oW-iW = -639, the exact signature invisible_launch.py's "
+            "restore-leak probe calibrates as leaking. The root is R2, and "
+            "`inner` is the real content box — not spoofable at the reporting "
+            "layer without breaking layout on real pages. Capping the WINDOW "
+            "fixes R2 at source and all three then hold at once: measured "
+            "live on the capped FORCED profile, inner [1280,577] outer "
+            "[1280,720] screen [1280,720]. (Those post-fix values were driven "
+            "independently by the reviewing seat over CDP, not only by the "
+            "author.) This is Firefox's own answer to the same question — "
+            "_seed_window_size, #216, 'a window can't be wider than its "
+            "screen' — reached here through a launch flag because Chromium "
+            "has no persisted window-size seed. "
+            "#167 IS NOT RE-OPENED: that leak was the FORCED branch falling "
+            "through to the auto-pick and reporting ~4K, and nothing here "
+            "participates in choosing W/H. Driven live rather than argued: a "
+            "2560x1440 pick on a 1920x1080 display still reads screen "
+            "[2560,1440], the operator's pick honoured verbatim, and the cap "
+            "composes with --force-device-scale-factor=1.5 (the flag #167 was "
+            "actually about) with all three relations holding. AUTO is "
+            "untouched by construction — parse_resolution('auto') is None, so "
+            "the arm cannot fire and no --window-size is emitted. "
+            "⚠️ THE BOUND, stated so this is a bounded claim and not a flat "
+            "one: the cap sizes the window AT LAUNCH. A window the operator "
+            "RESIZES AFTERWARDS can still produce the impossible pair, and "
+            "nothing in the tree re-asserts the relation after startup. The "
+            "reporting-layer pin did not cover that case either — it merely "
+            "reported a different impossible pair when it happened. The "
+            "exposed population is custom-resolution desktop profiles only; "
+            "AUTO is the default and is coherent on its own.",
         ),
         "firefox": (
             COVERED,
@@ -913,9 +974,9 @@ def test_firefox_device_screen_half_is_pinned_at_the_engine_layer():
 def test_outer_size_runs_the_other_direction():
     # AC5's second half. The matrix is not "Firefox is missing nine things": at
     # least one cell has Firefox covered and CHROMIUM answered from the other
-    # direction. #327 ESTABLISHED it by measurement and pinned outer inside the
-    # DEVICE builder, so the cell is COVERED_ELSEWHERE — the route exists but is
-    # not a builder of its own.
+    # direction. #327 ESTABLISHED it by measurement and then CAPPED THE WINDOW
+    # at launch, so the cell is COVERED_ELSEWHERE — a real route, named in the
+    # cell, that is not a spoof route at all.
     spoofs, _ = _firefox_spoof_census()
     assert "outer-size" in spoofs
     assert MATRIX["outer-size"]["firefox"][0] == COVERED
@@ -926,9 +987,52 @@ def test_outer_size_runs_the_other_direction():
     # while this matrix key is `outer-size` (HYPHEN) — B4's subtraction would
     # drop the hyphen and the underscore would show up as an unexplained extra.
     # Keeping this assertion means that builder cannot appear without someone
-    # reconciling the two spellings deliberately. #327 did NOT add one: the pin
-    # ships inside build_device_extension, so the census is unchanged.
+    # reconciling the two spellings deliberately. #327 did NOT add one: the
+    # route is a launch argument, so the census is unchanged from base.
     assert "outer_size" not in _builder_census()
+
+
+def test_a_forced_desktop_launch_really_carries_the_window_cap(
+    monkeypatch, tmp_path
+):
+    # THE CELL ABOVE, HELD TRUE RATHER THAN MERELY TRUE. COVERED_ELSEWHERE is
+    # deliberately not machine-checked — a route outside the builder census
+    # cannot be — so the cell's prose is normally the only thing standing
+    # behind it. That is not hypothetical here: #327 round 2 moved this vector
+    # from the device extension to a launch argument and left the cell
+    # describing the mechanism it had just deleted, green the whole time. A
+    # future agent would have gone to applyScreenPatch looking for a pin,
+    # found nothing, and been unable to tell whether it was removed, never
+    # landed, or moved — which is precisely the INTENTIONAL-vs-UNNOTICED
+    # confusion this file exists to refuse.
+    #
+    # So the load-bearing half of the claim is asserted against the argv a
+    # LAUNCH actually produces, using the same harness the Chromium column is
+    # read from everywhere else in this file. It cannot prove the cell's prose
+    # is well-written; it does mean the named route must still exist.
+    forced = _spawn_chromium_args(
+        monkeypatch,
+        tmp_path,
+        Profile(name="masking-matrix-forced-res", resolution="1280x720"),
+    )["args"]
+    assert "--window-size=1280,720" in forced, (
+        "the outer-size cell names spawn_browser's --window-size arm as its "
+        "route, and a FORCED desktop launch no longer emits it. Either the "
+        "route moved (RESTATE THE CELL — do not leave it naming this one) or "
+        "the cap regressed."
+    )
+
+    # AUTO is the default and is the control: it is coherent without help, and
+    # the cell says so. `parse_resolution("auto")` is None, so the arm cannot
+    # fire — asserted rather than assumed, because a cap that fired here would
+    # resize every operator's window on a profile that never asked for it.
+    auto = _spawn_chromium_args(
+        monkeypatch, tmp_path, Profile(name="masking-matrix-auto-res")
+    )["args"]
+    assert not [a for a in auto if a.startswith("--window-size")], (
+        "an AUTO desktop launch now emits --window-size. The cell claims AUTO "
+        "is untouched by construction; it no longer is."
+    )
 
 
 def test_outer_size_is_conditional_on_a_chosen_resolution():
