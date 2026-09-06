@@ -529,6 +529,67 @@ def test_up_to_date_does_not_file_an_issue(watch, tmp_path, monkeypatch):
     assert "exit 1" in tail
 
 
+def test_workflow_verdict_step_treats_unmeasured_as_red():
+    """The YAML's own branch must name the unmeasured case and exit non-zero."""
+    y = WORKFLOW.read_text(encoding="utf-8")
+    assert "unmeasured)" in y, "the verdict step must name the unmeasured case"
+    assert "NOTHING WAS MEASURED" in y
+    tail = y.split("unmeasured)", 1)[1]
+    assert "exit 1" in tail, "unmeasured must fail the run, not fall through green"
+    # the catch-all for "no status at all" must be red too
+    assert "never as a pass" in y
+
+
+def test_workflow_permissions_cover_every_api_call_it_makes():
+    """A `permissions:` block is a DENYLIST BY OMISSION — every unlisted scope
+    is `none`. So the scopes must be enumerated against what the job actually
+    calls, not eyeballed.
+
+    This is the class of defect no generic YAML-structure test can see: it is
+    not "unsafe", it is "NEVER WORKS" — every scheduled run 403s at the call and
+    the watcher reports nothing, forever, while the file looks perfectly
+    reasonable. PS-244 shipped exactly this (a cross-run artifact read under
+    `contents: read`, which needs `actions: read`), so the enumeration is pinned
+    here rather than trusted to a reading.
+
+    The mapping, checked call by call:
+      actions/checkout            -> contents: read
+      actions/setup-python        -> nothing
+      actions/upload-artifact@v4  -> nothing from github.token (a SAME-RUN
+                                     upload uses the runtime token; in-repo
+                                     precedent is engine-gpu-variance.yml, which
+                                     uploads under `contents: read` alone)
+      gh issue list/create/comment-> issues: write
+    """
+    import yaml as _yaml
+
+    text = WORKFLOW.read_text(encoding="utf-8")
+    perms = _yaml.safe_load(text)["permissions"]
+    body = text.split("jobs:", 1)[1]
+
+    assert "gh issue" in body, "the delivery step is the point of this workflow"
+    assert perms.get("issues") == "write", (
+        "the job files/comments on issues but does not hold issues: write — "
+        "every run would 403 at the one step that delivers the report, and the "
+        "watcher would be silent forever while looking fine"
+    )
+    assert perms.get("contents") == "read", (
+        "checkout needs contents: read, and a watcher that only reports must "
+        "not hold a repo-write token"
+    )
+    assert set(perms) == {"contents", "issues"}, (
+        "an unexplained scope is either dead or a capability nobody audited: %r"
+        % sorted(perms)
+    )
+
+    # A cross-run artifact read needs `actions: read`, which is NOT declared.
+    # This job makes none; asserted so adding one later trips here rather than
+    # silently 403ing on every scheduled run.
+    assert "run-id:" not in body and "run_id:" not in body, (
+        "a cross-run artifact read needs `actions: read`, which is not declared"
+    )
+
+
 def test_watcher_script_compiles():
     import subprocess
 
