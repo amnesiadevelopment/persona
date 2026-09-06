@@ -2,7 +2,7 @@
 
 This gate exists because `behaviour_cli` was a working instrument that nothing
 executed, so its check bodies could rot while the suite stayed green. A gate
-added to fix that can be un-fixed in four quiet ways, each of which leaves a
+added to fix that can be un-fixed in six quiet ways, each of which leaves a
 green check that proves nothing:
 
   * the step is removed, or stops invoking the harness at all;
@@ -14,7 +14,22 @@ green check that proves nothing:
     import is unavailable and the harness degrades to exit 2 on every run — a
     permanent red saying "nothing was measured";
   * the three exit codes get collapsed into "non-zero", or exit 2 stops failing
-    the job, so a run that COULD NOT LOOK starts reading as a pass.
+    the job, so a run that COULD NOT LOOK starts reading as a pass;
+  * the lane SELECTS NOTHING and the harness exits 0 over an empty world,
+    printing "the behaviour held" having held nothing — `exit_code([])` is
+    `EXIT_OK` because all three of its `any()` calls are false over an empty
+    list, and `--skip-launch` filters the registry with no floor on what
+    survives;
+  * the harness never STARTS — a bad invocation or an import error exits 1,
+    Python's code for an uncaught exception, which aliases `EXIT_FINDING` and
+    reports "nothing was measured" as "the product is broken".
+
+The last two are this ticket's own thesis turned on the gate built to remove
+it, and both were REPRODUCED by hand before the corroboration rules existed:
+flipping the three `needs_launch=False` flags gave `GATE EXIT: 0` over "0
+passed", and running the script from `/tmp` gave `No module named 'src'`
+announced as a FINDING at exit 1. The tests below drive those same two states,
+so each rule is pinned by a test that fails without it — not by a comment.
 
 So these assert the properties that make the gate MEAN something, in the spirit
 of tests/test_ci_verification_gates.py, rather than that a YAML key exists.
@@ -22,6 +37,7 @@ of tests/test_ci_verification_gates.py, rather than that a YAML key exists.
 
 from __future__ import annotations
 
+import importlib.util
 import subprocess
 import sys
 from pathlib import Path
@@ -35,6 +51,16 @@ RUNNER_SCRIPT = REPO_ROOT / ".github" / "scripts" / "run_behaviour_checks.py"
 STEP_NAME = "Behavioural checks, no-launch lane (gating)"
 SUITE_STEP_NAME = "Run the test suite"
 INSTALL_STEP_NAME = "Install deps"
+
+#: The three no-launch checks the lane must certify. Read from the runner in
+#: `test_the_expected_checks_are_the_registry_no_launch_lane` rather than
+#: trusted, so a drift between this list and the registry is a test failure
+#: instead of a gate that quietly stops requiring one of them.
+EXPECTED = (
+    "proxy-assignment-survives-edit",
+    "launch-refuses-broken-geography",
+    "certificate-key-material",
+)
 
 
 @pytest.fixture(scope="module")
@@ -53,11 +79,76 @@ def script_text() -> str:
     return RUNNER_SCRIPT.read_text(encoding="utf-8")
 
 
+@pytest.fixture(scope="module")
+def runner():
+    """The runner module itself, so its adjudication rules can be driven.
+
+    Imported by path because `.github/scripts/` is not a package and must not
+    become one — the CI step invokes the file directly.
+    """
+    spec = importlib.util.spec_from_file_location("_ps315_runner", RUNNER_SCRIPT)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _index_of(steps: list[dict], name: str) -> int:
     for i, step in enumerate(steps):
         if step.get("name") == name:
             return i
     raise AssertionError(f"no step named {name!r} in the tests job")
+
+
+def _report(passed: "list[str]", findings: int = 0, blocked: int = 0) -> str:
+    """A report in `behaviour.format_report`'s shape.
+
+    Only the two lines the runner reads are reproduced — the `[PASS]` badges
+    and the summary line. `test_the_runner_reads_the_real_report_format` holds
+    this stand-in to the real harness's output, so a format drift breaks a test
+    here rather than only a CI run.
+    """
+    lines = [f"[PASS] {name}\n  surface: whatever\n" for name in passed]
+    lines.append(
+        f"{len(passed)} passed, {findings} finding(s), {blocked} could not run, "
+        "0 browser launch(es)"
+    )
+    return "\n".join(lines)
+
+
+def _drive(tmp_path, *, code: int, stdout: str = "") -> subprocess.CompletedProcess:
+    """Run the real `main()` against a substituted child that exits `code`.
+
+    The child is a real process printing a real report, so this observes the
+    runner's end-to-end behaviour — including the capture and the exit — rather
+    than asserting it of the source text.
+    """
+    payload = tmp_path / "payload.txt"
+    payload.write_text(stdout, encoding="utf-8")
+
+    child = tmp_path / "child.py"
+    child.write_text(
+        "import sys, pathlib\n"
+        f"sys.stdout.write(pathlib.Path({str(payload)!r}).read_text(encoding='utf-8'))\n"
+        f"raise SystemExit({code})\n",
+        encoding="utf-8",
+    )
+
+    driver = tmp_path / "driver.py"
+    driver.write_text(
+        "import sys\n"
+        f"sys.path.insert(0, {str(RUNNER_SCRIPT.parent)!r})\n"
+        "import run_behaviour_checks as r\n"
+        f"r.COMMAND = [sys.executable, {str(child)!r}]\n"
+        "raise SystemExit(r.main())\n",
+        encoding="utf-8",
+    )
+    return subprocess.run(
+        [sys.executable, str(driver)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
 
 
 # --- the gate runs at all ---------------------------------------------------
@@ -176,20 +267,21 @@ def test_the_runner_exits_with_the_harness_own_code(tmp_path, code: int) -> None
     observes the propagation rather than asserting it of the source text. Code 3
     is included because an UNEXPECTED code must also fail — a harness that
     crashed certified nothing.
-    """
-    driver = tmp_path / "driver.py"
-    driver.write_text(
-        "import runpy, sys\n"
-        f"sys.path.insert(0, {str(RUNNER_SCRIPT.parent)!r})\n"
-        "import run_behaviour_checks as r\n"
-        f"r.COMMAND = [sys.executable, '-c', 'raise SystemExit({code})']\n"
-        "raise SystemExit(r.main())\n",
-        encoding="utf-8",
-    )
 
-    result = subprocess.run(
-        [sys.executable, str(driver)], capture_output=True, text=True, encoding="utf-8"
-    )
+    Each child prints a report CONSISTENT with the code it exits on, because
+    the runner corroborates 0 and 1 against the report rather than trusting the
+    number (see the corroboration section below). Propagation is the property
+    under test here; feeding an inconsistent report would be testing the other
+    rule and would let this test pass for the wrong reason.
+    """
+    consistent = {
+        0: _report(list(EXPECTED)),
+        1: _report(list(EXPECTED)[:-1], findings=1),
+        2: _report(list(EXPECTED)[:-1], blocked=1),
+        3: "",  # a crash speaks no vocabulary at all
+    }[code]
+
+    result = _drive(tmp_path, code=code, stdout=consistent)
 
     assert result.returncode == code, (
         f"the runner turned a harness exit {code} into {result.returncode} — "
@@ -204,18 +296,8 @@ def test_a_harness_that_could_not_measure_fails_the_job(tmp_path) -> None:
     harness was built to catch; letting it through here would reintroduce it in
     the gate meant to prevent it.
     """
-    driver = tmp_path / "driver.py"
-    driver.write_text(
-        "import sys\n"
-        f"sys.path.insert(0, {str(RUNNER_SCRIPT.parent)!r})\n"
-        "import run_behaviour_checks as r\n"
-        "r.COMMAND = [sys.executable, '-c', 'raise SystemExit(2)']\n"
-        "raise SystemExit(r.main())\n",
-        encoding="utf-8",
-    )
-
-    result = subprocess.run(
-        [sys.executable, str(driver)], capture_output=True, text=True, encoding="utf-8"
+    result = _drive(
+        tmp_path, code=2, stdout=_report(list(EXPECTED)[:-1], blocked=1)
     )
 
     assert result.returncode != 0, "exit 2 (nothing was measured) passed the job"
@@ -226,25 +308,305 @@ def test_an_unexpected_zero_is_not_reported_as_a_pass(tmp_path) -> None:
     """A harness that exits 0 without speaking its vocabulary still fails.
 
     Guards the one direction the parametrised test above cannot: a code outside
-    {0,1,2} is mapped to 2, and 0 must never be reachable that way.
+    {0,1,2} is mapped to 2, and 0 must never be reachable that way. Driven with
+    a harness whose report the runner cannot recognise at all — an empty
+    stdout, which is what a process that died before printing leaves behind.
     """
-    driver = tmp_path / "driver.py"
-    driver.write_text(
-        "import sys\n"
-        f"sys.path.insert(0, {str(RUNNER_SCRIPT.parent)!r})\n"
-        "import run_behaviour_checks as r\n"
-        "r.VERDICTS = {}\n"  # nothing is a recognised verdict
-        "r.COMMAND = [sys.executable, '-c', 'raise SystemExit(0)']\n"
-        "raise SystemExit(r.main())\n",
-        encoding="utf-8",
-    )
-
-    result = subprocess.run(
-        [sys.executable, str(driver)], capture_output=True, text=True, encoding="utf-8"
-    )
+    result = _drive(tmp_path, code=0, stdout="")
 
     assert result.returncode == 2, (
         "an unrecognised verdict was reported as a pass; it certifies nothing"
+    )
+
+
+# --- a 0 is only a pass if the report CERTIFIES the expected checks ----------
+#
+# `run_checks(..., skip_launch=True)` filters the registry with no floor on what
+# survives, and `exit_code([])` returns EXIT_OK because all three of its `any()`
+# calls are false over an empty list. Reproduced by hand before these tests
+# existed: flipping the three `needs_launch=False` flags gives
+#
+#     0 passed, 0 finding(s), 0 could not run, 0 browser launch(es)
+#     verdict: every selected check ran ... and the behaviour held
+#     GATE EXIT: 0
+#
+# — "the behaviour held" over NOTHING, and the job green. That is this ticket's
+# own sentence turned on the fix: an expensive check that is permanently green
+# because it quietly stopped looking.
+
+
+def test_an_empty_lane_is_not_a_pass(tmp_path) -> None:
+    """THE regression test for the audit's blocking finding.
+
+    The harness's own words for this state are "0 passed, 0 finding(s), 0 could
+    not run" at exit 0. Honouring that 0 is the defect.
+    """
+    result = _drive(tmp_path, code=0, stdout=_report([]))
+
+    assert result.returncode == 2, (
+        "the gate went GREEN over a lane that selected NOTHING. The harness "
+        "exits 0 on an empty selection and prints 'the behaviour held' having "
+        "held nothing — a permanently-green check that quietly stopped looking"
+    )
+
+
+def test_a_partly_certified_lane_is_not_a_pass(tmp_path) -> None:
+    """Two of three is not three.
+
+    The empty case is the dramatic one, but the likelier one is a single check
+    being renamed or retired — which shrinks the lane silently while the
+    remaining checks keep the summary looking healthy.
+    """
+    result = _drive(tmp_path, code=0, stdout=_report(list(EXPECTED)[:-1]))
+
+    assert result.returncode == 2, (
+        f"the gate honoured a 0 while {EXPECTED[-1]!r} was never certified"
+    )
+
+
+def test_the_names_of_the_missing_checks_are_reported(tmp_path) -> None:
+    """A downgrade must say WHICH check went missing.
+
+    This is why EXPECTED_CHECKS is a list of names and not a count: "expected 3,
+    got 2" sends the reader to the registry to work out which one, and the
+    runner already knows.
+    """
+    result = _drive(tmp_path, code=0, stdout=_report([EXPECTED[0]]))
+    combined = result.stdout + result.stderr
+
+    for missing in EXPECTED[1:]:
+        assert missing in combined, (
+            f"the downgrade message does not name {missing!r}, so the log says "
+            "a check is missing without saying which"
+        )
+
+
+def test_a_fully_certified_lane_still_passes(tmp_path) -> None:
+    """The corroboration must not make a genuine pass impossible.
+
+    Without this, a rule that returned 2 unconditionally would satisfy every
+    test above — a gate that is permanently RED proves as little as one that is
+    permanently green, and it would be "fixed" by being disabled.
+    """
+    result = _drive(tmp_path, code=0, stdout=_report(list(EXPECTED)))
+
+    assert result.returncode == 0, (
+        "a lane that certified all three expected checks was refused:\n"
+        f"{result.stdout}\n{result.stderr}"
+    )
+
+
+def test_extra_checks_do_not_break_a_pass(tmp_path) -> None:
+    """The rule is "at least these", so ADDING a no-launch check is not a break.
+
+    Retiring one should force somebody to look at EXPECTED_CHECKS; adding one
+    should not turn CI red on an unrelated PR.
+    """
+    result = _drive(
+        tmp_path, code=0, stdout=_report([*EXPECTED, "some-new-no-launch-check"])
+    )
+
+    assert result.returncode == 0, (
+        "adding a no-launch check turned the gate red, which would make the "
+        "constant brittle in the useless direction"
+    )
+
+
+def test_the_expected_checks_are_the_registry_no_launch_lane(runner) -> None:
+    """EXPECTED_CHECKS must BE the lane, not a list that drifted from it.
+
+    The constant is written out by hand deliberately — deriving it from the
+    registry would make it agree with an EMPTY registry by construction, which
+    is the failure being guarded against. This test is what keeps the hand-
+    written copy honest: it holds the constant to the real registry, so
+    retiring a no-launch check fails HERE, in a test that names the check,
+    rather than only on a runner.
+    """
+    from src.services.verify.behaviour_checks import CHECKS
+
+    lane = {c.name for c in CHECKS if not c.needs_launch}
+
+    assert set(runner.EXPECTED_CHECKS) == lane, (
+        "EXPECTED_CHECKS has drifted from the registry's no-launch lane.\n"
+        f"  constant: {sorted(runner.EXPECTED_CHECKS)}\n"
+        f"  registry: {sorted(lane)}\n"
+        "If a check was retired or renamed, update the constant deliberately — "
+        "that edit is meant to be noticed, not absorbed."
+    )
+
+
+# --- a 1 is only a finding if the harness LIVED to report one -----------------
+#
+# Python exits 1 on an uncaught exception, which aliases EXIT_FINDING.
+# `behaviour_cli` guards its own seams against that collision (it translates
+# BaselineUnavailable into EXIT_CANNOT_RUN precisely so the codes cannot alias)
+# but it cannot guard a failure that happens BEFORE it loads. Reproduced by
+# hand before these tests existed, running the script from /tmp:
+#
+#     No module named 'src'
+#     verdict: a check RAN and the behaviour did NOT hold — this is a FINDING
+#
+# The harness never started, and the gate announced a defect in the product.
+
+
+def test_a_harness_that_never_started_is_not_a_finding(tmp_path) -> None:
+    """No report at all means nothing was measured — code 2, never 1."""
+    result = _drive(tmp_path, code=1, stdout="")
+
+    assert result.returncode == 2, (
+        "an exit 1 with NO report was reported as a finding about the product. "
+        "Exit 1 is also Python's code for an uncaught exception, so a failure "
+        "before the harness loads must land on 2"
+    )
+
+
+def test_an_exit_one_whose_report_states_no_finding_is_not_a_finding(
+    tmp_path,
+) -> None:
+    """A code and a report that disagree certify nothing."""
+    result = _drive(tmp_path, code=1, stdout=_report(list(EXPECTED)))
+
+    assert result.returncode == 2, (
+        "the runner honoured an exit 1 over a report stating 0 finding(s)"
+    )
+
+
+def test_a_real_finding_still_exits_one(tmp_path) -> None:
+    """The corroboration must not swallow a genuine finding into 2.
+
+    1 and 2 mean different things — the product misbehaved vs the check could
+    not look — and collapsing a real finding into "nothing was measured" would
+    lose exactly the distinction this gate exists to preserve.
+    """
+    result = _drive(
+        tmp_path, code=1, stdout=_report(list(EXPECTED)[:-1], findings=1)
+    )
+
+    assert result.returncode == 1, (
+        "a genuine finding about the product was downgraded to 'nothing was "
+        "measured'; the two failures must stay distinguishable"
+    )
+
+
+def test_no_corroboration_rule_can_make_the_job_greener(runner) -> None:
+    """Every correction moves a verdict TOWARDS 2, never towards 0.
+
+    The asymmetry is the safety argument for adding adjudication at all: this
+    script may make the job redder than the harness asked for, and can never
+    make it greener. Swept over the report shapes the rules distinguish, so a
+    future rule that returned 0 on some new input fails here.
+    """
+    reports = [
+        "",
+        _report([]),
+        _report([EXPECTED[0]]),
+        _report(list(EXPECTED)[:-1]),
+        _report(list(EXPECTED)),
+        _report(list(EXPECTED), findings=1),
+        _report(list(EXPECTED)[:-1], findings=1),
+        _report(list(EXPECTED)[:-1], blocked=1),
+    ]
+
+    for rc in (0, 1, 2, 3, 137):
+        for report in reports:
+            code, _why = runner.adjudicate(rc, report)
+            assert code >= rc or code == 2, (
+                f"adjudicate({rc}, ...) returned {code} — a correction made the "
+                "verdict GREENER than the harness claimed"
+            )
+            if rc != 0:
+                assert code != 0, (
+                    f"adjudicate({rc}, ...) returned 0 — a non-pass became a pass"
+                )
+
+
+# --- the corroboration reads the report the harness ACTUALLY prints ----------
+
+
+def test_the_runner_reads_the_real_report_format() -> None:
+    """The rules above are only as good as their grip on the real output.
+
+    Every corroboration test drives a stand-in report. If `format_report`'s
+    shape ever drifts — the summary line, the `[PASS]` badges — those tests
+    would keep passing against a format the runner can no longer read, and the
+    gate would downgrade every real run to 2. This holds the parser to the
+    harness's own output rather than to the stand-in.
+    """
+    from src.services.verify.behaviour import format_report
+
+    spec = importlib.util.spec_from_file_location("_ps315_runner_fmt", RUNNER_SCRIPT)
+    assert spec is not None and spec.loader is not None
+    runner = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runner)
+
+    from src.services.verify.behaviour import PASS, Outcome
+
+    real = format_report(
+        [
+            Outcome(
+                name=name,
+                surface="a surface",
+                status=PASS,
+                detail="held",
+                evidence=["e"],
+                falsification="shown capable of failing",
+            )
+            for name in EXPECTED
+        ]
+    )
+
+    assert runner.passed_checks(real) == set(EXPECTED), (
+        "the runner cannot read `[PASS]` badges out of the real report — every "
+        "genuine run would be downgraded to 2"
+    )
+    counts = runner.summary(real)
+    assert counts is not None and counts[0] == len(EXPECTED), (
+        f"the runner cannot read the real summary line (got {counts!r})"
+    )
+
+
+# --- the command is anchored, so `-m` cannot resolve against the caller ------
+
+
+def test_the_gate_runs_from_the_repo_root_wherever_it_is_invoked(tmp_path) -> None:
+    """`python -m` resolves against the CALLER's cwd.
+
+    CI happens to run at the repo root, so an unanchored command works there —
+    which makes it latent rather than safe, and a latent gap in a gate is what
+    nobody notices. Measured before the anchor existed: from /tmp the command
+    gave `No module named 'src'`, and the gate announced it as a FINDING about
+    the product at exit 1.
+
+    Run from a directory that is emphatically not the repo, so a regression
+    here cannot pass by accident.
+    """
+    result = subprocess.run(
+        [sys.executable, str(RUNNER_SCRIPT)],
+        cwd=str(tmp_path),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+
+    assert "No module named" not in (result.stdout + result.stderr), (
+        "the runner could not import the harness from a foreign cwd — `-m` is "
+        "resolving against the caller's directory instead of the repo root"
+    )
+    assert result.returncode == 0, (
+        "the no-launch lane did not pass when invoked from outside the repo:\n"
+        f"{result.stdout}\n{result.stderr}"
+    )
+
+
+def test_a_gate_pointed_at_a_missing_harness_says_so(tmp_path, runner) -> None:
+    """If the module file is gone, that is "nothing was measured", not a pass.
+
+    Checked before the run so the log says the gate is pointed at nothing,
+    rather than leaving an opaque child exit code to be interpreted.
+    """
+    assert runner.MODULE_FILE.is_file(), (
+        f"{runner.MODULE_FILE} does not exist — the runner's own module path "
+        "no longer resolves, so its pre-flight would refuse every run"
     )
 
 
@@ -286,6 +648,14 @@ def test_the_real_harness_passes_through_the_runner() -> None:
 
     Everything above pins shape; this one observes the gate doing its job. It
     costs well under a second because the no-launch lane launches no browser.
+
+    ⚠️ THE ASSERTIONS ARE ON WHAT WAS CERTIFIED, NOT ON THE EXIT CODE ALONE.
+    An earlier version asserted `returncode == 0` and `"0 could not run" in
+    stdout`, and BOTH are satisfied by a run that measured nothing: zero checks
+    produce zero "could not run". It passed against a tree with the lane
+    flipped empty — a vacuously-green test guarding a vacuously-green gate,
+    which is the exact shape this ticket's charter calls "an expensive check
+    that is permanently green because it quietly stopped looking".
     """
     result = subprocess.run(
         [sys.executable, str(RUNNER_SCRIPT)],
@@ -298,6 +668,16 @@ def test_the_real_harness_passes_through_the_runner() -> None:
     assert result.returncode == 0, (
         "the no-launch behavioural lane did not pass through the runner:\n"
         f"{result.stdout}\n{result.stderr}"
+    )
+    for name in EXPECTED:
+        assert f"[PASS] {name}" in result.stdout, (
+            f"the lane did not certify {name!r} — a green run that did not "
+            "measure this check proves nothing about it:\n"
+            f"{result.stdout}"
+        )
+    assert f"{len(EXPECTED)} passed" in result.stdout, (
+        "the summary does not report every expected check as passed:\n"
+        f"{result.stdout}"
     )
     assert "0 could not run" in result.stdout, (
         "a check could not run, so nothing was certified"
