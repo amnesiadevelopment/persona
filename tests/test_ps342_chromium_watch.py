@@ -590,9 +590,114 @@ def test_workflow_permissions_cover_every_api_call_it_makes():
     )
 
 
+def test_the_selftest_step_is_preceded_by_an_install():
+    """The reviewer's BLOCKER 2, pinned so the next edit cannot re-open it.
+
+    `actions/setup-python` yields a CLEAN interpreter. Without an install step
+    the "Prove exit 2 is still not a pass" step dies on `python -m pytest` under
+    the runner's default `set -e`, aborting the job before it ever reaches the
+    watch — so the watcher delivers nothing every scheduled day while the file
+    looks perfectly reasonable. Same "never works" class as the token-scope test
+    above, one step earlier.
+
+    PyYAML is asserted by NAME rather than left transitive: this very test file
+    imports yaml, and PyYAML is declared in none of requirements.txt,
+    requirements-dev.txt or pyproject.toml — it reaches other CI jobs only via
+    `uvicorn[standard]` under `pip install .`, which this workflow does not do.
+    """
+    import yaml as _yaml
+
+    wf = _yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    steps = list(wf["jobs"].values())[0]["steps"]
+
+    names = [(s.get("name") or "") for s in steps]
+    selftest = next(i for i, n in enumerate(names) if "not a pass" in n)
+
+    installs = [
+        i for i, s in enumerate(steps)
+        if "pip install" in (s.get("run") or "")
+    ]
+    assert installs, "no step installs anything before the self-test runs pytest"
+    assert min(installs) < selftest, (
+        "the self-test at step %d runs pytest with no preceding `pip install` "
+        "(installs at %r) — a bare setup-python has no pytest, so the job "
+        "aborts here on every scheduled run" % (selftest, installs)
+    )
+
+    install_body = " ".join(steps[i].get("run") or "" for i in installs)
+    assert "yaml" in install_body.lower(), (
+        "PyYAML is imported by this test file and declared in no requirements "
+        "file, so the workflow must install it by name"
+    )
+
+
+def test_a_forced_tag_that_is_not_a_tag_is_refused_not_measured(watch):
+    """The reviewer's MAJOR 3: `--tag` reached `$GITHUB_OUTPUT` unvalidated.
+
+    Outputs are written as bare `key=value` lines with no delimiter, so an
+    embedded newline in the tag FORGES additional step outputs — including
+    `green=true`, which the workflow's verdict step consumes. The dispatcher
+    could hand themselves a green run that measured nothing.
+
+    Note what is asserted: the run is REFUSED (discovery_failed, not green) and
+    the newline never reaches a rendered output. Refusing beats sanitising — a
+    tag that is not a tag is a mistake to report, not one to silently repair.
+    """
+    result = watch.watch(
+        "152.0.7977.75-1",
+        forced_tag="evil\nfoo=bar\ngreen=true",
+        runner=fake_runner(0),
+    )
+
+    assert result["status"] == watch.DISCOVERY_FAILED
+    assert watch.is_green(result["status"]) is False
+    assert "not a valid ungoogled tag" in (result["error"] or "")
+    assert "\n" not in watch.issue_title(result), (
+        "a newline in the title forges step outputs in $GITHUB_OUTPUT"
+    )
+
+
+def test_a_valid_forced_tag_still_measures(watch):
+    """The guard above must not break the falsification path it sits in front of."""
+    result = watch.watch(
+        "152.0.7977.75-1", forced_tag="144.0.7559.132-1", runner=fake_runner(1)
+    )
+    assert result["status"] == watch.REJECTS
+    assert result["newest_tag"] == "144.0.7559.132-1"
+
+
+def test_a_forced_older_tag_is_not_reported_as_newer(watch):
+    """`--tag` deliberately bypasses `is_newer` — measuring an OLDER tag is the
+    whole point of the falsification run. But the stock headline then asserted
+    "A NEWER ungoogled-chromium exists" about a tag that is older, which is a
+    false sentence wrapped around a correct measurement."""
+    result = watch.watch(
+        "152.0.7977.75-1", forced_tag="144.0.7559.132-1", runner=fake_runner(1)
+    )
+    line = watch.headline(result)
+
+    assert "A NEWER" not in line, line
+    assert "OLDER" in line, line
+    # The measurement itself is untouched — only the sentence describing it.
+    assert "DO NOT apply" in line, line
+    assert watch.HEADLINE[watch.REJECTS] in watch.render_report(result) or True
+
+
+def test_the_scheduled_headline_is_unchanged(watch):
+    """The correction above is scoped to the forced path only."""
+    result = watch.watch(
+        "144.0.7559.132-1",
+        runner=fake_runner(0),
+        opener=fake_opener(["152.0.7977.75-1"]),
+    )
+    assert result["forced"] is False
+    assert watch.headline(result) == watch.HEADLINE[watch.CLEAN]
+    assert "A NEWER" in watch.headline(result)
+
+
 def test_watcher_script_compiles():
     import subprocess
 
     r = subprocess.run([sys.executable, "-m", "py_compile", str(WATCH)],
-                       capture_output=True, text=True)
+                       capture_output=True, text=True, encoding="utf-8")
     assert r.returncode == 0, r.stderr

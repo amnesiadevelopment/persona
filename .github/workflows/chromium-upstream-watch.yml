@@ -112,6 +112,27 @@ jobs:
         with:
           python-version: "3.13"
 
+      # INSTALL BEFORE THE SELF-TEST, OR THE SELF-TEST IS THE THING THAT FAILS.
+      #
+      # `actions/setup-python` gives a CLEAN interpreter — no pytest, no PyYAML.
+      # Without this step the "Prove exit 2 is still not a pass" step below dies
+      # on `python -m pytest` under the runner's default `set -e`, aborting the
+      # job before it ever reaches "Watch upstream and measure". That fails RED,
+      # which is correct for a trap, but it means the watcher delivers nothing
+      # every scheduled day while looking like it is reporting something.
+      #
+      # PyYAML is named EXPLICITLY rather than leaned on transitively: the tests
+      # `import yaml` to parse this very workflow, and PyYAML is declared in
+      # neither requirements.txt, requirements-dev.txt nor pyproject.toml. It
+      # reaches other CI jobs only as a transitive dep of `uvicorn[standard]`
+      # via `pip install .`, which this workflow deliberately does not do — the
+      # watcher is stdlib-only by design and should not need the whole product
+      # installed to check itself.
+      - name: Install the self-test's dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt PyYAML
+
       # PROVE THE JUDGEMENT STILL REFUSES TO CALL "COULD NOT MEASURE" A PASS,
       # BEFORE TRUSTING ANY VERDICT FROM IT.
       #

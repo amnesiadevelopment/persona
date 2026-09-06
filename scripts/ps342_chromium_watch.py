@@ -253,8 +253,17 @@ def run_probe(tag, timeout=2700, runner=None):
     if runner is not None:
         return runner(cmd, timeout)
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
-                           cwd=REPO_ROOT)
+        # `encoding="utf-8"` is load-bearing, not decoration. The probe prints
+        # ✅ / ⚠️ / em-dashes (22 non-ASCII lines in ps299_rebase_probe.py), this
+        # captured text becomes `probe_log`, and `probe_log` is embedded verbatim
+        # into the filed issue body. Bare `text=True` decodes with the platform
+        # preferred encoding — cp1252 on a Windows host — so the reporting path
+        # would either mojibake or raise UnicodeDecodeError. The workflow pins
+        # ubuntu-24.04 so the scheduled run is safe, but this script is also
+        # documented for hand-running. (PS-184 class; the encoding-discipline
+        # guard only scans tests/ and src/, so scripts/ is unwatched here.)
+        r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
+                           timeout=timeout, cwd=REPO_ROOT)
     except subprocess.TimeoutExpired:
         return 124, ("the rebase probe did not finish within %ds and was killed; "
                      "nothing was measured" % timeout)
@@ -288,11 +297,32 @@ def issue_title(result):
     )
 
 
+def headline(result):
+    """The headline, corrected for the forced path.
+
+    `HEADLINE` says "A NEWER ungoogled-chromium exists" because on the SCHEDULED
+    path that is guaranteed: `is_newer()` gates every non-`up_to_date` status.
+    The forced path deliberately skips that gate — measuring an OLDER tag is the
+    whole point of the falsification run (`--tag 144.0.7559.132-1`) — so on that
+    path the stock wording asserts something false about the tag it measured.
+    The measurement itself is unaffected; only the sentence describing it was.
+    """
+    status = result["status"]
+    text = HEADLINE[status]
+    if result.get("forced") and status not in (UP_TO_DATE, DISCOVERY_FAILED):
+        newest, current = result.get("newest_tag"), result.get("current_tag")
+        relation = "an OLDER" if (newest and current and is_newer(current, newest)) \
+            else "a HAND-PICKED"
+        text = text.replace("A NEWER ungoogled-chromium exists",
+                            "%s ungoogled-chromium tag was measured on request" % relation)
+    return text
+
+
 def render_report(result):
     """Markdown for the issue body / job summary."""
     status = result["status"]
     lines = []
-    lines.append("## %s" % HEADLINE[status])
+    lines.append("## %s" % headline(result))
     lines.append("")
     lines.append("| | |")
     lines.append("|---|---|")
@@ -422,7 +452,26 @@ def watch(current_tag, token=None, forced_tag=None, probe_timeout=2700,
         # path. Discovery is skipped; everything downstream is identical, which
         # is what makes a hand-run genuinely exercise the wiring the schedule
         # uses rather than a parallel one.
-        newest = forced_tag
+        #
+        # VALIDATE IT HERE, EVEN THOUGH main() ALREADY DID. This is the less
+        # trusted of the two inputs — it arrives from a workflow_dispatch box a
+        # human types into — and `read_current_tag()` has validated its own file
+        # since the first commit, so leaving the CLI value unchecked was exactly
+        # backwards. Unvalidated, an embedded newline forged additional step
+        # outputs: `--tag $'evil\ngreen=true'` reached `$GITHUB_OUTPUT` through
+        # issue_title(), where each line is written as `key=value` with no
+        # delimiter — so the dispatcher could hand themselves `green=true` on a
+        # run that measured nothing. Refusing is correct rather than sanitising:
+        # a tag that is not a tag is a mistake to report, not one to repair.
+        if not TAG_RE.match(forced_tag.strip()):
+            result["status"] = DISCOVERY_FAILED
+            result["error"] = (
+                "--tag %r is not a valid ungoogled tag; expected the "
+                "N.N.N.N-N shape, e.g. 152.0.7977.75-1. Nothing was measured."
+                % forced_tag
+            )
+            return result
+        newest = forced_tag.strip()
     else:
         newest, err = discover_newest_tag(token=token, opener=opener)
         if newest is None:
@@ -501,7 +550,7 @@ def main(argv=None):
 
     if not is_green(result["status"]):
         print("::error::chromium upstream watch: %s — %s"
-              % (result["status"], HEADLINE[result["status"]]))
+              % (result["status"], headline(result)))
 
     return exit_code_for(result["status"])
 
