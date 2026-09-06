@@ -432,6 +432,51 @@ def _spawn_invisible(profile: Profile, profile_dir: str, *, in_process: bool = F
             profile.hardware_generation,
         )
 
+        # WHY `lat`/`lon` ARE NOT IN THE cfg BELOW, though `locale` and
+        # `timezone` are and `proxy.lat`/`proxy.lon` are in scope right here.
+        # This is a RECORDED DECISION, not an oversight — PS-312 established it
+        # by measurement, and the matrix cell it answers is re-read by
+        # `tests/test_engine_masking_matrix.py`.
+        #
+        # The Chromium arm installs `build_geo_extension` for every proxied
+        # profile because `getCurrentPosition` could otherwise fall through to
+        # the REAL host coordinates while locale and timezone already name the
+        # exit country. That premise was tested on THIS engine rather than
+        # assumed, on a real proxied headful launch reading the value a page
+        # actually receives, and it does not hold here:
+        #
+        # getCurrentPosition is answered LOCALLY and yields no coordinates
+        #
+        # so there is no host position for a spoof to displace.
+        #
+        # Measured (invisible_core 20.14.0, firefox-20 / FF 151.0), reading the
+        # success/error callback from a page on a real https origin:
+        #
+        #   permission "prompt"  (the shipped default) -> neither callback ever
+        #                        fires; the call simply hangs on the doorhanger
+        #   permission "granted" -> error code 2 (POSITION_UNAVAILABLE) in
+        #                        ~12ms, proxied AND direct alike
+        #
+        # ~12ms is far too fast for a network round trip: the refusal is local,
+        # and it is CAUSED by the engine's own `geo.provider.network.url: ""`.
+        # That was isolated by A/B — the same launch with that one pref pointed
+        # at a reachable provider returns a position in ~18ms, which is also the
+        # positive control proving the reading is a real null and not a null
+        # instrument.
+        #
+        # So persona ships no Firefox geolocation spoof, and adding one would be
+        # a NET LOSS under Invariant #0: it would replace a native refusal that
+        # reads clean (`Function.prototype.toString` on getCurrentPosition still
+        # renders "[native code]") with a JS override a detector can see, to
+        # close a hole the measurement shows is not open. The engine's two geo
+        # decisions are load-bearing and must not be reversed — `geo.enabled:
+        # True` (an absent `Navigator.prototype.geolocation` is itself a tell)
+        # and `permissions.default.geo` left unset (a `denied` where stock says
+        # `prompt` was measured as a divergence).
+        #
+        # ⚠️ This rests on the engine, so it is only true while the engine
+        # behaves this way. Re-measure on an engine bump before trusting it.
+
         cfg = {
             "os_type": profile.os_type,
             "proxy_url": proxy_url,

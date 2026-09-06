@@ -1,0 +1,65 @@
+{
+ "stage": "done",
+ "persona_home": "/tmp/probe/home",
+ "display": ":97",
+ "_errs": [],
+ "data_dir": "/tmp/probe/home/persona_data",
+ "proxy": {
+  "cc": "DE",
+  "tz": "Europe/Berlin",
+  "lat": 52.52,
+  "lon": 13.405,
+  "url": "socks5://127.0.0.1:11080",
+  "last_check_ok": true
+ },
+ "profile": {
+  "name": "geo-probe",
+  "proxy": "probe-de",
+  "os_type": "windows",
+  "engine": "firefox",
+  "seed": 1720752205
+ },
+ "product_prefs_geo_keys": {},
+ "readings": {
+  "fresh.started": true,
+  "fresh.log_tail": [
+   "HIDPI_DEBUG chosen=1920x1080 window=capped dpr=1.0",
+   "BROWSER_STARTED"
+  ],
+  "fresh.nav_ok": true,
+  "fresh.env": {
+   "href": "https://example.com/",
+   "proto": "https:",
+   "secure": true,
+   "hasGeo": true,
+   "onProto": true,
+   "geoType": "object",
+   "gcpType": "function",
+   "tz": "Europe/Berlin",
+   "lang": "de-DE"
+  },
+  "fresh.permission_state": "granted",
+  "fresh.getCurrentPosition": {
+   "outcome": "position",
+   "lat": 41.4041,
+   "lon": 2.1741,
+   "accuracy": 1234,
+   "altitude": null,
+   "heading": null,
+   "speed": null,
+   "timestamp": 1788645844121,
+   "elapsed_ms": 25
+  },
+  "fresh.watchPosition": {
+   "outcome": "position",
+   "lat": 41.4041,
+   "lon": 2.1741,
+   "accuracy": 1234,
+   "altitude": null,
+   "heading": null,
+   "speed": null,
+   "timestamp": 1788645844133,
+   "elapsed_ms": 3
+  }
+ }
+}
