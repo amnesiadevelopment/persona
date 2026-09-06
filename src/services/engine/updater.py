@@ -649,7 +649,7 @@ def _asset_matches(name: str) -> bool:
 
     So an engine asset must carry the `personium-` prefix AND this OS's marker
     (`personium-<version>-linux-x86_64.AppImage`, `-windows-x86_64.zip`,
-    `-macos-x86_64.dmg`; see RELEASING.md). EITHER anchor alone already excludes
+    `-macos-arm64.dmg`; see RELEASING.md). EITHER anchor alone already excludes
     every application asset — `persona-` is not `personium-`, and no application
     asset carries an OS-marked engine suffix — which is the point: neither is
     load-bearing by itself, so loosening one does not silently reopen the hole.
@@ -662,7 +662,7 @@ def _asset_matches(name: str) -> bool:
     if _platform.IS_WINDOWS:
         return name.endswith("-windows-x86_64.zip")
     if _platform.IS_MACOS:
-        return name.endswith("-macos-x86_64.dmg")
+        return name.endswith("-macos-arm64.dmg")
     return name.endswith("-linux-x86_64.AppImage")
 
 
