@@ -12,6 +12,15 @@ project already recorded that lesson (PS-301: a 162-line reproduction script
 with no non-zero exit path at all, which "passed" on the defect). These tests
 exist so this verifier cannot quietly become that.
 
+AND A TEST THAT ASSERTS ONLY AN EXIT CODE CAN GUARD NOTHING
+───────────────────────────────────────────────────────────
+Two of these tests originally checked `run(...) == 2` and passed even with the
+fix they guard reverted, because *something else* in the same run was
+unmeasured. They now assert the specific ROW — verdict and name — so the
+assertion is about the behaviour and not about the run's mood. Every test here
+was verified by reverting its fix and confirming it fails; the five reversions
+and the tests they take down are recorded in the PS-343 PR.
+
 WHY THE FIXTURES ARE BUILT, NOT DOWNLOADED
 ──────────────────────────────────────────
 The real assets are ~585 MB across three files and live on a GitHub release. A
@@ -75,6 +84,7 @@ load_records = _V.load_records
 main = _V.main
 normalise_digest = _V.normalise_digest
 walk_fields = _V.walk_fields
+verify_asset = _V.verify_asset
 SHIPPED_TAG = "personium-152.0.7977.75"
 
 SWITCHES = [
@@ -333,6 +343,13 @@ def bench(tmp_path):
     record = {
         "schema": SCHEMA,
         "tag": "personium-1.2.3.4",
+        "base": {
+            # Witnessed by the Windows asset's two independent version
+            # statements. NOT by the macOS bundle version, which is the
+            # recorded discrepancy — see test_the_macos_bundle_version_is_not_
+            # admitted_as_a_witness_for_the_base_version.
+            "chromium_version": df("152.0.7977.75"),
+        },
         "patch_set": {"switches_introduced": df([df(s) for s in SWITCHES])},
         "build": {"produced_by": {"value": None, "confidence": "unknown"}},
         "assets": [
@@ -423,6 +440,41 @@ def test_missing_asset_is_exit_two_not_exit_zero(bench):
                 "value", "engine-trial-build.yml run 33972186413"
             ),
         ),
+        (
+            # THE RECORD'S HEADLINE CLAIM. `base.chromium_version` is where a
+            # reader looks for the ticket's "which Chromium version", and it
+            # used to have no red arm at all: altered to nonsense, the run
+            # stayed at exit 0 because no code path compared it to anything.
+            "base.chromium_version altered",
+            lambda r: r["base"]["chromium_version"].__setitem__(
+                "value", "152.0.7977.99"
+            ),
+        ),
+        (
+            # The other half of the same hole, one level down: an inner
+            # declaration inside `switches_introduced.value`, which the linter
+            # never descended into.
+            "a nested switch declaration given an unrecognised confidence",
+            lambda r: r["patch_set"]["switches_introduced"]["value"][3].__setitem__(
+                "confidence", "probably-fine"
+            ),
+        ),
+        (
+            "a nested switch declaration declared unknown but carrying a value",
+            lambda r: r["patch_set"]["switches_introduced"]["value"][5].__setitem__(
+                "confidence", "unknown"
+            ),
+        ),
+        (
+            # `switches_introduced` is the deriver's own needle list, so an
+            # invented switch used to appear on NEITHER side of the per-asset
+            # comparison and could not be falsified at all.
+            "a switch invented in the top-level claim",
+            lambda r: r["patch_set"]["switches_introduced"]["value"].append(
+                {"value": "fingerprint-invented-switch",
+                 "confidence": "derived_from_artifact"}
+            ),
+        ),
     ],
 )
 def test_altering_a_recorded_value_turns_the_check_red(bench, name, mutate):
@@ -430,6 +482,130 @@ def test_altering_a_recorded_value_turns_the_check_red(bench, name, mutate):
     assert run(records, assets) == 0, "the bench must be green before it is sabotaged"
     rewrite(records, record, mutate)
     assert run(records, assets) == 1, f"sabotage went undetected: {name}"
+
+
+def test_a_base_field_with_no_artifact_witness_is_unmeasured_not_green(bench):
+    """A `base` field claiming `derived_from_artifact` that this verifier
+    defines no witness for must NOT read as verified.
+
+    The confidence vocabulary promises the verifier checks `derived_from_
+    artifact`; a field wearing that label with no code path behind it makes the
+    promise false, which is worse than an honest `from_repository`.
+    """
+    records, assets, record = bench
+    rewrite(
+        records,
+        record,
+        lambda r: r["base"].__setitem__(
+            "some_future_field",
+            {"value": "whatever", "confidence": "derived_from_artifact"},
+        ),
+    )
+    assert run(records, assets) == 2
+
+
+def test_the_macos_bundle_version_is_not_admitted_as_a_witness_for_the_base_version(bench):
+    """The asymmetry, pinned rather than left incidental.
+
+    The macOS asset's bundle version disagrees with the release tag — that IS
+    the record's headline finding. If it were admitted as a witness for
+    `base.chromium_version`, the record would go RED on the very discrepancy it
+    exists to preserve, and the pressure would be to 'correct' the finding away.
+    The bench's macOS asset carries .64 against a base claim of .75, and the
+    run must still be green.
+    """
+    records, assets, record = bench
+    mac = next(a for a in record["assets"] if a["os"] == "macos")
+    assert mac["derived"]["bundle_short_version"]["value"] == "152.0.7977.64"
+    assert record["base"]["chromium_version"]["value"] == "152.0.7977.75"
+    assert run(records, assets) == 0
+
+    excluded = _V.BASE_WITNESSES_EXCLUDED["chromium_version"]
+    assert "bundle_short_version" in excluded
+    assert excluded["bundle_short_version"].strip()
+
+
+def test_an_asset_with_nothing_derivable_is_unmeasured_not_a_green_digest_pass(tmp_path):
+    """The digest-is-not-content trap coming back through the front door.
+
+    An asset whose record entry declares no `derived` block used to report a
+    NOTED gap — unscored — so a zip containing one readme.txt under a correct
+    name, size and digest passed with three green rows and exit 0. `UNMEASURED`
+    is the state the vocabulary already has for "nothing was measured".
+
+    Asserted on the ROW, not only on the exit code: an exit-code-only assertion
+    passes whenever anything else in the run happens to be unmeasured, which is
+    exactly how a test comes to guard nothing.
+    """
+    import hashlib
+
+    assets = tmp_path / "assets"
+    assets.mkdir()
+    # Not a Chromium package at all — one readme, under a correct name, size
+    # and digest.
+    p = assets / "personium-1.2.3.4-windows-x86_64.zip"
+    with zipfile.ZipFile(p, "w") as zf:
+        zf.writestr("readme.txt", "nothing here")
+
+    record = {
+        "tag": "personium-1.2.3.4",
+        "patch_set": {"switches_introduced": {"value": [], "confidence": "unknown"}},
+    }
+    asset = {
+        "name": p.name,
+        "format": "windows-zip",
+        "size_bytes": p.stat().st_size,
+        "sha256": hashlib.sha256(p.read_bytes()).hexdigest(),
+    }
+
+    report = Report()
+    assert verify_asset(record, asset, assets, report) is None
+    rows = {c.name: c.verdict for c in report.checks}
+    assert rows["size"] == _V.GREEN
+    assert rows["sha256"] == _V.GREEN
+    assert rows["derived"] == _V.UNMEASURED, rows
+    assert report.exit_code() == 2
+
+
+def test_a_structurally_incomplete_record_is_unmeasured_not_a_traceback(tmp_path):
+    """The README tells the next author to hand-copy and edit an existing
+    record, so a missing key is the likeliest failure this script will ever
+    see. It belongs in the UNMEASURED lane beside unreadable JSON, not in an
+    uncaught KeyError with no report at all."""
+    assets = tmp_path / "assets"
+    assets.mkdir()
+    p = assets / "personium-1.2.3.4-windows-x86_64.zip"
+    make_windows_zip(p)
+
+    record = {"tag": "personium-1.2.3.4", "patch_set": {}}
+    for missing in ("size_bytes", "sha256"):
+        asset = {"name": p.name, "format": "windows-zip", "size_bytes": 1, "sha256": "x"}
+        asset.pop(missing)
+
+        report = Report()
+        # The point of the test: this call must RETURN, not raise.
+        assert verify_asset(record, asset, assets, report) is None
+        rows = {c.name: c.verdict for c in report.checks}
+        assert rows == {"record-shape": _V.UNMEASURED}, (missing, rows)
+        assert report.exit_code() == 2
+
+
+def test_a_malformed_record_does_not_crash_the_whole_run(bench):
+    """And the same thing end to end: the CLI reports rather than tracebacks."""
+    records, assets, record = bench
+    rewrite(records, record, lambda r: r["assets"][0].pop("sha256"))
+    assert run(records, assets) == 2
+
+
+def test_the_nested_switch_declarations_are_linted_too(shipped_record):
+    """`walk_fields` used to return at the first `confidence` key, so the
+    eleven declarations inside `patch_set.switches_introduced.value` were
+    invisible to the linter — a third of the shipped record's fields sat
+    outside the vocabulary the record's whole value rests on."""
+    paths = {p for p, _ in walk_fields(shipped_record)}
+    assert "patch_set.switches_introduced" in paths
+    inner = {p for p in paths if p.startswith("patch_set.switches_introduced.value[")}
+    assert len(inner) == 11, sorted(paths)
 
 
 def test_an_unrecognised_confidence_is_red_not_ignored(bench):
