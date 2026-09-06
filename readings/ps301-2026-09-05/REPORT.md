@@ -273,9 +273,30 @@ width by its stock width:
 | **spread (max−min)** | **`0.000e+00`** | **`0.000e+00`** |
 
 A **constant** ratio across four different strings is multiplication, not
-perturbation — and the constant is *numerically equal to the `noise_x` the patch
-computes*, which is also what it reports as `actualBoundingBoxLeft`. Patch 015
-computes `noise_x = norm_x * 0.00001` with `norm_x ∈ [-0.5, 0.5]`, i.e.
+perturbation — and **every field of the `TextMetrics` object is scaled by that
+same constant**, verified bit-exactly on both seeds:
+
+```
+obs_width == stock_width * k    exact, 4/4 strings, both seeds
+obs_abbL  == stock_abbL  * k    exact, 4/4 strings, both seeds
+                                 (0*k = 0 · -1*k = +k · +1*k = -k)
+```
+
+That second line is the independent witness: `actualBoundingBoxLeft` is a
+*different field of the same object*, and it moves by the same factor as the
+width. It rules out "the width is computed wrongly" in favour of "`Shuffle()`
+scales the whole object", which is exactly the 015/014 account below.
+
+⚠️ Note what this deliberately does **not** say. An earlier revision claimed the
+constant ratio "equals the `actualBoundingBoxLeft` value printed beside it".
+That is false as a general statement and the committed transcript falsifies it:
+it holds for **1 of the 4 strings on each seed**, and only because that string's
+*stock* `abbL` happens to be exactly `+1`, so `stock_abbL * k` coincides with
+`k`. For `'A'` the stock `abbL` is `0`, so the observed value is `0` and cannot
+equal a non-zero ratio at any seed. The scaling relation above is what is
+actually true, and it is the stronger claim.
+
+Patch 015 computes `noise_x = norm_x * 0.00001` with `norm_x ∈ [-0.5, 0.5]`, i.e.
 `|noise_x| ≤ 5e-6`, and hands it to `text_metrics->Shuffle(noise_x)`. The
 upstream call site passed `GetNoiseFactorX()`, which is a value **around 1**
 (`1 + (rand−0.5)*0.000003`) precisely because `Shuffle` **scales**. The rebase

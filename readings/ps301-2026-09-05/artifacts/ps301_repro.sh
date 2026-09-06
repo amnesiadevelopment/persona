@@ -116,11 +116,17 @@ mt "$SELF"
 echo "--- STOCK control, --fingerprint=24601 (switch is inert in stock)"
 mt "$STOCK" --fingerprint=24601
 echo
-echo "READ: with a seed, every width is NEGATIVE and the observed/stock ratio is"
-echo "      IDENTICAL across all four strings — i.e. the width was MULTIPLIED by"
-echo "      the noise factor, not perturbed by it. The constant ratio equals the"
-echo "      actualBoundingBoxLeft value printed beside it. A negative width is"
-echo "      impossible per spec, so this is trivially detectable."
+echo "WHAT TO LOOK FOR: compare each self-built row against the STOCK row for the"
+echo "      same string. The defect signature is that every observed value is the"
+echo "      stock value MULTIPLIED by one constant factor k — width and"
+echo "      actualBoundingBoxLeft alike — rather than perturbed by a small offset."
+echo "      When k is negative the widths come out negative, which is impossible"
+echo "      per spec and is the cheapest tell."
+echo
+echo "      Do NOT read a verdict out of this section. It PRINTS; §2b DECIDES."
+echo "      On a REPAIRED engine these rows are positive and §2b exits 0, and any"
+echo "      fixed conclusion printed here would contradict that — which is the"
+echo "      exact failure the guard below was added to remove."
 
 echo
 echo "=== 2b. THE VERDICT — and this one can FAIL ==================="
