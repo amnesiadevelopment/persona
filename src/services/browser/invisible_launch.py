@@ -1011,16 +1011,43 @@ def _show_bookmarks_toolbar(profile_dir: str) -> None:
     })
     chrome_dir = os.path.join(profile_dir, "chrome")
     path = os.path.join(chrome_dir, "userChrome.css")
+    # DECISION (PS-333): BYTE-LEVEL PATCH, not a decline.
+    #
+    # This file is OPERATOR-AUTHORED — the docstrings above and on
+    # _scrub_chrome_zoom_css both say so ("a zoom sheet a user added",
+    # "a user's own customization"). Reading it as text with
+    # errors="replace" and writing the decoded string back REPLACED every
+    # undecodable byte with U+FFFD *on disk*: a sheet whose comment reads
+    # `/* Menü anpassen © 2026 */` in Latin-1 came back as `/* Men� anpassen
+    # � 2026 */`, permanently. Measured, 2 characters destroyed per launch.
+    #
+    # We append, and appending is a pure byte operation — nothing here needs
+    # to understand the operator's encoding. So the whole round trip stays in
+    # bytes and undecodable input is carried through untouched.
+    #
+    # WHY NOT DECLINE (the family idiom from PS-61/166/169/211/270/280):
+    # the read and the write share one `try` here, so widening the handler
+    # would skip the whole step and the bookmarks toolbar would stay
+    # collapsed on first paint — #242's symptom, reintroduced for any
+    # operator whose stylesheet is not UTF-8. Cosmetic, but avoidable at no
+    # cost, and it would ALSO desynchronise this function's two halves: the
+    # _upsert_prefs_js call above has already enabled stylesheet loading, so
+    # a decline leaves the pref saying "load userChrome.css" while the rule
+    # it was enabled for was never written.
+    #
+    # FAILURE MODE OF THIS ARM: none beyond the pre-existing one — an OSError
+    # still leaves the file untouched via the same `except OSError: pass`.
+    marker = b"#PersonalToolbar"
     try:
-        existing = ""
+        existing = b""
         if os.path.exists(path):
-            with open(path, encoding="utf-8", errors="replace") as f:
+            with open(path, "rb") as f:
                 existing = f.read()
-        if "#PersonalToolbar" in existing:
+        if marker in existing:
             return
         os.makedirs(chrome_dir, exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(existing + _BOOKMARKS_TOOLBAR_CSS)
+        with open(path, "wb") as f:
+            f.write(existing + _BOOKMARKS_TOOLBAR_CSS.encode("utf-8"))
     except OSError:
         pass
 
@@ -1915,9 +1942,51 @@ def _upsert_prefs_js(profile_dir: str, prefs: dict) -> None:
     if not profile_dir or not prefs:
         return
     path = os.path.join(profile_dir, "prefs.js")
+    # DECISION (PS-333): BYTE-LEVEL PATCH, and declining here would be WORSE
+    # THAN THE BUG — this is the site where the family idiom must not be
+    # applied mechanically.
+    #
+    # WHAT THE BUG WAS: reading with errors="replace" and writing the decoded
+    # text back persisted U+FFFD over every undecodable byte. Firefox writes
+    # this file, and it carries operator-visible strings (homepage, search
+    # keywords) that routinely hold non-ASCII. Measured: 1 character destroyed.
+    #
+    # ⛔ WHY THE ESTABLISHED IDIOM IS REFUSED HERE. Six prior tickets
+    # (PS-61/166/169/211/270/280) settled on "widen `except OSError` to
+    # `except (OSError, UnicodeDecodeError)` and let the step decline". That
+    # is right where the handler leaves the file alone. HERE THE HANDLER IS
+    # `lines = []` AND THE WRITE BELOW IS UNCONDITIONAL, so an empty read is
+    # not a decline — it is a truncation. Measured counterfactual: a 109-byte
+    # prefs.js with 3 operator prefs came back 34 bytes with 0 of them
+    # surviving. The bug loses one character; that "fix" loses the file.
+    # `lines = []` is correct for the FILE-ABSENT case (a fresh profile has no
+    # prefs.js, where empty genuinely is the truth) and wrong for a DECODE
+    # failure, where the file exists and is full of data. The two cases must
+    # not share an arm, which is exactly why they no longer do: the decode
+    # question is gone rather than re-routed.
+    #
+    # ⛔ AND WHY DECLINING IS UNACCEPTABLE INDEPENDENT OF THAT: this function
+    # is how prefs reach the profile's FIRST window (see the docstring). One
+    # of its callers seeds _startup_decided_prefs(cfg), which folds in
+    # _PROXY_ANTILEAK_PINS on a proxied profile — the ICE relay-only pin, the
+    # remote-DNS pin, the TRR guard. Skipping those because the operator's
+    # prefs.js happened not to decode would make leak protection conditional
+    # on an encoding, silently. That is a strictly worse outcome than a
+    # mojibaked comment byte.
+    #
+    # HOW THE BYTE PATH IS SAFE: the filter below matches an ASCII-only
+    # needle (`"<key>"`) against each raw line, and the lines it emits are
+    # ASCII-safe by construction (json.dumps escapes non-ASCII). Lines it
+    # KEEPS are passed through as the exact bytes that were read, so an
+    # undecodable operator line survives untouched. Splitting on b"\n" with
+    # keepends preserves the file's own line endings.
+    #
+    # FAILURE MODE OF THIS ARM: unchanged from before — an OSError on read
+    # still yields "no existing lines" (correct for an absent file), and an
+    # OSError on write is still swallowed.
     try:
-        with open(path, encoding="utf-8", errors="replace") as f:
-            lines = f.readlines()
+        with open(path, "rb") as f:
+            lines = f.read().splitlines(keepends=True)
     except OSError:
         lines = []
 
@@ -1928,11 +1997,14 @@ def _upsert_prefs_js(profile_dir: str, prefs: dict) -> None:
             return str(v)
         return json.dumps(str(v))
 
-    kept = [ln for ln in lines if not any(f'"{k}"' in ln for k in prefs)]
-    kept += [f'user_pref("{k}", {fmt(v)});\n' for k, v in prefs.items()]
+    needles = [f'"{k}"'.encode("utf-8") for k in prefs]
+    kept = [ln for ln in lines if not any(n in ln for n in needles)]
+    kept += [
+        f'user_pref("{k}", {fmt(v)});\n'.encode("utf-8") for k, v in prefs.items()
+    ]
     try:
         os.makedirs(profile_dir, exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
+        with open(path, "wb") as f:
             f.writelines(kept)
     except OSError:
         pass
@@ -1950,16 +2022,43 @@ def _scrub_prefs_js(profile_dir: str, keys) -> None:
     if not profile_dir or not keys:
         return
     path = os.path.join(profile_dir, "prefs.js")
+    # DECISION (PS-333): BYTE-LEVEL PATCH, not a decline.
+    #
+    # WHAT THE BUG WAS: this rewrites prefs.js when it removes a key, and
+    # reading with errors="replace" persisted U+FFFD over undecodable bytes
+    # on that write-back. Measured, 1 character destroyed — and CONDITIONALLY:
+    # with the target key absent the function early-returns below and the file
+    # is untouched, so the corruption only fires when a scrub actually
+    # happens. Both arms are pinned by tests.
+    #
+    # WHY NOT DECLINE: widening the handler to (OSError, UnicodeDecodeError)
+    # is a one-token change and would leave the file byte-intact — but it
+    # would leave the STALE KEY IN PLACE, which is the whole defect this
+    # function exists to prevent: a sampled profile's layout.css.devPixelsPerPx
+    # surviving into an Auto launch opens the first window at the sampled
+    # scale rather than the host's, a skew the operator never chose. Trading
+    # a data-integrity bug for a silent behavioural regression is not a fix,
+    # and it is avoidable: the scrub is a line filter, so it needs no
+    # understanding of the operator's encoding at all.
+    #
+    # HOW THE BYTE PATH IS SAFE: the needle is ASCII (`"<key>"`), matched
+    # against raw lines; every kept line is written back as the exact bytes
+    # that were read. splitlines(keepends=True) preserves the file's own line
+    # endings, so a CRLF prefs.js is not silently rewritten to LF.
+    #
+    # FAILURE MODE OF THIS ARM: unchanged — an OSError on read still returns
+    # without touching the file, and an OSError on write is still swallowed.
     try:
-        with open(path, encoding="utf-8", errors="replace") as f:
-            lines = f.readlines()
+        with open(path, "rb") as f:
+            lines = f.read().splitlines(keepends=True)
     except OSError:
         return
-    kept = [ln for ln in lines if not any(f'"{k}"' in ln for k in keys)]
+    needles = [f'"{k}"'.encode("utf-8") for k in keys]
+    kept = [ln for ln in lines if not any(n in ln for n in needles)]
     if len(kept) == len(lines):
         return
     try:
-        with open(path, "w", encoding="utf-8") as f:
+        with open(path, "wb") as f:
             f.writelines(kept)
     except OSError:
         pass
@@ -2407,18 +2506,37 @@ def _scrub_headless_cloak_prefs(profile_dir: str) -> None:
     if not profile_dir:
         return
     path = os.path.join(profile_dir, "prefs.js")
+    # DECISION (PS-333): BYTE-LEVEL PATCH, not a decline.
+    #
+    # WHAT THE BUG WAS: same shape as _scrub_prefs_js — the write-back after a
+    # removal persisted U+FFFD over undecodable bytes. Measured, 1 character
+    # destroyed, and conditionally: with neither stale key present the
+    # function early-returns and the file is untouched. Both arms are pinned.
+    #
+    # ⛔ WHY DECLINING IS THE WORST ARM AT THIS SITE SPECIFICALLY. The two
+    # keys below are what keep the headless init's window hidden. If they
+    # survive into the VISIBLE launch, the patched binary DWM-cloaks the
+    # window it just opened and the operator's browser NEVER APPEARS — with
+    # no error, because from the product's point of view the launch
+    # succeeded. Declining would make "did the browser open?" depend on
+    # whether an unrelated pref line decoded as UTF-8. The byte path removes
+    # the question entirely: the filter needle is ASCII and the kept lines are
+    # written back as the exact bytes read.
+    #
+    # FAILURE MODE OF THIS ARM: unchanged — OSError on read still returns
+    # without touching the file; OSError on write is still swallowed.
     try:
-        with open(path, encoding="utf-8", errors="replace") as f:
-            lines = f.readlines()
+        with open(path, "rb") as f:
+            lines = f.read().splitlines(keepends=True)
     except OSError:
         return
-    stale = ("zoom.stealth.cloak_windows",
-             "widget.windows.window_occlusion_tracking.enabled")
+    stale = (b"zoom.stealth.cloak_windows",
+             b"widget.windows.window_occlusion_tracking.enabled")
     kept = [ln for ln in lines if not any(k in ln for k in stale)]
     if len(kept) == len(lines):
         return
     try:
-        with open(path, "w", encoding="utf-8") as f:
+        with open(path, "wb") as f:
             f.writelines(kept)
     except OSError:
         pass
