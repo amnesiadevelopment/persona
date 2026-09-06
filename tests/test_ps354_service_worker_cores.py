@@ -115,7 +115,11 @@ def test_the_python_pick_matches_the_REAL_emitted_javascript(tmp_path):
                 f"console.log(JSON.stringify(pick(HCMEM,{CORES_MEMORY_SALT})));"
             )
             out = subprocess.run(
-                [node, "-e", prog], capture_output=True, text=True, timeout=60
+                [node, "-e", prog],
+                capture_output=True,
+                text=True,
+                timeout=60,
+                encoding="utf-8",
             )
             assert out.returncode == 0, out.stderr
             js_pick = tuple(json.loads(out.stdout.strip()))
