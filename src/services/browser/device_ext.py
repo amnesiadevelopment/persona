@@ -243,20 +243,66 @@ _CONTENT_SCRIPT = r"""
   function pick(arr, salt) { return arr[h32(salt) % arr.length]; }
 
   function nativeWrap(orig, replacement) {
+    // RE-HOUSE the caller's function EXPRESSION inside a real method shorthand.
+    //
+    // A sloppy-mode function expression owns `prototype`, `arguments` and
+    // `caller`; a native method owns exactly ["length","name"]. So the FORM the
+    // callsite happened to type is a one-line tell, readable by
+    // Object.getOwnPropertyNames without calling anything — an axis entirely
+    // independent of the toString cloak below. `delete replacement.prototype`
+    // cannot repair it (non-configurable: it returns false in sloppy mode and
+    // throws in strict), so the shape has to be right AT CREATION. Doing it
+    // here rather than at ~18 callsites means no spoofed VALUE is disturbed.
+    //
+    // `.apply(this, arguments)` keeps the receiver and the full argument list,
+    // so a re-housed wrapper is behaviourally identical to the expression.
+    var shell;
     try {
-      Object.defineProperty(replacement, 'name', { value: orig.name });
+      shell = ({ m() { return replacement.apply(this, arguments); } }).m;
+    } catch (e) {
+      // If the shorthand form is somehow unavailable, a correctly-spoofing
+      // wrapper with a wrong shape beats no wrapper at all.
+      shell = replacement;
+    }
+    try {
+      // Arity is a second axis: a shape fix that moves `length` swaps one tell
+      // for another. Copy it from the ORIGINAL at runtime — never a literal,
+      // which would go stale silently against a future engine.
+      Object.defineProperty(shell, 'length', { value: orig.length });
+      Object.defineProperty(shell, 'name', { value: orig.name });
       // Mark for the native_ext Function.prototype.toString patch so a detector
       // calling Function.prototype.toString.call(replacement) reads native. A
       // plain replacement.toString override is bypassed by that .call form.
-      Object.defineProperty(replacement, '__pnaName', { value: orig.name });
+      //
+      // This marker is READ AS AN OWN PROPERTY (`this.__pnaName`, see
+      // native_ext.py's applyNativePatch), so a Chromium wrapper the cloak can
+      // serve necessarily owns it and the best achievable shape here is
+      // ["__pnaName","length","name"]. That is a deliberate trade, not an
+      // oversight: it drops the three ENGINE-shaped leaks that identify a
+      // wrapper generically. The Firefox helper carries its marker in a WeakMap
+      // and therefore does reach the exact native set.
+      Object.defineProperty(shell, '__pnaName', { value: orig.name });
     } catch (e) {}
-    return replacement;
+    return shell;
   }
   function def(obj, prop, val) {
     try {
-      var getter = function () { return val; };
+      // A REAL ACCESSOR, pulled back out of an object literal — not a function
+      // expression. An expression getter owns `prototype`/`arguments`/`caller`
+      // and reads `.name === "getter"`; a native accessor owns exactly
+      // ["length","name"] with `.name === "get <prop>"` (cf. Map#size). Both
+      // are readable without calling anything, and `delete` cannot repair the
+      // first (non-configurable), so the form must be right at creation.
+      var getter = Object.getOwnPropertyDescriptor(
+        { get m() { return val; } }, 'm').get;
       // Native-looking getters (a masking detector may stringify the accessor).
-      try { Object.defineProperty(getter, '__pnaName', { value: 'get ' + prop }); } catch (e) {}
+      // `name` is pinned as a PAIR with the marker: the marker is what the
+      // toString cloak reads, and `name` is a SECOND, independent axis that
+      // would otherwise leak the persona-internal identifier "getter".
+      try {
+        Object.defineProperty(getter, 'name', { value: 'get ' + prop });
+        Object.defineProperty(getter, '__pnaName', { value: 'get ' + prop });
+      } catch (e) {}
       Object.defineProperty(obj, prop, {
         get: getter, configurable: true, enumerable: true,
       });
@@ -293,8 +339,14 @@ __SCREEN_REALM_SLOT__
     var DEPTH = IS_MAC ? 30 : 24;
     var DPR = IS_MAC ? 2 : 1;
     function h(x){var v=SEED^(x|0);v=Math.imul(v^(v>>>16),0x85ebca6b);v=Math.imul(v^(v>>>13),0xc2b2ae35);return (v^(v>>>16))>>>0;}
-    var def=function(o,k,val){try{var g=function(){return val;};try{Object.defineProperty(g,'__pnaName',{value:'get '+k});}catch(e){}Object.defineProperty(o,k,{get:g,configurable:true,enumerable:true});}catch(e){}};
-    var nw=function(orig,rep){try{Object.defineProperty(rep,'name',{value:orig.name});Object.defineProperty(rep,'__pnaName',{value:orig.name});}catch(e){}return rep;};
+    var def=function(o,k,val){try{var g=Object.getOwnPropertyDescriptor({get m(){return val;}},'m').get;try{Object.defineProperty(g,'name',{value:'get '+k});Object.defineProperty(g,'__pnaName',{value:'get '+k});}catch(e){}Object.defineProperty(o,k,{get:g,configurable:true,enumerable:true});}catch(e){}};
+    // The MINIFIED twin of the readable `nativeWrap` above, and the copy that
+    // actually serves `G.matchMedia` — the readable one has no callsite in this
+    // seam. Re-housed identically: shorthand shell, arity copied from `orig` at
+    // runtime, marker pinned last. Fixing the readable copy alone left
+    // matchMedia reading ["__pnaName","arguments","caller","length","name",
+    // "prototype"]; measured from a realm, not reasoned.
+    var nw=function(orig,rep){var s;try{s=({m(){return rep.apply(this,arguments);}}).m;}catch(e){s=rep;}try{Object.defineProperty(s,'length',{value:orig.length});Object.defineProperty(s,'name',{value:orig.name});Object.defineProperty(s,'__pnaName',{value:orig.name});}catch(e){}return s;};
 
     // Logical (CSS-px) resolutions from a real-world distribution for the OS.
     // Third element is the hardware GENERATION the entry was added in (absent =
@@ -486,7 +538,7 @@ __HW_REALM_GUARD__
     // page actually ends up with — it must be generation-filtered too, and
     // fixing only the copy above would have changed nothing observable.
     var P=__HCMEM__; var m=P[h(0xc0de5)%P.length];
-    var def=function(o,k,val){try{var g=function(){return val;};try{Object.defineProperty(g,'__pnaName',{value:'get '+k});}catch(e){}Object.defineProperty(o,k,{get:g,configurable:true,enumerable:true});}catch(e){}};
+    var def=function(o,k,val){try{var g=Object.getOwnPropertyDescriptor({get m(){return val;}},'m').get;try{Object.defineProperty(g,'name',{value:'get '+k});Object.defineProperty(g,'__pnaName',{value:'get '+k});}catch(e){}Object.defineProperty(o,k,{get:g,configurable:true,enumerable:true});}catch(e){}};
     def(G.navigator,'hardwareConcurrency',m[0]);
     def(G.navigator,'deviceMemory',Math.min(m[1],8));
    } catch (e) {}

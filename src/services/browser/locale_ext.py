@@ -84,15 +84,33 @@ __LOCALE_REALM_GUARD__
     ["DateTimeFormat", "NumberFormat", "RelativeTimeFormat", "DisplayNames",
      "ListFormat", "PluralRules", "Collator", "Segmenter"].forEach(_wrap);
 
-    const _mark = function (fn, name) {
-      try { Object.defineProperty(fn, "__pnaName", { value: name }); } catch (e) {}
-      try { Object.defineProperty(fn, "name", { value: name }); } catch (e) {}
-      return fn;
+    // ⚠️ `_mark` is for METHODS ONLY — never for the Intl constructors above.
+    //
+    // `_wrap`'s W legitimately owns `prototype`: a native Intl constructor does
+    // too (Intl.DateTimeFormat owns ["length","name","prototype",
+    // "supportedLocalesOf"]), and a method shorthand is NOT CONSTRUCTIBLE, so
+    // re-housing W would make `new Intl.DateTimeFormat()` throw. Measured, not
+    // assumed. That is why the shape fix stops at the constructor boundary.
+    //
+    // A wrapped Date METHOD is the opposite case: native Date#toLocaleString
+    // owns exactly ["length","name"], so an expression wrapper leaks
+    // `prototype`/`arguments`/`caller` here with nothing to justify them.
+    const _mark = function (fn, name, orig) {
+      let shell;
+      try {
+        shell = ({ m() { return fn.apply(this, arguments); } }).m;
+        // Copy arity from the ORIGINAL where we have one, so a wrapped method
+        // keeps the platform's own reading rather than the wrapper's.
+        if (orig) Object.defineProperty(shell, "length", { value: orig.length });
+      } catch (e) { shell = fn; }
+      try { Object.defineProperty(shell, "__pnaName", { value: name }); } catch (e) {}
+      try { Object.defineProperty(shell, "name", { value: name }); } catch (e) {}
+      return shell;
     };
     if (Dp) {
       ["toLocaleString", "toLocaleDateString", "toLocaleTimeString"].forEach(function (n) {
         const orig = Dp[n];
-        if (orig) Dp[n] = _mark(function (l, o) { return orig.call(this, l || LOCALE, o); }, n);
+        if (orig) Dp[n] = _mark(function (l, o) { return orig.call(this, l || LOCALE, o); }, n, orig);
       });
       // Date.toString / toTimeString render the tz NAME in the host locale; the
       // Intl overrides don't touch it. Re-render the suffix in LOCALE.
@@ -111,7 +129,7 @@ __LOCALE_REALM_GUARD__
           const tz = _tzName(this);
           if (tz && /\([^)]*\)\s*$/.test(s)) s = s.replace(/\([^)]*\)\s*$/, "(" + tz + ")");
           return s;
-        }, name);
+        }, name, orig);
       });
     }
     // Number/BigInt.toLocaleString use the host locale internally (not the JS
@@ -119,7 +137,7 @@ __LOCALE_REALM_GUARD__
     [G.Number, G.BigInt].forEach(function (C) {
       if (!C || !C.prototype || !C.prototype.toLocaleString) return;
       const orig = C.prototype.toLocaleString;
-      C.prototype.toLocaleString = _mark(function (l, o) { return orig.call(this, l || LOCALE, o); }, "toLocaleString");
+      C.prototype.toLocaleString = _mark(function (l, o) { return orig.call(this, l || LOCALE, o); }, "toLocaleString", orig);
     });
   } catch (e) {}
 }

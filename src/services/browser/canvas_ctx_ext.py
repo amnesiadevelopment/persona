@@ -181,6 +181,20 @@ __REALM_GUARD__
     };
 
     try {
+      // Re-house the expression in a real method shorthand BEFORE the identity
+      // properties are pinned: an expression owns `prototype`/`arguments`/
+      // `caller` where a native method owns exactly ["length","name"]. This site
+      // already got the ARITY axis right (just below) while leaving the SHAPE
+      // axis open — `delete` cannot repair it, so it must happen at creation.
+      //
+      // The self-reference is safe: the shorthand closes over the binding, and
+      // the assignment rebinds it only after the closure is built, so `.apply`
+      // inside reaches the ORIGINAL expression rather than recursing.
+      var inner = replacement;
+      replacement = ({ m() { return inner.apply(this, arguments); } }).m;
+    } catch (e) {}
+
+    try {
       // Match the platform's own function identity. `name` and `length` are
       // both read by detectors. Both are COPIED from the original rather than
       // hardcoded, so they stay correct if the engine's arity ever differs from

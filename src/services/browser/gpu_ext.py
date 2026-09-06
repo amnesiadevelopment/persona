@@ -497,14 +497,47 @@ __REALM_GUARD__
   }
 
   function nativeWrap(orig, replacement) {
+    // RE-HOUSE the caller's function EXPRESSION inside a real method shorthand.
+    //
+    // A sloppy-mode function expression owns `prototype`, `arguments` and
+    // `caller`; a native method owns exactly ["length","name"]. So the FORM the
+    // callsite happened to type is a one-line tell, readable by
+    // Object.getOwnPropertyNames without calling anything — an axis entirely
+    // independent of the toString cloak below. `delete replacement.prototype`
+    // cannot repair it (non-configurable: it returns false in sloppy mode and
+    // throws in strict), so the shape has to be right AT CREATION. Doing it
+    // here rather than at ~18 callsites means no spoofed VALUE is disturbed.
+    //
+    // `.apply(this, arguments)` keeps the receiver and the full argument list,
+    // so a re-housed wrapper is behaviourally identical to the expression.
+    var shell;
     try {
-      Object.defineProperty(replacement, 'name', { value: orig.name });
+      shell = ({ m() { return replacement.apply(this, arguments); } }).m;
+    } catch (e) {
+      // If the shorthand form is somehow unavailable, a correctly-spoofing
+      // wrapper with a wrong shape beats no wrapper at all.
+      shell = replacement;
+    }
+    try {
+      // Arity is a second axis: a shape fix that moves `length` swaps one tell
+      // for another. Copy it from the ORIGINAL at runtime — never a literal,
+      // which would go stale silently against a future engine.
+      Object.defineProperty(shell, 'length', { value: orig.length });
+      Object.defineProperty(shell, 'name', { value: orig.name });
       // Mark for the native_ext Function.prototype.toString patch so a detector
       // calling Function.prototype.toString.call(replacement) reads native. A
       // plain replacement.toString override is bypassed by that .call form.
-      Object.defineProperty(replacement, '__pnaName', { value: orig.name });
+      //
+      // This marker is READ AS AN OWN PROPERTY (`this.__pnaName`, see
+      // native_ext.py's applyNativePatch), so a Chromium wrapper the cloak can
+      // serve necessarily owns it and the best achievable shape here is
+      // ["__pnaName","length","name"]. That is a deliberate trade, not an
+      // oversight: it drops the three ENGINE-shaped leaks that identify a
+      // wrapper generically. The Firefox helper carries its marker in a WeakMap
+      // and therefore does reach the exact native set.
+      Object.defineProperty(shell, '__pnaName', { value: orig.name });
     } catch (e) {}
-    return replacement;
+    return shell;
   }
 
   var WIN_GPUS = __WIN_GPUS__;
