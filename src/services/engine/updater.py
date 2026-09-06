@@ -1012,10 +1012,37 @@ def _within(base: str, target: str) -> bool:
 
     realpath of a not-yet-existing leaf is still its lexical parent + leaf, so
     this answers correctly for a destination that has not been created yet —
-    which is the only moment at which the answer is useful here."""
+    which is the only moment at which the answer is useful here.
+
+    INCOMPARABLE PATHS ANSWER False — they do not propagate. On Windows, the
+    only OS the caller runs on, commonpath RAISES ValueError for two member
+    shapes a hostile archive can carry:
+
+      * a drive-letter member (`chrome-win/D:/evil.exe`) joins to the RELATIVE
+        path `D:evil.exe` -> "Can't mix absolute and relative paths";
+      * an absolute member on another drive (`E:\\evil.exe`)
+        -> "Paths don't have the same drive".
+
+    This function answers a yes/no question and both callers branch on the
+    answer, so "these two paths cannot be compared" must mean False — REFUSE
+    the member, which routes it to the same _HostileMember abort as any other
+    escape. Letting the ValueError out instead would raise it clean through a
+    `-> bool` installer (it is in none of _install_windows's except clauses,
+    nor in any handler between its call site and the UI's broad catch) and
+    report a REFUSED archive to the operator as "Engine update failed: Paths
+    don't have the same drive" — a refusal in the vocabulary of a transfer
+    failure, which download_engine's comments below explicitly forbid.
+
+    Answering False is also the CONSERVATIVE direction: the failure closes,
+    never opens. A path we cannot prove is inside `base` is treated as outside
+    it."""
     base_r = os.path.realpath(base)
     target_r = os.path.realpath(target)
-    return os.path.commonpath([base_r, target_r]) == base_r and target_r != base_r
+    try:
+        common = os.path.commonpath([base_r, target_r])
+    except ValueError:
+        return False
+    return common == base_r and target_r != base_r
 
 
 def _install_windows(asset_path: str) -> bool:
