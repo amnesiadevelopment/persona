@@ -223,6 +223,8 @@ warnings:
   them. So each asset also carries a version re-derived from the artifact's own
   structure, and the list of our fingerprint switches found in the shipped
   machine code — reported as separate rows, neither standing in for the other.
+  An asset from which **nothing** was derived is `UNMEASURED` (exit `2`), never
+  a pass: a green run on a digest alone is that same trap wearing a tick.
 
 ⚠️ **The first record found that the macOS asset of `personium-152.0.7977.75`
 contains `152.0.7977.64`.** `7977.64` is the only `7977.x` string anywhere in

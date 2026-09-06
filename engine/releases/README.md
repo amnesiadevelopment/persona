@@ -126,8 +126,43 @@ Both are in the record's `discrepancies[]`, with their consequence stated.
 1. Cut the release as `RELEASING.md` describes.
 2. Copy the existing record, update `tag` / `published_at` / `assets[]`
    (name, `size_bytes`, `sha256` from the release API's `digest` field).
-3. Fill `derived` from what you actually re-derived. **Leave a field out
-   rather than guessing it**; set `unknown` where you tried and could not.
+3. Fill `derived` from what you actually re-derived. **Never guess a value**;
+   set `unknown` where you tried and could not. Note that an asset with **no**
+   `derived` block at all is `UNMEASURED` (exit `2`), not a pass — its digest
+   is checked and its *content* is not, which is precisely the trap above. So
+   "leave it out" is honest about one field and not about a whole asset.
 4. Run the verifier against the real assets. Exit `0` is the bar.
 5. If you find a mismatch, record it in `discrepancies[]` rather than editing
    the derived value to match — the mismatch *is* the finding.
+
+---
+
+## What the verifier checks, and what it deliberately does not
+
+`derived_from_artifact` is a promise that the verifier checks the field, so
+every field wearing that label has a code path behind it:
+
+| claim | checked against |
+|---|---|
+| `assets[].sha256`, `size_bytes` | the file on disk |
+| `assets[].derived.*` | the per-format deriver's output |
+| `base.chromium_version` | the Windows `manifest_version` and `version_dir`, and the Linux `appimage_version` with its packaging revision dropped |
+| `base.ungoogled_tag` | the Linux `appimage_version` — the only asset carrying the packaging tag |
+| `patch_set.switches_introduced` | every declared switch must be found in the shipped machine code of **at least one** asset |
+
+Two of those need their reasoning stated, because both were holes:
+
+* **The macOS `bundle_short_version` is deliberately NOT a witness for
+  `base.chromium_version`.** It disagrees with the tag — that *is* the record's
+  headline finding — so admitting it would make the record go RED on the very
+  discrepancy it exists to preserve, and the pressure would be to "correct" the
+  finding away. The exclusion is in the code as `BASE_WITNESSES_EXCLUDED`, with
+  its reason, rather than left to be inferred from which fields happen to agree.
+* **`patch_set.switches_introduced` is the derivers' own search list**, so an
+  invented switch appears on *neither* side of the per-asset comparison and
+  cannot be falsified by that comparison. What the verifier checks instead is
+  the claim the label actually implies: a switch declared and found in **no**
+  shipped asset is RED.
+
+A `base` field claiming `derived_from_artifact` for which the verifier defines
+no witness is `UNMEASURED`, never silently green.

@@ -18,12 +18,15 @@ THE TWO TRAPS THIS SCRIPT IS BUILT AROUND
    the bytes that were published"; it says nothing about what is inside them.
    The project has already been bitten by this — three seats verified a
    Chromium binary by hash and none of them ever executed it. So every asset
-   here carries a second, *content-level* derivation alongside its digest: a
-   version string read out of the artifact's own structure (a Windows
-   `.manifest`, a macOS `Info.plist`, an AppImage `.desktop`), and the list of
-   our own fingerprint switches found in the shipped machine code. The digest
-   check and the derivation check are reported as SEPARATE rows and neither is
-   allowed to stand in for the other.
+   here carries a second, *content-level* derivation alongside its digest.
+   Each format states its version somewhere different in its own structure —
+   the Windows zip in a `<version>.manifest`, the macOS image in the browser
+   bundle's `Info.plist`, the Linux AppImage in its `.desktop` — and every
+   format additionally yields the list of our own fingerprint switches found
+   in the shipped machine code. The digest check and the derivation check are
+   reported as SEPARATE rows and neither is allowed to stand in for the other.
+   An asset from which NOTHING was derived is UNMEASURED, never green: a
+   digest-only pass is exactly the trap above wearing a tick.
 
 2. **A field that cannot be established is `unknown`, never inferred.** None of
    the three published assets was produced by any workflow in this repository
@@ -342,30 +345,16 @@ def derive_macos_dmg(path: Path, switches: list[str]) -> dict[str, object]:
     THIS IS THE ASSET THE TICKET WARNED ABOUT, and the check is why the warning
     is now a measurement: the version this returns is what the *bundle* claims,
     which on `personium-152.0.7977.75` is **not** what the filename claims.
-    """
-    image = b"".join(_udif_apfs_image(path))
 
-    version = None
-    for m in _PLIST_ID.finditer(image):
-        seg = image[max(0, m.start() - 1500) : m.start() + 1500]
-        ex = _PLIST_EXEC.search(seg)
-        sv = _PLIST_SHORTVER.search(seg)
-        # The top-level browser bundle: identifier exactly org.chromium.Chromium
-        # AND executable "Chromium". The helper bundles and the app-mode loader
-        # template carry a suffixed identifier, so this is not ambiguous.
-        if ex and sv and ex.group(1) == b"Chromium":
-            version = sv.group(1).decode("utf-8", "replace")
-            break
-    if version is None:
-        raise Unmeasurable(
-            "no org.chromium.Chromium browser bundle Info.plist in the image"
-        )
+    Read in two chunked passes rather than by materialising the ~457 MB
+    decompressed image — the module's stated memory discipline, honoured. Two
+    passes because the two questions want different windows: the plist needs a
+    span of context around each match, the switches only need to be found.
+    """
+    version = _macos_bundle_version(path)
 
     needles = [switch_needle(s) for s in switches]
-    found: set[bytes] = set()
-    for n in needles:
-        if n in image:
-            found.add(n)
+    found = find_needles(_StreamOfChunks(_udif_apfs_image(path)), needles)
 
     return {
         "bundle_short_version": version,
@@ -373,6 +362,36 @@ def derive_macos_dmg(path: Path, switches: list[str]) -> dict[str, object]:
             s for s in switches if switch_needle(s) in found
         ),
     }
+
+
+def _macos_bundle_version(path: Path) -> str:
+    """Scan the decompressed image for the top-level browser bundle's plist.
+
+    Chunked with a 3 KB overlap — the widest window `_PLIST_ID` needs context
+    on either side of — so a plist straddling a chunk boundary is still read.
+    """
+    context = 1500
+    stream = _StreamOfChunks(_udif_apfs_image(path))
+    tail = b""
+    while True:
+        block = stream.read(_CHUNK)
+        if not block:
+            break
+        window = tail + block
+        for m in _PLIST_ID.finditer(window):
+            seg = window[max(0, m.start() - context) : m.start() + context]
+            ex = _PLIST_EXEC.search(seg)
+            sv = _PLIST_SHORTVER.search(seg)
+            # The top-level browser bundle: identifier exactly
+            # org.chromium.Chromium AND executable "Chromium". The helper
+            # bundles and the app-mode loader template carry a suffixed
+            # identifier, so this is not ambiguous.
+            if ex and sv and ex.group(1) == b"Chromium":
+                return sv.group(1).decode("utf-8", "replace")
+        tail = window[-(2 * context) :]
+    raise Unmeasurable(
+        "no org.chromium.Chromium browser bundle Info.plist in the image"
+    )
 
 
 def derive_linux_appimage(path: Path, switches: list[str]) -> dict[str, object]:
@@ -494,10 +513,26 @@ def lint_record(record: dict, report: Report) -> None:
 
 
 def walk_fields(node, prefix: str = ""):
-    """Every `{value, confidence}` leaf in the record, with its dotted path."""
+    """Every `{value, confidence}` field in the record, with its dotted path.
+
+    NOT a leaf-only walk, deliberately. A `{value, confidence}` field may carry
+    OTHER `{value, confidence}` fields inside its `value` —
+    `patch_set.switches_introduced` is exactly that shape, a declared list of
+    eleven individually-declared switches. An earlier version of this walker
+    returned as soon as it saw a `confidence` key, so those eleven inner fields
+    were never linted at all: a third of the record's declarations sat outside
+    the vocabulary the record's whole value rests on. Yield the outer field AND
+    descend into its `value`.
+    """
     if isinstance(node, dict):
         if "confidence" in node:
             yield prefix or "<root>", node
+            # Descend into the declared value — but only into containers. A
+            # scalar value cannot hold further declarations, and recursing into
+            # a plain dict `value` would re-yield the same node's own keys.
+            inner = node.get("value")
+            if isinstance(inner, (list, dict)):
+                yield from walk_fields(inner, f"{prefix}.value" if prefix else "value")
             return
         for k, v in node.items():
             yield from walk_fields(v, f"{prefix}.{k}" if prefix else k)
@@ -506,13 +541,49 @@ def walk_fields(node, prefix: str = ""):
             yield from walk_fields(v, f"{prefix}[{i}]")
 
 
-def verify_asset(record: dict, asset: dict, assets_dir: Path, report: Report) -> None:
-    subject = asset["name"]
+def declared_switches(record: dict) -> list[str]:
+    """The switch names the record claims `000-add-fingerprint-switches.patch`
+    introduces. Used as the deriver's search list — see `verify_switch_claim`
+    for why that makes the claim itself need a separate check."""
+    node = (record.get("patch_set") or {}).get("switches_introduced") or {}
+    out = []
+    for f in node.get("value") or []:
+        if isinstance(f, dict) and isinstance(f.get("value"), str):
+            out.append(f["value"])
+    return out
+
+
+def verify_asset(
+    record: dict, asset: dict, assets_dir: Path, report: Report
+) -> dict[str, object] | None:
+    """Check one asset against its record entry.
+
+    Returns what was actually derived from the artifact, so the record-level
+    `base{}` and `patch_set{}` claims can be checked against the SAME evidence
+    (see `verify_base` / `verify_switch_claim`). Returns None when nothing was
+    derived — which is never a pass.
+    """
+    subject = asset.get("name", "<unnamed asset>")
+
+    # A record is hand-edited from an existing one (see engine/releases/
+    # README.md), so a missing key is the likeliest failure this script will
+    # ever see. It belongs in the UNMEASURED lane with unreadable JSON, not in
+    # a traceback with no report at all.
+    for required in ("name", "size_bytes", "sha256"):
+        if required not in asset:
+            report.add(
+                subject,
+                "record-shape",
+                UNMEASURED,
+                f"asset entry has no {required!r} — the record is structurally "
+                "incomplete and nothing could be checked against it",
+            )
+            return None
 
     path = assets_dir / asset["name"]
     if not path.is_file():
         report.add(subject, "present", UNMEASURED, f"not found under {assets_dir}")
-        return
+        return None
 
     # ── 1. IDENTITY. What was published. ────────────────────────────────────
     actual_size = path.stat().st_size
@@ -531,27 +602,39 @@ def verify_asset(record: dict, asset: dict, assets_dir: Path, report: Report) ->
         report.add(subject, "sha256", GREEN, expected)
 
     # ── 2. CONTENT. What is inside them. A digest cannot answer this. ───────
+    #
+    # An asset with no `derived` block is UNMEASURED, not green. It used to be
+    # reported as a NOTED gap, which is unscored — so a zip containing one
+    # readme.txt under a correct name, size and digest passed with three green
+    # rows and exit 0. That is the digest-is-not-content trap re-entering
+    # through the front door, and `UNMEASURED` is the state the vocabulary
+    # already has for "nothing was measured".
     derived_spec = asset.get("derived") or {}
     if not derived_spec:
-        report.add(subject, "derived", NOTED, "record declares nothing derivable")
-        return
+        report.add(
+            subject,
+            "derived",
+            UNMEASURED,
+            "the record declares nothing derivable from this asset — its digest "
+            "was checked and its CONTENT was not",
+        )
+        return None
 
     deriver = DERIVERS.get(asset.get("format", ""))
     if deriver is None:
         report.add(
             subject, "derived", UNMEASURED, f"no deriver for format {asset.get('format')!r}"
         )
-        return
+        return None
 
-    switches = [f["value"] for f in record["patch_set"]["switches_introduced"]["value"]]
     try:
-        actual_derived = deriver(path, switches)
+        actual_derived = deriver(path, declared_switches(record))
     except Unmeasurable as exc:
         report.add(subject, "derived", UNMEASURED, str(exc))
-        return
+        return None
 
     for key, node in derived_spec.items():
-        if node.get("confidence") != "derived_from_artifact":
+        if not isinstance(node, dict) or node.get("confidence") != "derived_from_artifact":
             report.add(subject, f"derived.{key}", NOTED, "not claimed as artifact-derived")
             continue
         if key not in actual_derived:
@@ -559,13 +642,194 @@ def verify_asset(record: dict, asset: dict, assets_dir: Path, report: Report) ->
                 subject, f"derived.{key}", UNMEASURED, "the deriver produced no such field"
             )
             continue
-        want, got = node["value"], actual_derived[key]
+        want, got = node.get("value"), actual_derived[key]
         if want == got:
             report.add(subject, f"derived.{key}", GREEN, repr(got))
         else:
             report.add(
                 subject, f"derived.{key}", RED, f"record {want!r}, artifact {got!r}"
             )
+
+    return actual_derived
+
+
+# ── record-level claims, checked against the per-asset derivations ──────────
+def _exact(v: str) -> str:
+    return v
+
+
+def _strip_packaging_revision(v: str) -> str:
+    """`152.0.7977.75-1` → `152.0.7977.75`.
+
+    The ungoogled packaging tag is the Chromium version plus a packaging
+    revision; `base.chromium_version` records the bare version, so the AppImage
+    witnesses it only after the revision is dropped.
+    """
+    return v.split("-", 1)[0]
+
+
+# WHICH per-asset derivation witnesses WHICH record-level `base{}` field.
+#
+# This table is the answer to a real hole: `base.chromium_version` and
+# `base.ungoogled_tag` are the record's top-level answer to the ticket's
+# "which ungoogled base, which Chromium version" — and they used to be declared
+# `derived_from_artifact` while NO code path compared them to anything. Both
+# could be altered to nonsense and the run stayed at exit 0.
+BASE_WITNESSES: dict[str, list[tuple[str, object]]] = {
+    "chromium_version": [
+        ("manifest_version", _exact),  # windows: assemblyIdentity/@version
+        ("version_dir", _exact),  # windows: Chrome-bin/<v>/
+        ("appimage_version", _strip_packaging_revision),  # linux: .desktop
+    ],
+    "ungoogled_tag": [
+        ("appimage_version", _exact),  # the only asset carrying the packaging tag
+    ],
+}
+
+# WITNESSES DELIBERATELY NOT ADMITTED, and why. This asymmetry is stated here,
+# in the code that depends on it, rather than left to be inferred from which
+# fields happen to agree.
+BASE_WITNESSES_EXCLUDED: dict[str, dict[str, str]] = {
+    "chromium_version": {
+        "bundle_short_version": (
+            "the macOS bundle version is itself a RECORDED DISCREPANCY (the asset "
+            "named .75 contains .64), so admitting it as a witness would make the "
+            "record fail on the very finding it exists to preserve — see "
+            "discrepancies[macos-version-mismatch]"
+        )
+    }
+}
+
+
+def verify_base(record: dict, derivations: dict[str, dict], report: Report) -> None:
+    """Check the record-level `base{}` block against the artifacts themselves.
+
+    A `base` field claiming `derived_from_artifact` that no deriver can reach
+    is UNMEASURED, never silently green: the confidence vocabulary promises the
+    verifier checks it, and a promise the code does not keep is worse than an
+    honest `from_repository`.
+    """
+    subject = record.get("tag", "<untagged>")
+    base = record.get("base") or {}
+
+    for key, node in base.items():
+        if not isinstance(node, dict):
+            continue
+        if node.get("confidence") != "derived_from_artifact":
+            continue  # lint_record already reports these
+
+        witnesses = BASE_WITNESSES.get(key)
+        if not witnesses:
+            report.add(
+                subject,
+                f"base.{key}",
+                UNMEASURED,
+                "claims derived_from_artifact but this verifier defines no "
+                "artifact witness for it — it must not read as verified",
+            )
+            continue
+
+        want = node.get("value")
+        seen: list[tuple[str, str, str]] = []
+        for derived_key, norm in witnesses:
+            for asset_name, derived in derivations.items():
+                raw = derived.get(derived_key)
+                if isinstance(raw, str):
+                    seen.append((asset_name, derived_key, norm(raw)))  # type: ignore[operator]
+
+        if not seen:
+            report.add(
+                subject,
+                f"base.{key}",
+                UNMEASURED,
+                "declared derived_from_artifact, but no asset yielded a witness "
+                f"({', '.join(w for w, _ in witnesses)}) on this run",
+            )
+            continue
+
+        disagreeing = [s for s in seen if s[2] != want]
+        if disagreeing:
+            report.add(
+                subject,
+                f"base.{key}",
+                RED,
+                f"record {want!r}, artifacts say "
+                + "; ".join(f"{a}:{k}={v!r}" for a, k, v in disagreeing),
+            )
+        else:
+            report.add(
+                subject,
+                f"base.{key}",
+                GREEN,
+                f"{want!r} witnessed by "
+                + ", ".join(f"{a}:{k}" for a, k, _ in seen),
+            )
+
+        for excluded, why in BASE_WITNESSES_EXCLUDED.get(key, {}).items():
+            if any(excluded in d for d in derivations.values()):
+                report.add(subject, f"base.{key}:excluded:{excluded}", NOTED, why)
+
+
+def verify_switch_claim(record: dict, derivations: dict[str, dict], report: Report) -> None:
+    """Check `patch_set.switches_introduced` as a CLAIM, not as an input.
+
+    The declared list is what the derivers search for, so it is the needle list
+    on both sides of the per-asset comparison — an invented switch simply never
+    appears in either, and the field was unfalsifiable by construction despite
+    wearing a `derived_from_artifact` label. The claim that IS falsifiable is
+    the one the label implies: every switch the record says our patch set
+    introduces was found in the shipped machine code of at least one asset. A
+    switch declared and found nowhere is RED.
+    """
+    subject = record.get("tag", "<untagged>")
+    node = (record.get("patch_set") or {}).get("switches_introduced")
+    if not isinstance(node, dict):
+        return
+    if node.get("confidence") != "derived_from_artifact":
+        return  # lint_record already reports these
+
+    declared = declared_switches(record)
+    if not declared:
+        report.add(
+            subject,
+            "patch_set.switches_introduced",
+            RED,
+            "declared derived_from_artifact but the list is empty or malformed",
+        )
+        return
+
+    measured = {
+        name: derived.get("fingerprint_switches_present") or []
+        for name, derived in derivations.items()
+    }
+    if not any(isinstance(v, list) for v in measured.values()):
+        report.add(
+            subject,
+            "patch_set.switches_introduced",
+            UNMEASURED,
+            "no asset yielded a switch list on this run",
+        )
+        return
+
+    unwitnessed = [
+        s
+        for s in declared
+        if not any(s in v for v in measured.values() if isinstance(v, list))
+    ]
+    if unwitnessed:
+        report.add(
+            subject,
+            "patch_set.switches_introduced",
+            RED,
+            f"declared but found in NO shipped asset: {', '.join(sorted(unwitnessed))}",
+        )
+    else:
+        report.add(
+            subject,
+            "patch_set.switches_introduced",
+            GREEN,
+            f"all {len(declared)} declared switches found in the shipped machine code",
+        )
 
 
 # ── driver ──────────────────────────────────────────────────────────────────
@@ -632,26 +896,41 @@ def main(argv: list[str] | None = None) -> int:
     tmpdir = None
     for record in records:
         lint_record(record, report)
+        derivations: dict[str, dict] = {}
         if args.lint_only:
             for a in record.get("assets", []):
-                report.add(a["name"], "artifact", UNMEASURED, "--lint-only: no artifact was read")
+                report.add(
+                    a.get("name", "<unnamed asset>"),
+                    "artifact",
+                    UNMEASURED,
+                    "--lint-only: no artifact was read",
+                )
             continue
 
+        tag = record.get("tag", "<untagged>")
         assets_dir = args.assets
         if args.download:
             tmpdir = tmpdir or tempfile.TemporaryDirectory(prefix="ps343-assets-")
-            assets_dir = Path(tmpdir.name) / record["tag"]
+            assets_dir = Path(tmpdir.name) / tag
             try:
-                download_assets(record["tag"], assets_dir)
+                download_assets(tag, assets_dir)
             except Unmeasurable as exc:
-                report.add(record["tag"], "download", UNMEASURED, str(exc))
+                report.add(tag, "download", UNMEASURED, str(exc))
                 continue
         if assets_dir is None:
-            report.add(record["tag"], "artifact", UNMEASURED, "no --assets directory given")
+            report.add(tag, "artifact", UNMEASURED, "no --assets directory given")
             continue
 
         for a in record.get("assets", []):
-            verify_asset(record, a, assets_dir, report)
+            derived = verify_asset(record, a, assets_dir, report)
+            if derived is not None:
+                derivations[a.get("name", "<unnamed asset>")] = derived
+
+        # The record-level claims are checked against the SAME evidence the
+        # per-asset rows were, so `base{}` cannot claim a version no artifact
+        # witnesses.
+        verify_base(record, derivations, report)
+        verify_switch_claim(record, derivations, report)
 
     print(render(report))
     if tmpdir:
