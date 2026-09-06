@@ -144,6 +144,14 @@ def launch(monkeypatch, tmp_path):
     monkeypatch.setattr(process, "DATA_DIR", str(data))
     monkeypatch.setattr(process, "BookmarkStore", _Bookmarks)
     monkeypatch.setattr(process, "write_window_entry", lambda *a, **kw: None)
+    # PS-356: a Chromium launch now refuses when the installed engine's
+    # version cannot be read (omitting --fingerprint-brand-version makes
+    # the engine advertise its hardcoded 144.x fallback, not "no claim").
+    # This harness tests something else, so the version is stubbed readable.
+    monkeypatch.setattr(
+        process, "installed_chromium_version",
+        lambda: process.ChromiumVersion(full="152.0.7977.75"),
+    )
     monkeypatch.setattr(
         process._platform, "supports_linux_desktop_integration", lambda: False
     )

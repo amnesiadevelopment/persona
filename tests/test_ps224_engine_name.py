@@ -428,9 +428,14 @@ def _all_tooltips(control) -> set:
     return out
 
 
-def _capture_launch_argv() -> list[str]:
+def _capture_launch_argv(stub_engine_version: bool = True) -> list[str]:
     """Run the REAL ``spawn_browser`` and return the argv the engine was
     actually launched with.
+
+    ``stub_engine_version=False`` leaves ``installed_chromium_version``
+    unpatched, so a CALLER that has installed its own (e.g. raising) stub sees
+    that stub reach the launch. Used by tests/test_ps356_brand_version.py to
+    drive the unreadable-engine SKIP path through a real launch.
 
     Not a re-implementation of the argv and not a grep: the product launch path
     runs in full, and the argv returned here is read back out of a real child
@@ -501,6 +506,23 @@ def _capture_launch_argv() -> list[str]:
         _mock.patch.object(_process, "seed_profile_prefs", lambda *a, **k: None),
         _mock.patch.object(_process, "popen_in_new_session", _recording_popen),
     ]
+    if stub_engine_version:
+        # PS-356: this container has no engine installed, so the installed
+        # Chromium version cannot be read. The desktop arm SKIPS
+        # --fingerprint-brand-version in that case (owner ruling: an absent
+        # version.txt is a reachable transient state, and failing closed would
+        # break ~99% of launches), so an unstubbed launch here would simply omit
+        # the flag. It is stubbed to a readable version so these tests measure
+        # what they are about — the engine NAME in the argv — against the same
+        # argv a normally-provisioned host produces.
+        # The skip itself is exercised in tests/test_ps356_brand_version.py.
+        patches.insert(
+            -1,
+            _mock.patch.object(
+                _process, "installed_chromium_version",
+                lambda: _process.ChromiumVersion(full="152.0.7977.75"),
+            ),
+        )
     for p in patches:
         p.start()
     try:

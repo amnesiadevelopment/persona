@@ -206,6 +206,20 @@ def _mobile_chromium_version(profile: Profile, preset) -> "ChromiumVersion | Non
 
     iOS profiles return None: real Safari ships no UA-CH and its UA carries no
     Chromium version, so there is nothing to derive and nothing to refuse.
+
+    ⚠️ THIS IS THE MOBILE-UA HELPER AND ITS FAIL-CLOSED SCOPE IS DELIBERATELY
+    UNCHANGED. The Client-Hints version every Chromium profile advertises —
+    desktop included — is resolved by ``_chromium_brand_version`` below, which
+    deliberately SKIPS rather than refusing. ⛔ That difference is intentional
+    and must not be "tidied" into consistency: skipping on THIS arm would make
+    the layer type a version the engine does not match (a contradiction), while
+    skipping on the desktop arm leaves the engine answering all three shapes
+    from its own default (coherent, merely less current). Different failure
+    modes, different correct answers — see that helper's docstring for the full
+    table. The two are also separate because they answer different questions:
+    this one decides what goes in ``--user-agent`` (mobile only; desktop passes
+    none), that one decides what goes in ``--fingerprint-brand-version`` (every
+    Chromium launch).
     """
     if preset is None or preset.os_type == "ios":
         return None
@@ -219,6 +233,108 @@ def _mobile_chromium_version(profile: Profile, preset) -> "ChromiumVersion | Non
             f"version the engine underneath does not match — run an engine check "
             f"to record it."
         ) from e
+
+
+def _chromium_brand_version(profile: Profile) -> "ChromiumVersion | None":
+    """The version `--fingerprint-brand-version` advertises, or ``None`` to skip.
+
+    WHAT THE SWITCH BUYS
+    --------------------
+    Without it the engine does NOT report the version it actually is.
+    `002-user-agent-fingerprint.patch`'s ``GetChromiumVersion()`` falls through
+    to a HARDCODED table when the switch is absent::
+
+        constexpr const char* kChromiumVersions[] = {
+            "144.0.7559.132", "144.0.7559.109", "144.0.7559.96", "144.0.7559.59" };
+        ...
+        return kChromiumVersions[seed % std::size(kChromiumVersions)];
+
+    So a profile on the 152 engine advertised Client Hints saying **144** while
+    its reduced user agent said **152** — pixelscan read that as *"masking
+    detected"*, browserscan as *"different browser version"*, creepjs as a
+    version lie. That is not drift; it is the engine's documented default
+    firing because nothing overrode it.
+
+    ⭐ WHY THIS SKIPS WHERE ITS MOBILE SIBLING REFUSES — A DELIBERATE ASYMMETRY
+    --------------------------------------------------------------------------
+    ⛔ DO NOT "FIX" THE INCONSISTENCY WITH ``_mobile_chromium_version``. The two
+    arms have DIFFERENT FAILURE MODES, so they have different correct answers,
+    and this was decided on the owner's ruling of 2026-09-06 after the opposite
+    design was tried and rejected.
+
+    An unreadable version is a REACHABLE TRANSIENT STATE, not a broken install —
+    ``EngineVersionUnreadableError``'s own docstring says ``version.txt`` may be
+    *"absent (a reachable state: the install completeness gate accepts a marker
+    OR a version file)"*, which is what a profile launched mid-update sees. So:
+
+    ================  ==========================  ============================
+    ..                Android (``--user-agent``)  Desktop (Client Hints)
+    ================  ==========================  ============================
+    population        a minority of profiles      ~99% of launches
+    if we skip        the layer would TYPE a      the engine answers from its
+                      version the engine does     OWN built-in default
+                      not match
+    resulting state   a CONTRADICTION between     UA, brands and full-version
+                      the layer and the engine    still agree WITH EACH OTHER
+    cost of refusing  one profile does not run    NO CHROMIUM PROFILE RUNS
+    ================  ==========================  ============================
+
+    The last two rows decide it. The tell this ticket exists to close is the
+    DISAGREEMENT between the shapes; skipping does not reintroduce it, because
+    the engine then answers all three shapes from one source of its own. What
+    is lost is CURRENCY (the advertised version is the engine's built-in
+    default rather than the installed build) — a weaker claim, not an incoherent
+    one. Refusing instead would convert a transient, self-healing condition into
+    "nothing launches at all" for the overwhelming majority of users.
+
+    On mobile the same skip WOULD be incoherent, so ``_mobile_chromium_version``
+    keeps failing closed. Its rationale is unchanged and still correct on its
+    own arm.
+
+    ⛔ THERE IS NO FALLBACK CONSTANT HERE, AND THERE MUST NEVER BE ONE.
+    "Skip" means PASS NO FLAG and let the engine answer. It does NOT mean
+    substituting ``"152.0.7977.75"`` or any other literal — that would
+    re-create, in a new place, the hand-written duplication
+    ``engine_version.py`` exists to remove, and would go stale INVISIBLY the
+    moment the engine moves. The only two outcomes are the READ value or no
+    flag at all.
+
+    ⚠️ THE SKIP IS LOGGED, BECAUSE IT IS A DEGRADED STATE.
+    A profile launching without this flag advertises the engine's built-in
+    version rather than its real one, and an operator wondering why their Client
+    Hints look old needs something to find. The log carries the REASON (the
+    underlying read failure) and the REMEDY, not merely the fact of a skip.
+
+    ⚠️ THE VALUE IS ``.full``, ESTABLISHED FROM THE PATCH — NOT ASSUMED.
+    The engine takes ONE input and fans it out into all three shapes itself::
+
+        chromium_version = GetChromiumVersion();                 # this value
+        chromium_major   = GetMajorVersion(chromium_version);    # engine derives
+        brand_version_list      <- chromium_major                # bare major '152'
+        brand_full_version_list <- chromium_version              # '152.0.7977.75'
+        metadata->full_version  <- chromium_version              # uaFullVersion
+
+    So passing ``.reduced`` (``152.0.0.0``) would land verbatim in
+    ``uaFullVersion`` — the exact tell ``engine_version.parse()`` refuses via
+    its ``full != reduced`` guard (*"a real Chrome never reports a .0.0 full
+    version"*). ``.major`` would truncate the full-version list. ``.full`` is
+    the only value that yields all three correct shapes.
+    """
+    try:
+        return installed_chromium_version()
+    except EngineVersionUnreadableError as e:
+        logger.warning(
+            "Profile %r launches Chromium WITHOUT --fingerprint-brand-version: "
+            "the installed engine's version could not be read (%s). The profile "
+            "still launches, and its user agent, Client Hints brands and "
+            "uaFullVersion still agree with each other — but they will report "
+            "the engine's own built-in version rather than the installed build, "
+            "so they may look out of date. This is usually transient (version.txt "
+            "is absent mid-update); run an engine check to record the version.",
+            profile.name,
+            e,
+        )
+        return None
 
 
 def _profile_locale(profile: Profile, proxy) -> str:
@@ -590,6 +706,21 @@ def spawn_browser(profile: Profile, *, in_process: bool = False) -> subprocess.P
     # asked before the profile dir, the desktop entry and the mTLS terminator.
     _lang = _profile_locale(profile, proxy)
 
+    # The version EVERY Chromium profile advertises in its Client Hints — desktop
+    # included, unlike the mobile-only UA version resolved further down.
+    #
+    # Resolved HERE, beside the three fail-closed gates above, even though this
+    # one does NOT refuse. Two reasons, and the second is the durable one:
+    #   * it reads the engine record, which is launch-independent work that has
+    #     no business happening after the profile dir, the host desktop entry and
+    #     the mTLS terminator (PS-283's ordering property);
+    #   * ⭐ if this gate is ever made fail-closed again, it is ALREADY in the
+    #     position that keeps PS-283's invariant. Putting it downstream would
+    #     leave a trap that only fires the day someone changes the policy.
+    # It takes only `profile` — nothing here depends on `preset`, which is why it
+    # can sit this early while `_mobile_chromium_version` cannot.
+    brand_version = _chromium_brand_version(profile)
+
     seed_profile_prefs(profile_dir, profile.search_engine)
 
     chosen = BookmarkStore().resolve_selection(
@@ -836,7 +967,46 @@ def spawn_browser(profile: Profile, *, in_process: bool = False) -> subprocess.P
             f"--user-data-dir={profile_dir}",
             f"--fingerprint={profile.fingerprint_seed}",
             f"--fingerprint-platform={engine_platform}",
+            # ⚠️ THE BRAND LINE IS THE GATE FOR THE VERSION FLAG BELOW — DO NOT
+            # REMOVE OR VARY IT.
+            #
+            # `--fingerprint-brand-version` is read by the engine ONLY inside
+            # `if (brand == "chrome")`, after a ToLowerASCII, in
+            # 002-user-agent-fingerprint.patch's GetChromiumVersion(). So this
+            # line gates the one appended just after this list.
+            # Removing it, or offering an Edge/Opera/Vivaldi brand option that
+            # varies it, does not merely change the brand: it SILENTLY disables
+            # the version flag — no error, no log — and the engine reverts to
+            # its hardcoded 144.x table while the reduced UA still says 152.
+            # That mismatch is the whole defect (pixelscan: "masking detected").
+            # ⛔ It is passed UNCONDITIONALLY, including when the version flag is
+            # skipped: the brand claim ("presents as Chrome and nothing else") is
+            # not contingent on the version being readable.
+            # Pinned by tests/test_ps356_brand_version.py.
             "--fingerprint-brand=Chrome",
+            # ⭐ THE VERSION FLAG, CONDITIONAL — THIS IS THE SKIP.
+            #
+            # The value the engine advertises in sec-ch-ua / uaFullVersion, READ
+            # from the installed engine. `.full` is correct for all three shapes
+            # because the engine derives the bare major itself — see
+            # _chromium_brand_version for the fan-out and why `.reduced` is a tell.
+            #
+            # `brand_version is None` means the version could not be read (a
+            # reachable transient state mid-update). We then emit NO FLAG and let
+            # the engine answer from its own built-in default, which keeps the
+            # three shapes agreeing WITH EACH OTHER — less current, not incoherent.
+            # ⛔ There is deliberately no `else` substituting a literal: a fallback
+            # constant is the exact duplication engine_version.py exists to remove
+            # and would go stale invisibly. The skip is logged as a degraded state.
+            #
+            # Spliced in place rather than appended at the end so it stays
+            # ADJACENT TO ITS GATE above — the pair reads as the unit it is, and
+            # tests/test_ps283_refused_launch_does_no_work.py pins argv order.
+            *(
+                [f"--fingerprint-brand-version={brand_version.full}"]
+                if brand_version is not None
+                else []
+            ),
             f"--lang={lang}",
             f"--accept-lang={lang},{lang.split('-')[0]}",
             f"--load-extension={','.join(extensions)}",
