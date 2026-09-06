@@ -1,0 +1,46 @@
+vector                                 layer differs    all realms seed-derived realm-coherent
+----------------------------------------------------------------------------------------------
+switches.hardware_concurrency          off   YES        YES        YES          YES           
+switches.hardware_concurrency          on    no         no         YES          YES           
+switches.platform                      off   no         no         no           YES           
+switches.platform                      on    no         no         no           YES           
+switches.user_agent                    off   no         no         no           YES           
+switches.user_agent                    on    no         no         no           YES           
+switches.uad_platform                  off   no         no         no           YES           
+switches.uad_platform                  on    no         no         no           YES           
+switches.screen_width                  off   no         no         no           YES           
+switches.screen_width                  on    no         no         no           YES           
+switches.screen_height                 off   no         no         no           YES           
+switches.screen_height                 on    no         no         no           YES           
+switches.device_pixel_ratio            off   no         no         no           YES           
+switches.device_pixel_ratio            on    no         no         no           YES           
+switches.timezone                      off   YES        YES        no           YES           
+switches.timezone                      on    YES        YES        no           YES           
+switches.tz_offset_minutes             off   YES        YES        no           YES           
+switches.tz_offset_minutes             on    YES        YES        no           YES           
+switches.webdriver                     off   YES        no         no           YES           
+switches.webdriver                     on    YES        no         no           YES           
+webgl.unmasked_vendor                  off   YES        YES        no           YES           
+webgl.unmasked_vendor                  on    no         no         no           YES           
+webgl.unmasked_renderer                off   YES        YES        YES          YES           
+webgl.unmasked_renderer                on    no         no         YES          YES           
+webgl.masked_vendor                    off   no         no         no           YES           
+webgl.masked_vendor                    on    no         no         no           YES           
+webgl.masked_renderer                  off   no         no         no           YES           
+webgl.masked_renderer                  on    no         no         no           YES           
+webgl.readpixels_hash                  off   YES        YES        YES          YES           
+webgl.readpixels_hash                  on    YES        YES        YES          YES           
+canvas.getimagedata_hash               off   YES        YES        YES          YES           
+canvas.getimagedata_hash               on    YES        YES        YES          YES           
+canvas.todataurl_hash                  off   YES        no         YES          NO — SPLIT    
+canvas.todataurl_hash                  on    YES        no         YES          NO — SPLIT    
+canvas.measuretext_width               off   YES        no         YES          NO — SPLIT    
+canvas.measuretext_width               on    YES        no         YES          NO — SPLIT    
+client_rects.x                         off   YES        no         YES          NO — SPLIT    
+client_rects.x                         on    YES        no         YES          NO — SPLIT    
+client_rects.y                         off   YES        no         YES          NO — SPLIT    
+client_rects.y                         on    YES        no         YES          NO — SPLIT    
+client_rects.width                     off   no         no         no           YES           
+client_rects.width                     on    no         no         no           YES           
+client_rects_exempt.x                  off   no         no         no           YES           
+client_rects_exempt.x                  on    no         no         no           YES           
