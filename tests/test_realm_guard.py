@@ -480,26 +480,102 @@ def _generated_scripts(tmp_path):
     }
 
 
-# (module file key, guard key, leaf indentation). Twelve guards across eleven
-# scripts: device.js carries TWO leaves (screen geometry and hardware
-# concurrency) and each needs its own slot, or one leaf's arrival would mark the
-# realm covered for the other. `voice_ext` indents its leaf body by 2 and every
-# other leaf by 4 — the helper takes that as a parameter, so a wrong indent here
-# is a real mismatch and not cosmetic.
-GUARD_SITES = [
-    ("audio", "audio", 4),
-    ("canvas_ctx", "canvas_ctx", 4),
-    ("device", "screen", 4),
-    ("device", "hw", 4),
-    ("geo", "geo", 4),
-    ("gpu", "gpu", 4),
-    ("locale", "locale", 4),
-    ("measuretext", "measuretext", 4),
-    ("mobile", "mobile", 4),
-    ("stealth", "stealth", 4),
-    ("voice", "voice", 2),
-    ("webgl", "webgl", 4),
-]
+# ⭐ DERIVED FROM LEAF REGISTRATION, NOT HAND-LISTED (PS-334).
+#
+# Every assertion in the structural half is parametrized over this set, so the
+# suite could previously only check leaves someone remembered to list. Measured:
+# strip `geo_ext`'s guard splice and keep its row -> 3 failed; strip the SAME
+# splice and remove the row -> 57 passed. Same broken product, and the
+# instrument SHRANK to fit the omission (59 -> 57 examples, no failures).
+#
+# ⛔ THE CANDIDATE SET IS KEYED ON `realm_bootstrap_js`, NOT `realm_guard_js`,
+# and that distinction is the whole point. Deriving from guard call sites is
+# CIRCULAR: a leaf whose splice was forgotten emits no such call, so it drops
+# out of its own candidate set and the suite stays green — the defect rebuilt
+# in derived clothing. Registration is the signal that CANNOT be absent from a
+# leaf that ships, because it is what puts the leaf in a realm at all.
+#
+# So a registered leaf with a missing guard is still a CANDIDATE, and fails.
+#
+# The guard KEY and INDENT are still read from the source (they are free
+# parameters the helper takes), but a leaf that registers and splices no guard
+# yields no key — which is reported as a failure by
+# `test_every_registered_leaf_is_guarded` below rather than silently dropped.
+def _registered_leaves() -> "dict[str, list[str]]":
+    """module key -> the leaf names it registers via `realm_bootstrap_js`."""
+    out: "dict[str, list[str]]" = {}
+    for path in sorted(_SRC.glob("*_ext.py")):
+        names = re.findall(
+            r"realm_bootstrap_js\(\s*[\"'](\w+)[\"']", path.read_text(encoding="utf-8")
+        )
+        if names:
+            out[path.stem[: -len("_ext")]] = names
+    return out
+
+
+def _spliced_guards() -> "dict[str, list[tuple[str, int]]]":
+    """module key -> the (guard key, indent) pairs it actually splices."""
+    out: "dict[str, list[tuple[str, int]]]" = {}
+    for path in sorted(_SRC.glob("*_ext.py")):
+        found = re.findall(
+            r"realm_guard_js\(\s*[\"'](\w+)[\"']\s*"
+            # The indent is a FREE PARAMETER of the helper and is passed EITHER
+            # positionally OR as `indent=N` — `voice_ext` uses the keyword form
+            # with 2, every other leaf takes the default 4. Matching only the
+            # positional form silently read voice's indent as 4 and reddened
+            # two of its own examples: a derivation must read the source as the
+            # helper is actually called, not as one caller happens to spell it.
+            r"(?:,\s*(?:indent\s*=\s*)?(\d+))?",
+            path.read_text(encoding="utf-8"),
+        )
+        if found:
+            out[path.stem[: -len("_ext")]] = [
+                (k, int(i) if i else 4) for k, i in found
+            ]
+    return out
+
+
+# The two leaves that register and legitimately splice NO guard. Declared with
+# the reason in code, in the same shape as the file's other declarations — a
+# blanket skip-list with no reasons is what this ticket exists to remove.
+#
+# ⚠️ An entry here WAIVES a real check, so each must name why idempotency is
+# guaranteed by something other than a guard.
+UNGUARDED_BY_DESIGN = {
+    "native": (
+        "CHAIN, don't flag-guard (native_ext.py:29). Idempotency is structural: "
+        "a marked wrapper renders the native form exactly once in either load "
+        "order. The flag it removed (`G.__pnaToStringPatched`) was itself a "
+        "masking tell, findable by Object.keys(window)."
+    ),
+}
+
+
+def _derive_guard_sites() -> "list[tuple[str, str, int]]":
+    """(module key, guard key, indent) for every guard a registered leaf splices."""
+    spliced = _spliced_guards()
+    sites: "list[tuple[str, str, int]]" = []
+    for module in _registered_leaves():
+        for key, indent in spliced.get(module, []):
+            sites.append((module, key, indent))
+    return sorted(sites)
+
+
+GUARD_SITES = _derive_guard_sites()
+
+# ANTI-VACUITY FLOOR, the same one this file already applies to its two other
+# derived sweeps (`assert scanned > 5`, with the comment "An absence assertion
+# that swept nothing is green for the wrong reason").
+#
+# A derived candidate set that silently derives ZERO would parametrize every
+# structural test with nothing and report a clean pass — the precise failure
+# this ticket is about, one layer up. The floor is deliberately well below
+# today's count so it does not become a second hand-maintained number.
+assert len(GUARD_SITES) > 8, (
+    f"derived only {len(GUARD_SITES)} guard sites — the walk is broken, so "
+    f"every structural test below would be parametrized with nothing and pass "
+    f"for the wrong reason"
+)
 
 
 @pytest.fixture(scope="module")
@@ -641,4 +717,64 @@ def test_no_generated_script_carries_an_unfilled_slot_placeholder(generated):
     offenders = {k: v for k, v in offenders.items() if v}
     assert not offenders, (
         f"unfilled slot placeholder(s) shipped as JS: {offenders}"
+    )
+
+
+def test_every_registered_leaf_is_guarded():
+    """A leaf that registers with the realm registry must splice a guard.
+
+    ⭐ THIS IS WHAT MAKES THE DERIVATION NON-CIRCULAR, and it is the assertion
+    the hand-written list could never carry.
+
+    `GUARD_SITES` is derived from `realm_guard_js` call sites, so a leaf whose
+    splice was FORGOTTEN contributes no row — it would drop out of its own
+    candidate set and every parametrized test above would simply not run for
+    it. That is the defect this ticket exists to close, rebuilt in derived
+    clothing.
+
+    So the candidate set is cross-checked against `realm_bootstrap_js`, which
+    is the signal that CANNOT be absent from a leaf that ships: it is what puts
+    the leaf into a realm at all. A module that registers a leaf and splices no
+    guard fails HERE, naming itself, instead of silently shrinking the suite.
+
+    Measured before this test existed: stripping `geo_ext`'s splice and
+    removing its row left the suite at 57 passed, 0 failed.
+    """
+    registered = _registered_leaves()
+    spliced = _spliced_guards()
+
+    # Guard the guard: a walk that finds nothing would make the loop below
+    # vacuous, which is the same shape of failure one layer up.
+    assert len(registered) > 8, (
+        f"only {len(registered)} modules register a leaf — the walk is broken, "
+        f"so this test is not checking anything"
+    )
+
+    unguarded = sorted(
+        m for m in registered
+        if not spliced.get(m) and m not in UNGUARDED_BY_DESIGN
+    )
+    assert not unguarded, (
+        "these modules register a realm leaf but splice NO realm guard, so the "
+        "leaf can apply twice in one realm and apply its noise twice — a "
+        "self-inflicted unlinkability tell:\n  "
+        + "\n  ".join(unguarded)
+        + "\n\nAdd the guard, or — if idempotency is genuinely structural — an "
+        "UNGUARDED_BY_DESIGN entry stating why."
+    )
+
+
+def test_the_by_design_waivers_still_apply():
+    """An `UNGUARDED_BY_DESIGN` entry must name a module that REALLY is unguarded.
+
+    Keeps the waiver list honest in the other direction: if `native_ext` ever
+    grows a guard, its entry becomes a stale waiver that would hide a future
+    regression, and this fails until someone removes it.
+    """
+    spliced = _spliced_guards()
+    stale = sorted(m for m in UNGUARDED_BY_DESIGN if spliced.get(m))
+    assert not stale, (
+        "these modules are waived as unguarded-by-design but now splice a "
+        "guard, so the waiver is stale and would hide a future regression:\n  "
+        + "\n  ".join(stale)
     )
