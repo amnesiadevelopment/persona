@@ -14,6 +14,20 @@ engine interpolates the constant — the next rename is one edit, not a sweep.
 from ..core.strings import CHROMIUM_ENGINE_NAME
 
 CHANGELOG: dict[str, list[str]] = {
+    "3.1.0": [
+        f"persona now runs its own {CHROMIUM_ENGINE_NAME} browser engine, "
+        "built from source with the anti-detect patches compiled in, instead "
+        "of downloading a third-party build \u2014 and it updates from persona's "
+        "own release channel.",
+        "The masking wrappers are now built to look like the browser's own "
+        "native functions, so the fact that a value is masked is itself harder "
+        "to detect.",
+        "Several launch paths no longer overwrite your own files, and a proxy "
+        "that cannot actually be reached is no longer shown as healthy on the "
+        "Network page.",
+        "A profile can declare the timezone of its exit country, plus dialog "
+        "and Activity Log fixes.",
+    ],
     "3.0.2": [
         "A heavy page no longer stalls the browser. Opening a demanding site "
         "could freeze the window; the check that runs behind every connection "

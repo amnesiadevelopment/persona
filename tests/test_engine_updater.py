@@ -16,7 +16,7 @@ from src.services.engine.updater import (
 # `personium-` prefix AND an explicit OS marker — see _asset_matches for why
 # both anchors exist and why neither may be dropped.
 WIN_ASSET = "personium-148.0.7778.215-windows-x86_64.zip"
-MAC_ASSET = "personium-148.0.7778.215-macos-x86_64.dmg"
+MAC_ASSET = "personium-148.0.7778.215-macos-arm64.dmg"
 LINUX_ASSET = "personium-148.0.7778.215-linux-x86_64.AppImage"
 LINUX_TARXZ = "personium-148.0.7778.215-linux-x86_64.tar.xz"
 WIN_INSTALLER = "personium-148.0.7778.215-windows-x86_64-installer.exe"
