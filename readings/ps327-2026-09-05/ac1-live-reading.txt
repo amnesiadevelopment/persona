@@ -1,0 +1,191 @@
+PS-327 AC1 — chromium:outer-size established BY MEASUREMENT
+===========================================================
+Base: origin/main d658c81. Container: /usr/bin/chromium 152.0.7977.75
+Venue: HEADFUL chromium under Xvfb (1920x1080x24), read over CDP
+       Runtime.evaluate. NOT chromium_tier (see FINDING A: it passes no
+       resolution= and so can only ever reach the AUTO branch).
+
+WHY HEADFUL. --headless=new reports outerWidth/outerHeight == 0, which would
+have produced a FALSE NEGATIVE ("no mismatch") on the exact vector under test.
+The extension WAS live in that run (screen.width read 1280 vs 2560 across the
+two branches), so the headless reading is a venue artifact, not evidence.
+
+SETUP. Real window 1920x1080; operator-picked resolution 1280x720, i.e.
+SMALLER than the live window, which is the stated reachability bound.
+Both branches use the SAME seed (12345), generation 0, os_type=windows.
+The ONLY difference is resolution= passed to build_device_extension.
+
+READING
+-------
+FORCED (resolution=(1280,720)) — the subject:
+  innerWidth 1919  innerHeight 936
+  outerWidth 1919  outerHeight 1079
+  screen     1280 x 720     avail 1280 x 680
+  outer_gt_screen = TRUE          <-- IMPOSSIBLE PAIR
+
+AUTO (resolution=None) — the POSITIVE CONTROL:
+  innerWidth 1919  innerHeight 936
+  outerWidth 1919  outerHeight 1079
+  screen     2560 x 1440    avail 2560 x 1400
+  outer_gt_screen = FALSE         <-- coherent, floored at the window
+
+VERDICT: the mismatch the Firefox override exists to remove DOES occur on
+desktop Chromium, on the FORCED branch only. The cell moves off
+NOT_ESTABLISHED, and a spoof is warranted (AC3).
+
+BOTH AXES FAIL, not just width:
+  outerWidth  1919 > 1280 screen.width
+  outerHeight 1079 >  720 screen.height
+A fix pinning only width would leave the pair impossible on height.
+
+NOTE FOR HONEST BOUND 2 (raised WITH the reading, as the ticket requires).
+The pair does not merely look impossible — the window's TRUE extent is
+readable from it. A page that sees outerWidth 1919 while screen.width claims
+1280 learns the real window is 1919 CSS px, i.e. the host window size the
+FORCED branch was meant to conceal. That is a stronger statement than
+"incoherent", and it is why capping/pinning is worth doing rather than
+tolerating. It is still MASKING INVISIBILITY, not an Invariant #0 host-fact
+leak: no GPU, OS, locale or IP escapes, and outerWidth is the host WINDOW,
+which the operator controls. Recorded here rather than silently upgraded.
+
+1919 not 1920: chromium's own window chrome under this WM. Immaterial —
+the comparison under test is outer vs screen, and 1919 > 1280 either way.
+
+
+AC3/AC4 — AFTER THE FIX, same venue, same seed, same window
+============================================================
+⛔ SUPERSEDED — THIS IS THE ROUND-1 FIX, WHICH WAS WRONG AND WAS DELETED.
+   Kept rather than edited away, because the WORD "coherent" below sits beside
+   a pair that is NOT coherent (inner 1919 > outer 1280 — a window smaller
+   than its own content), and that mislabel is the thing this ticket kept
+   producing. The reviewer caught it here first; #327 round 2 then repeated
+   the identical shape in the matrix cell, and round 3 in this artifact. An
+   artifact that asserts a verdict its own numbers refute is worth more as a
+   marked exhibit than as a deletion. THE READING BELOW MEASURES ONLY
+   outer-vs-screen — the one comparison the round-1 fix was aimed at — and
+   that is exactly how it passed. See ROUND 2 and ROUND 3 for what shipped.
+
+FORCED (resolution=(1280,720)):
+  inner 1919 x 936   outer 1280 x 680   screen 1280 x 720
+  outer_gt_screen = FALSE        <-- MISLABELLED "coherent" at the time; only
+                                     R3 was checked. R1 (outer >= inner) is
+                                     VIOLATED here by -639. Not coherent.
+  screen.width is STILL EXACTLY THE OPERATOR'S PICK (1280) -> #167 not re-opened
+
+AUTO (resolution=None) — the AC4 negative assertion:
+  inner 1919 x 936   outer 1919 x 1079  screen 2560 x 1440
+  BYTE-IDENTICAL to the pre-fix AUTO reading. The control is untouched.
+
+A HARNESS CORRECTION, recorded rather than smoothed over. The first post-fix
+run reported screen 1920x1080 / availHeight 1080 on the FORCED leg — i.e. the
+operator's pick apparently lost, which is exactly #167's failure shape and
+would have been a serious regression. It was NOT: a direct descriptor probe on
+the same build returned screen 1280 / outer 1280 / availH 680, and a re-run on
+fresh debug ports reproduced that. The bad reading came from a contaminated
+CDP session (stale profile / reused port), not from the build. Distrust a
+reading that changes a value your diff never touches - availHeight 1080 is not
+even reachable through `H - INSET` for any pool entry, which is the tell.
+
+
+=====================================================================
+ROUND 2 — THE FIRST FIX WAS WRONG. CORRECTED BY MEASUREMENT.
+=====================================================================
+Reviewer (persona-reviewer, audit FAIL on PR #266 @ 392ce47) found that the
+round-1 fix — clamping the REPORTED outer down to the spoofed screen — bought
+R3 by breaking R1. Reproduced independently here with the same builder:
+
+   pick          inner        outer       screen    oW-iW  oH-iH  R1
+   win 1280x720  [1919,936]  [1280,680]  [1280,720]  -639   -256  VIOLATED
+   win 1366x768  [1919,936]  [1366,728]  [1366,768]  -553   -208  VIOLATED
+   win 1600x900  [1919,936]  [1600,860]  [1600,900]  -319    -76  VIOLATED
+   mac 1440x900  [1919,936]  [1440,875]  [1440,900]  -479    -61  VIOLATED
+
+ATTRIBUTION, checked at the merge-base d658c81 (the "broke it vs exposed it"
+rule): R1 HELD at base (oW-iW = 0) while R3 was the violation. So round 1's
+breakage was mine and in scope, not debt it exposed.
+
+WHY IT WAS NOT A SLIP IN THE CLAMP — IT IS ARITHMETIC:
+   live inner 1919, picked screen 1280
+   R1 needs outer >= 1919
+   R3 needs outer <= 1280
+   => 1919 <= outer <= 1280 is EMPTY.
+No value the content script reports satisfies both. Bounding the clamp below
+by inner (the obvious repair) only chooses R3's violation instead of R1's.
+
+THE ROOT IS R2 (inner <= screen), and `inner` is the real window's content
+box — not spoofable at the reporting layer without breaking layout on real
+pages. So the reporting layer is the WRONG LAYER for this vector.
+
+MEASURED FIX — CAP THE WINDOW. Live under Xvfb, window sized to the pick:
+   CAP to 1280x720:  inner [1280,577]  outer [1280,680]  screen [1280,720]
+      R1  1280 >= 1280  OK
+      R2  1280 <= 1280  OK   <-- even the PRE-EXISTING violation clears
+      R3  1280 <= 1280  OK
+All three hold simultaneously, which the reporting layer provably cannot do.
+
+A FACT I GOT WRONG IN ROUND 1, corrected: I rejected the cap partly because I
+believed the desktop branch could not know the resolution at launch. It CAN —
+process.py's desktop `else` arm already computes
+parse_resolution(profile.resolution) to build the extension, so the value is
+in hand exactly where launch args are assembled.
+
+RESULT: device_ext.py is now BYTE-IDENTICAL to base. The whole fix is one
+launch arg in process.py, fired only when a desktop profile carries a FORCED
+resolution (parse_resolution("auto") is None, so AUTO cannot reach it).
+
+
+=====================================================================
+ROUND 3 — THE RECORD, NOT THE CODE. And one number reconciled.
+=====================================================================
+Round 2's code was audited CORRECT and driven independently by the reviewing
+seat (Xvfb + real builder + real launch arg, over CDP). The audit FAIL was
+against the RECORD: round 2 rewrote process.py and did not touch
+tests/test_engine_masking_matrix.py, so the outer-size/chromium cell still
+described the round-1 device_ext clamp that round 2 had DELETED — naming
+applyScreenPatch as the route and quoting outer 1280x680. Every load-bearing
+sentence in it was false at that HEAD.
+
+No product code changed in round 3. process.py is byte-identical to round 2
+and device_ext.py is byte-identical to base.
+
+A NUMBER THAT DISAGREED, RECONCILED RATHER THAN PICKED
+------------------------------------------------------
+Round 2's cap reading above records outer [1280,680]; the reviewer's
+independent drive of the same capped FORCED profile read outer [1280,720]:
+
+    author  (round 2)     inner [1280,577]  outer [1280,680]  screen [1280,720]
+    reviewer (independent) inner [1280,577]  outer [1280,720]  screen [1280,720]
+
+inner and screen agree exactly; only outerHeight differs, by 40 — which is
+precisely INSET on a non-mac profile, the work-area allowance. So the two
+readings differ in whether the measured window occupied the full screen box or
+the available box beneath it, a property of the WM/venue rather than of the
+change. BOTH satisfy all three relations (R1 outer >= inner: 680 and 720 are
+each >= 577; R3 outer <= screen: each <= 720), so the finding is unaffected
+either way.
+
+THE MATRIX CELL QUOTES THE REVIEWER'S 720, not the author's 680, deliberately:
+it is the independently driven figure, and the round-1 lesson in this same file
+is that the author's own instrument is the one to distrust. The 40px residual
+is recorded here rather than smoothed away, because an exact-looking number
+with two sources and no note is how the earlier mislabels survived.
+
+WHAT ROUND 3 CHANGED, all in tests/test_engine_masking_matrix.py
+----------------------------------------------------------------
+* the outer-size/chromium cell rewritten to the mechanism that SHIPPED: the
+  --window-size launch arg in spawn_browser, not a pin in device_ext.
+* the EMPTY-INTERVAL argument moved INTO the cell. It is the reasoning a
+  future agent will come to the matrix for, and it lived only in a commit body.
+* the BOUND named, so COVERED_ELSEWHERE is a bounded claim: the cap sizes the
+  window AT LAUNCH, and a window resized AFTERWARDS is not covered.
+* COVERED_ELSEWHERE re-decided deliberately (the ground moved — the route is
+  no longer a different BUILDER but a launch flag), with all four rejected
+  positions and their reasons stated in the cell.
+* two drift sites fixed: the docstring's NOT_ESTABLISHED enumeration and the
+  matrix table row, both of which still called this cell unestablished. The
+  same two were stale for PS-312's `geo` cell and are corrected with it.
+* a MACHINE CHECK added — test_a_forced_desktop_launch_really_carries_the_
+  window_cap — asserting a FORCED desktop launch's real argv carries the cap
+  and an AUTO launch does not. COVERED_ELSEWHERE cannot be census-checked, so
+  prose was the only control; this holds its load-bearing half. Falsified:
+  removing the cap turns it RED on the argv value, not on source text.
