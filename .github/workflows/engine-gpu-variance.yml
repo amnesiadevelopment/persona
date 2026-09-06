@@ -151,10 +151,30 @@ jobs:
           # known-bad list is refused here rather than measured — the refusal is
           # the correct outcome and this job should not re-litigate it.
           tag, url, digest, verdict, message = updater.fetch_latest_checked(timeout=30)
-          print(f"newest engine release: {tag} (policy verdict: {verdict})", file=sys.stderr)
+          print(f"newest engine release: {tag!r} (policy verdict: {verdict})", file=sys.stderr)
           if verdict != "ok":
               print(f"persona already refuses this build: {message}", file=sys.stderr)
               sys.exit(f"refusing to measure a build persona will not install: {tag}")
+          # AN EMPTY TAG IS A DIFFERENT FACT FROM A FAILED DOWNLOAD, and until
+          # PS-338 the two were reported with the same sentence — one of them
+          # with a blank where the version should be ("could not download
+          # engine build "). fetch_latest_full answers ('','','') when NO
+          # personium- release resolves at all, and policy.check("") is OK by
+          # design (its docstring: "no tag" is a fetch failure, and making it a
+          # governance refusal would mislabel a network problem). So the verdict
+          # above cannot catch this and the caller must. Measured twice: runs
+          # 33961825089 and 34029820054, both before the first engine release
+          # existed.
+          if not tag or not url:
+              sys.exit(
+                  "no Personium engine release resolved — the repository served "
+                  "no installable personium-* release at this moment, so there "
+                  "is no build to measure. This is an ACQUISITION failure, not "
+                  "a variance finding: nothing has been shown about any engine, "
+                  "and nothing should be added to policy.KNOWN_BAD_VERSIONS. "
+                  "Check that an engine release is published and that its asset "
+                  "for this OS is attached."
+              )
           if not updater.download_engine(url, digest=digest, tag=tag):
               sys.exit(f"could not download engine build {tag}")
           # download_engine does NOT write version.txt — the UI does that after a
@@ -186,6 +206,7 @@ jobs:
       # any branching on the code here would be the place that laundering
       # sneaks back in.
       - name: Measure the engine's GPU identity variance
+        id: measure
         run: |
           xvfb-run -a python -m src.services.verify.engine_gpu_variance check \
             --output /tmp/engine-gpu-variance.json
@@ -193,16 +214,42 @@ jobs:
       # On a red run this file is the whole evidence base for deciding what to
       # blocklist, and it lives on a runner about to be destroyed. It carries
       # the engine_build, the per-seed readings and the verdict.
+      #
+      # GATED ON THE MEASUREMENT, not on failure() alone (PS-338): a run that
+      # never got an engine writes no file, and an unconditional upload emitted
+      # "No files were found with the provided path" — a warning that reads as
+      # a LOST artifact rather than an absent measurement. Run 34029820054
+      # printed exactly that.
       - name: Keep the reading when the gate goes red
-        if: failure()
+        if: failure() && steps.measure.outcome == 'failure'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: engine-gpu-variance-reading
           path: /tmp/engine-gpu-variance.json
           if-no-files-found: warn
 
+      # ---------------------------------------------------------------------
+      # TWO RED OUTCOMES, TOLD APART (PS-338)
+      # ---------------------------------------------------------------------
+      # The step below used to be guarded on bare `failure()`, so ANY red run —
+      # including one where the engine could not be downloaded and the measure
+      # step never executed — announced "the engine did not clear the GPU
+      # seed-variance bar" and told the reader to blocklist a tag. On runs
+      # 33961825089 and 34029820054 that tag rendered as the empty string.
+      #
+      # A variance verdict is a claim about a MEASUREMENT. It may only be made
+      # when the measurement actually ran and came back non-zero. The two arms
+      # are complements on `steps.measure.outcome`, both carrying failure(), so
+      # they PARTITION the red space: every red run gets exactly one
+      # explanation, and never two.
+      #
+      # This is the same doctrine the exit-code comment above states, in the
+      # other direction. There: "we failed to look" must not wear the colour of
+      # "we looked and it was fine". Here: "we failed to look" must not wear the
+      # colour of "we looked and it was BROKEN". A report that does not match
+      # what the job did is the bug, whichever way it points.
       - name: Say what a red run means and what to do about it
-        if: failure()
+        if: failure() && steps.measure.outcome == 'failure'
         env:
           TAG: ${{ steps.engine.outputs.tag }}
         run: |
@@ -234,4 +281,46 @@ jobs:
             3. Do NOT "fix" this by pinning the engine or by relaxing the bar.
                The bar is read out of gpu_ext's own fallback pool so the two
                cannot drift; lowering it would only hide the finding.
+          EOF
+
+      # THE OTHER ARM. The job is red, and the variance measurement is NOT what
+      # reported the problem — it was skipped because an earlier step failed
+      # (no engine resolved, download failed, driver or display would not
+      # provision), or it passed and something else went wrong.
+      #
+      # The two conditions are exact complements on `steps.measure.outcome`, so
+      # between them they cover every red run and never both fire. Note a
+      # SKIPPED step's outcome is `skipped`, and a step the job never reached at
+      # all leaves the context empty — both are `!= 'failure'`, so both land
+      # here rather than falling through to silence.
+      #
+      # It deliberately names NO tag and prescribes NO blocklisting: there is
+      # no measured finding to justify refusing a build on operators' machines.
+      - name: Say that the reading never reached a verdict
+        if: failure() && steps.measure.outcome != 'failure'
+        run: |
+          echo "::error::This red run is NOT a GPU seed-variance finding — the measurement did not report one."
+          cat <<'EOF'
+          THIS IS NOT A VARIANCE FINDING.
+
+          The variance measurement is not what failed here. Either it never ran
+          — an earlier step failed and it was skipped — or it ran clean and the
+          job is red for some other reason. Either way NO engine has been shown
+          to vary its GPU by seed, and none has been shown NOT to. Read the
+          failing step above for the actual cause. The usual ones:
+
+            * no Personium engine release resolved — the repository served no
+              installable personium-* release at that moment, or the newest one
+              has no asset for this runner's OS;
+            * the download failed, or the asset's digest did not verify;
+            * the driver or the display would not provision.
+
+          WHAT TO DO
+            1. Fix the problem named above. This job is a detector, and in this
+               state it is blind rather than alarmed.
+            2. Do NOT add anything to the engine known-bad list on the strength
+               of this run. That list refuses a build BY NAME on every
+               operator's machine, and this run convicted no build.
+            3. Once it is fixed, re-run this workflow (workflow_dispatch) rather
+               than waiting for the daily slot, so the reading is actually taken.
           EOF
