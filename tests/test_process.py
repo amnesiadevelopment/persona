@@ -718,3 +718,240 @@ def test_no_proxy_profile_still_launches(monkeypatch, tmp_path):
     # no proxy => no exception
     proc = process.spawn_browser(Profile(name="direct-ok", proxy=None))
     assert proc is not None
+
+
+# --- PS-358: an INLINE proxy must not launch as a DIRECT profile -------------
+#
+# THE DEFECT, measured at e4438c5 before the fix, with a REAL Poland exit
+# (46.205.198.123, Europe/Warsaw) pasted inline as an operator would paste it:
+#
+#     inline socks5 (exit in Warsaw) -> timezone America/New_York, locale en-US
+#     direct (no proxy at all)       -> timezone America/New_York, locale en-US
+#                                       ^^ BYTE-IDENTICAL
+#
+# The launch path asks the store TWO questions about one ref: `resolve()` (which
+# falls back to treating the ref as a raw URL, so the fail-closed gate is
+# satisfied) and `get()` (a plain NAME lookup, which answers None). None is the
+# no-proxy sentinel, so the profile was CLASSIFIED AS DIRECT and took the branch
+# that pins a US zone beside a forced en-US — coherent for a direct profile, and
+# a language contradicting the IP for this one.
+#
+# ⛔ THESE ASSERT THE RENDERED LAUNCH OUTCOME, NOT A HELPER'S RETURN VALUE.
+# That is the PS-274 trap named in this ticket's falsification clause: PS-274's
+# own second commit reproduced its headline defect INSIDE the feature written to
+# remove it, by checking the helper rather than what shipped. So firefox is
+# asserted through the `cfg` handed to `spawn`, and chromium through the argv
+# handed to `Popen` — the two things the engines actually receive.
+
+
+class _InlineGeoStore:
+    """A store that resolves an inline ref's exit, WITHOUT touching the network.
+
+    Shaped like the real one: `resolve` falls back to the raw URL, `get` answers
+    None for a ref that names no stored proxy, and `geo_for_launch` is what the
+    launch is supposed to ask. The probe is injected, so these tests pin
+    BEHAVIOUR rather than reachability of a live exit.
+    """
+
+    country_code = "PL"
+    country_name = "Poland"
+    timezone = "Europe/Warsaw"
+
+    def resolve(self, ref):
+        return ref or None
+
+    def get(self, ref):
+        return None  # inline ref names no STORED proxy — this is the defect
+
+    def geo_for_launch(self, ref, **kw):
+        from src.models.proxy import Proxy
+
+        if not ref:
+            return None
+        return Proxy(
+            name="",
+            url=ref,
+            country_code=self.country_code,
+            country_name=self.country_name,
+            timezone=self.timezone,
+            last_check_ok=True if self.country_code else None,
+        )
+
+
+class _InlineUnresolvableStore(_InlineGeoStore):
+    """An inline proxy whose exit could NOT be established."""
+
+    country_code = ""
+    country_name = ""
+    timezone = ""
+
+
+INLINE_REF = "socks5://user:pass@gw.example.net:1080"
+
+
+def test_firefox_inline_proxy_declares_the_exits_zone_and_language(
+    monkeypatch, tmp_path
+):
+    """The rendered cfg must carry the EXIT's geography, not a US default."""
+    captured = []
+    monkeypatch.setattr(il, "is_invisible_installed", lambda: True)
+    monkeypatch.setattr(
+        il, "spawn", lambda cfg, **kw: captured.append(cfg) or _Spawned()
+    )
+    monkeypatch.setattr(process, "ProxyStore", _InlineGeoStore)
+    monkeypatch.setattr(process, "BookmarkStore", _Bookmarks)
+    monkeypatch.setattr(launch_policy, "_host_timezone", lambda: "Europe/Kyiv")
+
+    process._spawn_invisible(
+        Profile(name="pl-inline-ff", engine="firefox", proxy=INLINE_REF),
+        str(tmp_path),
+    )
+
+    assert captured, "the launch never reached spawn, so nothing was rendered"
+    cfg = captured[0]
+    # The pair must AGREE and must both describe the exit. Asserting only the
+    # timezone would let `en-US` beside `Europe/Warsaw` pass — the same
+    # mismatch in a new shape, which this ticket explicitly forbids.
+    assert cfg["timezone"] == "Europe/Warsaw", (
+        f"inline proxy exiting in PL declared timezone {cfg['timezone']!r}"
+    )
+    assert cfg["locale"] == "pl-PL", (
+        f"inline proxy exiting in PL declared locale {cfg['locale']!r} — a "
+        "language that contradicts its own exit IP"
+    )
+    # NOT the direct-profile answer. Stated explicitly because that specific
+    # pair IS the defect, and it is coherent enough to look fine.
+    assert (cfg["timezone"], cfg["locale"]) != ("America/New_York", "en-US")
+
+
+def test_chromium_inline_proxy_declares_the_exits_zone_and_language(
+    monkeypatch, tmp_path
+):
+    """The same property on the other engine, asserted through the real argv.
+
+    A fix covering one engine is not a fix: both arms asked `get()` and both
+    took the direct branch, so the mismatch would simply move to whichever
+    engine was left behind.
+    """
+    spawned = []
+
+    class _FakePopen:
+        def __init__(self, args, **kwargs):
+            spawned.append(args)
+            self.pid = os.getpid()
+
+    monkeypatch.setattr(process, "DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(process, "ProxyStore", _InlineGeoStore)
+    monkeypatch.setattr(process, "BookmarkStore", _Bookmarks)
+    monkeypatch.setattr(process, "write_window_entry", lambda name: None)
+    monkeypatch.setattr(process._platform, "IS_LINUX", False)
+    monkeypatch.setattr(launch_policy, "_host_timezone", lambda: "Europe/Kyiv")
+    monkeypatch.setattr(process.subprocess, "Popen", _FakePopen)
+
+    process.spawn_browser(Profile(name="pl-inline-cr", proxy=INLINE_REF))
+
+    assert spawned, "the launch never reached Popen, so no argv was rendered"
+    argv = spawned[0]
+    assert "--timezone=Europe/Warsaw" in argv, (
+        f"inline proxy exiting in PL rendered no Warsaw timezone: "
+        f"{[a for a in argv if a.startswith('--timezone')]}"
+    )
+    assert "--lang=pl-PL" in argv, (
+        f"inline proxy exiting in PL rendered "
+        f"{[a for a in argv if a.startswith('--lang')]}"
+    )
+    assert "--accept-lang=pl-PL,pl" in argv
+    assert "--timezone=America/New_York" not in argv
+    assert "--lang=en-US" not in argv
+
+
+def test_firefox_refuses_an_inline_proxy_whose_exit_cannot_be_established(
+    monkeypatch, tmp_path
+):
+    """No geography => STOP. Not a US zone, not a coarser one, not a quieter one.
+
+    This is the second half of the ticket's falsification clause, and the half a
+    fix could most easily get wrong: making the inline path RESOLVE is only
+    correct if the unresolvable case still REFUSES. A fallback here would be the
+    Invariant #0 trade — spending the operator's real position to buy a quieter
+    tell.
+    """
+    import pytest
+
+    from src.services.proxy.errors import GeographyUnknownError
+
+    spawned = []
+    monkeypatch.setattr(il, "is_invisible_installed", lambda: True)
+    monkeypatch.setattr(
+        il, "spawn", lambda cfg, **kw: spawned.append(cfg) or _Spawned()
+    )
+    monkeypatch.setattr(process, "ProxyStore", _InlineUnresolvableStore)
+    monkeypatch.setattr(process, "BookmarkStore", _Bookmarks)
+    monkeypatch.setattr(launch_policy, "_host_timezone", lambda: "Europe/Kyiv")
+
+    with pytest.raises(GeographyUnknownError):
+        process._spawn_invisible(
+            Profile(name="dead-inline-ff", engine="firefox", proxy=INLINE_REF),
+            str(tmp_path),
+        )
+    assert spawned == [], "must NOT spawn when the inline exit is unknown"
+
+
+def test_chromium_refuses_an_inline_proxy_whose_exit_cannot_be_established(
+    monkeypatch, tmp_path
+):
+    """The refusal on the other engine, for the reason above."""
+    import pytest
+
+    from src.services.proxy.errors import GeographyUnknownError
+
+    spawned = []
+
+    class _FakePopen:
+        def __init__(self, args, **kwargs):
+            spawned.append(args)
+            self.pid = os.getpid()
+
+    monkeypatch.setattr(process, "DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(process, "ProxyStore", _InlineUnresolvableStore)
+    monkeypatch.setattr(process, "BookmarkStore", _Bookmarks)
+    monkeypatch.setattr(process, "write_window_entry", lambda name: None)
+    monkeypatch.setattr(process._platform, "IS_LINUX", False)
+    monkeypatch.setattr(launch_policy, "_host_timezone", lambda: "Europe/Kyiv")
+    monkeypatch.setattr(process.subprocess, "Popen", _FakePopen)
+
+    with pytest.raises(GeographyUnknownError):
+        process.spawn_browser(Profile(name="dead-inline-cr", proxy=INLINE_REF))
+    assert spawned == [], "must NOT spawn when the inline exit is unknown"
+
+
+def test_a_direct_profile_still_declares_the_coherent_us_pair(
+    monkeypatch, tmp_path
+):
+    """THE REGRESSION GUARD, and the reason the fix is upstream of the helpers.
+
+    `proxy is None` pinning a US zone beside a forced en-US is CORRECT for a
+    genuinely direct profile — it is the #218 protection that stops persona
+    leaking the host locale, and the pair is coherent by construction. The
+    tempting fix (teach that branch about inline proxies) would have damaged
+    exactly this. A direct profile must be untouched.
+    """
+    captured = []
+    monkeypatch.setattr(il, "is_invisible_installed", lambda: True)
+    monkeypatch.setattr(
+        il, "spawn", lambda cfg, **kw: captured.append(cfg) or _Spawned()
+    )
+    monkeypatch.setattr(process, "ProxyStore", _InlineGeoStore)
+    monkeypatch.setattr(process, "BookmarkStore", _Bookmarks)
+    monkeypatch.setattr(launch_policy, "_host_timezone", lambda: "Europe/Kyiv")
+
+    process._spawn_invisible(
+        Profile(name="direct-ff", engine="firefox", proxy=None), str(tmp_path)
+    )
+
+    cfg = captured[0]
+    assert cfg["locale"] == "en-US"
+    assert cfg["timezone"] == "America/New_York"
+    # And specifically NOT the host zone the patch above installs — a direct
+    # profile must never declare where the operator actually is.
+    assert cfg["timezone"] != "Europe/Kyiv"

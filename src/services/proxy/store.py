@@ -15,6 +15,12 @@ from .tz_names import is_declarable_zone
 
 logger = get_logger("proxy.store")
 
+#: Seconds an INLINE proxy's launch-time geo probe may take before the launch is
+#: refused. A named proxy is checked ahead of time and never reaches that probe;
+#: an inline one has no record to read, so this bound is what stands between a
+#: dead proxy and a launch that hangs on the operator's click (PS-358).
+INLINE_GEO_TIMEOUT = 10
+
 
 class ProxyStore(StoreGuardMixin, TrashableMixin):
     _guard_logger = logger
@@ -35,6 +41,12 @@ class ProxyStore(StoreGuardMixin, TrashableMixin):
         # so a mutation can't race a _save iterating self.proxies (RLock so a
         # mutator can call _save while holding it).
         self._lock = threading.RLock()
+        #: Exit geography established for INLINE proxy URLs, keyed by URL
+        #: (PS-358). Per-instance and in-memory only — never persisted, because
+        #: an inline proxy is not a stored proxy and must not become one by the
+        #: side effect of launching. Only SUCCESSFUL checks land here; see
+        #: `geo_for_launch` for why a failure is deliberately not cached.
+        self._inline_geo: dict[str, Proxy] = {}
         self._load()
 
     def _load(self) -> None:
@@ -142,6 +154,138 @@ class ProxyStore(StoreGuardMixin, TrashableMixin):
                 # None here makes the launch guard fail CLOSED (audit7 #1).
                 return proxy.url if parse_proxy_server(proxy.url) else None
         return ref if parse_proxy_server(ref) else None
+
+    def geo_for_launch(
+        self,
+        ref: str | None,
+        *,
+        timeout: int = INLINE_GEO_TIMEOUT,
+        check: Callable[..., tuple] | None = None,
+    ) -> Proxy | None:
+        """The geography-bearing record the LAUNCH path must reason about.
+
+        ⭐ THIS EXISTS BECAUSE :meth:`resolve` AND :meth:`get` DISAGREE ABOUT
+        WHAT AN INLINE PROXY IS, AND THE LAUNCH PATH ASKS BOTH (PS-358).
+
+        ``resolve()`` deliberately falls back to treating the ref as a raw proxy
+        URL, so an INLINE ``socks5://…`` resolves fine and satisfies the
+        fail-closed gate. ``get()`` is a plain name lookup, so the SAME ref
+        answers ``None`` — and ``None`` is the *no-proxy* sentinel that
+        ``_profile_timezone`` / ``_profile_locale`` read as "this profile is
+        DIRECT". Measured before the fix, an inline proxy exiting in Warsaw
+        launched byte-identically to a direct profile::
+
+            inline socks5 (exit 46.205.198.123, PL) -> America/New_York + en-US
+            direct (no proxy at all)                -> America/New_York + en-US
+
+        A US clock beside ``en-US`` is coherent FOR A DIRECT PROFILE — which is
+        exactly why nothing downstream could notice. The language contradicted
+        the IP, which is the inconsistency a checker is built to find.
+
+        ⛔ THE FIX IS NOT TO TEACH THE ``None`` BRANCH TO GUESS. That branch is
+        correct for a direct profile and is the #218 host-locale protection.
+        Handing it a country would be inventing geography — the precise trade
+        Invariant #0 removes from the table. This resolves the exit instead, and
+        where it cannot, it returns a record carrying NO geography so the
+        EXISTING gate refuses the launch. Both acceptable outcomes come from
+        machinery that already exists; none of it is re-implemented here.
+
+        Returns, in order:
+
+        * a STORED proxy, untouched, when the ref names one — the named path is
+          geo-checked ahead of time and this method must not disturb it, nor add
+          a network round trip to it;
+        * ``None`` when there is no ref at all — a genuinely DIRECT profile,
+          which must keep taking the direct branch;
+        * an EPHEMERAL :class:`Proxy` for an inline ref, carrying the exit
+          geography when it could be established and carrying NONE when it could
+          not. The empty case is not a fallback: the launch gate refuses it.
+
+        ⚠️ THE ROUND TRIP IS PAID HERE, AT LAUNCH. A named proxy is checked in
+        advance; an inline one has no record to read, so establishing its exit
+        costs a network probe in front of the operator's click. Three properties
+        bound that cost, and each is deliberate:
+
+        1. **Bounded, never indefinite.** ``timeout`` is passed to the checker,
+           so a dead proxy REFUSES the launch instead of hanging it. A launch
+           that silently hangs is its own defect.
+        2. **Paid at most once per exit.** The result is cached on the store
+           class, keyed by the proxy URL, so relaunching the same inline profile
+           does not re-probe. The cache holds only what a check REPORTED.
+        3. **Never paid by the named path**, which returns above without
+           reaching the probe.
+
+        ⚠️ FRESHNESS IS EXPLICITLY OUT OF SCOPE (PS-358). A rotating or
+        backconnect exit moves, so geography resolved at launch may be wrong
+        later — true of the named path too, which reads a record written by an
+        earlier check. This does not make that worse: the cache is per-process
+        and per-URL, and a rotating exit's *credentials* differ per session.
+
+        ``check`` is injectable so a test can drive both arms without a network.
+        """
+        if not ref:
+            return None
+        with self._lock:
+            stored = self.proxies.get(ref)
+        if stored is not None:
+            return stored
+
+        url = self.resolve(ref)
+        if not url:
+            # Unparseable: `resolve` already fails closed and the launch guard
+            # refuses on the empty URL before geography is ever consulted.
+            return None
+
+        with self._lock:
+            cached = self._inline_geo.get(url)
+        if cached is not None:
+            return cached
+
+        probe = check
+        if probe is None:
+            # Imported lazily: `proxy_checker` pulls in the network stack, and
+            # the store is constructed on paths (the UI, the API, every launch)
+            # that must not pay for it unless an inline proxy is actually being
+            # resolved.
+            from ...utils.proxy_checker import check_proxy_detailed_sync
+
+            probe = check_proxy_detailed_sync
+        try:
+            ok, _msg, country_code, country_name, ip, timezone, lat, lon = probe(
+                url, timeout
+            )
+        except Exception:
+            # A checker that RAISES must not take the launch down with it, and
+            # must not be mistaken for a successful check either. Fall through
+            # with no geography: the launch gate refuses, which is the correct
+            # outcome for "we could not establish the exit".
+            ok = False
+            country_code = country_name = ip = timezone = ""
+            lat = lon = None
+
+        resolved = Proxy(
+            # Deliberately unnamed: this record is NOT in `self.proxies` and must
+            # never be mistaken for a stored proxy or saved to disk. The refusal
+            # messages name the profile's own `profile.proxy` ref, so an operator
+            # still sees the proxy they typed.
+            name="",
+            url=url,
+            country_code=country_code if ok else "",
+            country_name=country_name if ok else "",
+            last_ip=ip if ok else "",
+            timezone=timezone if ok else "",
+            lat=lat if ok else None,
+            lon=lon if ok else None,
+            checked_at=self._now() if ok else 0.0,
+            last_check_ok=True if ok else None,
+        )
+        if ok:
+            # Only a SUCCESSFUL check is cached. Caching a failure would pin a
+            # transient outage into a permanent refusal for the life of the
+            # process, so a failed probe is retried on the next launch.
+            with self._lock:
+                self._inline_geo[url] = resolved
+        return resolved
 
     def add(self, name: str, url: str, rotate_url: str = "") -> bool:
         with self._lock:

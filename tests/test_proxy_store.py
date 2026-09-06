@@ -456,3 +456,146 @@ def test_save_blocked_when_quarantine_fails(tmp_path, monkeypatch):
     # rename failed -> saving disabled so we never overwrite the creds file
     s.add("home", "socks5://user:pass@1.2.3.4:1080")
     assert path.read_text(encoding="utf-8") == "{ broken"
+
+
+# --- PS-358: geo_for_launch — the launch path's geography question -----------
+
+
+def _store(tmp_path):
+    from src.services.proxy.store import ProxyStore
+
+    return ProxyStore(path=str(tmp_path / "proxies.json"))
+
+
+def test_geo_for_launch_returns_a_stored_proxy_untouched_and_never_probes(tmp_path):
+    """The NAMED path must be unchanged, and must pay NO launch-time round trip.
+
+    A named proxy is geo-checked ahead of time. If this method probed for it too,
+    the fix would put a network call in front of every proxied launch — the
+    latency cost the ticket asks to be weighed, imposed on the one population
+    that had already paid it.
+    """
+    s = _store(tmp_path)
+    s.add("pl-exit", "socks5://u:p@5.6.7.8:1080")
+    s.mark_checked("pl-exit", "PL", "Poland", ip="5.6.7.8", timezone="Europe/Warsaw")
+
+    probed = []
+
+    def _never(url, timeout):
+        probed.append(url)
+        raise AssertionError("a STORED proxy must not be probed at launch")
+
+    got = s.geo_for_launch("pl-exit", check=_never)
+    assert got is s.get("pl-exit"), "the stored record itself must come back"
+    assert got.country_code == "PL"
+    assert probed == []
+
+
+def test_geo_for_launch_answers_none_for_a_genuinely_direct_profile(tmp_path):
+    """No ref at all is DIRECT, and must keep taking the direct branch."""
+    s = _store(tmp_path)
+    assert s.geo_for_launch(None) is None
+    assert s.geo_for_launch("") is None
+
+
+def test_geo_for_launch_resolves_an_inline_refs_exit_geography(tmp_path):
+    """THE FIX. An inline ref must come back carrying its EXIT's geography.
+
+    Before PS-358 this ref answered None, which the launch read as "direct".
+    """
+    s = _store(tmp_path)
+    ref = "socks5://u:p@1.2.3.4:1080"
+    assert s.get(ref) is None, "premise: an inline ref names no stored proxy"
+
+    def _pl(url, timeout):
+        assert url == ref, "the probe must be handed the resolved URL"
+        return (True, "ok", "PL", "Poland", "46.205.198.123", "Europe/Warsaw", 52.2, 21.0)
+
+    got = s.geo_for_launch(ref, check=_pl)
+    assert got is not None, "an inline proxy must not answer None (that is DIRECT)"
+    assert (got.country_code, got.timezone) == ("PL", "Europe/Warsaw")
+    assert got.last_check_ok is True
+    # It must NOT have been written into the store: launching a profile is not
+    # a gesture that creates a saved proxy.
+    assert s.get(ref) is None
+    assert "pl" not in s.proxies and ref not in s.proxies
+
+
+def test_geo_for_launch_carries_no_geography_when_the_exit_is_unknown(tmp_path):
+    """A failed probe must yield an EMPTY record, so the launch gate refuses.
+
+    ⛔ It must never invent a value — not a host-derived one, not a coarser one.
+    The record comes back geoless and `_profile_timezone` refuses on it.
+    """
+    s = _store(tmp_path)
+    ref = "socks5://u:p@203.0.113.9:1080"
+
+    def _fail(url, timeout):
+        return (False, "timed out", "", "", "", "", None, None)
+
+    got = s.geo_for_launch(ref, check=_fail)
+    assert got is not None
+    assert got.country_code == "" and got.timezone == ""
+    assert got.last_check_ok is None
+
+
+def test_geo_for_launch_does_not_let_a_raising_probe_take_the_launch_down(tmp_path):
+    """A checker that RAISES must refuse the launch, not crash it — and must not
+    be mistaken for a successful check."""
+    s = _store(tmp_path)
+
+    def _boom(url, timeout):
+        raise OSError("network unreachable")
+
+    got = s.geo_for_launch("socks5://u:p@1.2.3.4:1080", check=_boom)
+    assert got is not None
+    assert got.country_code == "" and got.timezone == ""
+
+
+def test_geo_for_launch_pays_the_round_trip_at_most_once_per_exit(tmp_path):
+    """The latency bound. Relaunching the same inline proxy must not re-probe."""
+    s = _store(tmp_path)
+    ref = "socks5://u:p@1.2.3.4:1080"
+    calls = []
+
+    def _pl(url, timeout):
+        calls.append(url)
+        return (True, "ok", "PL", "Poland", "46.205.198.123", "Europe/Warsaw", None, None)
+
+    first = s.geo_for_launch(ref, check=_pl)
+    second = s.geo_for_launch(ref, check=_pl)
+    assert len(calls) == 1, f"probed {len(calls)} times for one exit"
+    assert (second.country_code, second.timezone) == (first.country_code, first.timezone)
+
+
+def test_a_failed_probe_is_not_cached_so_a_transient_outage_is_retried(tmp_path):
+    """Caching a FAILURE would pin a blip into a permanent refusal for the life
+    of the process. Only a successful check is remembered."""
+    s = _store(tmp_path)
+    ref = "socks5://u:p@1.2.3.4:1080"
+    calls = []
+
+    def _flaky(url, timeout):
+        calls.append(url)
+        if len(calls) == 1:
+            return (False, "timed out", "", "", "", "", None, None)
+        return (True, "ok", "PL", "Poland", "1.2.3.4", "Europe/Warsaw", None, None)
+
+    assert s.geo_for_launch(ref, check=_flaky).country_code == ""
+    assert s.geo_for_launch(ref, check=_flaky).country_code == "PL"
+    assert len(calls) == 2, "a failed probe must be retried, not cached"
+
+
+def test_geo_for_launch_answers_none_for_an_unparseable_ref(tmp_path):
+    """`resolve` already fails closed on an unusable URL; the launch guard
+    refuses on the empty URL before geography is consulted, so there is nothing
+    to probe."""
+    s = _store(tmp_path)
+    probed = []
+
+    got = s.geo_for_launch(
+        "socks5://1.2.3.4",  # no port: parse_proxy_server returns None
+        check=lambda u, t: probed.append(u) or (True, "", "PL", "", "", "", None, None),
+    )
+    assert got is None
+    assert probed == [], "an unusable ref must not be probed"
