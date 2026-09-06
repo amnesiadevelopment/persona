@@ -54,9 +54,22 @@ the comparison under test is outer vs screen, and 1919 > 1280 either way.
 
 AC3/AC4 — AFTER THE FIX, same venue, same seed, same window
 ============================================================
+⛔ SUPERSEDED — THIS IS THE ROUND-1 FIX, WHICH WAS WRONG AND WAS DELETED.
+   Kept rather than edited away, because the WORD "coherent" below sits beside
+   a pair that is NOT coherent (inner 1919 > outer 1280 — a window smaller
+   than its own content), and that mislabel is the thing this ticket kept
+   producing. The reviewer caught it here first; #327 round 2 then repeated
+   the identical shape in the matrix cell, and round 3 in this artifact. An
+   artifact that asserts a verdict its own numbers refute is worth more as a
+   marked exhibit than as a deletion. THE READING BELOW MEASURES ONLY
+   outer-vs-screen — the one comparison the round-1 fix was aimed at — and
+   that is exactly how it passed. See ROUND 2 and ROUND 3 for what shipped.
+
 FORCED (resolution=(1280,720)):
   inner 1919 x 936   outer 1280 x 680   screen 1280 x 720
-  outer_gt_screen = FALSE        <-- coherent; window now fits its screen
+  outer_gt_screen = FALSE        <-- MISLABELLED "coherent" at the time; only
+                                     R3 was checked. R1 (outer >= inner) is
+                                     VIOLATED here by -639. Not coherent.
   screen.width is STILL EXACTLY THE OPERATOR'S PICK (1280) -> #167 not re-opened
 
 AUTO (resolution=None) — the AC4 negative assertion:
@@ -119,3 +132,60 @@ in hand exactly where launch args are assembled.
 RESULT: device_ext.py is now BYTE-IDENTICAL to base. The whole fix is one
 launch arg in process.py, fired only when a desktop profile carries a FORCED
 resolution (parse_resolution("auto") is None, so AUTO cannot reach it).
+
+
+=====================================================================
+ROUND 3 — THE RECORD, NOT THE CODE. And one number reconciled.
+=====================================================================
+Round 2's code was audited CORRECT and driven independently by the reviewing
+seat (Xvfb + real builder + real launch arg, over CDP). The audit FAIL was
+against the RECORD: round 2 rewrote process.py and did not touch
+tests/test_engine_masking_matrix.py, so the outer-size/chromium cell still
+described the round-1 device_ext clamp that round 2 had DELETED — naming
+applyScreenPatch as the route and quoting outer 1280x680. Every load-bearing
+sentence in it was false at that HEAD.
+
+No product code changed in round 3. process.py is byte-identical to round 2
+and device_ext.py is byte-identical to base.
+
+A NUMBER THAT DISAGREED, RECONCILED RATHER THAN PICKED
+------------------------------------------------------
+Round 2's cap reading above records outer [1280,680]; the reviewer's
+independent drive of the same capped FORCED profile read outer [1280,720]:
+
+    author  (round 2)     inner [1280,577]  outer [1280,680]  screen [1280,720]
+    reviewer (independent) inner [1280,577]  outer [1280,720]  screen [1280,720]
+
+inner and screen agree exactly; only outerHeight differs, by 40 — which is
+precisely INSET on a non-mac profile, the work-area allowance. So the two
+readings differ in whether the measured window occupied the full screen box or
+the available box beneath it, a property of the WM/venue rather than of the
+change. BOTH satisfy all three relations (R1 outer >= inner: 680 and 720 are
+each >= 577; R3 outer <= screen: each <= 720), so the finding is unaffected
+either way.
+
+THE MATRIX CELL QUOTES THE REVIEWER'S 720, not the author's 680, deliberately:
+it is the independently driven figure, and the round-1 lesson in this same file
+is that the author's own instrument is the one to distrust. The 40px residual
+is recorded here rather than smoothed away, because an exact-looking number
+with two sources and no note is how the earlier mislabels survived.
+
+WHAT ROUND 3 CHANGED, all in tests/test_engine_masking_matrix.py
+----------------------------------------------------------------
+* the outer-size/chromium cell rewritten to the mechanism that SHIPPED: the
+  --window-size launch arg in spawn_browser, not a pin in device_ext.
+* the EMPTY-INTERVAL argument moved INTO the cell. It is the reasoning a
+  future agent will come to the matrix for, and it lived only in a commit body.
+* the BOUND named, so COVERED_ELSEWHERE is a bounded claim: the cap sizes the
+  window AT LAUNCH, and a window resized AFTERWARDS is not covered.
+* COVERED_ELSEWHERE re-decided deliberately (the ground moved — the route is
+  no longer a different BUILDER but a launch flag), with all four rejected
+  positions and their reasons stated in the cell.
+* two drift sites fixed: the docstring's NOT_ESTABLISHED enumeration and the
+  matrix table row, both of which still called this cell unestablished. The
+  same two were stale for PS-312's `geo` cell and are corrected with it.
+* a MACHINE CHECK added — test_a_forced_desktop_launch_really_carries_the_
+  window_cap — asserting a FORCED desktop launch's real argv carries the cap
+  and an AUTO launch does not. COVERED_ELSEWHERE cannot be census-checked, so
+  prose was the only control; this holds its load-bearing half. Falsified:
+  removing the cap turns it RED on the argv value, not on source text.
