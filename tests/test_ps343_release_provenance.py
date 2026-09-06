@@ -349,7 +349,9 @@ def bench(tmp_path):
     }
     records = tmp_path / "records"
     records.mkdir()
-    (records / "personium-1.2.3.4.json").write_text(json.dumps(record, indent=2))
+    (records / "personium-1.2.3.4.json").write_text(
+        json.dumps(record, indent=2), encoding="utf-8"
+    )
     return records, assets, record
 
 
@@ -360,7 +362,9 @@ def run(records: Path, assets: Path) -> int:
 def rewrite(records: Path, record: dict, mutate) -> None:
     r = copy.deepcopy(record)
     mutate(r)
-    (records / "personium-1.2.3.4.json").write_text(json.dumps(r, indent=2))
+    (records / "personium-1.2.3.4.json").write_text(
+        json.dumps(r, indent=2), encoding="utf-8"
+    )
 
 
 def test_a_truthful_record_passes(bench):
