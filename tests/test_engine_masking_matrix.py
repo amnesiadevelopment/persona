@@ -326,13 +326,20 @@ MATRIX = {
             "always gets it and a proxy-less one never does.",
         ),
         "firefox": (
-            NOT_ESTABLISHED,
-            "No spoof, and NO RECORDED REASON. 'geolocation' and "
-            "'getCurrentPosition' appear zero times on this launch path. The "
-            "Chromium builder exists because getCurrentPosition could otherwise "
-            "fall through to the REAL host coordinates while locale and "
-            "timezone already say the exit country — nothing in the tree says "
-            "whether that is true, false, or already handled on this engine.",
+            NOT_COVERED_RECORDED,
+            "getCurrentPosition is answered LOCALLY and yields no coordinates, "
+            "so there is no host position for a spoof to displace. PS-312 "
+            "established this BY MEASUREMENT on a real proxied headful launch, "
+            "reading the value the page's own callback receives: permission "
+            "'granted' -> error code 2 (POSITION_UNAVAILABLE) in ~12ms, "
+            "proxied and direct alike; the shipped 'prompt' default -> neither "
+            "callback fires. The cause is the engine's own "
+            "geo.provider.network.url: \"\", isolated by A/B (that one pref "
+            "pointed at a reachable provider returns a position in ~18ms — "
+            "which is also the positive control proving the null is real). "
+            "Shipping a spoof would REPLACE a native refusal that reads clean "
+            "with a JS override a detector can see, to close a hole that is "
+            "not open.",
         ),
     },
     # THE REVERSE CELL. Every row above is a Chromium builder asking after
@@ -378,6 +385,13 @@ RECORDED_REASON_SOURCES = {
         "src/services/browser/gpu_ext.py",
         "So on windows and macos the engine ALREADY authors a plausible, "
         "seed-derived identity",
+    ),
+    # PS-312. Written into the FIREFOX ARM of spawn_browser — beside the cfg
+    # dict that carries `locale` and `timezone` and not `lat`/`lon`, which is
+    # exactly where a reader asks the question the reason answers.
+    "geo": (
+        "src/services/browser/process.py",
+        "getCurrentPosition is answered LOCALLY and yields no coordinates",
     ),
 }
 
@@ -787,7 +801,13 @@ def test_firefox_not_established_cells_are_not_quietly_covered():
     tokens = {
         "stealth": ("downlinkMax", "ContentIndex"),
         "measuretext": ("measureText",),
-        "geo": ("geolocation", "getCurrentPosition"),
+        # "geo" left this dict in PS-312, which established the cell by
+        # measurement. Its absence-guard did NOT go with it: the same two
+        # tokens are still swept in
+        # ``test_the_recorded_geo_absence_is_still_an_absence`` below, where
+        # they now guard a NOT_COVERED_RECORDED cell instead of an unestablished
+        # one. Deleting the guard along with the entry would have traded a
+        # stated unknown for an unwatched decision.
         "device": ("enumerateDevices",),
     }
     for vector, names in tokens.items():
@@ -801,6 +821,32 @@ def test_firefox_not_established_cells_are_not_quietly_covered():
                 f"Firefox now emits {name!r}, so the {vector!r} cell is no "
                 f"longer 'position not established'. State the position."
             )
+
+
+def test_the_recorded_geo_absence_is_still_an_absence():
+    # PS-312's cell, guarded from the same side the NOT_ESTABLISHED sweep above
+    # guards its own — and this test exists because moving the cell must NOT
+    # cost it that guard. The decision recorded in `process.py`'s Firefox arm is
+    # "persona ships NO Firefox geolocation spoof, because the engine already
+    # refuses locally". A spoof that quietly appeared would make the recorded
+    # reason describe a tree that no longer matches it, exactly as a reworded
+    # reason would — so both oracles the sweep above uses are applied here:
+    # the emitted source, and the spoof registry.
+    js = _firefox_installed_js()
+    spoofs, _ = _firefox_spoof_census()
+    assert MATRIX["geo"]["firefox"][0] == NOT_COVERED_RECORDED
+    assert "geo" not in spoofs, (
+        "a Firefox geo spoof is now registered, contradicting the recorded "
+        "decision in process.py's Firefox arm that persona ships none. Either "
+        "the engine's behaviour changed (RE-MEASURE, then restate the cell as "
+        "COVERED and give it a FIREFOX_SPOOF_CONDITIONS entry) or the spoof is "
+        "the defect."
+    )
+    for name in ("geolocation", "getCurrentPosition"):
+        assert name not in js, (
+            f"Firefox now emits {name!r}, so the recorded 'no spoof ships' "
+            f"decision no longer describes this tree. Restate the cell."
+        )
 
 
 def test_firefox_voice_and_canvas_ctx_absences_are_not_accidental():
@@ -1049,7 +1095,10 @@ def test_the_open_cells_are_the_deliverable_and_are_named():
         "firefox:stealth",
         "firefox:measuretext",
         "firefox:device",
-        "firefox:geo",
+        # "firefox:geo" was here until PS-312 established it BY MEASUREMENT.
+        # Its deletion IS that commit's record; the cell now reads
+        # NOT_COVERED_RECORDED and its reason is re-read out of the tree by
+        # ``test_recorded_reasons_still_in_tree``.
         "chromium:outer-size",
     }
 
