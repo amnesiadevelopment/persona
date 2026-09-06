@@ -3,6 +3,7 @@ from collections.abc import Callable
 
 import flet as ft
 
+from ...core.strings import CHROMIUM_ENGINE_NAME
 from ...models.profile import Profile
 from ...models.proxy import Proxy
 from ...services.browser.refusal import Refusal
@@ -545,7 +546,8 @@ def _automation_channel_chip(cdp_channel_open: bool) -> list[ft.Control]:
             # is open on a browser they are watching, and "CDP" alone assumes
             # the reader already knows what it costs.
             tooltip=(
-                "This session was launched with AI/CDP control: chromium has an "
+                "This session was launched with AI/CDP control: "
+                f"{CHROMIUM_ENGINE_NAME} has an "
                 "unauthenticated remote-debugging port open, which any process "
                 "running as this user can drive. It closes when the session ends.\n\n"
                 "Reflects the RUNNING session — toggling AI control now does not "

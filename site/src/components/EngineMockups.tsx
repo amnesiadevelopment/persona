@@ -17,7 +17,7 @@ const CHROMIUM: Tone = {
   accent: '#7ea8ff',
   soft: 'rgba(80,140,255,0.16)',
   Icon: ChromiumIcon,
-  host: 'fingerprint-chromium',
+  host: 'Personium',
   rows: [
     { label: 'Canvas', value: 'noised' },
     { label: 'WebGL vendor', value: 'spoofed' },

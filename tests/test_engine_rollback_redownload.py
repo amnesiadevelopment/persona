@@ -37,6 +37,8 @@ import os
 
 import pytest
 
+from src.core.strings import CHROMIUM_ENGINE_NAME
+
 import src.core.platform as _platform
 from src.services.engine import updater
 from src.ui import app as _app_mod
@@ -1023,7 +1025,10 @@ def test_a_refusal_after_bytes_moved_does_not_leave_a_stale_byte_count(
     fake_revert, _shown = _revert_emitting(
         (90_000_000, 189_000_000),
         ok=False,
-        message="Chromium engine: going back to 148.0.1 failed — download failed",
+        message=(
+            f"{CHROMIUM_ENGINE_NAME} engine: going back to 148.0.1 failed "
+            "— download failed"
+        ),
     )
     monkeypatch.setattr(updater, "revert_to_previous_build", fake_revert)
 

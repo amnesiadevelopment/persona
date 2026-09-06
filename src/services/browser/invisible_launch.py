@@ -17,6 +17,7 @@ import time
 
 from ...core import platform as _platform
 from ...core.logging import get_logger
+from ..engine_naming import engine_display_name
 # PS-73: the per-seed audio perturbation, shared with the Chromium extension
 # builder in the same module. Firefox loads no persona extension, so it takes
 # the same patch through add_init_script instead.
@@ -3399,8 +3400,9 @@ def _launch_and_watch(cfg, profile_dir, emit, _finish, stop_event, in_thread):
             # on every OS, so say so plainly instead of failing with a cryptic
             # TLS error on the admin site.
             emit(
-                "MTLS_UNSUPPORTED: Firefox certificates aren't available on this "
-                "OS yet (use the Chromium engine for this profile)"
+                "MTLS_UNSUPPORTED: Firefox certificates aren't available on "
+                f"this OS yet (use the {engine_display_name()} engine for this "
+                "profile)"
             )
         else:
             emit("MTLS_CA_IMPORT_FAILED: opening without certificate trust")

@@ -2,14 +2,24 @@
 
 Keep the newest version first. Each entry is a short, user-facing bullet list —
 not a git log. When cutting a release, add the new version's highlights here.
+
+⚠️ OUR CHROMIUM ENGINE IS NAMED FROM ``CHROMIUM_ENGINE_NAME``, NEVER TYPED IN
+(PS-318). Entries here are OPERATOR-FACING and shipped ones are rewritten when
+the name changes: the engine was already ours when 3.0.2 and earlier shipped,
+and leaving the old label in a note an operator still reads would keep an
+inaccurate name in front of them indefinitely. So an entry that names the
+engine interpolates the constant — the next rename is one edit, not a sweep.
 """
+
+from ..core.strings import CHROMIUM_ENGINE_NAME
 
 CHANGELOG: dict[str, list[str]] = {
     "3.0.2": [
         "A heavy page no longer stalls the browser. Opening a demanding site "
         "could freeze the window; the check that runs behind every connection "
         "now does its work once instead of repeating it for each request.",
-        "Closing persona no longer leaves Chromium running in the background. "
+        f"Closing persona no longer leaves {CHROMIUM_ENGINE_NAME} running in "
+        "the background. "
         "Browser processes were surviving after the app closed — on one "
         "machine a leftover set was still using most of a processor half a day "
         "later. A browser and everything it started are now shut down "
@@ -65,7 +75,8 @@ CHANGELOG: dict[str, list[str]] = {
         "Firefox profiles keep their open tabs across a restart again. A "
         "scheduled engine build update was clearing the session-restore "
         "settings, so a profile came back empty.",
-        "Chromium's engine row now explains why it has no rollback available "
+        f"{CHROMIUM_ENGINE_NAME}'s engine row now explains why it has no "
+        "rollback available "
         "yet, instead of showing an empty space that looked like the feature "
         "was missing.",
         "Linux updates now keep the previous AppImage, so an update can be "
@@ -182,7 +193,8 @@ CHANGELOG: dict[str, list[str]] = {
         "presented only to that site's address and never to any other — so it "
         "can't be used to recognise you elsewhere — and it stays inside persona, "
         "never imported into the operating system. Works on every OS with the "
-        "Chromium engine; Firefox certificates are Linux-only for now.",
+        f"{CHROMIUM_ENGINE_NAME} engine; Firefox certificates are Linux-only "
+        "for now.",
         "Restoring a profile from a backup now keeps every setting (engine, "
         "resolution, bookmarks, tags, assigned certificate and more) instead of "
         "quietly resetting most of them to defaults.",

@@ -24,6 +24,7 @@ import json
 from types import SimpleNamespace
 
 import src.ui.app as app_mod
+from src.core.strings import CHROMIUM_ENGINE_NAME
 from src.services.engine import policy, updater
 
 
@@ -381,7 +382,8 @@ def test_a_refused_build_is_not_downloaded_and_says_why(monkeypatch):
         "fetch_latest_checked",
         lambda timeout=20: (
             "149.0.8000.10", "", "", policy.ABOVE_CEILING,
-            "Chromium engine 149.0.8000.10 is above the maximum Chromium major "
+            f"{CHROMIUM_ENGINE_NAME} engine 149.0.8000.10 is above the maximum "
+            "Chromium major "
             "set in your engine policy file (Chromium 148) — raise or remove "
             "max_tested_major in /home/op/.persona/engine-policy.json to "
             "install it.",
@@ -442,7 +444,8 @@ def test_a_refusal_actually_paints_the_row_instead_of_wedging_on_downloading(
         "fetch_latest_checked",
         lambda timeout=20: (
             "149.0.8000.10", "", "", policy.ABOVE_CEILING,
-            "Chromium engine 149.0.8000.10 is above the maximum Chromium major "
+            f"{CHROMIUM_ENGINE_NAME} engine 149.0.8000.10 is above the maximum "
+            "Chromium major "
             "set in your engine policy file (Chromium 148) — raise or remove "
             "max_tested_major in /home/op/.persona/engine-policy.json to "
             "install it.",
@@ -512,7 +515,8 @@ def test_a_known_bad_refusal_reads_differently_from_a_ceiling_refusal(monkeypatc
         "fetch_latest_checked",
         lambda timeout=20: (
             "148.0.7778.215", "", "", policy.KNOWN_BAD,
-            "Chromium engine 148.0.7778.215 is on persona's known-bad list — "
+            f"{CHROMIUM_ENGINE_NAME} engine 148.0.7778.215 is on persona's "
+            "known-bad list — "
             "not installing it.",
         ),
     )
@@ -706,7 +710,8 @@ def test_a_known_bad_first_install_is_not_silent_on_the_onboarding_path(monkeypa
         updater.policy, "check",
         lambda tag: (
             policy.KNOWN_BAD,
-            "Chromium engine 148.0.7778.215 is on persona's known-bad list — "
+            f"{CHROMIUM_ENGINE_NAME} engine 148.0.7778.215 is on persona's "
+            "known-bad list — "
             "not installing it.",
         ),
     )
