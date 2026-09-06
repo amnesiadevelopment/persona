@@ -30,6 +30,19 @@ COMPILE_RESULT="${COMPILE_RESULT:-unknown}"
 # what the manifest SAYS, while whether the borrow was allowed at all is decided
 # by ps218_verify_control.sh, which stops the build before this script runs.
 CONTROL_RUN_ID="${CONTROL_RUN_ID:-}"
+# PS-307 — was the prepared source tree REUSED from a previous dispatch, or
+# built fresh? "true"/"false" from ps307_tree_state.sh, or empty on a run that
+# predates the mechanism. This is reported because a reused tree changes what
+# the prepare wall-clock figure MEANS, and that figure is one of this workflow's
+# deliverables: a reader comparing 40 seconds against 12 minutes must be able to
+# see that the two measure different things rather than a machine that got
+# faster.
+TREE_REUSED="${TREE_REUSED:-}"
+# PS-307 — the outcome of the tree-evidence check that our 16 fingerprint
+# patches are actually IN the compiled tree. `success` is the only value that
+# licenses the "16 fingerprint patches" claim below; anything else means the
+# claim is unbacked and the manifest says so instead of asserting it.
+PATCHES_VERIFIED="${PATCHES_VERIFIED:-}"
 
 REC="record"
 mkdir -p "$REC"
@@ -75,7 +88,25 @@ say() {
     echo "| ungoogled revision | \`$(cat "${UCPL_DIR}/ungoogled-chromium/revision.txt")\` |"
   fi
   if [ "$TREE" = "patched" ]; then
-    echo "| our fingerprint patches | 16, from fingerprint-chromium \`${FINGERPRINT_TAG:-144.0.7559.132}\` |"
+    # PS-307 — the patch-layer row states what was VERIFIED, never what was
+    # intended. Before this, the row asserted "16" on the strength of the
+    # staging step having run — and on a preserved tree staging can run
+    # perfectly while upstream's apply_patches() skips itself and puts none of
+    # them in the tree. The row now reports the tree-evidence check's verdict.
+    case "$PATCHES_VERIFIED" in
+      success)
+        echo "| our fingerprint patches | 16, from fingerprint-chromium \`${FINGERPRINT_TAG:-144.0.7559.132}\` — **VERIFIED PRESENT IN THE TREE** (see \`patch-presence-patched.txt\`) |"
+        ;;
+      failure)
+        echo "| our fingerprint patches | ❌ **NOT ALL PRESENT IN THE TREE** — the presence check FAILED. Nothing here may be read as a measurement of our patch layer. See \`patch-presence-patched.txt\`. |"
+        ;;
+      "")
+        echo "| our fingerprint patches | 16 STAGED, presence in the tree NOT CHECKED (this run predates the PS-307 verification) |"
+        ;;
+      *)
+        echo "| our fingerprint patches | 16 staged; presence check reported \`${PATCHES_VERIFIED}\` — treat the patch layer as UNCONFIRMED |"
+        ;;
+    esac
     # PS-244 — THE PROVENANCE OF THE CONTROL, IN THE SUMMARY TABLE.
     # An attribution resting on a control built in another run is a weaker
     # claim than one resting on an in-run control, and a reader must be able to
@@ -88,6 +119,20 @@ say() {
   else
     echo "| our fingerprint patches | NONE — this is the instrument check |"
   fi
+  # PS-307 — reused or fresh, in the summary table where the cost figures are
+  # read from. Both rows below are about the SAME dispatch, and a reader who
+  # takes the prepare wall-clock without this row will misread it.
+  case "$TREE_REUSED" in
+    true)
+      echo "| source tree | ♻️ **REUSED** from a previous dispatch — the prepare figure below is a WARM one and is NOT comparable to a cold prepare |"
+      ;;
+    false)
+      echo "| source tree | BUILT FRESH this dispatch (the download cache may still have been reused) |"
+      ;;
+    *)
+      echo "| source tree | not recorded (this run predates PS-307 tree reuse) |"
+      ;;
+  esac
   echo
   echo "## The two results, stated separately"
   echo
@@ -171,6 +216,27 @@ say() {
 
   echo "## Cost"
   echo
+  # PS-307 — the reuse note sits IMMEDIATELY ABOVE the timing blocks rather than
+  # only in the table, because the number it qualifies is right below it and a
+  # qualification a reader meets after the figure has already been taken is a
+  # qualification that did not happen.
+  if [ "$TREE_REUSED" = "true" ]; then
+    echo "> ♻️ **The source tree was REUSED from a previous dispatch.** The prepare"
+    echo "> figure below therefore measures a WARM start: the ~1.7 GB download, the"
+    echo "> unpack, the toolchain fetch and the application of the 111 de-googling"
+    echo "> patches were all SKIPPED because upstream's stamp files were already in"
+    echo "> the preserved tree. It is not comparable to a cold prepare, and it says"
+    echo "> nothing about how long preparing this tree from nothing takes."
+    echo ">"
+    echo "> The COMPILE figure is unaffected: ninja builds the same sources either way."
+    echo
+  elif [ "$TREE_REUSED" = "false" ]; then
+    echo "> The source tree was built FRESH this dispatch, so the prepare figure below"
+    echo "> is a cold one. (The download cache is preserved separately from the tree,"
+    echo "> so the ~1.7 GB tarball may still not have been re-downloaded — see"
+    echo "> \`tree-reuse-${TREE}.txt\` for what was on disk.)"
+    echo
+  fi
   # Wall-clock and peak memory are deliverables of this ticket, so they are in
   # the manifest itself rather than only in the raw timing files.
   for phase in prepare compile; do
@@ -195,6 +261,30 @@ say() {
 
   echo "## Environment"
   echo
+
+  # PS-307 — the reuse decision and the patch-presence verdict, in full, before
+  # the environment dump. Both raw reports also travel in `record/`.
+  echo "## Tree provenance (PS-307)"
+  echo
+  echo "Whether this dispatch reused a prepared tree, and — for the patched tree —"
+  echo "whether our patches were proven to be IN it. These are separate questions:"
+  echo "the first is about COST, the second is about whether the artifact's label is"
+  echo "true. A stamp file can answer the first and cannot answer the second, which"
+  echo "is why the presence check reads the source files instead."
+  echo
+  echo '```'
+  cat "${REC}/tree-reuse-${TREE}.txt" 2>/dev/null || echo "(not recorded — this run predates PS-307 tree reuse)"
+  echo '```'
+  echo
+  if [ -f "${REC}/patch-presence-${TREE}.txt" ]; then
+    echo "### Are our patches in the tree?"
+    echo
+    echo '```'
+    cat "${REC}/patch-presence-${TREE}.txt"
+    echo '```'
+    echo
+  fi
+
   echo "### As the job found the machine (before prepare)"
   echo '```'
   cat "${REC}/environment-${TREE}.txt" 2>/dev/null || echo "(not recorded)"
