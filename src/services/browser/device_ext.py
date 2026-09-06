@@ -519,10 +519,11 @@ __SCREEN_REALM_BOOTSTRAP__
   // EVERYTHING THE LEAF NEEDS IS DECLARED INSIDE ITS BODY, because the body is
   // what crosses realms: `applyDevicesPatch.toString()` is re-evaluated in the
   // child, so anything referenced from the enclosing IIFE would be undefined
-  // there. The three helpers this block used to close over live at the top of
-  // that IIFE — `h32` and `nativeWrap` above, and `hx` was declared here — and
-  // none of them survives the trip. `applyHwPatch` below is the in-tree
-  // precedent and does exactly this with its own SEED/`h`/`def`.
+  // there. The three helpers this block used to close over were IIFE-scoped —
+  // `h32` above, the since-deleted top-level `nativeWrap` (see the note beside
+  // `pick`), and `hx`, which was declared here — and none of them survives the
+  // trip. `applyHwPatch` below is the in-tree precedent and does exactly this
+  // with its own SEED/`h`/`def`.
   //
   // THE GUARD SITS BELOW THIS LEAF'S REAL PRECONDITION, NOT AT THE TOP OF THE
   // BODY. `mediaDevices` is not universally present — it is absent from a
