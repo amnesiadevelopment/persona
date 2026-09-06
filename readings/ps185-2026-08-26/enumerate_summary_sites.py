@@ -57,6 +57,38 @@ is a published figure and the row that mixes a recounted percentage with a
 frozen count is the exact artifact this class produces. An exemption nobody
 checks is how a defect hides behind the word "intentional".
 
+⭐ AXIS 1'S UNIT IS THE CLAIM, NOT ONLY THE FIELD (PS-214)
+----------------------------------------------------------
+The field walk above proves that *something* reads each raw-reading field. It
+cannot prove that *every rendered claim derived from that field* reads it: the
+pass rule is satisfied by ONE differing line, so a field feeding N rendered
+claims passes while N-1 of them are frozen — the survivor hides behind its live
+siblings. PS-185's own demonstration is the proof: freezing the entire macos
+row still moved 35 other lines and axis 1 returned EXIT=0.
+
+So pass 3 records WHICH lines each mutation moved (a free byproduct of renders
+already being paid for — no extra renders, no runtime change) and reports any
+non-structural rendered line that NO mutation moves. Re-planting that macos
+freeze now exits 1 and names line 9.
+
+Two bounds were closed in the same pass:
+
+* ``zip`` TRUNCATES to the shorter sequence, so a mutation that only added or
+  removed TRAILING lines read as inert. Length is now compared explicitly.
+* The inert-LINE population is triaged one line at a time, in the same shape as
+  ``NOT_RENDERED`` and under the same rule — a declaration records a decision,
+  it does not suppress a check. No catch-all waiver.
+
+⭐ THE MEASURED POPULATION, which the ticket called an OUTPUT of this work
+rather than an input: of **57 non-blank rendered lines, 5 are inert.** Four are
+genuinely static (a table header, a sentence quoting a code constant, two
+pieces of reader guidance). **The fifth is a real finding** — the "Lower is
+better" line interpolates ``measured_at``, ``len(seeds_requested)`` and
+``provenance.engine.build``, so it IS a rendered claim, and it is inert only
+because this axis' walk covers ``readings`` and never reaches those three
+fields. That is a gap in the MUTATION SET rather than a frozen render; see
+``_FROZEN_PROVENANCE_LINE``, which states it rather than declaring it away.
+
 USE
 ---
 Run it after ANY change to ``derive.py``::
@@ -362,6 +394,15 @@ def run_axis1(base: "list[str]", quiet: bool) -> "list[str]":
     observed = []
     attributable: "set[str]" = set()
 
+    # THE CLAIM-LEVEL RECORD (PS-214): rendered line index -> the set of
+    # (field, op) mutations that moved it. Inverted after pass 1, this answers
+    # the question the field-granular rule cannot: which rendered lines does NO
+    # mutation move? Those are the frozen claims.
+    #
+    # Costs nothing. Pass 1 already renders all 198 mutations and already
+    # compares each against `base`; only the indices were being discarded.
+    line_movers: "dict[int, set[str]]" = {}
+
     # STRUCTURAL VALUES ARE NOT MEASUREMENTS, and the distinction is drawn
     # from the records rather than by a hand-written waiver. An engine name
     # and a seed are IDENTIFIERS: they key `readings`, `verdicts` and
@@ -398,8 +439,36 @@ def run_axis1(base: "list[str]", quiet: bool) -> "list[str]":
                 # able to print. A traceback prints nothing at all.
                 crashed.append(f"{op_name}: {type(exc).__name__}: {exc}")
                 continue
-            if any(b != a for b, a in zip(base, after)):
+            # WHICH lines moved, not merely WHETHER any did. The indices are a
+            # FREE byproduct of a comparison pass 1 already performs on every
+            # one of its renders, and capturing them is what raises this axis'
+            # unit from the FIELD to the CLAIM (PS-214).
+            #
+            # THE UNIT MATTERS because the field-granular rule below is
+            # satisfied by ONE differing line. A field feeding N rendered
+            # claims passes while N-1 of them are frozen, because the survivor
+            # hides behind its live siblings — measured on PS-185's own
+            # demonstration, where freezing the whole macos row still left 35
+            # other lines moving and axis 1 returned EXIT=0.
+            #
+            # ⚠️ `zip` TRUNCATES TO THE SHORTER SEQUENCE, so a mutation that
+            # only adds or removes TRAILING lines — leaving the common prefix
+            # identical — reads as inert under a zipped comparison. That is a
+            # second, distinct blind spot from the granularity one: a render
+            # collapsing from 88 lines to an identical-prefix 80 registers as
+            # "not moved". Length is therefore compared EXPLICITLY, and the
+            # indices past the common prefix are recorded as moved.
+            moved_lines = [
+                i for i, (b, a) in enumerate(zip(base, after)) if b != a
+            ]
+            if len(after) != len(base):
+                moved_lines.extend(range(min(len(base), len(after)),
+                                         max(len(base), len(after))))
+            if moved_lines:
                 moved.append(op_name)
+                for i in moved_lines:
+                    if i < len(base):
+                        line_movers.setdefault(i, set()).add(f"{label}/{op_name}")
             # ATTRIBUTION. Whatever vanished from the page when this field was
             # destroyed is a value the article demonstrably READS from it.
             after_text = "\n".join(after)
@@ -449,7 +518,167 @@ def run_axis1(base: "list[str]", quiet: bool) -> "list[str]":
             print(f"  ✗ {label}: inert and UNDECLARED")
         elif not quiet:
             print(f"  ~ {label}: inert, declared ({NOT_RENDERED[decl_key]})")
+
+    # ---- pass 3: the CLAIM-level unit (PS-214) ----------------------------
+    #
+    # Passes 1-2 answer "does something read this FIELD?". This answers the
+    # strictly harder question the defect class actually lives at: "is this
+    # rendered LINE computed from the evidence at all?" A line no mutation
+    # moves is frozen against every raw reading in the corpus — it cannot be
+    # responding to any of them.
+    #
+    # This ADDS a unit; it does not replace the field walk above, whose
+    # NOT_RENDERED triage and _cited_values / attributable / structural
+    # guards remain load-bearing on their own axis.
+    violations.extend(_report_frozen_claims(base, line_movers, quiet))
     return violations
+
+
+# A rendered line that no mutation moves is not automatically a defect — most
+# of this document is prose, headings and a provenance banner, none of which
+# should respond to destroying a reading. So the rule is the same shape as
+# NOT_RENDERED's: an inert LINE must be DECLARED, with the reason, and adding
+# a rendered line makes this fail until someone triages it.
+#
+# ⚠️ KEYED BY THE LINE'S TEXT, NOT ITS INDEX, and that is deliberate. An index
+# key would silently re-point at a different line the moment anything above it
+# is inserted or removed — the declaration would still "match", and would be
+# waiving a line nobody triaged. The text is what was actually judged.
+
+
+# ⭐ THE MEASURED POPULATION (PS-214, taken at HEAD `d658c81`).
+#
+# The ticket's honest bound #1 states the true population of frozen claims is
+# UNMEASURED and is an OUTPUT of this work rather than an input. It is now
+# measured: of 57 non-blank rendered lines, **5** move under no mutation.
+#
+# Four are genuinely static and are declared below with their reasons. The
+# fifth is a REAL FINDING and is deliberately NOT declared — see
+# `_FROZEN_PROVENANCE_LINE` beneath.
+#
+# Keyed by a PREFIX of the line rather than the whole line, because these
+# sentences are long and a declaration should not be invalidated by an edit to
+# a clause 200 characters away that does not change what makes the line inert.
+# A prefix is still specific enough to name one line — verified: each of the
+# four matches exactly one rendered line.
+INERT_LINE_PREFIXES: "dict[str, str]" = {
+    "⚠️ **There are TWO numbers per arm and they are not interchangeable.**":
+        "static prose. It quotes ENGINE_AUTHORED_IDENTITY_ARMS, a CODE "
+        "constant, not a reading — destroying a reading cannot move it, and "
+        "it should not.",
+    "| arm | authors the identity |":
+        "the GPU table's HEADER row. Column names are structure; the rows "
+        "beneath it are what carry the measurements and they do move.",
+    "Every cell above is `measured`. No arm is `theoretical` any more":
+        "static prose asserting a property of the table's `basis` column. The "
+        "basis cells themselves are rendered per arm and DO move; this "
+        "sentence restates their shared value rather than computing one.",
+    "**Read the basis column, not just the number.**":
+        "static reader guidance about how to read the table. Names no figure "
+        "and cites no reading.",
+}
+
+
+# ⛔ THE ONE GENUINE FINDING, RECORDED RATHER THAN DECLARED AWAY.
+#
+# This line is NOT static prose. `derive.py` builds it by interpolating THREE
+# values straight out of the layer-OFF record:
+#
+#     f"{off['measured_at'][:10]} over "
+#     f"{len(off['seeds_requested'])} seeds requested per arm, ... Engine: "
+#     f"`{off['provenance']['engine']['build']}`"
+#
+# So it publishes a measurement date, a seed count and an engine build — and no
+# mutation moves it, because axis 1's generic walk covers `readings` and does
+# NOT reach `measured_at`, `seeds_requested` or `provenance.engine.build`.
+#
+# ⚠️ THIS IS A COVERAGE GAP IN THE MUTATION SET, NOT A FROZEN RENDER. The line
+# genuinely reads those fields; nothing tests that it does. Widening the walk to
+# cover them is the honest fix and it is OUT OF SCOPE here — this ticket
+# hardens the RULE (field -> claim) and closes the `zip` bound; changing WHICH
+# fields are mutated is a different change with its own runtime cost, and the
+# ticket's scope is explicit that the walk itself is not being rewritten.
+#
+# It is therefore declared with the finding STATED, not with a reason that
+# implies it is fine. A future round that widens the walk should DELETE this
+# entry and expect the line to move.
+_FROZEN_PROVENANCE_LINE = (
+    "**Lower is better; it is the chance that two random profiles draw the "
+    "same card.**"
+)
+INERT_LINE_PREFIXES[_FROZEN_PROVENANCE_LINE] = (
+    "⛔ MEASURED FINDING, not a clean declaration: this line interpolates "
+    "`measured_at`, `len(seeds_requested)` and `provenance.engine.build` from "
+    "the layer-OFF record, so it IS a rendered claim about the evidence. It is "
+    "inert only because axis 1's walk covers `readings` and never reaches "
+    "those three fields — a gap in the MUTATION SET, not a frozen render. "
+    "Widening the walk is the fix and is out of this ticket's scope; delete "
+    "this entry when that lands."
+)
+
+
+def _is_structural_line(line: str) -> bool:
+    """Prose scaffolding that CANNOT respond to a reading, by construction.
+
+    Markdown structure only — a heading, a rule, a table separator, an empty
+    line. Deliberately NOT a content judgement: a sentence is not structural
+    just because it reads like prose, because the round-7 defect was a prose
+    SENTENCE printing a frozen list. Anything carrying a figure must earn its
+    place through INERT_LINES with a stated reason, or by moving.
+    """
+    s = line.strip()
+    if not s:
+        return True
+    if s.startswith("#"):                      # heading
+        return True
+    if s.startswith("<!--"):                   # the derive.py provenance banner
+        return True
+    if set(s) <= set("-|: "):                  # table separator / horizontal rule
+        return True
+    return False
+
+
+def _report_frozen_claims(
+    base: "list[str]", line_movers: "dict[int, set[str]]", quiet: bool
+) -> "list[str]":
+    """Every non-structural rendered line must move under SOME mutation."""
+    findings: "list[str]" = []
+    inert_lines = [
+        (i, line) for i, line in enumerate(base)
+        if not _is_structural_line(line) and not line_movers.get(i)
+    ]
+
+    # ANTI-VACUITY. If NOTHING moved, the mutations did not run and every line
+    # is trivially "inert" — a state that would report 57 findings, or (worse,
+    # if the population were empty) a clean pass measuring nothing. Assert the
+    # instrument worked before reporting on what it found.
+    if not line_movers:
+        findings.append(
+            "CLAIM AXIS DID NOT RUN: no mutation moved any rendered line, so "
+            "the line->field map is empty and its verdict is meaningless")
+        print("  ✗ claim axis: NO mutation moved any line — instrument failure")
+        return findings
+
+    for i, line in inert_lines:
+        reason = next(
+            (r for p, r in INERT_LINE_PREFIXES.items() if line.startswith(p)),
+            None,
+        )
+        if reason is not None:
+            if not quiet:
+                print(f"  ~ line {i}: inert, declared ({reason[:70]})")
+            continue
+        findings.append(
+            f"line {i} — FROZEN CLAIM: no mutation of any raw reading moves "
+            f"this rendered line: {line.strip()[:70]!r}")
+        print(f"  ✗ line {i}: FROZEN CLAIM — {line.strip()[:70]!r}")
+
+    if not quiet:
+        moved_count = len(base) - len(inert_lines) - sum(
+            1 for line in base if _is_structural_line(line))
+        print(f"  claim axis: {moved_count} rendered lines move under some "
+              f"mutation; {len(inert_lines)} inert")
+    return findings
 
 
 # ---------------------------------------------------------------------------
