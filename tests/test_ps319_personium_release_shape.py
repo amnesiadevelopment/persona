@@ -10,14 +10,22 @@ and depends on GitHub being reachable, and a test that silently skips when the
 network is absent is exactly the "verification layer that can quietly stop
 verifying" this suite's conftest was written to refuse.
 
-So what is pinned here is the part that CAN be checked offline and is the part a
-future edit could actually break: the SELECTION RULE, evaluated against the
-REAL release document as it was published. The asset names, the tag, the
-prerelease flag and the per-asset digests below are transcribed from
+So what is pinned here is the part that CAN be checked offline AND is driven
+through product code — the SELECTION RULE, evaluated against the REAL release
+document as it was published. The asset names, the tag and the per-asset digests
+below are transcribed from
 ``/repos/amnesiadevelopment/persona/releases/tags/personium-152.0.7977.75`` as
 served on 2026-09-06, not invented — which is what makes these assertions about
 a release that exists rather than about a fixture someone made agree with the
 code.
+
+Every test in this file goes through ``updater``. Facts about the RELEASE that
+no code here reads — that it was published as a prerelease, and that it did not
+take the app's ``releases/latest`` pointer — are transcribed into the fixture
+and recorded in the PR body, but deliberately NOT asserted: a test comparing two
+hardcoded values cannot fail for any reason except someone editing the fixture,
+and the first draft of this file proved that the hard way (see the notes at the
+fixture and in the AC2 section).
 
 The neighbouring ``test_engine_updater.py`` already covers this rule with
 synthetic 148 names. This file is deliberately NOT that: it uses the real 152
@@ -63,10 +71,21 @@ _DL = (
     + "/"
 )
 
-# The engine release as GitHub serves it. `prerelease: True` is what keeps the
-# app's one `releases/latest` pointer on the application — measured on the live
-# repository, where this release is NINE DAYS NEWER than v3.0.2 and did not take
-# that pointer.
+# The engine release as GitHub serves it.
+#
+# ⚠️ `prerelease` and `published_at` are transcribed here because they are part
+# of the real document, NOT because anything below asserts them. `prerelease` is
+# a GITHUB-SIDE fact — no code in this repository reads it, so there is no
+# product path an offline test could drive it through, and a test comparing this
+# dict to the value written beside it would only ever fail if someone edited the
+# fixture. That measurement is an ONLINE one and its honest home is the PR body
+# and the ticket, where it was recorded: at publication this release was newer
+# than the then-latest v3.0.2 and did not take the pointer. It is deliberately
+# NOT restated as an assertion here — the earlier attempt to do so pinned an
+# ORDERING that stopped being true within hours (v3.1.0 was cut at 13:30Z, two
+# hours after this release, and correctly took the pointer) and went on passing
+# green through the change, because two hardcoded strings cannot notice the
+# world moving.
 ENGINE_RELEASE = {
     "tag_name": ENGINE_TAG,
     "draft": False,
@@ -147,14 +166,28 @@ def test_published_release_is_an_engine_release_by_tag():
     assert updater.engine_tag(ENGINE_TAG) == ENGINE_TAG
 
 
-def test_published_release_is_a_prerelease_not_a_draft():
-    """The publication shape RELEASING.md specifies, pinned on the real document.
-
-    `prerelease` is what keeps the app's `releases/latest` pointer on the
-    application; `draft: False` is what makes the release readable at all, since
-    the unauthenticated by-tag endpoint answers 404 for a draft."""
-    assert ENGINE_RELEASE["prerelease"] is True
-    assert ENGINE_RELEASE["draft"] is False
+# NOTE — there is no test here for the `prerelease`/`draft` publication flags,
+# and both halves of that absence are deliberate.
+#
+# `prerelease` is a GITHUB-SIDE fact that no code in this repository reads (see
+# the note on ENGINE_RELEASE), so nothing offline can drive it through the
+# product; the version that used to sit here compared the fixture's own literal
+# to the value written 80 lines above it.
+#
+# `draft` IS read by the product — `_release_asset` refuses on it — so the
+# obvious repair was to re-point the test through it:
+# `assert updater._release_asset({**ENGINE_RELEASE, "draft": True}) == ("","","")`.
+# That was written and then MEASURED, and it is a third copy: deleting the
+# `data.get("draft")` arm fails it and
+# `test_release_channel_separation.py::test_engine_updater_skips_draft_releases`
+# TOGETHER, and never one without the other. Same standard applied to the digest
+# truth table below — duplicating an existing guard on the real document instead
+# of a synthetic one adds maintenance surface, not defence, because the
+# refusal returns before any part of the document is looked at.
+#
+# What the real document's flags actually were is transcribed in ENGINE_RELEASE
+# and recorded in the PR body, which is the honest home for a measurement of the
+# world.
 
 
 @pytest.mark.parametrize("label,win,mac,asset,_digest", _OS_CASES)
@@ -188,7 +221,7 @@ def test_release_asset_yields_version_url_and_digest(
     assert not updater.httpdl.digest_missing(got_digest)
 
 
-def test_macos_asset_reports_the_tag_version_not_its_compile_version():
+def test_macos_asset_reports_the_tag_version_not_its_compile_version(monkeypatch):
     """⚠️ The macOS binary was COMPILED at 152.0.7977.64 and is published under a
     `.75` name (the owner's naming decision, closed by publishing).
 
@@ -197,12 +230,8 @@ def test_macos_asset_reports_the_tag_version_not_its_compile_version():
     binary was built from — so the skew is invisible to the update path. This
     documents that as intended behaviour rather than leaving a future reader to
     rediscover the discrepancy and treat it as a defect."""
-    old = (_platform.IS_WINDOWS, _platform.IS_MACOS)
-    _platform.IS_WINDOWS, _platform.IS_MACOS = False, True
-    try:
-        version, url, _d = updater._release_asset(ENGINE_RELEASE)
-    finally:
-        _platform.IS_WINDOWS, _platform.IS_MACOS = old
+    _force_os(monkeypatch, mac=True)
+    version, url, _d = updater._release_asset(ENGINE_RELEASE)
     assert version == "152.0.7977.75"
     assert url.endswith("-macos-arm64.dmg")
 
@@ -262,9 +291,19 @@ def test_asset_rule_refuses_the_OTHER_platforms_assets(
         )
 
 
-# The `-<os>-<arch>` markers RELEASING.md specifies, paired with plausible
-# assets that share the extension but NOT the marker. Every one of these is a
-# name a future release could legitimately carry.
+# The per-OS markers `_asset_matches` ACTUALLY ENFORCES (updater.py:660-666:
+# `-linux-x86_64.AppImage`, `-windows-x86_64.zip`, `-macos-arm64.dmg`), paired
+# with plausible assets that share the extension but NOT the marker. Every one
+# of these is a name a future release could legitimately carry.
+#
+# ⚠️ Derived from the CODE, not from RELEASING.md, because the two disagree on
+# one row: RELEASING.md:24 still lists the macOS engine asset as
+# `personium-<version>-macos-x86_64.dmg`, while the matcher was corrected to
+# `-macos-arm64.dmg` in 622b0e6 and the real published asset is arm64. That is
+# why `...-macos-x86_64.dmg` appears BELOW as a name that must be REFUSED
+# despite the doc naming it — the doc's row is stale. Left uncorrected here on
+# purpose: the divergence predates PS-319 and fixing the doc is a different
+# diff.
 _LOOSENED_MARKER_CASES = (
     ("linux", False, False, "personium-153.0.1.2-linux-arm64.AppImage"),
     ("linux", False, False, "personium-153.0.1.2-android-x86_64.AppImage"),
@@ -305,16 +344,18 @@ def test_os_marker_is_the_full_marker_not_a_bare_extension(
     )
 
 
-def test_engine_release_did_not_take_the_apps_latest_pointer():
-    """The engine release is NEWER than the application release and is still not
-    what `releases/latest` points at — because it is a prerelease, which that
-    endpoint excludes by design.
-
-    Pinned as an ORDERING fact: a pointer that simply never had a chance to move
-    would prove much less than one that could have moved and did not."""
-    assert ENGINE_RELEASE["published_at"] > APP_RELEASE["published_at"]
-    assert ENGINE_RELEASE["prerelease"] is True
-    assert APP_RELEASE["prerelease"] is False
+# NOTE — there is no test here asserting that this engine release did not take
+# the app's `releases/latest` pointer, and that absence is deliberate. That is a
+# claim about GITHUB'S BEHAVIOUR, driven by a field no code in this repository
+# reads, so nothing offline can drive it through the product; the version that
+# used to sit here compared two hardcoded timestamps and went on passing green
+# when the fact it claimed to pin stopped being true (v3.1.0 was published at
+# 13:30Z on the same day, two hours AFTER this engine release, and correctly
+# took the pointer). The measurement was made live and belongs in the PR body
+# and the ticket, not in a test that cannot notice it going stale.
+#
+# What CAN be pinned offline is the separation itself, and it is — by the tag
+# and asset guards above, both driven through `updater`.
 
 
 # ---------------------------------------------------------------------------
@@ -351,36 +392,39 @@ def test_missing_digest_is_refused_before_any_bytes_move(tmp_path, monkeypatch):
     )
 
 
-def test_blank_digest_is_a_mismatch_not_an_omission():
-    """A digest that ARRIVED and is unusable is NOT the omission refusal.
-
-    `download_engine` takes the EngineUnverifiable exit only on
-    `digest_missing`, so a malformed value ("sha256:", "   ") falls through to
-    the ordinary verify gate and is rejected as a mismatch. Collapsing the two
-    would let a malformed digest be described to the operator as an upstream
-    omission — a different, and wrong, story about what happened."""
-    assert updater.httpdl.digest_missing(None) is True
-    assert updater.httpdl.digest_missing("") is True
-    assert updater.httpdl.digest_missing("   ") is False
-    assert updater.httpdl.digest_missing(LINUX_DIGEST) is False
+# NOTE — `digest_missing`'s truth table is NOT restated here. The version that
+# used to sit at this point asserted None/""/"   "/a-real-digest, which is a
+# strict SUBSET of
+# tests/test_update_verify.py::test_allow_missing_does_not_cover_a_present_but_unusable_digest
+# (:286): that test covers six
+# malformed inputs including "sha256::" and "\t\n", and carries the downstream
+# `digest_ok`/`verify_bytes`/`verify_file`/`sha256_ok` legs this file's copy
+# dropped. Duplicating the weaker half of an existing guard adds maintenance
+# surface, not defence. The distinction it documented — a digest that ARRIVED
+# and is unusable is a MISMATCH, not the omission refusal above — is pinned
+# there, and the refusal itself is driven through `download_engine` above.
 
 
 # ---------------------------------------------------------------------------
-# AC7 — assert the predictable-URL fallback is STILL ABSENT. Do not delete it a
+# AC7 — the predictable-URL fallback must still be ABSENT. Do not delete it a
 # second time (PS-305 already removed it).
+#
+# NOT re-asserted here. `assert not hasattr(updater, "appimage_url_for")`
+# already exists TWICE — test_engine_updater.py:91
+# (`test_appimage_url_fallback_is_gone`, :84) and
+# test_release_channel_separation.py:277
+# — and a third identical line is maintenance surface rather than defence in
+# depth: all three fail together or none does. AC7 asks that the absence be
+# ASSERTED rather than the fallback deleted again; it already is, by those two,
+# and this file's contribution to that AC is that it deletes nothing.
+#
+# What PS-319 changed about the question is worth recording even though it
+# needs no new test: the fallback's whole purpose was to paper over "this
+# release lists no asset for my OS", and PS-319 is the first ticket where WE
+# cut the release. A missing per-OS asset is now our own broken release, and the
+# right answer to one is a refusal a person can see and fix — which is what
+# `_release_asset` does, driven above.
 # ---------------------------------------------------------------------------
-
-
-def test_predictable_url_fallback_is_still_absent():
-    """AC7 is an ABSENCE assertion, deliberately.
-
-    `test_appimage_url_fallback_is_gone` in test_engine_updater.py already pins
-    this; PS-319 re-states it beside the release that made the question live,
-    because the fallback's whole purpose was to paper over "this release lists
-    no asset for my OS" — and PS-319 is the first ticket where WE are the one
-    cutting the release. A missing per-OS asset is now our own broken release,
-    and the right answer to one is a refusal a person can see and fix."""
-    assert not hasattr(updater, "appimage_url_for")
 
 
 def test_engine_source_constants_are_ours():
