@@ -1,10 +1,10 @@
-"""PS-215: what the DOM-INSERTION wrappers cost at 13 riders.
+"""PS-215: what the DOM-INSERTION wrappers cost at 14 riders.
 
 WHY THIS FILE EXISTS, AND WHY ``test_ps215_tostring_chain.py`` DOES NOT COVER
 IT. That suite pins depth-invariance for ``Function.prototype.toString``, and
-explicitly for ``toString`` only. Both chains are thirteen deep for the same
+explicitly for ``toString`` only. Both chains are fourteen deep for the same
 reason — ``WorkerCloak.setup`` and the reach are spliced INSIDE
-``__pnaInstall``, which all thirteen riders carry — but the two chains have
+``__pnaInstall``, which all fourteen riders carry — but the two chains have
 completely different cost shapes, and a result measured on one does NOT
 transfer to the other:
 
