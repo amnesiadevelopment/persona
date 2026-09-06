@@ -38,6 +38,7 @@ of tests/test_ci_verification_gates.py, rather than that a YAML key exists.
 from __future__ import annotations
 
 import importlib.util
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -562,6 +563,163 @@ def test_the_runner_reads_the_real_report_format() -> None:
     counts = runner.summary(real)
     assert counts is not None and counts[0] == len(EXPECTED), (
         f"the runner cannot read the real summary line (got {counts!r})"
+    )
+
+
+# --- the child WRITES what this parent claims to READ ------------------------
+#
+# `encoding="utf-8"` on subprocess.run governs the DECODE only. Nothing governs
+# the child's ENCODE, and a Python process whose stdout is a PIPE on Windows
+# resolves to the ANSI code page. Measured on run `34004209963`, the SAME line
+# off two legs of the same commit:
+#
+#     ubuntu-24.04    b'behaviour \xe2\x80\x94 whether a SOCKS handshake'
+#     windows-latest  b'behaviour \xef\xbf\xbd whether a SOCKS handshake'
+#
+# U+FFFD is not a rendering artifact — it is the record of a decode that already
+# failed. These drive a child under a hostile console so the seam is exercised
+# on every platform, rather than being observable only on the one leg where it
+# breaks.
+
+
+def _console_child(tmp_path, text: str) -> Path:
+    """A child that writes `text` then a well-formed summary line."""
+    child = tmp_path / "console_child.py"
+    child.write_text(
+        "import sys\n"
+        f"sys.stdout.write({text!r} + '\\n')\n"
+        "sys.stdout.write('[PASS] proxy-assignment-survives-edit\\n')\n"
+        "sys.stdout.write('[PASS] launch-refuses-broken-geography\\n')\n"
+        "sys.stdout.write('[PASS] certificate-key-material\\n')\n"
+        "sys.stdout.write('3 passed, 0 finding(s), 0 could not run\\n')\n",
+        encoding="utf-8",
+    )
+    return child
+
+
+def _run_under_console(tmp_path, child: Path, console: str):
+    """Run the real `main()` with the AMBIENT console forced to `console`.
+
+    `PYTHONIOENCODING` is set on the PARENT's environment, which the runner
+    copies into the child's — so if the runner did not pin the child's stream,
+    the child inherits this hostile value. That is the Windows condition,
+    reproduced on any platform.
+    """
+    driver = tmp_path / "console_driver.py"
+    driver.write_text(
+        "import sys\n"
+        f"sys.path.insert(0, {str(RUNNER_SCRIPT.parent)!r})\n"
+        "import run_behaviour_checks as r\n"
+        f"r.COMMAND = [sys.executable, {str(child)!r}]\n"
+        "raise SystemExit(r.main())\n",
+        encoding="utf-8",
+    )
+    env = dict(os.environ)
+    env["PYTHONIOENCODING"] = console
+    return subprocess.run(
+        [sys.executable, str(driver)],
+        capture_output=True,
+        env=env,
+        encoding="utf-8",
+        errors="replace",
+        text=True,
+    )
+
+
+def test_a_non_ascii_report_survives_a_cp1252_console(tmp_path) -> None:
+    """THE regression test for the false claim in round 2's record.
+
+    The em-dash exists in cp1252 (0x97), so an unpinned child does not raise —
+    it round-trips LOSSILY, and the log silently shows U+FFFD where the report
+    said something. That is the defect measured on windows-latest.
+    """
+    child = _console_child(tmp_path, "certificate key material \u2014 not the session")
+    result = _run_under_console(tmp_path, child, "cp1252")
+
+    assert "\ufffd" not in result.stdout, (
+        "the child's report came back with U+FFFD — the replacement character "
+        "means a decode already failed and threw the original away. The child's "
+        "stdout encoding is not pinned:\n"
+        f"{result.stdout}"
+    )
+    assert "\u2014" in result.stdout, "the em-dash did not survive the round trip"
+    assert result.returncode == 0
+
+
+def test_a_character_outside_cp1252_does_not_crash_the_child(tmp_path) -> None:
+    """The escalation, and the reason the lossy round trip is worth blocking on.
+
+    A character cp1252 CANNOT represent does not degrade — the child's writer
+    RAISES, so it exits 1 with the summary line never printed. That is
+    EXIT_FINDING's code produced by a crash on a truncated report: the exact
+    1-vs-2 collision this gate exists to close.
+
+    `adjudicate` refuses it either way (no summary -> 2), and
+    `test_a_harness_that_never_started_is_not_a_finding` pins that. This asserts
+    the stronger property: the crash does not happen at all, so a real verdict
+    is not lost to a reporting seam.
+    """
+    child = _console_child(tmp_path, "check \u2713 passed")
+    result = _run_under_console(tmp_path, child, "cp1252")
+
+    assert "UnicodeEncodeError" not in result.stdout + result.stderr, (
+        "the child raised while ENCODING its report, so the summary was never "
+        "printed and a crash wore EXIT_FINDING's code:\n"
+        f"{result.stdout}\n{result.stderr}"
+    )
+    assert "3 passed" in result.stdout, (
+        "the summary line never arrived — the report was truncated by the "
+        "reporting seam, not by anything the product did"
+    )
+    assert result.returncode == 0, (
+        f"a healthy lane failed under a cp1252 console (rc={result.returncode})"
+    )
+
+
+def test_the_parents_own_verdict_survives_a_cp1252_console(tmp_path) -> None:
+    """The parent has the same problem, and pinning only the child misses it.
+
+    `VERDICTS`, `_DOWNGRADE` and the failure banner all contain an em-dash, and
+    this process's own stdout resolves to the console codec too. Measured on
+    the falsification run `34000438536`, windows leg — the PARENT's line:
+
+        b'Nothing was certified \\xef\\xbf\\xbd this is NOT a pass'
+
+    Driven through the DOWNGRADE path, because that is where the parent emits
+    the most text of its own.
+    """
+    child = tmp_path / "empty_lane.py"
+    child.write_text(
+        "import sys\n"
+        "sys.stdout.write('0 passed, 0 finding(s), 0 could not run\\n')\n",
+        encoding="utf-8",
+    )
+    result = _run_under_console(tmp_path, child, "cp1252")
+
+    assert result.returncode == 2, "the empty lane should have been downgraded"
+    assert "\ufffd" not in result.stdout + result.stderr, (
+        "the PARENT's own downgrade text came back with U+FFFD, so the gate's "
+        "verdict is corrupted on any platform with a non-utf-8 console:\n"
+        f"{result.stdout}\n{result.stderr}"
+    )
+
+
+def test_the_runner_pins_the_childs_stdout_encoding(runner) -> None:
+    """The mechanism, asserted directly rather than only through its effect.
+
+    The behavioural tests above would also pass if someone "fixed" this by
+    stripping non-ASCII from the report, which would destroy the log's content
+    to protect its encoding. This names the actual remedy.
+    """
+    source = RUNNER_SCRIPT.read_text(encoding="utf-8")
+
+    assert 'env["PYTHONIOENCODING"] = "utf-8"' in source, (
+        "the runner no longer pins the child's stdout encoding, so the child "
+        "writes under the platform console while this parent decodes utf-8"
+    )
+    assert getattr(runner, "echo", None) is not None, (
+        "the byte-safe writer is gone; the parent's own verdict text would be "
+        "re-encoded through the console codec"
     )
 
 

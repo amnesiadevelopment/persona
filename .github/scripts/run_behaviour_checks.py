@@ -193,22 +193,37 @@ _DOWNGRADE = (
 )
 
 
-def echo(text: str) -> None:
-    """Put the child's report in the step log without re-encoding it.
+def echo(text: str, *, err: bool = False) -> None:
+    """Write text to the step log without a locale-dependent re-encode.
 
-    The report contains an em-dash, and the parent's stdout resolves to cp1252
-    on ``windows-latest`` where nothing pins it, so re-printing through a text
-    stream is exactly the platform-dependent round trip
-    ``tests/test_encoding_discipline.py`` exists to prevent. Writing the bytes
-    means the log gets what the harness wrote.
+    USED FOR THE PARENT'S OWN OUTPUT AS WELL AS THE CHILD'S REPORT, because the
+    parent has exactly the same problem and it is easy to miss: `VERDICTS`,
+    `_DOWNGRADE` and the failure banner all contain an em-dash, and this
+    process's `sys.stdout` resolves to the ANSI code page on Windows just as
+    the child's did. Measured on the falsification run 34000438536, windows
+    leg — this line is the PARENT's, not the harness's:
+
+        b'Nothing was certified \\xef\\xbf\\xbd this is NOT a pass'
+
+    So pinning only the child (PYTHONIOENCODING, set in `main`) would have left
+    the gate's own verdict corrupted on 1 of 3 platforms. Both halves are
+    needed; neither is sufficient.
+
+    Writing encoded bytes to the underlying buffer is what makes this
+    independent of the console's codec. `errors="replace"` is deliberate here
+    and is NOT the defect above: this is the last stop before the log, so a
+    character that cannot be written must degrade rather than raise and take
+    the gate's verdict down with it.
     """
-    stream = getattr(sys.stdout, "buffer", None)
-    if stream is None:  # a substituted stdout in a test, not a real console
-        sys.stdout.write(text)
+    stream = sys.stderr if err else sys.stdout
+    buffer = getattr(stream, "buffer", None)
+    if buffer is None:  # a substituted stream in a test, not a real console
+        stream.write(text)
+        stream.flush()
         return
-    sys.stdout.flush()
-    stream.write(text.encode("utf-8", errors="replace"))
     stream.flush()
+    buffer.write(text.encode("utf-8", errors="replace"))
+    buffer.flush()
 
 
 def summary(output: str) -> "tuple[int, int, int] | None":
@@ -295,11 +310,10 @@ def adjudicate(rc: int, output: str) -> "tuple[int, str | None]":
 
 def main() -> int:
     if not MODULE_FILE.is_file():
-        print(
+        echo(
             f"CANNOT RUN: {MODULE_FILE} does not exist, so this gate is pointed "
-            "at nothing. Nothing was certified.",
-            file=sys.stderr,
-            flush=True,
+            "at nothing. Nothing was certified.\n",
+            err=True,
         )
         return 2
 
@@ -307,10 +321,34 @@ def main() -> int:
     env = dict(os.environ)
     env["PERSONA_HOME"] = home
     env[REEXEC_FLAG] = "1"
+    # THE CHILD MUST WRITE WHAT THIS PARENT CLAIMS TO READ. Naming
+    # encoding="utf-8" on subprocess.run below governs only the DECODE; nothing
+    # governs the child's ENCODE, and a Python process whose stdout is a PIPE on
+    # Windows resolves to the ANSI code page (cp1252). Measured on
+    # windows-latest, run 34004209963, against the same line on ubuntu:
+    #
+    #   ubuntu   b'behaviour \xe2\x80\x94 whether a SOCKS handshake'   <- em-dash
+    #   windows  b'behaviour \xef\xbf\xbd whether a SOCKS handshake'   <- U+FFFD
+    #
+    # U+FFFD is not a rendering artifact; it is the record of a decode that
+    # already failed and threw the original byte away. The em-dash merely
+    # ROUND-TRIPS badly because it exists in cp1252 (0x97). A character that
+    # does NOT — a '✓', an arrow, a non-Latin-1 name in a check's detail — makes
+    # the child RAISE UnicodeEncodeError instead: rc 1, and the summary line
+    # never printed. That is EXIT_FINDING's code produced by a crash, on a
+    # truncated report, which is precisely the 1-vs-2 collision this gate exists
+    # to close. `adjudicate` does refuse it (no summary -> 2), but that safety
+    # comes from the harness's CURRENT vocabulary rather than from anything this
+    # script controls, and behaviour.py's report text is owned elsewhere.
+    env["PYTHONIOENCODING"] = "utf-8"
+    # PYTHONUTF8 alone is NOT sufficient and is not a substitute: it is ignored
+    # when PYTHONIOENCODING is set, and the reverse is the direction that
+    # matters here. Both are harmless together; the line above is the one that
+    # pins the stream.
 
-    print(f"scratch PERSONA_HOME={home}", flush=True)
-    print(f"cwd={REPO_ROOT}", flush=True)
-    print(f"$ {' '.join(COMMAND[1:])}", flush=True)
+    echo(f"scratch PERSONA_HOME={home}\n")
+    echo(f"cwd={REPO_ROOT}\n")
+    echo(f"$ {' '.join(COMMAND[1:])}\n")
 
     started = time.monotonic()
     try:
@@ -325,9 +363,10 @@ def main() -> int:
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
-            # Named rather than inherited: the report contains an em-dash and
-            # the child writes utf-8, so a locale-resolved decode would be
-            # cp1252 on Windows against a utf-8 write (PS-184).
+            # Named rather than inherited, and PAIRED with PYTHONIOENCODING
+            # above: this is the DECODE half, that is the ENCODE half, and
+            # pinning either alone leaves the two ends disagreeing by
+            # construction — which is the PS-184 defect exactly.
             encoding="utf-8",
             errors="replace",
         )
@@ -342,23 +381,22 @@ def main() -> int:
     echo(output)
 
     rc = completed.returncode
-    print(f"\nbehavioural checks finished in {elapsed:.2f}s, exit {rc}", flush=True)
+    echo(f"\nbehavioural checks finished in {elapsed:.2f}s, exit {rc}\n")
 
     code, note = adjudicate(rc, output)
 
     verdict = VERDICTS.get(code)
     if verdict is not None and note is None:
-        print(f"verdict: {verdict}", flush=True)
+        echo(f"verdict: {verdict}\n")
     if note is not None:
-        print(note, file=sys.stderr, flush=True)
+        echo(note + "\n", err=True)
 
     if code != 0:
-        print(
+        echo(
             "FAILING THE JOB. Exit 1 and exit 2 are different failures and are "
             "deliberately not collapsed: 1 says the product misbehaved, 2 says "
-            "the check could not look. Neither is a pass.",
-            file=sys.stderr,
-            flush=True,
+            "the check could not look. Neither is a pass.\n",
+            err=True,
         )
     return code
 
