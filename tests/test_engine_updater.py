@@ -1735,3 +1735,111 @@ def test_install_windows_confines_a_single_level_traversal_into_engine_dir(
     updater._install_windows(str(zip_path))
 
     assert _escaped(tmp_path, engine_dir, "SIBLING_PWNED") == []
+
+
+# ---------------------------------------------------------------------------
+# PS-310 round 2 — `_within` must REFUSE, never RAISE.
+#
+# The confinement above resolves each member's destination and compares it
+# against staging with os.path.commonpath. On Windows — the ONLY OS this arm
+# runs on — commonpath raises ValueError for two member shapes a hostile
+# archive can carry, and ValueError is in neither the
+# `except (OSError, zipfile.BadZipFile, _HostileMember)` tuple in
+# `_install_windows` nor any enclosing handler between its sole call site and
+# src/ui/app.py's broad `except Exception`.
+#
+# So a `-> bool` installer RAISES on exactly the hostile-archive class the
+# confinement was written to refuse, and the operator is told
+# "Engine update failed: Paths don't have the same drive" — a REFUSAL reported
+# in the vocabulary of a TRANSFER failure, the confusion download_engine's own
+# comments forbid.
+#
+# This is FAIL-CLOSED (nothing escapes; it is NOT a re-opened path escape). It
+# is a wrong-exception / wrong-vocabulary defect, and it contradicts both
+# `_install_windows`'s own docstring ("the caller still sees False") and the
+# recorded AC6 decision that a hostile member ABORTS the install.
+#
+# CPython's extractall — the control the whole confinement rests on — strips
+# drive letters deliberately, so the very archive the control sanitizes is the
+# one that makes the hand-rolled loop raise.
+#
+# WHY THESE ARE HELPER-LEVEL TESTS AND NOT AN END-TO-END INSTALL.
+# The defect needs Windows path semantics for the JOIN (`D:/x` must join to the
+# RELATIVE `D:x`) and POSIX semantics for the real file writes in the same call.
+# Those are contradictory on one runner, so an "end-to-end" version could only
+# be built by INJECTING the ValueError — a test of the injection, not of the
+# product. `ntpath` is CPython's REAL Windows path implementation and imports
+# everywhere, so driving `_within` through it exercises the genuine failure
+# with no mock of the failure itself. The fix lives in `_within`, so that is
+# also the correct unit to pin.
+
+
+class _NtPathOs:
+    """Stand-in for `updater`'s module-global `os` whose `.path` is `ntpath`.
+
+    Scoped to the updater module so nothing else in the process sees Windows
+    path semantics — patching the shared `os.path` globally instead breaks
+    pytest's own traceback rendering, which is how this shim came to exist.
+
+    Every non-`path` attribute delegates to the real `os`, so a function under
+    test can still touch the filesystem normally."""
+
+    def __init__(self):
+        import ntpath
+
+        self.path = ntpath
+
+    def __getattr__(self, name):
+        return getattr(os, name)
+
+
+def test_within_refuses_a_drive_letter_member_instead_of_raising(monkeypatch):
+    """A member like `chrome-win/D:/evil.exe` joins, under Windows semantics, to
+    the RELATIVE path `D:evil.exe`; commonpath then raises
+    "Can't mix absolute and relative paths".
+
+    `_within` answers a yes/no question and both of its callers branch on that
+    answer, so the only correct response to "these two paths cannot be
+    compared" is False — refuse the member. Raising turns a refusal into a
+    crash in a function annotated `-> bool`."""
+    import ntpath
+
+    monkeypatch.setattr(updater, "os", _NtPathOs())
+
+    staging = r"C:\Users\op\.persona\engine\.staging"
+    dest = ntpath.join(staging, *"D:/evil.exe".split("/"))
+    assert dest == "D:evil.exe", (
+        "fixture drifted: the join no longer yields the relative drive-letter "
+        f"path this test is about (got {dest!r})"
+    )
+
+    assert updater._within(staging, dest) is False
+
+
+def test_within_refuses_a_different_drive_member_instead_of_raising(monkeypatch):
+    """The SECOND commonpath ValueError, with a different message and a
+    different cause: two ABSOLUTE Windows paths on different drives raise
+    "Paths don't have the same drive".
+
+    Worth its own test rather than a parametrize case, because the case above
+    mixes absolute with relative while this one does not — a fix that reasons
+    about only one of those two shapes leaves the other raising."""
+    monkeypatch.setattr(updater, "os", _NtPathOs())
+
+    staging = r"C:\Users\op\.persona\engine\.staging"
+    assert updater._within(staging, r"E:\evil.exe") is False
+
+
+def test_within_still_answers_true_for_a_genuine_windows_child(monkeypatch):
+    """The confinement must not be "fixed" by making `_within` answer False for
+    everything — that would refuse every honest archive and brick the Windows
+    engine update entirely.
+
+    Pins the POSITIVE half under the same Windows semantics: a real child of
+    staging still resolves as inside it."""
+    monkeypatch.setattr(updater, "os", _NtPathOs())
+
+    staging = r"C:\Users\op\.persona\engine\.staging"
+    assert updater._within(staging, staging + r"\locales\en.pak") is True
+    # base itself is deliberately NOT "inside" — see the docstring
+    assert updater._within(staging, staging) is False
