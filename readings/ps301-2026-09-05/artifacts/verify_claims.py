@@ -166,6 +166,55 @@ for seed, pairs in RATIOS.items():
         f"{abs(rs[0]):.3e}",
     )
 
+# The WHOLE-OBJECT scaling claim, which is what §4 actually asserts and what the
+# ratio table above cannot see on its own.
+#
+# WHY THIS EXISTS. An earlier revision of the report claimed the constant ratio
+# "equals the actualBoundingBoxLeft value printed beside it". That is false —
+# it holds for 1 of the 4 strings on each seed, and only because that string's
+# STOCK abbL happens to be exactly +1, so stock_abbL * k coincides with k. For
+# 'A' the stock abbL is 0, so the observed value is 0 and cannot equal a
+# non-zero ratio at any seed. The figure sat in the one place this file did not
+# look (`grep -c abbL verify_claims.py` was 0), so a full pass read as coverage
+# it did not have.
+#
+# The true — and stronger — statement is that EVERY field of the TextMetrics
+# object is scaled by the SAME k. abbL is a DIFFERENT FIELD of the same object,
+# so it is the independent witness that distinguishes "the width is computed
+# wrongly" from "Shuffle() scales the whole object". Pinned here so the
+# distinction cannot be lost again.
+ABBL = {
+    # seed: ((obs_abbL, stock_abbL), ...) for the transcript's four strings
+    24601: (
+        (0.0, 0.0),
+        (5.759808038305448e-07, -1.0),
+        (5.759808038305448e-07, -1.0),
+        (-5.759808038305448e-07, 1.0),
+    ),
+    5150: (
+        (0.0, 0.0),
+        (3.873257860279004e-06, -1.0),
+        (3.873257860279004e-06, -1.0),
+        (-3.873257860279004e-06, 1.0),
+    ),
+}
+for seed, pairs in ABBL.items():
+    k = RATIOS[seed][0][0] / RATIOS[seed][0][1]
+    check(
+        f"§4 seed {seed}: actualBoundingBoxLeft is scaled by the SAME k as the "
+        "width, exactly, on all 4 strings (⇒ Shuffle scales the whole object)",
+        all(obs == stock * k for obs, stock in pairs),
+        f"k={k!r}",
+    )
+    # The retired claim, pinned as FALSE so it cannot be reintroduced as true.
+    matches = sum(1 for obs, _ in pairs if obs == k)
+    check(
+        f"§4 seed {seed}: the retired 'ratio EQUALS the abbL beside it' claim is "
+        "false for 3 of 4 strings (kept so it is not restored)",
+        matches == 1,
+        f"{matches}/4 strings coincide, and only where stock_abbL == +1",
+    )
+
 # --- §5 switches -----------------------------------------------------------
 for seed in (24601, 5150):
     tzs = {realm(product, seed, "off", r)["switches"]["timezone"] for r in REALMS}
