@@ -357,15 +357,39 @@ def test_the_macos_service_worker_value_is_the_engines_own():
 def test_worker_wrap_does_not_chain_the_service_worker():
     """The CURRENT coverage of the realm chaining, pinned as it actually is.
 
-    THIS TEST IS EXPECTED TO FAIL WHEN THE BLIND SPOT IS CLOSED. That is its
-    purpose: the committed records above can never fail after a fix (a record
-    is a historical fact), so without this the repo would carry no signal that
-    the gap had been closed and the PS-189 documentation had gone stale.
+    ⚠️ THIS TEST'S ORIGINAL PREMISE EXPIRED IN PS-354, AND THE ORIGINAL
+    INSTRUCTION IN THIS DOCSTRING IS NOW WRONG. It said: "IF YOU ARE READING
+    THIS BECAUSE IT WENT RED: good — something now reaches the service worker
+    realm. Delete this test." Both halves failed to survive contact with the
+    actual fix, and the way they failed is worth keeping.
 
-    IF YOU ARE READING THIS BECAUSE IT WENT RED: good — something now reaches
-    the service worker realm. Delete this test, and update the PS-189 blind-spot
-    sections in ``worker_wrap``'s and ``gpu_ext``'s headers, which state the
-    realm is unauthored.
+    THE GAP IS CLOSED — by the ENGINE, via ``--fingerprint-hardware-concurrency``
+    (``process.py``), which authors the value before any of our JS runs and so
+    covers every realm including this one. Measured live on the shipped engine,
+    host cores = 8:
+
+        before (no flag):  page 8,  service worker 8   <- both the HOST's value
+        after  (flag=13):  page 13, service worker 13
+        after  (flag=4):   page 4,  service worker 4
+
+    ⛔ AND THIS TEST STAYED GREEN THROUGH ALL OF IT, because it asserts on
+    ``worker_wrap``'s generated source and the fix is not in ``worker_wrap``. A
+    self-obsoleting guard that cannot observe the thing whose obsolescence it is
+    supposed to announce is a VACUOUS guard: it would have gone on reporting an
+    open gap indefinitely, or been deleted by someone who noticed it was stale
+    and assumed it was merely wrong.
+
+    SO IT IS REPOINTED RATHER THAN DELETED. What it pins now is the fact that
+    made it look obsolete: ``worker_wrap`` STILL does not chain the service
+    worker, and that is CORRECT — the realm is authored by the engine, not by
+    our JS. Chaining it here would add observable surface to a realm nothing of
+    ours currently touches, which is exactly the route PS-354 rejected.
+
+    IF YOU ARE READING THIS BECAUSE IT WENT RED: something is now trying to
+    reach the service worker realm from ``worker_wrap``. That is a route change,
+    not a bug fix — decide it deliberately, because the engine already authors
+    this realm and two authors racing is a new failure mode. Do not "fix" it by
+    deleting the assertion.
     """
     from src.services.browser import worker_wrap
 
@@ -374,9 +398,99 @@ def test_worker_wrap_does_not_chain_the_service_worker():
     assert "G.Worker" in js, "sanity: the dedicated Worker is chained"
     assert "G.SharedWorker" in js, "sanity: the SharedWorker is chained"
     assert "ServiceWorker" not in js, (
-        "worker_wrap now mentions ServiceWorker — if the realm is genuinely "
-        "covered, delete this test and update the PS-189 blind-spot sections "
-        "in worker_wrap.py and gpu_ext.py, which state that it is not"
+        "worker_wrap now reaches for the ServiceWorker realm. Since PS-354 that "
+        "realm is authored by the ENGINE (--fingerprint-hardware-concurrency in "
+        "process.py), so a JS author here is a second author racing the first — "
+        "and it adds observable surface to a realm we otherwise never touch. "
+        "This was the route PS-354 considered and rejected; reopen it "
+        "deliberately or not at all."
+    )
+
+
+def test_the_service_worker_realm_is_authored_by_the_engine_flag():
+    """⭐ THE OBSOLESCENCE SIGNAL THE GUARD ABOVE STRUCTURALLY COULD NOT CARRY.
+
+    PS-189 left a self-obsoleting guard so the repo would announce when the
+    blind spot closed. It could not do that job: it watches ``worker_wrap``, and
+    the fix landed in ``process.py``, so the gap closed in complete silence.
+    This test is the missing half — it watches the place the realm's author
+    actually lives, so if that author is ever removed the repo says so instead
+    of quietly reverting to a host leak.
+
+    ⛔ IT ASSERTS THE VALUE, NOT THE FLAG'S PRESENCE. Argv containing a flag is
+    not evidence the realm is covered — that is the substring-check failure that
+    let PS-314's mobile extension parse clean while failing to execute at all.
+    The realm coverage itself is a LIVE reading (recorded in PS-354's PR); what
+    is checkable here is the property that makes the flag CORRECT: the engine is
+    told the same machine the page realm computes for itself. A page/engine
+    mismatch would be the same tell as the original page/worker mismatch, just
+    relocated.
+    """
+    import pytest
+
+    from src.models.profile import Profile
+    from src.services.browser import process
+    from src.services.browser.device_ext import hardware_concurrency_for
+
+    handed = {}
+
+    def _popen(args, **kwargs):
+        handed["args"] = list(args)
+        raise RuntimeError("stop: the argv is all this test needs")
+
+    import tempfile as _tf
+    import unittest.mock as _mock
+
+    tmp = _tf.mkdtemp(prefix="ps354-sw-")
+
+    class _Store:
+        def get(self, *a, **k):
+            return None
+
+        def resolve(self, *a, **k):
+            return None
+
+    class _Bookmarks:
+        def resolve_selection(self, *a, **k):
+            return []
+
+    patches = [
+        _mock.patch.object(process, "popen_in_new_session", _popen),
+        _mock.patch.object(process, "DATA_DIR", tmp),
+        _mock.patch.object(process, "ProxyStore", _Store),
+        _mock.patch.object(process, "BookmarkStore", _Bookmarks),
+        _mock.patch.object(process, "write_window_entry", lambda name: None),
+        _mock.patch.object(process, "seed_bookmarks", lambda *a, **k: None),
+        _mock.patch.object(process, "seed_profile_prefs", lambda *a, **k: None),
+    ]
+    for p in patches:
+        p.start()
+    try:
+        profile = Profile(
+            name="ps354-sw-author", engine="chromium", fingerprint_seed_value=42
+        )
+        with pytest.raises(RuntimeError):
+            process.spawn_browser(profile)
+    finally:
+        for p in reversed(patches):
+            p.stop()
+
+    flags = [
+        a for a in handed.get("args", [])
+        if a.startswith("--fingerprint-hardware-concurrency=")
+    ]
+    assert len(flags) == 1, (
+        "the ServiceWorker realm has lost its only author: the chromium launch "
+        "no longer passes --fingerprint-hardware-concurrency, so the realm "
+        "falls back to the engine's seed default or the HOST. PS-189 measured "
+        "that leak directly (a linux service worker reported the host's "
+        f"SwiftShader while eleven sibling realms reported the profile's card). Got: {flags}"
+    )
+    passed = int(flags[0].split("=", 1)[1])
+    expected = hardware_concurrency_for(42, profile.hardware_generation)
+    assert passed == expected, (
+        f"the engine is told {passed} cores but the page realm resolves to "
+        f"{expected} — a page/engine mismatch, the same tell relocated"
     )
 
 

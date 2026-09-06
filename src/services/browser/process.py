@@ -24,7 +24,7 @@ from ..proxy.store import ProxyStore
 from .bookmarks_seed import seed_bookmarks
 from .process_group import popen_in_new_session, reap_process_group
 from .audio_ext import build_audio_extension
-from .device_ext import build_device_extension
+from .device_ext import build_device_extension, hardware_concurrency_for
 from .env_policy import (
     browser_child_cwd,
     pin_child_tmpdir,
@@ -1007,6 +1007,35 @@ def spawn_browser(profile: Profile, *, in_process: bool = False) -> subprocess.P
                 if brand_version is not None
                 else []
             ),
+            # THE SERVICE WORKER'S ONLY AUTHOR (PS-354).
+            #
+            # `applyHwPatch` carries hardwareConcurrency into Web and Shared
+            # Workers, but a ServiceWorkerGlobalScope is reached by NEITHER of
+            # persona's identity authors: it is never CONSTRUCTED by the page,
+            # so `worker_wrap`'s chaining has no constructor to intercept, and
+            # an MV3 content script does not run there. The realm therefore
+            # fell through to the engine's own seed fallback, or on arms the
+            # engine does not spoof, to the HOST. PS-189 measured that directly
+            # -- a linux service worker reported the host's SwiftShader while
+            # ELEVEN sibling realms in the same launch reported the profile's
+            # card.
+            #
+            # The engine authors this before any of our code runs, so it covers
+            # every realm INCLUDING the service worker natively -- no wrapper,
+            # no descriptor, and no observable surface added to a realm we
+            # otherwise never touch (which a JS shim would have done).
+            #
+            # ⛔ THE VALUE IS THE PAGE REALM'S OWN PICK, NOT A CONSTANT. It is
+            # resolved through the same generation-filtered CORES_MEMORY pool,
+            # the same hash and the same salt the emitted device.js uses, so
+            # page and engine agree BY CONSTRUCTION. A hardcoded number would
+            # pass a spot check on whichever profile happens to match it and
+            # would replace a page/worker mismatch with a page/engine mismatch
+            # on every other profile -- the same tell, relocated. Measured
+            # live: profiles resolve to 4, 6, 8 and 16 across the pool, so
+            # "it's 8" is false for most of them.
+            f"--fingerprint-hardware-concurrency="
+            f"{hardware_concurrency_for(profile.fingerprint_seed, profile.hardware_generation)}",
             f"--lang={lang}",
             f"--accept-lang={lang},{lang.split('-')[0]}",
             f"--load-extension={','.join(extensions)}",
