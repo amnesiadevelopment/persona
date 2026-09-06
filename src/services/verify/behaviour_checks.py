@@ -442,9 +442,9 @@ def _run_proxy_assignment_survives_edit(ctx: Context) -> Outcome:
     # to clear it as a side effect, because absence and emptiness were the same
     # statement — the defect proxy_assignment.py was written to end.
     renamed = "ps70-proxy-holder-2"
-    if not pm.update_profile(name, renamed, new_notes="unrelated note"):
+    if not pm.update_profile_RENAMED(name, renamed, new_notes="unrelated note"):
         raise BehaviourCheckError("the unrelated edit was refused")
-    if not pm.update_profile(renamed, renamed, new_search_engine="google"):
+    if not pm.update_profile_RENAMED(renamed, renamed, new_search_engine="google"):
         raise BehaviourCheckError("the second unrelated edit was refused")
 
     still = pm.profiles[renamed].proxy
