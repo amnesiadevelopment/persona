@@ -377,6 +377,13 @@ def _drive_spawn_browser(monkeypatch, tmp_path, engine):
     monkeypatch.setattr(_process, "ProxyStore", _Store)
     monkeypatch.setattr(_process, "BookmarkStore", _Bookmarks)
     monkeypatch.setattr(_process, "write_window_entry", lambda name: None)
+    # PS-356: stub the engine version readable — a Chromium launch now refuses
+    # when it cannot state the installed version, and this file is about
+    # process groups.
+    monkeypatch.setattr(
+        _process, "installed_chromium_version",
+        lambda: _process.ChromiumVersion(full="152.0.7977.75"),
+    )
     monkeypatch.setattr(_process, "seed_bookmarks", lambda *a, **k: None)
     monkeypatch.setattr(_process, "seed_profile_prefs", lambda *a, **k: None)
     monkeypatch.setattr(_process, "FINGERPRINT_CHROMIUM", engine)
