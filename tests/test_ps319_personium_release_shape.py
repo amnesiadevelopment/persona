@@ -75,12 +75,18 @@ _DL = (
 #
 # ⚠️ `prerelease` and `published_at` are transcribed here because they are part
 # of the real document, NOT because anything below asserts them. `prerelease` is
-# a GITHUB-SIDE fact — no code in this repository reads it, so there is no
-# product path an offline test could drive it through, and a test comparing this
-# dict to the value written beside it would only ever fail if someone edited the
-# fixture. That measurement is an ONLINE one and its honest home is the PR body
-# and the ticket, where it was recorded: at publication this release was newer
-# than the then-latest v3.0.2 and did not take the pointer. It is deliberately
+# a GITHUB-SIDE fact that THIS module deliberately does not read: `is_engine_tag`
+# rests on the TAG precisely because the prerelease box is ticked by hand at
+# release time and a guard resting on it would fail exactly when that hand
+# slipped (updater.py:604). So there is no path in the engine updater an offline
+# test could drive it through, and a test comparing this dict to the value
+# written beside it would only ever fail if someone edited the fixture. (The
+# FIREFOX updater does read it — firefox.py:163, driven offline by
+# test_engine_firefox.py:105 — but that is a different updater with its own
+# upstream, out of scope here.) That measurement is an ONLINE one and its
+# honest home is the PR body and the ticket, where it was recorded: at
+# publication this release was newer than the then-latest v3.0.2 and did not
+# take the pointer. It is deliberately
 # NOT restated as an assertion here — the earlier attempt to do so pinned an
 # ORDERING that stopped being true within hours (v3.1.0 was cut at 13:30Z, two
 # hours after this release, and correctly took the pointer) and went on passing
@@ -169,10 +175,14 @@ def test_published_release_is_an_engine_release_by_tag():
 # NOTE — there is no test here for the `prerelease`/`draft` publication flags,
 # and both halves of that absence are deliberate.
 #
-# `prerelease` is a GITHUB-SIDE fact that no code in this repository reads (see
-# the note on ENGINE_RELEASE), so nothing offline can drive it through the
-# product; the version that used to sit here compared the fixture's own literal
-# to the value written 80 lines above it.
+# `prerelease` is a GITHUB-SIDE fact that THIS module deliberately does not read
+# (see the note on ENGINE_RELEASE): `is_engine_tag` rests on the TAG because the
+# prerelease box is ticked by hand at release time and a guard resting on it
+# would fail exactly when that hand slipped (updater.py:604). So nothing offline
+# can drive it through the engine updater; the version that used to sit here
+# compared the fixture's own literal to the value written 80 lines above it.
+# (firefox.py:163 DOES read the flag and test_engine_firefox.py:105 drives it —
+# a different updater, out of scope here.)
 #
 # `draft` IS read by the product — `_release_asset` refuses on it — so the
 # obvious repair was to re-point the test through it:
@@ -346,9 +356,11 @@ def test_os_marker_is_the_full_marker_not_a_bare_extension(
 
 # NOTE — there is no test here asserting that this engine release did not take
 # the app's `releases/latest` pointer, and that absence is deliberate. That is a
-# claim about GITHUB'S BEHAVIOUR, driven by a field no code in this repository
-# reads, so nothing offline can drive it through the product; the version that
-# used to sit here compared two hardcoded timestamps and went on passing green
+# claim about GITHUB'S BEHAVIOUR, driven by the `prerelease` field that THIS
+# module deliberately does not read (updater.py:604 — the guard rests on the TAG
+# because that box is ticked by hand), so nothing offline can drive it through
+# the engine updater; the version that used to sit here compared two hardcoded
+# timestamps and went on passing green
 # when the fact it claimed to pin stopped being true (v3.1.0 was published at
 # 13:30Z on the same day, two hours AFTER this engine release, and correctly
 # took the pointer). The measurement was made live and belongs in the PR body
