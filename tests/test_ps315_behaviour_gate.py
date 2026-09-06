@@ -188,7 +188,7 @@ def test_the_runner_exits_with_the_harness_own_code(tmp_path, code: int) -> None
     )
 
     result = subprocess.run(
-        [sys.executable, str(driver)], capture_output=True, text=True
+        [sys.executable, str(driver)], capture_output=True, text=True, encoding="utf-8"
     )
 
     assert result.returncode == code, (
@@ -215,7 +215,7 @@ def test_a_harness_that_could_not_measure_fails_the_job(tmp_path) -> None:
     )
 
     result = subprocess.run(
-        [sys.executable, str(driver)], capture_output=True, text=True
+        [sys.executable, str(driver)], capture_output=True, text=True, encoding="utf-8"
     )
 
     assert result.returncode != 0, "exit 2 (nothing was measured) passed the job"
@@ -240,7 +240,7 @@ def test_an_unexpected_zero_is_not_reported_as_a_pass(tmp_path) -> None:
     )
 
     result = subprocess.run(
-        [sys.executable, str(driver)], capture_output=True, text=True
+        [sys.executable, str(driver)], capture_output=True, text=True, encoding="utf-8"
     )
 
     assert result.returncode == 2, (
@@ -292,6 +292,7 @@ def test_the_real_harness_passes_through_the_runner() -> None:
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
 
     assert result.returncode == 0, (
