@@ -58,7 +58,7 @@ ENGINE_ASSETS = [
     {"name": f"personium-{ENGINE_VERSION}-windows-x86_64.zip",
      "browser_download_url": "http://x/engine-win", "size": 340000000,
      "digest": "sha256:" + "2" * 64},
-    {"name": f"personium-{ENGINE_VERSION}-macos-x86_64.dmg",
+    {"name": f"personium-{ENGINE_VERSION}-macos-arm64.dmg",
      "browser_download_url": "http://x/engine-mac", "size": 350000000,
      "digest": "sha256:" + "3" * 64},
 ]

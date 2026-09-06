@@ -718,7 +718,7 @@ def test_fetch_release_full_reads_the_by_tag_endpoint_for_this_os(monkeypatch):
         "prerelease": True,
         "assets": [
             {
-                "name": "personium-148.0.7778.215-macos-x86_64.dmg",
+                "name": "personium-148.0.7778.215-macos-arm64.dmg",
                 "browser_download_url": "http://x/mac.dmg",
                 "digest": "sha256:" + "c" * 64,
             },
