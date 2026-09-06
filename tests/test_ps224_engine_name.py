@@ -628,6 +628,30 @@ _ALLOWED_FRAGMENTS = (
     # brand is ours, the version number is upstream's, and both are correct.
     ("services/engine/policy.py", "maximum Chromium major"),
     ("services/engine/policy.py", "(Chromium "),
+    # THE CLOAKING COMMENT inside webgl_ext's Chromium `nativeWrap` payload —
+    # JavaScript that runs IN THE PAGE, not text an operator reads. Added at
+    # PS-340.
+    #
+    # ⚠️ WHY THIS IS A FRAGMENT AND NOT A WHOLE-FILE ENTRY, which is the
+    # decision worth recording. The six `*_ext.py` payloads above are excluded
+    # wholesale, and copying that shape here was the obvious move — but it was
+    # MEASURED rather than assumed, and it fails: planting an operator-facing
+    # `"Personium engine: WebGL patch failed"` into webgl_ext.py leaves this
+    # file's guard GREEN under a whole-file entry. The fragment keeps the rest
+    # of the file scanned, and that mutation RED.
+    #
+    # ⚠️ AND THE GUARD'S OWN SUGGESTED REMEDY IS WRONG HERE. The failure
+    # message says to interpolate CHROMIUM_ENGINE_NAME; doing so would write
+    # "Personium" into page-reachable JavaScript, which is exactly what
+    # `test_the_name_is_absent_from_every_extension_the_launch_injects`
+    # forbids. Sourcing the name would trade a red guard for a real
+    # fingerprinting leak — the allowance, not an interpolation, is the fix.
+    #
+    # The word is upstream's here: it names the ENGINE whose wrapper the cloak
+    # serves, in a comment explaining `__pnaName`. The literal arrived with
+    # PS-314's `_CHROMIUM_NATIVE_WRAP`, which is why PS-318's payload census
+    # did not see it.
+    ("services/browser/webgl_ext.py", "so a Chromium wrapper the cloak can"),
 )
 
 #: Spellings of our Chromium engine that must never be TYPED into an
