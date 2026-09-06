@@ -377,6 +377,19 @@ jobs:
         # thing this instrument was built to catch. The script owns that
         # mapping and explains it; do not collapse it to "non-zero" here.
         #
+        # A RAW EXIT CODE IS A CLAIM, SO THE SCRIPT CORROBORATES 0 AND 1
+        # AGAINST THE REPORT. Two ways this gate could go green over nothing,
+        # both reproduced by hand: the no-launch lane selects by FILTERING the
+        # registry with no floor, and `exit_code([])` is EXIT_OK — so an empty
+        # lane prints "0 passed" and "the behaviour held" at exit 0; and
+        # Python's exit code for an uncaught exception is 1, which aliases
+        # EXIT_FINDING, so a harness that never STARTED reads as a defect in
+        # the product. The script honours a 0 only when the report certifies
+        # every expected check by name, and a 1 only when the report states a
+        # finding; otherwise it downgrades to 2. Every correction moves TOWARDS
+        # 2 — this can make the job redder than the harness asked, never
+        # greener. `tests/test_ps315_behaviour_gate.py` pins both rules.
+        #
         # NOT the launch lane: `--skip-launch` runs the three checks needing no
         # browser, no display and no exit. The four launch-backed checks and
         # any display provisioning are separate work.
