@@ -330,3 +330,212 @@ def test_every_device_install_rides_a_registered_leaf():
         "they reach only the realms chromium injects into:\n  "
         + "\n  ".join(f"L{i}: {t}" for i, t in uncovered)
     )
+
+
+# ---------------------------------------------------------------------------
+# THE GUARD'S POSITION (round 3, reviewer-found)
+# ---------------------------------------------------------------------------
+# `realm_guard_js`'s own docstring: splice the guard AFTER the leaf's own
+# preconditions, "because a realm where the leaf did no work must NOT be
+# recorded as covered, or a later invocation that COULD have patched it returns
+# early against an empty realm."
+#
+# `applyDevicesPatch` has a precondition of exactly that kind — `mediaDevices`
+# is absent from a worker realm and can be absent from a page-built realm at the
+# moment it is installed into. The first submission spliced the guard above it,
+# under the weaker `!G.navigator` check, so a realm installed into too early was
+# marked `devices: true` having patched NOTHING, and the second invocation — the
+# one that could have patched it — returned early. That realm then reported the
+# ENGINE's device list permanently: this ticket's own defect, reintroduced
+# through the recovery path.
+#
+# ⚠️ NO EXISTING TEST CAN SEE THIS. `test_realm_guard.py` asserts the guard's
+# PRESENCE and UNIQUENESS, never its POSITION, and every realm test above
+# installs into a fully-formed realm exactly ONCE. The two-invocation shape below
+# is what the defect requires, and it is a value-read: it reddens on the ids the
+# child realm received, not on a source string.
+#
+# The two invocations are not contrived. `tests/test_realm_guard.py`'s own module
+# docstring records constraint (b): a realm receives INDEPENDENT `__pnaInstall`
+# invocations — the `all_frames: true` content script AND the parent's
+# `contentWindow` accessor — so arriving twice, at two different moments in the
+# realm's life, is the shipped transport's normal behaviour.
+
+_TWO_INVOCATION_PROBE = (
+    HARNESS
+    + _FRESH_MEDIA_DEVICES
+    + r"""
+const DEVICE_JS = fs.readFileSync(process.argv[2], "utf8");
+
+function bareRealm() {
+  const r = makeRealm();
+  vm.runInContext(
+    "globalThis.navigator = { userAgent: 'probe' };" +
+    "globalThis.screen = {};" +
+    "globalThis.setTimeout = (f) => f();",
+    r.ctx
+  );
+  return r;
+}
+function attachMediaDevices(realm) {
+  vm.runInContext(
+    "globalThis.navigator.mediaDevices = (" + freshMediaDevices.toString() + ")();",
+    realm.ctx
+  );
+}
+
+// PAGE realm: fully formed, content script runs, registry populated.
+const page = bareRealm();
+attachMediaDevices(page);
+let pageError = null;
+try { vm.runInContext(DEVICE_JS, page.ctx); } catch (e) { pageError = String(e); }
+
+let payload = null, spawnError = null;
+try { payload = spawn(page); } catch (e) { spawnError = String(e); }
+
+// CHILD realm, installed into TWICE.
+//   #1 arrives BEFORE the page has attached `mediaDevices` — the leaf can do
+//      no work, so it must NOT mark the realm covered.
+//   #2 arrives after, and is the invocation that CAN patch it.
+const child = bareRealm();          // deliberately NO mediaDevices yet
+let err1 = null, err2 = null;
+if (payload) {
+  try { vm.runInContext(payload, child.ctx); } catch (e) { err1 = String(e); }
+}
+// What the registry recorded after an invocation that patched nothing.
+let regAfterFirst = null;
+try {
+  regAfterFirst = vm.runInContext(
+    "JSON.stringify(Object.getOwnPropertyDescriptor(Object,'__pnaRealm') " +
+    "? Object.__pnaRealm : null)",
+    child.ctx
+  );
+} catch (e) { regAfterFirst = "ERR " + e; }
+
+attachMediaDevices(child);
+if (payload) {
+  try { vm.runInContext(payload, child.ctx); } catch (e) { err2 = String(e); }
+}
+
+const results = {
+  page_error: pageError,
+  spawn_error: spawnError,
+  install1_error: err1,
+  install2_error: err2,
+  payload_bytes: payload ? payload.length : 0,
+  registry_after_install1: regAfterFirst,
+};
+
+function read(ctx, done) {
+  let out;
+  try { out = vm.runInContext("navigator.mediaDevices.enumerateDevices()", ctx); }
+  catch (e) { return done({ error: String(e) }); }
+  Promise.resolve(out).then(
+    (list) => done({
+      devices: (list || []).map((d) => ({
+        kind: d.kind, deviceId: String(d.deviceId), groupId: String(d.groupId),
+      })),
+    }),
+    (e) => done({ error: "rejected: " + e })
+  );
+}
+
+read(page.ctx, (p) => {
+  results.page = p;
+  read(child.ctx, (c) => {
+    results.child = c;
+    console.log(JSON.stringify(results));
+  });
+});
+"""
+)
+
+
+def _run_two_invocation() -> dict:
+    d = tempfile.mkdtemp()
+    build_device_extension(SEED, d, GENERATION)
+    work = pathlib.Path(tempfile.mkdtemp())
+    (work / "probe.js").write_text(_TWO_INVOCATION_PROBE, encoding="utf-8")
+    proc = subprocess.run(
+        [NODE, str(work / "probe.js"), str(pathlib.Path(d) / "device.js")],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=120,
+    )
+    assert proc.returncode == 0, (
+        f"the probe did not run, so it measured NOTHING:\n"
+        f"--- stdout ---\n{proc.stdout}\n--- stderr ---\n{proc.stderr}"
+    )
+    return json.loads([ln for ln in proc.stdout.splitlines() if ln.strip()][-1])
+
+
+def test_a_realm_installed_into_before_mediadevices_exists_is_still_patched_later():
+    """THE ORDERING CRITERION: an early arrival must not consume the guard.
+
+    Install #1 lands in a realm with no `mediaDevices` — the leaf can patch
+    nothing. Install #2 lands after the page attached it. The realm must end up
+    reading the PROFILE's list.
+
+    Reds here mean the guard was spliced above the leaf's real precondition, so
+    install #1 marked the realm covered while doing no work and install #2
+    returned early. That realm then reports the engine's device list for its
+    whole life — silently, since a skipped guard and a completed one are
+    indistinguishable from outside.
+    """
+    out = _run_two_invocation()
+    assert not out["spawn_error"], out["spawn_error"]
+    assert out["payload_bytes"] > 1000, (
+        f"the bootstrap transported {out['payload_bytes']} bytes — too small to "
+        f"be the real payload, so this harness is measuring itself"
+    )
+    assert not out["install1_error"], out["install1_error"]
+    assert not out["install2_error"], out["install2_error"]
+    assert not out.get("child", {}).get("error"), out["child"]["error"]
+
+    page = out["page"]["devices"]
+    child = out["child"]["devices"]
+
+    assert {d["deviceId"] for d in page} != ENGINE_IDS, (
+        "the PAGE realm reported the engine's list — the content script did not "
+        "run, so this measures the harness"
+    )
+    assert {d["deviceId"] for d in child} != ENGINE_IDS, (
+        "the child realm reports the ENGINE's device list. It was installed into "
+        "once BEFORE `mediaDevices` existed and once after; the first invocation "
+        "patched nothing, so it must not have marked the realm covered. Move "
+        "`__DEVICES_REALM_GUARD__` BELOW the leaf's `if (!md || "
+        "!md.enumerateDevices) return;` precondition.\n"
+        f"  registry after install#1: {out['registry_after_install1']}\n"
+        f"  page : {page}\n  child: {child}"
+    )
+    assert child == page, (
+        f"the child realm's list differs from the page realm's:\n"
+        f"  page : {page}\n  child: {child}"
+    )
+
+
+def test_an_invocation_that_patched_nothing_does_not_claim_the_devices_key():
+    """The mechanism behind the test above, asserted directly.
+
+    Reading the registry is a weaker check than reading the device list, so it
+    is NOT the acceptance criterion — but it names the cause in one line when
+    the value-read goes red, which is worth having in the failure output of a
+    defect whose symptom is 31 lines away from its cause.
+    """
+    out = _run_two_invocation()
+    reg = json.loads(out["registry_after_install1"] or "null") or {}
+    assert reg, (
+        "the registry is empty after install#1 — no leaf ran at all, so this "
+        "test is measuring the harness rather than the guard's position"
+    )
+    assert "hw" in reg, (
+        f"`applyHwPatch` did real work in this realm and should have claimed its "
+        f"key; the registry reads {reg}, so the transport is not what it should be"
+    )
+    assert reg.get("devices") is not True, (
+        f"install#1 landed in a realm with NO `mediaDevices`, so "
+        f"`applyDevicesPatch` patched nothing — yet it recorded `devices: true` "
+        f"({reg}). The guard is spliced ABOVE the leaf's real precondition, so "
+        f"the next invocation returns early against an unpatched realm."
+    )

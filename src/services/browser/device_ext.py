@@ -318,49 +318,15 @@ _CONTENT_SCRIPT = r"""
   }
   function pick(arr, salt) { return arr[h32(salt) % arr.length]; }
 
-  function nativeWrap(orig, replacement) {
-    // RE-HOUSE the caller's function EXPRESSION inside a real method shorthand.
-    //
-    // A sloppy-mode function expression owns `prototype`, `arguments` and
-    // `caller`; a native method owns exactly ["length","name"]. So the FORM the
-    // callsite happened to type is a one-line tell, readable by
-    // Object.getOwnPropertyNames without calling anything — an axis entirely
-    // independent of the toString cloak below. `delete replacement.prototype`
-    // cannot repair it (non-configurable: it returns false in sloppy mode and
-    // throws in strict), so the shape has to be right AT CREATION. Doing it
-    // here rather than at ~18 callsites means no spoofed VALUE is disturbed.
-    //
-    // `.apply(this, arguments)` keeps the receiver and the full argument list,
-    // so a re-housed wrapper is behaviourally identical to the expression.
-    var shell;
-    try {
-      shell = ({ m() { return replacement.apply(this, arguments); } }).m;
-    } catch (e) {
-      // If the shorthand form is somehow unavailable, a correctly-spoofing
-      // wrapper with a wrong shape beats no wrapper at all.
-      shell = replacement;
-    }
-    try {
-      // Arity is a second axis: a shape fix that moves `length` swaps one tell
-      // for another. Copy it from the ORIGINAL at runtime — never a literal,
-      // which would go stale silently against a future engine.
-      Object.defineProperty(shell, 'length', { value: orig.length });
-      Object.defineProperty(shell, 'name', { value: orig.name });
-      // Mark for the native_ext Function.prototype.toString patch so a detector
-      // calling Function.prototype.toString.call(replacement) reads native. A
-      // plain replacement.toString override is bypassed by that .call form.
-      //
-      // This marker is READ AS AN OWN PROPERTY (`this.__pnaName`, see
-      // native_ext.py's applyNativePatch), so a Chromium wrapper the cloak can
-      // serve necessarily owns it and the best achievable shape here is
-      // ["__pnaName","length","name"]. That is a deliberate trade, not an
-      // oversight: it drops the three ENGINE-shaped leaks that identify a
-      // wrapper generically. The Firefox helper carries its marker in a WeakMap
-      // and therefore does reach the exact native set.
-      Object.defineProperty(shell, '__pnaName', { value: orig.name });
-    } catch (e) {}
-    return shell;
-  }
+  // NOTE: this IIFE used to define a top-level `nativeWrap`. Its LAST callsite
+  // was the `mediaDevices.enumerateDevices` install, which PS-320 moved into
+  // `applyDevicesPatch` — and a leaf carries its OWN wrapper (`nw`) inside its
+  // body, because the body is what crosses realms. So the readable copy became
+  // ~10 lines of unreachable JS shipped into every realm, and it is deleted
+  // rather than left. Each of the three leaves below declares its own minified
+  // `nw`; there is no shared one, deliberately. This is not tidiness: a dead
+  // readable copy is exactly what let a PS-314 falsification arm pass against
+  // code that never runs, one function over in this same file.
   function def(obj, prop, val) {
     try {
       // A REAL ACCESSOR, pulled back out of an object literal — not a function
@@ -557,9 +523,25 @@ __SCREEN_REALM_BOOTSTRAP__
   // that IIFE — `h32` and `nativeWrap` above, and `hx` was declared here — and
   // none of them survives the trip. `applyHwPatch` below is the in-tree
   // precedent and does exactly this with its own SEED/`h`/`def`.
+  //
+  // THE GUARD SITS BELOW THIS LEAF'S REAL PRECONDITION, NOT AT THE TOP OF THE
+  // BODY. `mediaDevices` is not universally present — it is absent from a
+  // worker realm, and a page-built realm can be installed into BEFORE the page
+  // has attached it — so `!G.navigator` is a weaker check that passes in realms
+  // this leaf then bails out of. `realm_guard_js`'s own docstring states the
+  // rule and names canvas_ctx/measuretext as the leaves that already obey it: a
+  // realm where the leaf did NO work must not be recorded as covered, or the
+  // later invocation that COULD have patched it returns early against an empty
+  // realm and that realm reports the ENGINE's device list permanently. That is
+  // this ticket's own defect reintroduced through the recovery path, and it is
+  // silent — the structural suite asserts the guard's PRESENCE and UNIQUENESS,
+  // never its POSITION. test_a_realm_installed_into_before_mediadevices_exists
+  // is the value-read that gates it.
   function applyDevicesPatch(G) {
    try {
     if (!G || !G.navigator) return;
+    var md = G.navigator.mediaDevices;
+    if (!md || !md.enumerateDevices) return;
 __DEVICES_REALM_GUARD__
     var SEED = __SEED__;
     function h32(x) {
@@ -591,8 +573,6 @@ __DEVICES_REALM_GUARD__
       } catch (e) {}
       return s;
     };
-    var md = G.navigator.mediaDevices;
-    if (!md || !md.enumerateDevices) return;
     var grpMic = hx(64, 0xa11), grpCam = hx(64, 0xb22), grpSpk = hx(64, 0xc33);
     var list = [
       { kind: 'audioinput',  gid: grpMic, did: 'default' },
