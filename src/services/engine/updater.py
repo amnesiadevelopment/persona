@@ -1603,7 +1603,7 @@ def _release_pin(log=None) -> None:
     except Exception as e:
         if log:
             log(
-                f"Chromium engine: couldn't clear the hold ({e}) — the panel "
+                f"{engine_display_name()} engine: couldn't clear the hold ({e}) — the panel "
                 "may still say your engine is held at a build you no longer "
                 "have"
             )
@@ -1699,7 +1699,7 @@ def ensure_engine(
         # could not get that build, and what it is doing instead — is stated.
         if log:
             log(
-                f"Chromium engine: persona could not get {pin} from upstream "
+                f"{engine_display_name()} engine: persona could not get {pin} from upstream "
                 "(it may have been withdrawn), so it cannot hold your engine "
                 "there — installing the newest build instead."
             )
