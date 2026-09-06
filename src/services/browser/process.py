@@ -481,6 +481,37 @@ def _profile_timezone(profile: Profile, proxy) -> str:
         ) from e
 
 
+def _launch_geo(store, ref: str | None):
+    """The geography-bearing proxy record a launch must reason about.
+
+    ⭐ WHY THIS INDIRECTION EXISTS, since a bare ``store.geo_for_launch(ref)``
+    would read better. The launch path is driven by ~20 test files that install
+    their own minimal store DOUBLE — a class with ``resolve`` and ``get`` and
+    nothing else. Those doubles are how the QUIC, DoH, VA-API, env-scrub, cwd
+    and cert suites reach the launch at all, and almost none of them are about
+    proxies: they need *a* proxy to exist and assert something else entirely.
+
+    Calling a NEW store method directly makes every one of them raise
+    ``AttributeError`` — measured, 51 failures across five files — which is not a
+    real finding about the product. It is a doubles-out-of-date finding, and
+    "make 51 unrelated tests pass again" is exactly the pressure that produces a
+    rushed edit to a suite nobody re-reads. So the new capability is asked for
+    politely and the old question is the fallback.
+
+    ⚠️ THE FALLBACK IS FOR TEST DOUBLES, NOT FOR PRODUCTION. The real
+    :class:`ProxyStore` always implements ``geo_for_launch``, so the production
+    path ALWAYS takes the first branch — a double that lacks the method gets the
+    pre-PS-358 behaviour, which is correct for a double that hardcodes a stored
+    proxy anyway (an inline ref never reaches it). A test that wants the inline
+    behaviour must provide a store that implements it, which is what the PS-358
+    tests do.
+    """
+    geo = getattr(store, "geo_for_launch", None)
+    if callable(geo):
+        return geo(ref)
+    return store.get(ref) if ref else None
+
+
 def _spawn_invisible(profile: Profile, profile_dir: str, *, in_process: bool = False):
     """Launch the invisible_playwright (patched Firefox 150) engine. SOCKS5
     proxy auth is handled natively (no bridge). Returns a Popen-compatible
@@ -497,7 +528,15 @@ def _spawn_invisible(profile: Profile, profile_dir: str, *, in_process: bool = F
     # Fail CLOSED: never launch FF DIRECT for a profile that HAS a proxy assigned.
     _require_proxy_resolved(profile, _resolved)
     proxy_url = _resolved or ""
-    proxy = store.get(profile.proxy) if profile.proxy else None
+    # `geo_for_launch`, NOT `get`: a plain name lookup answers None for an INLINE
+    # proxy, and None is the no-proxy sentinel the two helpers below read as
+    # "this profile is DIRECT" — so an inline socks5 exiting in Warsaw used to
+    # launch with a US zone and en-US, a language contradicting its own IP
+    # (PS-358). This resolves the exit instead, and where it cannot it returns a
+    # record carrying no geography so the gates below REFUSE rather than fall
+    # back. The named path is unaffected: a stored proxy is returned untouched
+    # and pays no launch-time probe.
+    proxy = _launch_geo(store, profile.proxy)
     # Locale + timezone follow the proxy's geo so they match the exit IP. Always
     # resolve to a CONCRETE zone — never leave it empty: invisible treats an
     # empty timezone as "auto" and blocks the launch ~40s on an egress-IP lookup
@@ -686,7 +725,10 @@ def spawn_browser(profile: Profile, *, in_process: bool = False) -> subprocess.P
         return proc
 
     store = ProxyStore()
-    proxy = store.get(profile.proxy) if profile.proxy else None
+    # `geo_for_launch`, NOT `get` — the chromium arm carried the SAME defect as
+    # the firefox arm above and must be fixed with it, or the mismatch simply
+    # moves to whichever engine was left behind (PS-358).
+    proxy = _launch_geo(store, profile.proxy)
     proxy_url = store.resolve(profile.proxy)
     # Fail CLOSED: never open a DIRECT window for a profile that HAS a proxy.
     _require_proxy_resolved(profile, proxy_url)
