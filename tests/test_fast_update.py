@@ -419,46 +419,127 @@ def test_exhausted_launch_budget_restores_and_relaunches_previous(tmp_path):
     assert launches == 1, "restored the previous release but never launched it"
 
 
-def test_confirmed_boot_leaves_no_retained_pair(tmp_path):
-    # AC4: a confirmed-good boot drops the retained pair, so one previous
-    # version is kept and replaced per update rather than accumulating.
+def test_confirmed_boot_leaves_the_retained_pair(tmp_path):
+    # AC3, and this test is the REWRITE of
+    # `test_confirmed_boot_leaves_no_retained_pair`, which asserted the exact
+    # opposite. That is deliberate and is the ticket, not a casualty of it.
+    #
+    # PS-80's AC4 recorded a decision — "a confirmed-good boot leaves no
+    # retained pair — one previous version, replaced per update, never
+    # accumulating" — and the deletion it pinned is removed here. The argument,
+    # searched for a counter-reason at implementation time and found to have
+    # none (`git log -S"drop_retained_steps"` and `-S"confirm_body"` each
+    # return exactly one commit, the feature's own; every "accumulat" hit in
+    # the module states the non-accumulation GOAL and none argues a retained
+    # pair is itself harmful):
+    #
+    #   * AC4's stated goal — NON-ACCUMULATION — is met identically either
+    #     way, and the test below this one proves it on files rather than
+    #     asserting it. `stage_steps` already `move`s the live pair OVER the
+    #     retained one, so the next update replaces it. The bound is DEPTH, not
+    #     duration — the same policy updater.py states for the macOS .app and
+    #     engine_install.py states for the Firefox engine.
+    #   * What the deletion cost was the only artifact a Windows revert could
+    #     have used. The recovery arm consumes the pair for a release that will
+    #     not come up AT ALL; the success arm then destroyed it for the case
+    #     that matters most — a release that boots, registers in tasklist, and
+    #     is broken. rollback_target() had no Windows arm because there was
+    #     nothing on disk for one to resolve.
+    #   * The cost of keeping it is one app.zip + hash (~1MB), against the
+    #     ~200MB .app macOS retains and the AppImage Linux retains, both
+    #     indefinitely.
     dst_zip, dst_hash, new_zip, new_hash = _install_dir(tmp_path)
     bat = _emit(tmp_path, dst_zip, dst_hash, new_zip, new_hash)
     _run_section(bat, "swap")
     prev_zip, prev_hash = fu.retained_paths(str(dst_zip), str(dst_hash))
     assert os.path.isfile(prev_zip)
 
-    _run_section(bat, "confirmed")
+    # There is no longer a success arm at all — the confirm goes straight to
+    # :done — so the pair survives the boot by construction rather than by a
+    # cleanup that happens to be skipped.
+    assert "confirmed" not in _labels(bat), (
+        "a success arm is emitted again — the retained pair has something that "
+        "can delete it"
+    )
+    assert "if not errorlevel 1 goto done" in bat
 
-    assert not os.path.exists(prev_zip), "retained pair accumulates across updates"
-    assert not os.path.exists(prev_hash)
+    # ON DISK, after the boot the script confirms: the way back is still there.
+    assert os.path.isfile(prev_zip), "the confirmed boot destroyed the way back"
+    assert os.path.isfile(prev_hash)
+    assert open(prev_zip, "rb").read() == b"WORKING-RELEASE-CODE"
+    assert open(prev_hash, encoding="utf-8").read() == "oldsha"
     # the release that booted stays live and untouched
     assert dst_zip.read_bytes() == b"NEW-RELEASE-CODE"
     assert dst_hash.read_text(encoding="utf-8") == "newsha"
 
 
-def test_failed_boot_never_runs_the_confirmed_cleanup(tmp_path):
-    # The ordering hazard: :confirmed (drop the retained pair) is emitted
-    # between the confirm and :done. If the spent budget FELL THROUGH into it
-    # instead of jumping, a failed boot would delete exactly what recovery
-    # needs — restoring nothing. The jump must be explicit.
+def test_a_second_update_replaces_the_retained_pair_rather_than_adding_one(
+    tmp_path,
+):
+    # AC3's other half, and the one that actually keeps PS-80's AC4 GOAL. The
+    # non-accumulation guarantee is not deleted here, it changes MECHANISM:
+    # from delete-on-confirm to replace-on-next-update. Asserted by running two
+    # real updates back to back against one install dir and counting what is
+    # on disk — never by reading the emitted text.
+    dst_zip, dst_hash, new_zip, new_hash = _install_dir(tmp_path)
+    app_dir = os.path.dirname(str(dst_zip))
+
+    # update 1: WORKING -> NEW
+    bat = _emit(tmp_path, dst_zip, dst_hash, new_zip, new_hash)
+    _run_section(bat, "swap")
+
+    # update 2: NEW -> NEWER, from the same install dir the first one left
+    newer_zip = tmp_path / "staged" / "newer.zip"
+    newer_hash = tmp_path / "staged" / "newer.zip.hash"
+    newer_zip.write_bytes(b"NEWER-RELEASE-CODE")
+    newer_hash.write_text("newersha", encoding="utf-8")
+    bat2 = _emit(tmp_path, dst_zip, dst_hash, newer_zip, newer_hash)
+    _run_section(bat2, "swap")
+
+    # EXACTLY ONE retained pair — the previous release's, not the one before it
+    retained = sorted(n for n in os.listdir(app_dir)
+                      if n.endswith(fu.RETAINED_SUFFIX))
+    assert retained == ["app.zip.hash.prev", "app.zip.prev"], (
+        f"retention accumulated across updates: {sorted(os.listdir(app_dir))}"
+    )
+    prev_zip, prev_hash = fu.retained_paths(str(dst_zip), str(dst_hash))
+    assert open(prev_zip, "rb").read() == b"NEW-RELEASE-CODE", (
+        "the retained pair is not the version this update replaced"
+    )
+    assert open(prev_hash, encoding="utf-8").read() == "newsha"
+    # and the newest release is live
+    assert dst_zip.read_bytes() == b"NEWER-RELEASE-CODE"
+    assert dst_hash.read_text(encoding="utf-8") == "newersha"
+
+
+def test_failed_boot_still_reaches_the_restore_arm(tmp_path):
+    # THE REWRITE of `test_failed_boot_never_runs_the_confirmed_cleanup`, whose
+    # hazard was that :confirmed sat between the confirm and :done and a
+    # fall-through would delete exactly what recovery needs. With no success
+    # arm that hazard cannot exist — but the ROUTING it guarded must be
+    # asserted, not reasoned about, because build_bat's `exhausted_jump`
+    # branches on WHICH arms are present and dropping one changes that branch.
     dst_zip, dst_hash, new_zip, new_hash = _install_dir(tmp_path)
     bat = _emit(tmp_path, dst_zip, dst_hash, new_zip, new_hash)
 
-    # success goes to the cleanup arm; the exhausted budget goes to the restore arm
-    assert "if not errorlevel 1 goto confirmed" in bat
-    launch = bat.split(":launch")[1].split(":recover")[0]
-    assert "goto recover" in launch
-    # the restore arm ends by leaving, so it cannot fall into the cleanup below it
-    recover = bat.split(":recover")[1].split(":confirmed")[0]
+    # a good boot ends the script; nothing runs between the confirm and :done
+    assert "if not errorlevel 1 goto done" in bat
+    assert "confirmed" not in _labels(bat)
+    # a spent launch budget still reaches the restore arm — the property the
+    # old test's `goto recover` assertion pinned, unchanged by the removal
+    launch = bat.split(":launch")[1]
+    assert "if %boots% lss 5 goto launch" in launch
+    assert "goto recover" in launch, (
+        "the spent launch budget no longer reaches the restore arm"
+    )
+    # and the restore arm still ends by leaving rather than falling anywhere
+    recover = bat.split(":recover")[1]
     assert "goto done" in recover
-    # and the cleanup targets ONLY the retained pair, never the live files
-    cleanup = "\n".join(_section(bat, "confirmed"))
-    assert ".prev" in cleanup
-    for line in _section(bat, "confirmed"):
-        if line.strip():
-            assert line.rstrip().endswith(">nul 2>&1")
-            assert ".prev" in line, "cleanup touches a file that is not the retained pair"
+    # nothing in the script deletes a retained file any more
+    assert ".prev" in bat, "the retention itself vanished"
+    assert "del /F /Q" not in bat.split(":swap")[1].split(":done")[0], (
+        "something still deletes files after the swap"
+    )
 
 
 def test_step_order_is_still_wait_stage_purge_launch(tmp_path):
@@ -545,3 +626,143 @@ def test_recovery_route_launches_exactly_once(tmp_path):
     # and the restore still happened, on disk, on that same route
     assert dst_zip.read_bytes() == b"WORKING-RELEASE-CODE"
     assert dst_hash.read_text(encoding="utf-8") == "oldsha"
+
+
+# ---------------------------------------------------------------------------
+# PS-328: the OPERATOR-DRIVEN restore. The recovery arm above is automatic and
+# fires only when a release will not come up AT ALL; this is the way back from
+# a release that boots, registers in tasklist, and is broken — the case the
+# confirm-time deletion used to make unreachable.
+#
+# Same discipline as everything above it: assert on FILES in a real temp
+# install dir by executing the emitted script's file-op lines, never on batch
+# text. Executing the whole script needs Windows (cmd, tasklist, start).
+# ---------------------------------------------------------------------------
+
+
+def _emit_restore(tmp_path, dst_zip, dst_hash) -> str:
+    exe = tmp_path / "persona.exe"
+    exe.write_bytes(b"MZ")
+    path = fu._write_appzip_restore_bat(
+        str(exe), str(dst_zip), str(dst_hash), 4242
+    )
+    try:
+        with open(path, encoding="ascii", newline="") as f:
+            return f.read()
+    finally:
+        os.remove(path)
+
+
+def test_the_restore_script_puts_the_retained_pair_back_on_disk(tmp_path):
+    # AC6 at the file level. BOTH halves go back together: the hash mismatch is
+    # what makes flet re-extract, since its marker records the release being
+    # reverted FROM (restore_steps' own docstring).
+    dst_zip, dst_hash, new_zip, new_hash = _install_dir(tmp_path)
+    swap = _emit(tmp_path, dst_zip, dst_hash, new_zip, new_hash)
+    _run_section(swap, "swap")
+    assert dst_zip.read_bytes() == b"NEW-RELEASE-CODE"  # the bad release is live
+
+    bat = _emit_restore(tmp_path, dst_zip, dst_hash)
+    _run_section(bat, "restore")
+
+    assert dst_zip.read_bytes() == b"WORKING-RELEASE-CODE", (
+        "the revert did not put the previous app.zip back"
+    )
+    assert dst_hash.read_text(encoding="utf-8") == "oldsha", (
+        "the hash did not go back with the zip — flet will not re-extract"
+    )
+    # the retained pair is CONSUMED (move, not copy), so the reverted install
+    # holds exactly one good pair and no leftovers
+    prev_zip, prev_hash = fu.retained_paths(str(dst_zip), str(dst_hash))
+    assert not os.path.exists(prev_zip)
+    assert not os.path.exists(prev_hash)
+
+
+def test_the_restore_script_launches_exactly_once_through_a_purge(tmp_path):
+    # The restore is a THIRD caller of the shared generator, and step 3 of
+    # build_bat's order is a property of every route to a launch: the restore
+    # has just put the OLD zip + OLD hash back while the extraction on disk is
+    # the NEW one, so the bootstrap WILL delete and re-extract — and that
+    # delete is precisely the one that cannot retry (#195).
+    dst_zip, dst_hash, _nz, _nh = _install_dir(tmp_path)
+    bat = _emit_restore(tmp_path, dst_zip, dst_hash)
+
+    launch_sections = [lbl for lbl in _labels(bat)
+                       if any(ln.strip().lower().startswith("start ")
+                              for ln in _section(bat, lbl))]
+    assert len(launch_sections) == 1, launch_sections
+    assert launch_sections[0] in _purge_exits(bat), (
+        "the restore launches against an extraction no purge block cleared (#195)"
+    )
+    assert sum(_run_section(bat, lbl) for lbl in _route(bat, "restore")) == 1
+
+
+def test_the_restore_script_is_stage_only_and_adds_no_arms(tmp_path):
+    # TRAP 3: the generator is shared with the full installer, whose script
+    # must stay byte-identical (PS-80's AC5). A stage-only caller adds no
+    # labels beyond its own stage label — the cheapest shape the generator
+    # emits — so this pins the label set rather than trusting it.
+    dst_zip, dst_hash, _nz, _nh = _install_dir(tmp_path)
+    bat = _emit_restore(tmp_path, dst_zip, dst_hash)
+
+    assert _labels(bat) == [
+        "wait", "hold", "restore", "purge", "launch", "done"
+    ]
+    # no recovery and no success arm: there is nothing to recover TO (the
+    # retained pair is what this consumes) and nothing to drop on success
+    assert "recover" not in bat
+    assert "confirmed" not in bat
+    # the wait is on THIS persona only, and the order still holds
+    assert 'tasklist /FI "PID eq 4242"' in bat
+    assert bat.index(":wait") < bat.index(":restore") < bat.index(":purge") \
+        < bat.index(":launch")
+
+
+def test_the_restore_script_is_ascii_and_silent(tmp_path):
+    # cmd reads .bat in the OEM codepage and a live console during an update is
+    # a reported defect — the same two constraints every emitted script here
+    # carries.
+    dst_zip, dst_hash, _nz, _nh = _install_dir(tmp_path)
+    bat = _emit_restore(tmp_path, dst_zip, dst_hash)
+
+    bat.encode("ascii")  # raises if a non-ASCII path leaked in
+    assert bat.startswith("@echo off\r\n")
+    for line in bat.replace("\r\n", "\n").split("\n"):
+        stripped = line.strip()
+        if not stripped or stripped.startswith(":") or stripped.startswith("if ") \
+                or stripped.startswith("goto") or stripped.startswith("set "):
+            continue
+        if stripped.startswith("start ") or stripped.startswith("(goto)") \
+                or stripped == "@echo off":
+            continue
+        assert ">nul" in stripped, f"unsilenced line: {stripped!r}"
+
+
+def test_staging_a_restore_refuses_when_nothing_is_retained(tmp_path, monkeypatch):
+    # The full-installer lane leaves no `.prev` pair (Inno upgrades in place
+    # under a fixed AppId), so the revert must refuse rather than emit a script
+    # whose `if exist` guards would all no-op into a relaunch of the SAME build.
+    dst_zip, dst_hash, _nz, _nh = _install_dir(tmp_path)
+    monkeypatch.setattr(fu._platform, "IS_WINDOWS", True)
+    monkeypatch.setattr(
+        fu, "install_app_zip_paths", lambda: (str(dst_zip), str(dst_hash))
+    )
+    monkeypatch.setattr(fu.install_env, "installed_windows_exe", lambda: "p.exe")
+
+    assert fu.stage_retained_restore() == ""
+
+
+def test_staging_a_restore_refuses_on_a_half_retained_pair(tmp_path, monkeypatch):
+    # A lone .prev zip is not a revert this can honour: without the hash going
+    # back too, flet keeps the extraction of the release being reverted from.
+    dst_zip, dst_hash, _nz, _nh = _install_dir(tmp_path)
+    prev_zip, _prev_hash = fu.retained_paths(str(dst_zip), str(dst_hash))
+    with open(prev_zip, "wb") as f:
+        f.write(b"WORKING-RELEASE-CODE")
+    monkeypatch.setattr(fu._platform, "IS_WINDOWS", True)
+    monkeypatch.setattr(
+        fu, "install_app_zip_paths", lambda: (str(dst_zip), str(dst_hash))
+    )
+    monkeypatch.setattr(fu.install_env, "installed_windows_exe", lambda: "p.exe")
+
+    assert fu.stage_retained_restore() == ""
