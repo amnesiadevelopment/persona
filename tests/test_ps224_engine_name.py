@@ -602,6 +602,7 @@ _NOT_OUR_ENGINE_NAME = {
     "services/browser/device_ext.py",
     "services/browser/gpu_ext.py",
     "services/browser/voice_ext.py",
+    "services/browser/webgl_ext.py",
     "services/browser/worker_wrap.py",
     # MEASUREMENT PROVENANCE, explicitly deferred by the PS-318 ticket: these
     # values are written into committed reading artifacts, and changing one
