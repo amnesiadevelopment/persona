@@ -1,0 +1,265 @@
+name: behaviour-launch-lane
+
+# The execution venue for the LAUNCH-BACKED behavioural checks (PS-336).
+#
+# PS-315 wired `behaviour_cli`'s `--skip-launch` lane into ci.yml and said so in
+# the step it added: "The four launch-backed checks and any display provisioning
+# are separate work." This is that work.
+#
+# ⭐ WHAT WAS ACTUALLY BROKEN, MEASURED AT THIS BRANCH'S BASE (`db6d528`), not
+# inferred. Planting `raise AssertionError("MUT-PLANTED")` at the head of ONE
+# check body at a time and running every suite file that references the module
+# (240 tests):
+#
+#     _run_restart_continuity                 240 passed   <- mutant SURVIVES
+#     _run_benign_edit_stability              240 passed   <- mutant SURVIVES
+#     _run_trash_restore_and_wipe             240 passed   <- mutant SURVIVES
+#
+#     CONTROLS (same probe shape, so the three greens are a coverage gap and
+#     not a suite incapable of killing anything in this file):
+#     _run_two_profile_unlinkability          4 failed, 236 passed
+#     _run_launch_refuses_broken_geography    6 failed, 234 passed
+#
+# And PS-315's own gate, run over each sabotaged body in turn, printed
+# `GATE EXIT: 0` and "every selected check ran, was shown capable of failing,
+# and the behaviour held" — over three bodies that cannot execute at all. Its
+# `EXPECTED_CHECKS` floor is correct and is scoped to its own lane by
+# construction, so it structurally cannot notice. PS-315 did not merely leave
+# the gap; it built a green sentence over it.
+#
+# ---------------------------------------------------------------------------
+# WHY A SEPARATE WORKFLOW AND NOT A STEP IN ci.yml — PRICED, NOT ASSUMED
+# ---------------------------------------------------------------------------
+# Measured on one linux host at n=1, real Personium engine, under `xvfb-run -a`:
+#
+#     the three selected checks       66.2s, 12 browser launches
+#     the whole registry (all seven)  93.5s, 16 browser launches
+#     engine download, cold cache     ~10s, 584 MB extracted
+#
+# So the lane itself is ~76s against ci.yml's 30-minute per-job cap, and it
+# WOULD fit there on wall-clock alone. It is here anyway, for three reasons
+# that are about cost and correctness rather than about the cap:
+#
+#   1. ci.yml's `tests` job is a 6-INSTANCE matrix — os: [ubuntu-24.04,
+#      windows-latest, macos-latest] x shard: [main, ui-driver] — and the
+#      PS-315 behavioural step carries no shard condition, so it already runs
+#      in all six. That is free at 0.4s and emphatically not free for a lane
+#      that downloads a 584 MB engine: appending this beside it would pay the
+#      download SIX TIMES PER PR, with the macOS and Windows legs paying the
+#      worst of it.
+#      ⚠️ NOTE what that is and is not: `timeout-minutes` is per JOB INSTANCE
+#      and the matrix declares `fail-fast: false` with no `max-parallel`, so
+#      the six run concurrently on six runners with six separate 30-minute
+#      budgets. The x6 is RUNNER-MINUTES AND BANDWIDTH, not cap pressure. An
+#      earlier reading of this called it cap pressure; it is not, and the
+#      correction matters because it pushes toward the wrong remedy.
+#   2. THE FIXTURES ARE FIREFOX-ONLY AND THE ENGINE IS LINUX-PROVISIONED HERE.
+#      `behaviour.py`'s UNCOVERED_SURFACES records that all 18 scratch profiles
+#      take `Context.make_profile`'s defaults (os_type=windows,
+#      device_type=desktop) — "the ONE combination that resolves to firefox".
+#      So the three OS legs would measure the same firefox arm three times over
+#      and learn one fact, while `xvfb` is linux-only and the display story on
+#      the macOS and Windows runners is unmeasured work this ticket does not do.
+#   3. A PR IS THE WRONG EVENT FOR MOST OF THE RISK. These bodies rot from
+#      changes to the product and from ENGINE BUILDS this repo does not author
+#      (`engine-baseline.txt` is bumped by engine-autoupdate.yml). A daily
+#      reading catches both; a PR trigger catches only the first, at 6x the
+#      cost. The PR path filter below adds the first back for the files that
+#      can actually break it.
+#
+# This is the shape `engine-gpu-variance.yml` already established for exactly
+# this trade — cron + workflow_dispatch + a generous timeout — and AC5 of the
+# ticket names it as an explicitly legitimate outcome rather than a failure.
+#
+# ---------------------------------------------------------------------------
+# WHICH ENGINE THIS MEASURES, AND WHY IT IS NOT THE ONE ci.yml INSTALLS
+# ---------------------------------------------------------------------------
+# The PERSONIUM build named by `engine-baseline.txt` (today `firefox-20`), via
+# `src.services.engine.firefox.download_engine` — the same bytes `updater`
+# hands an operator's app, and the same provisioning shape
+# `engine-autoupdate.yml` uses.
+#
+# NOT the stock playwright Firefox that ci.yml provisions with `python -m
+# playwright install firefox`. The two are different artifacts and the answer
+# changes what a green means: these checks observe a MASKED identity — a
+# restart presenting the same machine, a benign edit not moving it — and every
+# one of those properties is produced by persona's layer running on the patched
+# build. A pass on stock Firefox would certify a browser nobody ships.
+#
+# ⚠️ Verified rather than assumed: the engine resolves through
+# invisible_playwright's own cache (`~/.cache/invisible-playwright`), NOT
+# playwright's (`~/.cache/ms-playwright`, absent on a machine where these
+# checks pass). `playwright install firefox` populates the latter and leaves
+# the former empty, so the two provisioning steps are not interchangeable.
+#
+# ---------------------------------------------------------------------------
+# WHY xvfb IS INSTALLED HERE WHEN ci.yml MEASURED THAT IT DID NOT NEED ONE
+# ---------------------------------------------------------------------------
+# ci.yml's own comment records, as a measured result, that headless Firefox
+# sufficed for the tests it had. That result is real and is about a DIFFERENT
+# code path. `behaviour.run_checks` calls `require_display()` as a PREFLIGHT
+# whenever any SELECTED check has `needs_launch=True`, before any profile's
+# engine is resolved — the preflight is engine-blind by construction, and
+# `baseline._require_display` raises on linux with DISPLAY unset. Without Xvfb
+# this lane is exit 2 on every run: a permanent "nothing was measured", which
+# is the exact failure this instrument exists to remove.
+#
+# ---------------------------------------------------------------------------
+# THE THREE EXIT CODES STAY THREE
+# ---------------------------------------------------------------------------
+#     0  every check in the floor ran, was falsified, and held
+#     1  a check RAN and the behaviour did NOT hold      -> a FINDING
+#     2  a check COULD NOT RUN. Nothing was certified.   -> NOT a pass
+#
+# ⚠️ EXIT 2 FAILS THIS JOB, deliberately. "We failed to look" must never wear
+# the colour of "we looked and it was fine" — that is the defect being closed,
+# and re-creating it in the gate built to remove it would be absurd. Letting a
+# bare `run:` propagate the child's code is what keeps that true; any branching
+# on the code here is where the laundering would sneak back in.
+#
+# NOT `continue-on-error` and NOT `|| true`, for the same reason.
+
+on:
+  schedule:
+    # Daily at 07:20 UTC — after engine-autoupdate's 06:00 slot and
+    # engine-gpu-variance's 06:40, so the three do not contend for a runner,
+    # and AFTER the autoupdate job so this reads whatever engine baseline that
+    # job may have just bumped to. Nothing here depends on either of them.
+    - cron: "20 7 * * *"
+  workflow_dispatch: {}
+  # THE PR ARM, DELIBERATELY NARROW. A change to the checks themselves, to the
+  # harness, to the probes they read through, or to this venue is exactly the
+  # change a daily reading would catch up to 24h late — and it is the change
+  # most likely to be wrong. Everything else waits for the cron rather than
+  # paying a 584 MB engine download per pull request.
+  #
+  # ⚠️ THE FILTER IS A COST CONTROL, NOT A CLAIM THAT NOTHING ELSE CAN BREAK
+  # THIS LANE. `_run_restart_continuity` reads through the whole launch stack,
+  # so a change under src/services/browser/ can absolutely move it and will not
+  # trigger this arm. That gap is covered by the cron, at up to a day's delay,
+  # and widening the filter to the launch stack would put the download back on
+  # a large fraction of PRs. Stated so the next reader does not mistake the
+  # list for a completeness claim.
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "src/services/verify/behaviour*.py"
+      - "src/services/verify/probes.py"
+      - "src/services/verify/diff.py"
+      - "src/services/verify/baseline.py"
+      - ".github/scripts/run_launch_behaviour_checks.py"
+      - ".github/scripts/run_behaviour_checks.py"
+      - ".github/workflows/behaviour-launch-lane.yml"
+      - "engine-baseline.txt"
+
+permissions:
+  contents: read          # reads the tree and the public engine release only
+
+concurrency:
+  group: behaviour-launch-lane-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  launch-lane:
+    name: behavioural checks, launch lane (gating)
+    # LINUX ONLY, and stated rather than implied: the fixtures are firefox-only
+    # (see reason 2 in the header), `xvfb` is linux-only, and this ticket does
+    # not do the unmeasured work of a display story on the macOS and Windows
+    # runners. A pass here says nothing about how those platforms behave.
+    runs-on: ubuntu-24.04
+    # The lane measured 66s and the whole registry 94s, plus ~10s for the
+    # engine and a couple of minutes of dependency installation. 45 leaves
+    # headroom for a slow runner or a slow upstream without letting a genuinely
+    # wedged browser launch hang for hours — the same budget
+    # engine-gpu-variance.yml settled on for the same reason.
+    timeout-minutes: 45
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Report what this machine actually is
+        shell: bash
+        run: |
+          python -c "import platform, sys; print('platform:', platform.platform()); print('machine :', platform.machine()); print('python  :', sys.version)"
+          echo "DISPLAY=[${DISPLAY:-<unset>}]"
+          echo "engine baseline: $(cat engine-baseline.txt)"
+
+      - name: Provision a display and the project
+        # THE PROJECT, not requirements-dev.txt. The lane imports `cryptography`
+        # (a first-class dependency) and the whole browser stack; without them
+        # it does not fail cleanly, it DEGRADES to CANNOT RUN with a
+        # ModuleNotFoundError and exits 2 — a permanent red saying "nothing was
+        # measured", which is the failure this gate exists to remove. PS-315
+        # learned this on the cheap lane; the expensive one inherits it.
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb
+          python -m pip install --upgrade pip
+          pip install --prefer-binary .
+          pip check
+
+      - name: Provision the Personium engine binary
+        # `engine-autoupdate.yml`'s shape, deliberately: read the tag from
+        # engine-baseline.txt and call the product's OWN downloader, so this
+        # measures the build an operator receives rather than a stock browser.
+        # The tag is echoed so a red run names the build that was measured.
+        shell: bash
+        run: |
+          tag="$(tr -d '[:space:]' < engine-baseline.txt)"
+          echo "downloading engine build: $tag"
+          python -c "
+          import sys
+          from src.services.engine.firefox import download_engine, current_version
+          tag = sys.argv[1]
+          if not download_engine(tag):
+              sys.exit(f'could not download engine build {tag}')
+          print('installed build:', current_version())
+          " "$tag"
+
+      - name: Behavioural checks, launch lane (gating)
+        # A bare `run:` so the script's exit code reaches the runner unmodified.
+        # `xvfb-run` propagates its child's code (verified: exit 2 in, exit 2
+        # out), so the three verdicts survive the display wrapper.
+        shell: bash
+        run: xvfb-run -a python .github/scripts/run_launch_behaviour_checks.py
+
+      - name: Say what a red run means and what to do about it
+        if: failure()
+        run: |
+          cat <<'EOF'
+          The launch-backed behavioural lane did not come back clean. READ THE
+          EXIT CODE ABOVE BEFORE ACTING — the two failures mean opposite things.
+
+            exit 1  a check RAN and the behaviour did NOT hold. This is a
+                    FINDING about the product: a profile did not survive a
+                    restart as the same machine, a benign edit moved the
+                    presented identity, or the trash bin handed a profile back
+                    under a changed one. Read the [FINDING] block's evidence
+                    lines — they carry the vectors that moved. This module
+                    reports; it does not fix.
+
+            exit 2  a check COULD NOT RUN, or a verdict could not be
+                    corroborated. NOTHING WAS CERTIFIED — this is NOT a pass
+                    and must not be read as one. The usual causes are
+                    environmental (the engine or the display failed to come
+                    up), and the log says which. A [CANNOT RUN] block reading
+                    "SELF-TEST FAILED" is different and more serious: the check
+                    did not catch a defect planted on purpose, so nothing it
+                    says can be trusted.
+
+          ⛔ DO NOT "fix" a red run by narrowing the lane, by relaxing the
+          EXPECTED_CHECKS floor in run_launch_behaviour_checks.py, or by
+          letting exit 2 pass. Each of those turns this back into a gate that
+          reports a verdict it has not earned, which is the entire defect the
+          venue was built to close.
+          EOF
