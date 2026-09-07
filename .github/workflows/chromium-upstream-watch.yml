@@ -1,0 +1,270 @@
+name: chromium-upstream-watch
+
+# Does a newer ungoogled-chromium exist, and do our 16 fingerprint patches still
+# apply to it?
+#
+# WHY THIS JOB EXISTS (PS-342). We build and ship our OWN Chromium engine —
+# ungoogled-chromium plus the 16 patches in engine/patches/fingerprint/ — and
+# until this workflow, nothing anywhere noticed when a newer ungoogled release
+# appeared. Falling behind on the engine we own was something that would HAPPEN
+# to us rather than something we chose, and the silent party was us.
+#
+# ---------------------------------------------------------------------------
+# WHY THIS IS ITS OWN WORKFLOW AND NOT A STEP IN AN EXISTING ONE
+# ---------------------------------------------------------------------------
+# The choice is stated because the ticket asked for it to be stated, and both
+# alternatives were checked at f5b1743 rather than assumed:
+#
+#   * NOT `engine-autoupdate.yml`. That job watches the patched-FIREFOX engine
+#     and only that: both of its provisioning steps import
+#     `src.services.engine.firefox`, its source of truth is
+#     invisible_playwright's release feed, and its gate is `engine_gate
+#     record`/`compare` on a fingerprint recording. `git grep -i ungoogled` over
+#     it returns zero hits. A DIFFERENT engine, a DIFFERENT source of truth and
+#     a DIFFERENT gate — folding Chromium in would give one job two unrelated
+#     failure modes, so a red run would no longer say WHICH engine is in
+#     trouble, and a Firefox-side failure would suppress the Chromium reading
+#     that ran after it. The Firefox lane's behaviour is untouched by this
+#     workflow.
+#
+#   * NOT `engine-gpu-variance.yml`. That job reads the ALREADY PUBLISHED
+#     Personium release — the bytes `updater.fetch_latest()` hands the operator.
+#     It deliberately measures what users receive. This one looks UPSTREAM, at
+#     something we have not built and nobody has received. Opposite ends of the
+#     pipeline.
+#
+#   * NOT `ci.yml`. A new upstream release is NEWS, not a broken build, and it
+#     has nothing to do with the pull request that happened to trigger CI. This
+#     workflow is on a schedule and a manual dispatch ONLY — it is on no PR or
+#     push trigger, so it can never make an unrelated change look broken.
+#
+# ---------------------------------------------------------------------------
+# WHAT IT DOES NOT DO — DELIBERATELY
+# ---------------------------------------------------------------------------
+# It does NOT auto-bump the target tag, does NOT build, and does NOT publish. A
+# Chromium major brings security fixes and breaks patches in the same move, and
+# weighing those against each other is a human judgement. The deliverable here
+# is a signal with a date on it. Acting on it is a person dispatching
+# `engine-trial-build.yml`, and the filed issue says so in as many words.
+#
+# ---------------------------------------------------------------------------
+# ⛔ THE TRAP THIS WORKFLOW IS BUILT AROUND: EXIT 2 IS NOT GREEN
+# ---------------------------------------------------------------------------
+# `scripts/ps299_rebase_probe.py` has a three-value exit contract:
+#
+#     0 = all 16 apply, zero rejects, zero fuzz
+#     1 = rejects and/or fuzz — a rebase is needed
+#     2 = THE MEASUREMENT COULD NOT BE MADE AT ALL
+#
+# `engine/patches/fingerprint/REBASING.md` warns in its own words that 2 is
+# "**not** 'the patches are fine'. Nothing was measured." A watcher that reads
+# it as a pass is worse than no watcher: it manufactures evidence of continuity.
+# The probe's own history is why — its first version printed
+# "81/81 hunks, 0 rejects, ✅" against an EMPTY DIRECTORY.
+#
+# So the classification lives in ONE tested place — `classify()` in
+# `scripts/ps342_chromium_watch.py`, exercised by
+# `tests/test_ps342_chromium_watch.py` — and this file does no exit-code
+# arithmetic of its own. The self-test step below runs BEFORE any network work
+# and proves the judgement still refuses to call 2 a pass; if that is broken,
+# every downstream answer is meaningless and there is no point spending a clone
+# to produce one.
+
+on:
+  schedule:
+    # Daily 07:20 UTC — after engine-autoupdate (06:00) and engine-gpu-variance
+    # (06:40) so the three do not contend for a runner. Nothing about this job
+    # depends on either of them.
+    - cron: "20 7 * * *"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: >-
+          Measure THIS ungoogled tag instead of discovering the newest one.
+          This is the falsification path: point it at a tag our patches are
+          known NOT to apply to (e.g. 144.0.7559.132-1) and the run must report
+          red — and distinguishably from "could not measure". Leave blank for
+          the normal watch.
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  issues: write      # the report is filed as an issue; that is the only write
+
+concurrency:
+  group: chromium-upstream-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-24.04
+    # The probe is ~1 minute of network plus ~38 file fetches. 60 leaves room
+    # for a slow googlesource without letting a wedged fetch hang for hours —
+    # and a timeout is classified UNMEASURED, never as a pass.
+    timeout-minutes: 60
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: "3.13"
+
+      # INSTALL BEFORE THE SELF-TEST, OR THE SELF-TEST IS THE THING THAT FAILS.
+      #
+      # `actions/setup-python` gives a CLEAN interpreter — no pytest, no PyYAML.
+      # Without this step the "Prove exit 2 is still not a pass" step below dies
+      # on `python -m pytest` under the runner's default `set -e`, aborting the
+      # job before it ever reaches "Watch upstream and measure". That fails RED,
+      # which is correct for a trap, but it means the watcher delivers nothing
+      # every scheduled day while looking like it is reporting something.
+      #
+      # PyYAML is named EXPLICITLY rather than leaned on transitively: the tests
+      # `import yaml` to parse this very workflow, and PyYAML is declared in
+      # neither requirements.txt, requirements-dev.txt nor pyproject.toml. It
+      # reaches other CI jobs only as a transitive dep of `uvicorn[standard]`
+      # via `pip install .`, which this workflow deliberately does not do — the
+      # watcher is stdlib-only by design and should not need the whole product
+      # installed to check itself.
+      - name: Install the self-test's dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt PyYAML
+
+      # PROVE THE JUDGEMENT STILL REFUSES TO CALL "COULD NOT MEASURE" A PASS,
+      # BEFORE TRUSTING ANY VERDICT FROM IT.
+      #
+      # Same reasoning as engine-gpu-variance.yml's "Prove the gate still goes
+      # red", and placed first for the same reason: the live watch below can
+      # only ever demonstrate the outcome upstream happens to produce today, and
+      # an outcome only ever observed passing is not coverage. This needs no
+      # network at all.
+      - name: Prove exit 2 is still not a pass
+        run: python -m pytest tests/test_ps342_chromium_watch.py -q
+
+      - name: Watch upstream and measure
+        id: watch
+        continue-on-error: true       # see "the report is the deliverable" below
+        env:
+          # Only to raise the API rate limit on the tag list. The read is public.
+          GITHUB_TOKEN: ${{ github.token }}
+          # Through the ENVIRONMENT, never interpolated into the command line.
+          # A `${{ inputs.* }}` expanded straight into a `run:` block is
+          # substituted before bash ever sees it, so a dispatch input becomes
+          # shell source text. This is a manually-dispatched job on a
+          # write-capable-ish token, so the cheap habit is the right one.
+          FORCED_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          args=()
+          if [ -n "${FORCED_TAG:-}" ]; then
+            args+=(--tag "$FORCED_TAG")
+          fi
+          python3 scripts/ps342_chromium_watch.py "${args[@]}" \
+            --report-json /tmp/chromium-watch.json \
+            --report-md /tmp/chromium-watch.md \
+            --github-output "$GITHUB_OUTPUT"
+
+      # The reading is the whole evidence base for a rebase decision and it
+      # lives on a runner about to be destroyed. `always()`, because the runs
+      # worth keeping are exactly the ones that did not go green.
+      - name: Keep the reading
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: chromium-upstream-watch
+          path: |
+            /tmp/chromium-watch.json
+            /tmp/chromium-watch.md
+          if-no-files-found: warn
+
+      - name: Put the report in the job summary
+        if: always()
+        run: cat /tmp/chromium-watch.md >> "$GITHUB_STEP_SUMMARY" || true
+
+      # THE REPORT IS THE DELIVERABLE — "in a form a human actually receives".
+      #
+      # A red workflow run is not that. Nobody is subscribed to this repo's
+      # Actions failures, and the ticket's whole complaint is that being behind
+      # was a discovery rather than a notification. So every non-`up_to_date`
+      # outcome is FILED AS AN ISSUE, which notifies watchers, appears in the
+      # issue list, and can be closed by a human as the decision it represents.
+      #
+      # `report` is true for clean, rejects, unmeasured AND discovery_failed —
+      # note that CLEAN files too. A newer tag our patches apply to is exactly
+      # the news this job exists to deliver; suppressing it because it is not a
+      # defect would put us back where we started.
+      #
+      # The title carries tag + status, so re-running does not file the same
+      # news twice, while the same tag moving from `unmeasured` to `clean` DOES
+      # get its own record rather than quietly editing away the fact that we
+      # once could not measure it.
+      - name: File or update the report issue
+        if: steps.watch.outputs.report == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TITLE: ${{ steps.watch.outputs.title }}
+          STATUS: ${{ steps.watch.outputs.status }}
+        run: |
+          set -euo pipefail
+          # Exact-title match, done in jq against the fetched list rather than
+          # by trusting the search index: `gh issue list --search` is fuzzy and
+          # eventually-consistent, so a near-miss there would file a duplicate
+          # every single day. The title is passed in as a jq ARGUMENT (--arg),
+          # so quoting inside it cannot break the filter.
+          existing="$(gh issue list --state open --limit 100 --json number,title \
+            | jq -r --arg t "$TITLE" 'map(select(.title == $t)) | .[0].number // empty')"
+          if [ -n "$existing" ]; then
+            echo "same news already filed as #$existing — commenting rather than duplicating"
+            gh issue comment "$existing" --body-file /tmp/chromium-watch.md
+          else
+            gh issue create --title "$TITLE" --body-file /tmp/chromium-watch.md
+          fi
+
+      # THE JOB'S OWN COLOUR, decided in one place and from the status only.
+      #
+      # `continue-on-error` on the watch step above exists so the report is
+      # always filed and the artifact always uploaded even on a red reading —
+      # not to swallow the verdict. This step re-asserts it, so the run is red
+      # for `rejects`, `unmeasured` and `discovery_failed`, and green only for
+      # `up_to_date` and `clean`.
+      #
+      # ⚠️ UNMEASURED FAILS THIS JOB TOO, exactly as exit 2 fails
+      # engine-gpu-variance.yml. "We failed to look" must never wear the colour
+      # of "we looked and it was fine". Note this job is on NO pull-request or
+      # push trigger, so a red here cannot block anyone's unrelated work.
+      - name: Report the verdict
+        env:
+          STATUS: ${{ steps.watch.outputs.status }}
+          GREEN: ${{ steps.watch.outputs.green }}
+          NEWEST: ${{ steps.watch.outputs.newest_tag }}
+          PROBE_EXIT: ${{ steps.watch.outputs.probe_exit }}
+        run: |
+          echo "status=${STATUS:-<none>} green=${GREEN:-false} newest=${NEWEST:-<none>} probe_exit=${PROBE_EXIT:-<none>}"
+          if [ "${GREEN:-false}" = "true" ]; then
+            echo "chromium upstream watch: ${STATUS}"
+            exit 0
+          fi
+          case "${STATUS:-}" in
+            rejects)
+              echo "::error::Our 16 fingerprint patches DO NOT apply at ${NEWEST}. This is a MEASURED failure (probe exit ${PROBE_EXIT}) — a rebase stands between us and upstream currency. See the filed issue and engine/patches/fingerprint/REBASING.md."
+              ;;
+            unmeasured)
+              echo "::error::NOTHING WAS MEASURED at ${NEWEST} (probe exit ${PROBE_EXIT}). This is NOT a pass and must not be read as continuity — whether our patches apply there is unknown. Re-run scripts/ps299_rebase_probe.py --tag ${NEWEST} by hand and read the log."
+              ;;
+            discovery_failed)
+              echo "::error::Could not retrieve the ungoogled-chromium tag list, so we do not know whether a newer release exists. NOTHING WAS MEASURED."
+              ;;
+            invalid_tag)
+              echo "::error::The tag this run was asked to measure is not an ungoogled tag, so nothing was looked up and NOTHING WAS MEASURED. This is NOT an upstream outage — re-dispatch with the full N.N.N.N-N form (the usual slip is dropping the -1 packaging revision)."
+              ;;
+            baseline_unreadable)
+              echo "::error::engine/patches/fingerprint/CURRENT_TAG.txt could not be read as a tag, so we do not know what our current target is and NOTHING WAS MEASURED. This is NOT an upstream outage and NOT a bad dispatch input — the file is missing or corrupt in the repository. Restore it to the tag on the 'Current target' line of engine/patches/fingerprint/REBASING.md."
+              ;;
+            *)
+              echo "::error::the watch step produced no status at all — treat this as UNMEASURED, never as a pass."
+              ;;
+          esac
+          exit 1

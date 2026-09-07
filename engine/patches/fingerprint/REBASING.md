@@ -35,6 +35,21 @@ There are **three** exit statuses, and the third is the one to read carefully:
 `2` is **not** "the patches are fine". Nothing was measured. Do not let an
 automation treat it as anything other than a hard stop.
 
+**Something now runs this for you.** `.github/workflows/chromium-upstream-watch.yml`
+(PS-342) runs daily at 07:20 UTC: it discovers the newest ungoogled tag, compares
+it to `CURRENT_TAG.txt` in this directory, runs the probe when there is something
+new, and **files an issue** with the verdict. It watches and reports — it does
+not bump, build or publish, because a Chromium major brings security fixes and
+breaks patches in the same move and that trade is a human call. Its
+classification of the three exit statuses lives in one tested place
+(`classify()` in `scripts/ps342_chromium_watch.py`,
+`tests/test_ps342_chromium_watch.py`), and exit `2` is reported as
+**unmeasured** — red, and distinct from the `1` red.
+
+⚠️ **`CURRENT_TAG.txt` and the "Current target" line at the top of this file must
+move together.** A test asserts they agree; if they drift, the watcher measures
+news against a baseline nobody believes we are on.
+
 **Green here is necessary, not sufficient.** A clean textual apply is not a
 compile — see "What this does NOT establish" at the bottom.
 
