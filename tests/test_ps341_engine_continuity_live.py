@@ -487,6 +487,17 @@ def test_the_recorded_position_does_not_overclaim_a_live_theme_reading():
 
     It is deliberately a text assertion rather than a data one: the defect this
     guards against was never in the reading, it was in the sentence about it.
+
+    ⚠️ ITS BOUND, STATED RATHER THAN IMPLIED (and measured, not assumed). This
+    catches the DELETION of the split and the RETURN of the exact rejected
+    sentence. It does NOT catch a NEW overclaim written alongside a surviving
+    split — verified by mutation: appending "(and also confirmed live, all five
+    read from the RUNNING browser)" to the on-disk bullet leaves this **green**.
+    A general "this prose does not overclaim" assertion is not available to a
+    string check, so do not read a pass here as one. What it buys is that the
+    specific regression which already happened once cannot happen silently
+    twice; the rest is a human reading the position. Recorded because a guard
+    whose limits are unstated gets inherited as stronger than it is.
     """
     src = (REPO / "src" / "services" / "browser" / "process.py").read_text(
         encoding="utf-8"
