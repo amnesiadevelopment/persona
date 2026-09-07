@@ -451,6 +451,13 @@ def test_engine_macos_asset_matches_the_updater_rule():
     later doc fix cannot quietly retarget this sweep at an asset that does not
     exist.
     """
-    updater = (REPO_ROOT / "src" / "services" / "engine" / "updater.py").read_text()
+    # NAME THE ENCODING. A bare read_text() decodes with the platform's
+    # preferred encoding — cp1252 on Windows — and updater.py contains
+    # non-ASCII bytes, so this raised UnicodeDecodeError on windows-latest
+    # rather than merely risking one. tests/test_encoding_discipline.py
+    # enforces this project-wide.
+    updater = (REPO_ROOT / "src" / "services" / "engine" / "updater.py").read_text(
+        encoding="utf-8"
+    )
     assert '"-macos-arm64.dmg"' in updater
     assert any(a.endswith("-macos-arm64.dmg") for a in mod.ENGINE_ASSETS)
