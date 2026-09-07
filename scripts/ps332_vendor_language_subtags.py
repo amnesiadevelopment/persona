@@ -46,11 +46,37 @@ declared locale is consumed by the SAME engine argument as a table-derived one,
 so it is held to the same shape — the same reasoning that narrows
 ``DECLARABLE_ZONE_NAMES`` to the ``Region/City`` form.
 
-Records marked ``Deprecated`` are dropped: the registry keeps ``in``, ``iw``,
-``ji``, ``jw``, ``mo`` and ``sh`` forever with a ``Preferred-Value`` pointing
-at their replacement, and accepting a deprecated tag would let an operator
-declare a language a modern engine reports back under a different name — a
-disagreement between what was declared and what the page sees.
+WHAT IS DROPPED: THE SUBTAGS AN ENGINE RENAMES
+----------------------------------------------
+The rule is **"the composed locale canonicalizes to itself"**, and it is not
+the same rule as "the registry does not mark it ``Deprecated``". The first
+version of this script tested the ``Deprecated`` FIELD, and its own docstring
+then described the INTENT — that an engine must not report the declared value
+back under another name. For three subtags those two disagree, and the field
+test admitted all three:
+
+    sh -> sr-Latn   Scope: macrolanguage, no Deprecated field at all
+    tl -> fil       an ordinary live record, no Deprecated field at all
+    tw -> ak        live; and ``tw`` ALONE canonicalizes to ``tw``
+
+``tw`` is why the property has to be measured on the **composed** value rather
+than on the bare subtag: ``Intl.getCanonicalLocales(['tw'])`` answers ``tw``,
+while ``tw-NG`` answers ``ak-NG``. This product never ships a bare subtag —
+``declared_locale`` composes ``<lang>-<COUNTRY>`` and hands THAT to the engine
+— so a bare-form check would have passed ``tw`` and shipped the rename anyway.
+
+The renames are CLDR/ICU alias facts, not IANA fields: no single registry field
+predicts the nine. ``Macrolanguage`` is present on ``bs hr id nb nn sr`` which
+are all fine, and absent from ``sh`` and ``tl``; ``Scope`` and ``Comments``
+likewise cut across the set. So the exclusions are read from CLDR's own
+``supplementalMetadata.xml`` ``<languageAlias>`` table — the data ICU
+implements — and vendored as a literal below with the measurement that produced
+it, rather than inferred from a proxy field that does not carry the fact.
+
+Measured with node 24 / ICU 78.2 over the full cross-product of 190 two-letter
+language subtags x 261 live region subtags (49,590 pairs): exactly nine
+languages are renamed, each on 261/261 regions, and no rename is
+region-dependent. ``DEPRECATED`` (6) is a strict subset of ``RENAMED`` (9).
 """
 
 from __future__ import annotations
@@ -58,6 +84,39 @@ from __future__ import annotations
 import hashlib
 import pathlib
 import sys
+
+#: Two-letter language subtags a BCP 47 implementation RENAMES — the exclusion
+#: set, and the reason it is a literal rather than a registry-field test.
+#:
+#: These are CLDR ``<languageAlias>`` entries (``common/supplemental/
+#: supplementalMetadata.xml``), which is the data ICU implements and therefore
+#: what a browser engine actually does to the value we hand it. NO IANA field
+#: predicts this set: ``Deprecated`` covers only six of the nine, and
+#: ``Macrolanguage`` / ``Scope`` / ``Comments`` each cut across it (``nb``,
+#: ``sr``, ``bs``, ``hr`` carry those fields and are perfectly canonical).
+#:
+#: Each entry was MEASURED on the COMPOSED form the product actually ships,
+#: ``<lang>-<COUNTRY>``, over 190 x 261 = 49,590 language/region pairs with
+#: node 24 / ICU 78.2. All nine are renamed on 261/261 regions; none is
+#: region-dependent. ``tw`` is the one that proves the composed form is the
+#: right unit: ``tw`` alone canonicalizes to ``tw``, but ``tw-NG`` -> ``ak-NG``.
+#:
+#: CLDR also aliases ``nb`` -> ``no`` and ``sr`` -> ``sh``, and both are
+#: DELIBERATELY absent here: ICU does not apply those directions (``nb-NO`` and
+#: ``sr-RS`` canonicalize to themselves, measured), and both are LIVE values in
+#: the shipped ``_COUNTRY_LOCALE`` table -- excluding them would make a locale
+#: the product itself ships undeclarable.
+RENAMED_BY_ENGINES = {
+    "bh": "bho",      # macrolanguage; also Deprecated
+    "in": "id",       # Deprecated 1989
+    "iw": "he",       # Deprecated 1989
+    "ji": "yi",       # Deprecated 1989
+    "jw": "jv",       # Deprecated 2001
+    "mo": "ro",       # Deprecated 2008
+    "sh": "sr-Latn",  # legacy alias; NO Deprecated field in the registry
+    "tl": "fil",      # legacy alias; NO Deprecated field in the registry
+    "tw": "ak",       # macrolanguage; renamed only in the COMPOSED form
+}
 
 HEADER = '''"""Legal BCP 47 language subtags, VENDORED — the oracle the operator's declared
 exit language is validated against.
@@ -104,15 +163,41 @@ LANGUAGE_SUBTAGS_SHA256 = "{sha}"
 _SUBTAGS_TEXT = """\\
 {body}"""
 
+#: Two-letter language subtags a BCP 47 engine RENAMES, mapped to what it
+#: answers instead. THE EXCLUSION SET: none of these is declarable, and the
+#: test suite asserts that as a property rather than by name.
+#:
+#: WHY THIS IS DATA AND NOT A REGISTRY-FIELD TEST. The rule wanted is "the
+#: composed locale canonicalizes to itself"; the first version of this module
+#: implemented "the registry does not mark it ``Deprecated``" while its prose
+#: described the first rule. Those two disagree on ``sh``, ``tl`` and ``tw``,
+#: and the field test admitted all three — the module SAID ``sh`` was excluded
+#: and it was not. No IANA field predicts this set: ``Deprecated`` covers six
+#: of the nine, and ``Macrolanguage`` / ``Scope`` / ``Comments`` each cut
+#: across it (``nb``, ``sr``, ``bs``, ``hr`` carry those fields and are
+#: perfectly canonical). The renames are CLDR ``<languageAlias>`` facts — the
+#: data ICU implements — so they are vendored as data, with the measurement.
+#:
+#: MEASURED ON THE COMPOSED FORM, which is the only form this product ships:
+#: ``declared_locale`` composes ``<lang>-<COUNTRY>`` and hands THAT to the
+#: engine. 190 two-letter languages x 261 live regions = 49,590 pairs, node 24
+#: / ICU 78.2. All nine are renamed on 261/261 regions; none is
+#: region-dependent. ``tw`` is why the bare subtag is the wrong unit:
+#: ``getCanonicalLocales(['tw'])`` answers ``tw``, but ``tw-NG`` answers
+#: ``ak-NG`` — a bare-form check passes ``tw`` and ships the rename anyway.
+ENGINE_RENAMED_SUBTAGS: dict[str, str] = {{
+{renamed}}}
+
 #: The language subtags an operator may DECLARE for a proxy exit.
 #:
 #: TWO-LETTER (ISO 639-1) ONLY, and the narrowing is the shipped rule rather
 #: than a new one: every value in ``_COUNTRY_LOCALE`` (``launch_policy.py``,
 #: 241 rows) uses a two-letter language subtag, and a declared language is
-#: consumed by the same engine argument as a table-derived one. Deprecated
-#: registry entries (``in``, ``iw``, ``ji``, ``jw``, ``mo``, ``sh``) are
-#: excluded: a modern engine reports their replacements back, so accepting one
-#: would let the declared value and the observed value disagree.
+#: consumed by the same engine argument as a table-derived one. Every subtag
+#: in ``ENGINE_RENAMED_SUBTAGS`` above is excluded: an engine reports its
+#: replacement back, so accepting one would let the declared value and the
+#: observed value disagree — ``sh-NG`` is shipped as ``--lang=sh-NG`` and the
+#: page reads ``sr-Latn``, which is exactly the tell PS-2 exists to close.
 DECLARABLE_LANGUAGE_SUBTAGS: frozenset[str] = frozenset(_SUBTAGS_TEXT.split())
 
 
@@ -126,6 +211,15 @@ def is_declarable_language(subtag: str) -> bool:
     as fact. A plausible-looking non-language is simply absent from the set, so
     it needs no rule of its own. Case is normalised because BCP 47 subtags are
     case-insensitive and conventionally lowercase; nothing else is.
+
+    FALSE for a REAL language an engine renames (``sh``, ``tl``, ``tw`` and the
+    six deprecated tags — see ``ENGINE_RENAMED_SUBTAGS``). That is not the set
+    being wrong about what a language is: ``sh`` IS Serbo-Croatian. It is the
+    set answering the question this product actually asks, which is "may an
+    operator declare this as the exit's language", and the answer is no for a
+    value the engine will report back under another name. The operator-facing
+    remedy is to declare the replacement (``sr`` for ``sh``) — a value that
+    survives the round trip.
     """
     return (subtag or "").strip().lower() in DECLARABLE_LANGUAGE_SUBTAGS
 '''
@@ -166,17 +260,30 @@ def main(argv: list[str]) -> int:
         if record.get("Type", [None])[0] != "language":
             continue
         subtag = record["Subtag"][0]
-        if len(subtag) != 2 or "Deprecated" in record:
+        if len(subtag) != 2:
+            continue
+        # THE RULE IS "the composed locale canonicalizes to itself", not "the
+        # registry does not mark it Deprecated". Those two disagree on sh, tl
+        # and tw, and the field test admits all three. See RENAMED_BY_ENGINES.
+        if subtag in RENAMED_BY_ENGINES:
             continue
         subtags.append(subtag)
     body = "\n".join(subtags) + "\n"
     sha = hashlib.sha256(body.encode()).hexdigest()
+    renamed = "".join(
+        f'    "{tag}": "{replacement}",\n'
+        for tag, replacement in sorted(RENAMED_BY_ENGINES.items())
+    )
     out = pathlib.Path(__file__).resolve().parents[1] / (
         "src/services/proxy/language_names.py"
     )
     out.write_text(
         HEADER.format(
-            file_date=file_date, sha=sha, count=len(subtags), body=body
+            file_date=file_date,
+            sha=sha,
+            count=len(subtags),
+            body=body,
+            renamed=renamed,
         ),
         encoding="utf-8",
     )

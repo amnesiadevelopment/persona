@@ -37,9 +37,9 @@ REGISTRY_FILE_DATE = "2026-08-08"
 
 #: sha256 of the newline-separated subtag text below, so a refresh can be shown
 #: to be a faithful copy of what the script produced rather than a hand edit.
-LANGUAGE_SUBTAGS_SHA256 = "27b03451de5eb8b570917d385cdfc6b70ea0e32cf316a74e235ab4de24b0e0ef"
+LANGUAGE_SUBTAGS_SHA256 = "8a01516698cc6d306d3198369249525019746e6d20778f4676bb5c94620298ff"
 
-#: 184 newline-separated ISO 639-1 subtags, registry order.
+#: 181 newline-separated ISO 639-1 subtags, registry order.
 _SUBTAGS_TEXT = """\
 aa
 ab
@@ -182,7 +182,6 @@ sc
 sd
 se
 sg
-sh
 si
 sk
 sl
@@ -202,13 +201,11 @@ tg
 th
 ti
 tk
-tl
 tn
 to
 tr
 ts
 tt
-tw
 ty
 ug
 uk
@@ -227,15 +224,50 @@ zh
 zu
 """
 
+#: Two-letter language subtags a BCP 47 engine RENAMES, mapped to what it
+#: answers instead. THE EXCLUSION SET: none of these is declarable, and the
+#: test suite asserts that as a property rather than by name.
+#:
+#: WHY THIS IS DATA AND NOT A REGISTRY-FIELD TEST. The rule wanted is "the
+#: composed locale canonicalizes to itself"; the first version of this module
+#: implemented "the registry does not mark it ``Deprecated``" while its prose
+#: described the first rule. Those two disagree on ``sh``, ``tl`` and ``tw``,
+#: and the field test admitted all three — the module SAID ``sh`` was excluded
+#: and it was not. No IANA field predicts this set: ``Deprecated`` covers six
+#: of the nine, and ``Macrolanguage`` / ``Scope`` / ``Comments`` each cut
+#: across it (``nb``, ``sr``, ``bs``, ``hr`` carry those fields and are
+#: perfectly canonical). The renames are CLDR ``<languageAlias>`` facts — the
+#: data ICU implements — so they are vendored as data, with the measurement.
+#:
+#: MEASURED ON THE COMPOSED FORM, which is the only form this product ships:
+#: ``declared_locale`` composes ``<lang>-<COUNTRY>`` and hands THAT to the
+#: engine. 190 two-letter languages x 261 live regions = 49,590 pairs, node 24
+#: / ICU 78.2. All nine are renamed on 261/261 regions; none is
+#: region-dependent. ``tw`` is why the bare subtag is the wrong unit:
+#: ``getCanonicalLocales(['tw'])`` answers ``tw``, but ``tw-NG`` answers
+#: ``ak-NG`` — a bare-form check passes ``tw`` and ships the rename anyway.
+ENGINE_RENAMED_SUBTAGS: dict[str, str] = {
+    "bh": "bho",
+    "in": "id",
+    "iw": "he",
+    "ji": "yi",
+    "jw": "jv",
+    "mo": "ro",
+    "sh": "sr-Latn",
+    "tl": "fil",
+    "tw": "ak",
+}
+
 #: The language subtags an operator may DECLARE for a proxy exit.
 #:
 #: TWO-LETTER (ISO 639-1) ONLY, and the narrowing is the shipped rule rather
 #: than a new one: every value in ``_COUNTRY_LOCALE`` (``launch_policy.py``,
 #: 241 rows) uses a two-letter language subtag, and a declared language is
-#: consumed by the same engine argument as a table-derived one. Deprecated
-#: registry entries (``in``, ``iw``, ``ji``, ``jw``, ``mo``, ``sh``) are
-#: excluded: a modern engine reports their replacements back, so accepting one
-#: would let the declared value and the observed value disagree.
+#: consumed by the same engine argument as a table-derived one. Every subtag
+#: in ``ENGINE_RENAMED_SUBTAGS`` above is excluded: an engine reports its
+#: replacement back, so accepting one would let the declared value and the
+#: observed value disagree — ``sh-NG`` is shipped as ``--lang=sh-NG`` and the
+#: page reads ``sr-Latn``, which is exactly the tell PS-2 exists to close.
 DECLARABLE_LANGUAGE_SUBTAGS: frozenset[str] = frozenset(_SUBTAGS_TEXT.split())
 
 
@@ -249,5 +281,14 @@ def is_declarable_language(subtag: str) -> bool:
     as fact. A plausible-looking non-language is simply absent from the set, so
     it needs no rule of its own. Case is normalised because BCP 47 subtags are
     case-insensitive and conventionally lowercase; nothing else is.
+
+    FALSE for a REAL language an engine renames (``sh``, ``tl``, ``tw`` and the
+    six deprecated tags — see ``ENGINE_RENAMED_SUBTAGS``). That is not the set
+    being wrong about what a language is: ``sh`` IS Serbo-Croatian. It is the
+    set answering the question this product actually asks, which is "may an
+    operator declare this as the exit's language", and the answer is no for a
+    value the engine will report back under another name. The operator-facing
+    remedy is to declare the replacement (``sr`` for ``sh``) — a value that
+    survives the round trip.
     """
     return (subtag or "").strip().lower() in DECLARABLE_LANGUAGE_SUBTAGS

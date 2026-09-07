@@ -7,7 +7,10 @@ from ...core.strings import get_string
 from ...interfaces.protocols import IProxyService
 from ...models.proxy import Proxy
 from ...services.browser.launch_policy import declared_locale, declared_timezone
-from ...services.proxy.language_names import is_declarable_language
+from ...services.proxy.language_names import (
+    ENGINE_RENAMED_SUBTAGS,
+    is_declarable_language,
+)
 from ...services.proxy.tz_names import is_declarable_zone
 from ...utils.proxy_parse import parse_proxy_line
 from ...utils.proxy_parser import build_proxy_url, split_proxy_url
@@ -382,6 +385,32 @@ def open_proxy_dialog(
             declared_locale(proxy).split("-")[0] if proxy is not None else ""
         )
         declaring_locale = language != locale_prefilled
+        if declaring_locale and language and language in ENGINE_RENAMED_SUBTAGS:
+            # A REAL language a browser renames (sh -> sr-Latn, tl -> fil,
+            # tw -> ak). Refused for a different reason than a non-language, so
+            # it must not be told it is not a language code — that sentence is
+            # FALSE and leaves the operator no move. Mirrors the store's arm;
+            # the two must not disagree, which is why both read the same
+            # vendored table.
+            answer = ENGINE_RENAMED_SUBTAGS[language]
+            remedy = answer.split("-")[0]
+            # ⛔ ONLY NAME A REMEDY THAT WORKS — bh -> bho and tl -> fil are
+            # three-letter and this field takes two. Naming one would send the
+            # operator back through the same door to be refused again.
+            locale_error.value = (
+                f"'{language}' is a real language code, but a browser reports "
+                f"it back as '{answer}', so the declared language would "
+                "disagree with what a page sees. "
+                + (
+                    f"Use '{remedy}' instead."
+                    if is_declarable_language(remedy)
+                    else f"'{answer}' is not a two-letter subtag this field "
+                    "takes — use the closest two-letter language of the exit."
+                )
+            )
+            locale_error.visible = True
+            page.update()
+            return
         if declaring_locale and language and not is_declarable_language(language):
             locale_error.value = (
                 f"'{language}' is not a language code. Use a two-letter "

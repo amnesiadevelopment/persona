@@ -11,7 +11,7 @@ from ...utils.atomic import atomic_write_json
 from ...utils.proxy_parser import parse_proxy_server
 from ...utils.store_guard import StoreGuardMixin
 from ...utils.trashable import TrashableMixin, restore_kwargs
-from .language_names import is_declarable_language
+from .language_names import ENGINE_RENAMED_SUBTAGS, is_declarable_language
 from .tz_names import is_declarable_zone
 
 logger = get_logger("proxy.store")
@@ -706,6 +706,42 @@ class ProxyStore(StoreGuardMixin, TrashableMixin):
                     "FOR a country, so it is not re-used automatically: clear "
                     "the field and save, then enter the language for the "
                     "current exit."
+                )
+            if language in ENGINE_RENAMED_SUBTAGS:
+                # A REAL language, refused for a different reason than a
+                # non-language — so it gets a different sentence. A browser
+                # renames these (sh -> sr-Latn, tl -> fil, tw -> ak), so
+                # declaring one would ship a value the page then reads back
+                # under another name: the declared-vs-observed disagreement
+                # PS-2 exists to close. Telling the operator 'sh is not a
+                # language code' would be false and would leave them with no
+                # move.
+                answer = ENGINE_RENAMED_SUBTAGS[language]
+                remedy = answer.split("-")[0]
+                # ⚠️ ONLY NAME A REMEDY THAT WORKS. Three of the nine rename to
+                # something this door cannot accept — bh -> bho and tl -> fil
+                # are THREE-letter subtags, and the declarable set is
+                # two-letter only. Naming them would be the "remedy that loops"
+                # this whole ticket exists to end, rebuilt one gate further
+                # along: the operator types what the message told them to and
+                # is refused again. Where the replacement is not declarable the
+                # sentence states the fact and stops, rather than inventing a
+                # gesture.
+                if is_declarable_language(remedy):
+                    return False, (
+                        f"{language!r} is a real language code, but a browser "
+                        f"reports it back as {answer!r} — so declaring it "
+                        "would make the exit's declared language disagree "
+                        "with what a page actually sees. Declare "
+                        f"{remedy!r} instead."
+                    )
+                return False, (
+                    f"{language!r} is a real language code, but a browser "
+                    f"reports it back as {answer!r} — so declaring it would "
+                    "make the exit's declared language disagree with what a "
+                    f"page actually sees, and {answer!r} is not a two-letter "
+                    "subtag this field accepts. Declare the closest "
+                    "two-letter language of the exit instead."
                 )
             if not is_declarable_language(language):
                 return False, (
