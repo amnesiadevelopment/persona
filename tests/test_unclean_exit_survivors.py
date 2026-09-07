@@ -126,6 +126,35 @@ def _kill_hard(pid: int | None) -> None:
         pass
 
 
+def _pid_alive(pid: int) -> bool:
+    """Is ``pid`` still a live process? PORTABLE — not ``/proc``.
+
+    ⛔ ``os.path.exists(f"/proc/{pid}")`` IS LINUX-ONLY, and it fails in the
+    WORST direction on a platform without procfs: macOS has no ``/proc`` at
+    all, so it answers False for a process that is very much alive, and a
+    PRECONDITION asserting the engine outlived the persona then fails on a
+    healthy tree. That is what reddened `tests (macos-latest, main)`.
+
+    ``os.kill(pid, 0)`` is the POSIX way to ask, and it is what the product's
+    own liveness (`psutil`) reduces to: signal 0 performs the permission and
+    existence checks and delivers nothing. `ProcessLookupError` is the only
+    answer that means GONE — `PermissionError` means the pid exists and is
+    someone else's, which is still alive for our purposes.
+
+    ⚠️ A ZOMBIE READS ALIVE under both this and the /proc test, which is why
+    every caller here reaps its own children (`_await_exit` waitpid's first).
+    """
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
 def _await_exit(pid: int, timeout: float = 10.0) -> None:
     """Reap ``pid`` and wait until the OS agrees it is gone.
 
@@ -141,7 +170,7 @@ def _await_exit(pid: int, timeout: float = 10.0) -> None:
         pass
     deadline = time.time() + timeout
     while time.time() < deadline:
-        if not os.path.exists(f"/proc/{pid}"):
+        if not _pid_alive(pid):
             return
         try:
             os.kill(pid, 0)
@@ -310,7 +339,7 @@ def test_a_browser_that_outlived_a_killed_persona_is_reported_as_running(
     pids = _launch_persona(reaper, registry_path, "alpha")
     _crash(pids["persona_pid"])
 
-    assert os.path.exists(f"/proc/{pids['engine_pid']}"), (
+    assert _pid_alive(pids["engine_pid"]), (
         "precondition: the engine must have OUTLIVED the persona, or this test "
         "is measuring nothing"
     )
@@ -408,9 +437,9 @@ def test_a_record_whose_engine_also_died_resolves_to_gone(tmp_path, reaper):
     # on.
     _kill_hard(pids["engine_pid"])
     deadline = time.time() + 10
-    while time.time() < deadline and os.path.exists(f"/proc/{pids['engine_pid']}"):
+    while time.time() < deadline and _pid_alive(pids["engine_pid"]):
         time.sleep(0.05)
-    assert not os.path.exists(f"/proc/{pids['engine_pid']}"), (
+    assert not _pid_alive(pids["engine_pid"]), (
         "precondition: the engine must really be gone"
     )
 
