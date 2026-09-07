@@ -67,6 +67,82 @@ def cores_memory_for_generation(generation: int) -> list[tuple[int, int]]:
     return [e.pair for e in visible_entries(CORES_MEMORY, generation)]
 
 
+#: The salt the emitted page script uses when it picks from the cores/RAM pool
+#: (``pick(HCMEM, 0xc0de5)``). Named here so the Python resolver below and the
+#: JS cannot drift to two different constants.
+CORES_MEMORY_SALT = 0xC0DE5
+
+
+def _h32(seed: int, salt: int) -> int:
+    """The emitted script's ``h32``, in Python.
+
+    A LINE-FOR-LINE port of the JS at the top of ``_CONTENT_SCRIPT``::
+
+        var h = SEED ^ (x | 0);
+        h = Math.imul(h ^ (h >>> 16), 0x85ebca6b);
+        h = Math.imul(h ^ (h >>> 13), 0xc2b2ae35);
+        return (h ^ (h >>> 16)) >>> 0;
+
+    ``Math.imul`` is 32-bit-truncating signed multiply and ``>>>`` is a LOGICAL
+    shift, so every step masks to 32 bits — a Python ``*`` or ``>>`` without the
+    mask silently diverges on large seeds, which is the whole reason this is
+    written out rather than approximated.
+
+    ⚠️ THIS IS A SECOND IMPLEMENTATION OF A RULE THAT ALREADY EXISTS IN JS, and
+    that is a drift hazard by construction. It is justified only because the
+    ENGINE needs the answer before any JS runs (see
+    :func:`hardware_concurrency_for`). ``test_ps354_service_worker_cores.py``
+    pins the two against each other by executing the REAL emitted script in
+    node and comparing, over many seeds and every generation — so a change to
+    either side fails rather than producing two quietly different profiles.
+    """
+    h = (seed ^ (salt & 0xFFFFFFFF)) & 0xFFFFFFFF
+    h = ((h ^ (h >> 16)) * 0x85EBCA6B) & 0xFFFFFFFF
+    h = ((h ^ (h >> 13)) * 0xC2B2AE35) & 0xFFFFFFFF
+    return (h ^ (h >> 16)) & 0xFFFFFFFF
+
+
+def cores_memory_pick(seed: int, generation: int) -> tuple[int, int]:
+    """The (cores, GB-RAM) pair THIS profile resolves to — the page realm's own
+    pick, computed in Python.
+
+    ⛔ THE POOL IS GENERATION-FILTERED AND THE DIVISOR IS THE FILTERED LENGTH.
+    Taking ``CORES_MEMORY`` whole, or its first entry, is the original defect
+    this module's comments describe: it re-indexes existing profiles onto a
+    different machine the moment anyone appends to the pool.
+    """
+    pool = cores_memory_for_generation(generation)
+    return pool[_h32(int(seed) & 0xFFFFFFFF, CORES_MEMORY_SALT) % len(pool)]
+
+
+def hardware_concurrency_for(seed: int, generation: int) -> int:
+    """The value to pass the ENGINE as ``--fingerprint-hardware-concurrency``.
+
+    WHY THE ENGINE NEEDS TO BE TOLD AT ALL (PS-354). ``applyHwPatch`` carries
+    ``hardwareConcurrency`` into Web and Shared Workers, but a
+    ``ServiceWorkerGlobalScope`` is reached by NEITHER of persona's identity
+    authors: it is never CONSTRUCTED by the page, so there is no constructor for
+    ``worker_wrap``'s chaining to intercept, and an MV3 content script does not
+    run there. The realm therefore fell through to the engine's own seed
+    fallback, or on arms the engine does not spoof, to the HOST. PS-189
+    measured that directly — a linux service worker reported the host's
+    SwiftShader while ELEVEN sibling realms in the same launch reported the
+    profile's card.
+
+    The engine flag authors the value before any of our code runs, so it covers
+    every realm INCLUDING the service worker natively — no wrapper, no
+    descriptor, no residue in a realm we otherwise never touch.
+
+    ⛔ THE VALUE MUST EQUAL THE PAGE REALM'S PICK, BY CONSTRUCTION. Passing
+    anything else — a constant, the pool's first entry, the host's real count —
+    does not fix the defect: it REPLACES a page/worker mismatch with a
+    page/engine mismatch, which is the same tell in a different place. Hence
+    this reads the identical pool through the identical hash with the identical
+    salt, rather than restating a number that happens to match today.
+    """
+    return cores_memory_pick(seed, generation)[0]
+
+
 @dataclass(frozen=True)
 class ScreenResolutionEntry:
     """One logical (CSS-px) screen resolution for the emitted ``ALL_RES`` pool,

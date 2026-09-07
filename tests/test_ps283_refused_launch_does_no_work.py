@@ -123,6 +123,16 @@ def launch_env(monkeypatch, tmp_path):
     data.mkdir()
     monkeypatch.setattr(process, "DATA_DIR", str(data))
     monkeypatch.setattr(process, "BookmarkStore", _Bookmarks)
+    # PS-356: this suite is about launch-ordering residue, and a Chromium launch
+    # resolves the installed engine version to decide whether to pass
+    # --fingerprint-brand-version. This container has no engine installed, so the
+    # version is stubbed READABLE here to keep the happy path a happy path — an
+    # unstubbed launch would still succeed (the desktop arm SKIPS the flag rather
+    # than refusing) but would produce a different argv than _PRISTINE_ARGV pins.
+    monkeypatch.setattr(
+        process, "installed_chromium_version",
+        lambda: process.ChromiumVersion(full="152.0.7977.75"),
+    )
 
     # The desktop entry is Linux-gated in the product; force it ON so the host
     # artifact is actually reachable on every CI platform. Without this the
@@ -402,6 +412,21 @@ def _normalise(argv, profile_dir, data_dir):
 #: with the same four platform seams pinned that ``Env.pin_platform`` pins; all
 #: three came back byte-identical to the post-hoist tree, which is the AC4
 #: measurement itself.
+#:
+#: ⭐ AMENDED ONCE, DELIBERATELY, BY PS-354 — and the amendment is recorded here
+#: because a pinned-argv ratchet edited without a reason is how the reason gets
+#: lost. ``--fingerprint-hardware-concurrency=<n>`` was ADDED to all three arms.
+#: It is a real, intended change to what is launched: it gives the
+#: ServiceWorker realm its only author (that realm is reached by neither of
+#: persona's JS identity authors, so it previously fell through to the engine's
+#: seed default or to the HOST — PS-189 measured the leak directly).
+#:
+#: ⚠️ THE VALUE 8 HERE IS THIS FIXTURE PROFILE'S OWN PICK, NOT A CONSTANT THE
+#: PRODUCT EMITS. It is the generation-filtered ``CORES_MEMORY`` entry this
+#: seed resolves to; other profiles legitimately launch with 4, 6, 12 or 16.
+#: So do NOT read this line as "persona always passes 8" and do not copy it as
+#: an expected value anywhere else — ``test_ps354_service_worker_cores.py``
+#: pins the resolver against the real emitted ``device.js`` for many seeds.
 _PRISTINE_ARGV = {
     "linux": [
         "<ENGINE>",
@@ -410,6 +435,8 @@ _PRISTINE_ARGV = {
         "--fingerprint=<SEED>",
         "--fingerprint-platform=windows",
         "--fingerprint-brand=Chrome",
+        "--fingerprint-brand-version=152.0.7977.75",
+        "--fingerprint-hardware-concurrency=8",
         "--lang=de-DE",
         "--accept-lang=de-DE,de",
         (
@@ -459,6 +486,8 @@ _PRISTINE_ARGV = {
         "--fingerprint=<SEED>",
         "--fingerprint-platform=windows",
         "--fingerprint-brand=Chrome",
+        "--fingerprint-brand-version=152.0.7977.75",
+        "--fingerprint-hardware-concurrency=8",
         "--lang=de-DE",
         "--accept-lang=de-DE,de",
         (
@@ -496,6 +525,8 @@ _PRISTINE_ARGV = {
         "--fingerprint=<SEED>",
         "--fingerprint-platform=windows",
         "--fingerprint-brand=Chrome",
+        "--fingerprint-brand-version=152.0.7977.75",
+        "--fingerprint-hardware-concurrency=8",
         "--lang=de-DE",
         "--accept-lang=de-DE,de",
         (
@@ -769,3 +800,86 @@ def test_the_extension_builders_really_do_write_when_a_launch_proceeds(
     )
     assert os.path.isdir(launch_env.data_dir / "writes")
     assert isinstance(launch_env.apps_dir, pathlib.Path)
+
+
+# ---------------------------------------------------------------------------
+# PS-356 — the engine-version gate's POSITION, pinned even though it no longer
+#          refuses
+# ---------------------------------------------------------------------------
+#
+# The reviewer of PR #287 asked for the engine-version cause to be added to
+# REFUSALS, so the new gate would carry the same residue coverage as the three
+# geo causes. That request was correct when it was made and is no longer
+# satisfiable as written: the owner subsequently ruled that the DESKTOP arm
+# SKIPS rather than refuses, so there is no fourth refusal to parametrize.
+#
+# ⛔ Adding one anyway would mean asserting a behaviour the product deliberately
+# does not have — a test that measures a fabricated case is worse than no test.
+#
+# So the property is pinned where it is still real. The residue defect was never
+# about the exception; it was about a gate being asked AFTER the writers. That
+# ordering is still a live risk here, because the gate reads the engine record
+# and someone could move the read down beside the flag that consumes it — which
+# is exactly what the first draft of PS-356 did. And if the policy is ever
+# reversed BACK to fail-closed, the gate is already in the position that keeps
+# PS-283's invariant, rather than leaving a trap that fires on the policy change.
+
+
+def test_the_engine_version_gate_is_asked_before_any_launch_work():
+    """STRUCTURAL, because there is no exception left to observe.
+
+    `_chromium_brand_version` must be resolved with the other three gates —
+    before the profile dir is seeded, before the host desktop entry is written
+    and before the mTLS terminator is entered. Asserted on source ORDER rather
+    than on residue, since a skip produces no refusal to measure.
+    """
+    import inspect
+
+    src = inspect.getsource(process.spawn_browser)
+    gate = src.index("_chromium_brand_version(profile)")
+
+    # it sits with its three fail-closed siblings...
+    assert src.index("_profile_locale(profile, proxy)") < gate, (
+        "the engine-version gate must be resolved beside the geo gates"
+    )
+    # ...and ahead of every writer PS-283 was about
+    for writer in (
+        "seed_profile_prefs(",
+        "seed_bookmarks(",
+        "write_window_entry(",
+        "_cert_session_for(",
+    ):
+        assert gate < src.index(writer), (
+            f"the engine-version gate is resolved AFTER {writer} — PS-283's "
+            "defect on a new cause. It reads the engine record, which is "
+            "launch-independent work, and if this gate is ever made fail-closed "
+            "again a refusal here would leave profile files, a host desktop "
+            "entry and a started mTLS terminator behind."
+        )
+
+
+def test_an_unreadable_engine_version_still_completes_the_launch(launch_env):
+    """The counterpart to the residue tests: this cause does NOT refuse, so it
+    must produce a COMPLETE launch, not a half-built one.
+
+    A gate that silently degraded into a partial launch would be the residue
+    defect wearing the opposite mask — nothing raised, but a profile built by a
+    path that gave up half way.
+    """
+    launch_env.use(_proxy(**_GOOD))
+    import unittest.mock as _mock
+    from src.services.browser.engine_version import EngineVersionUnreadableError
+
+    with _mock.patch.object(
+        process, "installed_chromium_version",
+        _mock.Mock(side_effect=EngineVersionUnreadableError("version.txt absent")),
+    ):
+        proc = process.spawn_browser(Profile(name="skipped", proxy="p1"))
+
+    assert proc is not None, "the desktop arm must LAUNCH, not refuse"
+    files = launch_env.profile_files("skipped")
+    ext_dirs = {f.split("/")[0] for f in files if f.startswith(".persona-")}
+    assert len(ext_dirs) >= 10, (
+        "an unreadable engine version must produce a COMPLETE profile — a "
+        f"half-built one is the residue defect without the exception: {sorted(ext_dirs)}"
+    )

@@ -243,20 +243,47 @@ def passed_checks(output: str) -> "set[str]":
     return set(PASS_RE.findall(output))
 
 
-def adjudicate(rc: int, output: str) -> "tuple[int, str | None]":
+def adjudicate(
+    rc: int, output: str, expected: "tuple[str, ...]" = EXPECTED_CHECKS
+) -> "tuple[int, str | None]":
     """Return the code this gate exits with, and why if it differs from ``rc``.
 
     Kept a pure function of the child's code and its output so the corroboration
     rules can be driven directly in tests, rather than only through the shapes a
     subprocess happens to make reachable.
+
+    ``expected`` DEFAULTS to this lane's own floor, so every existing caller and
+    every existing test is unaffected. It is a parameter rather than a hard
+    read of the module global because the LAUNCH lane
+    (``run_launch_behaviour_checks.py``, PS-336) needs the same corroboration
+    over a DIFFERENT floor, and the alternative — a second copy of these rules —
+    is the shape that lets two gates drift into two different definitions of
+    "a 0 was earned". One owner, two floors.
+
+    ⚠️ ``expected`` MUST NOT BE EMPTY, and that is checked rather than trusted:
+    an empty floor makes ``missing`` empty for EVERY report, so the rule below
+    would honour a 0 over a lane that certified nothing — which is PS-315's
+    own hole re-created inside the rule written to close it. An empty floor is
+    a defect in the CALLER, so it lands on 2 like every other thing this script
+    cannot corroborate.
     """
+    if not expected:
+        return 2, _DOWNGRADE.format(
+            claimed=f"exit {rc}",
+            why=(
+                "this gate was given an EMPTY expected-check floor, so it has "
+                "nothing to corroborate a verdict against. A floor of no names "
+                "is satisfied by a report certifying nothing"
+            ),
+        )
+
     if rc == 2:
         # Already "nothing was certified". There is nothing to corroborate and
         # nowhere safer to move it.
         return 2, None
 
     if rc == 0:
-        missing = [name for name in EXPECTED_CHECKS if name not in passed_checks(output)]
+        missing = [name for name in expected if name not in passed_checks(output)]
         if missing:
             counts = summary(output)
             observed = (

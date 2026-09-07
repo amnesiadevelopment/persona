@@ -377,31 +377,86 @@ def test_an_android_launch_refuses_rather_than_advertising_a_guessed_version(
 
 
 def test_a_desktop_profile_passes_no_user_agent_at_all(monkeypatch, tmp_path):
-    """Desktop profiles inherit whatever the engine reports and were ALREADY
-    version-independent. This change must not introduce a coupling that did not
-    exist — including a --user-agent that was never passed before."""
+    """Desktop profiles inherit whatever the engine reports in the UA and were
+    ALREADY version-independent THERE. This change must not introduce a
+    coupling that did not exist — including a --user-agent that was never
+    passed before.
+
+    ⚠️ Scope note (PS-356): this remains true of the USER AGENT and is NOT true
+    of Client Hints. See the test below.
+    """
     args = _spawn(monkeypatch, tmp_path, Profile(name="deskt", os_type="windows"))
     assert _ua_arg(args) is None
     assert not any("user-agent" in a.lower() for a in args)
 
 
-def test_a_desktop_profile_launches_even_when_the_engine_version_is_unreadable(
+def test_a_desktop_profile_skips_the_flag_when_the_engine_version_is_unreadable(
     monkeypatch, tmp_path
 ):
-    """The fail-closed gate is scoped to the profiles that actually advertise a
-    Chromium version. A desktop profile advertises none, so an unreadable
-    version is none of its business and must not block it."""
+    """⚠️ THIS TEST HAS BEEN REVERSED TWICE. Read the whole docstring before
+    "fixing" it in either direction — both reversals were on evidence.
+
+    **Reversal 1 (PS-356, measured).** It originally asserted a desktop launch
+    proceeds when the version is unreadable, on the premise that *"a desktop
+    profile advertises none"*. **That premise is false, and it was measured
+    false on the shipped engine.** A desktop-shaped launch (no --user-agent at
+    all, exactly as the test above pins) reported:
+
+        brands:        Chromium 144 / Google Chrome 144
+        uaFullVersion: 144.0.7559.59
+
+    on the **152** engine. The user agent is version-independent for desktop;
+    **Client Hints are not.** The engine emits sec-ch-ua on every profile, and
+    with `--fingerprint-brand-version` absent it fills them from a hardcoded
+    144.x table in 002-user-agent-fingerprint.patch. So a desktop profile DOES
+    advertise a Chromium version, in two of the three shapes — and before PS-356
+    it advertised the WRONG one. ⭐ THAT MEASUREMENT STILL STANDS and is why this
+    test exists at all.
+
+    **Reversal 2 (owner ruling, 2026-09-06): the REMEDY changed, not the fact.**
+    The gate was made fail-closed on the strength of the measurement above. The
+    owner overruled that for the desktop arm: an absent `version.txt` is a
+    reachable transient state mid-update, so refusing would break ~99% of
+    launches for a self-healing condition. The launch now PROCEEDS with the flag
+    SKIPPED.
+
+    ⭐ Why skipping is not a return to the pre-PS-356 defect: with no flag the
+    engine answers all three shapes from ONE source (its own default), so they
+    agree WITH EACH OTHER. The tell is the DISAGREEMENT between shapes, and it
+    is not reintroduced — the claim is merely less current. The defect this
+    ticket closes was UA-152-against-brands-144, which cannot arise here.
+    """
     args = _spawn(
         monkeypatch, tmp_path, Profile(name="deskt", os_type="windows"), tag=""
     )
-    assert _ua_arg(args) is None
+    assert not any(a.startswith("--fingerprint-brand-version") for a in args), (
+        "an unreadable version must SKIP the flag, not pass a default"
+    )
+    # ⛔ and never a fallback constant — that is the duplication engine_version.py
+    # exists to remove.
+    assert not any("144" in a for a in args if "fingerprint" in a)
+    # the brand gate is not contingent on the version
+    assert "--fingerprint-brand=Chrome" in args
 
 
 def test_an_ios_profile_advertises_no_chromium_version(monkeypatch, tmp_path):
     """Real iOS Safari ships no UA-CH and its UA carries no Chromium version, so
-    there is nothing to derive — and nothing to refuse when the engine's version
-    cannot be read."""
-    args = _spawn(monkeypatch, tmp_path, Profile(name="fone", os_type="ios"), tag="")
+    there is nothing to derive **in the shapes this test reads**.
+
+    ⚠️ PS-356 SCOPE: this is a claim about the UA and about `navigator.
+    userAgentData`, which the mobile extension DELETES on iOS. It is NOT a
+    claim about the `sec-ch-ua` HTTP REQUEST HEADER, which the engine emits
+    before any extension runs and which no JS-side deletion can reach. Measured
+    on the shipped engine, a launch with no `--fingerprint-brand-version`:
+
+        sec-ch-ua:  "Chromium";v="144", "Google Chrome";v="144"
+        User-Agent: ... Chrome/152.0.0.0 ...
+
+    So the version is still worth passing on an iOS launch — see the test
+    below. This test provides a valid tag and asserts only what it is actually
+    about: that no Chromium version reaches the UA.
+    """
+    args = _spawn(monkeypatch, tmp_path, Profile(name="fone", os_type="ios"))
     ua = _ua_arg(args)
     assert ua is not None
     assert "Chrome/" not in ua
@@ -412,6 +467,31 @@ def test_an_ios_profile_advertises_no_chromium_version(monkeypatch, tmp_path):
     ).read_text(encoding="utf-8")
     assert "__FULLVER__" not in js and "__MAJOR__" not in js
     assert OLD_FULL not in js and f"version: '{OLD_MAJOR}'" not in js
+
+
+def test_an_ios_profile_also_skips_rather_than_refusing(monkeypatch, tmp_path):
+    """⚠️ PS-356: the Client-Hints gate is ENGINE-WIDE, not OS-scoped — and it
+    skips rather than refusing, exactly like every other Chromium profile.
+
+    The tempting scope is "iOS advertises no Chromium version, so exempt it" —
+    that is what `_mobile_chromium_version` correctly does, because iOS is
+    passed a UA with no version slot and the mobile extension deletes
+    `navigator.userAgentData` outright.
+
+    But an iOS profile still launches the **Chromium engine**, and the engine
+    emits `sec-ch-ua` on the wire before any extension exists to delete
+    anything. Measured above: 144 in the header against 152 in the UA. A
+    server-side checker reads that mismatch and no JS-side masking can hide it.
+    ⭐ So the version flag is passed on an iOS launch too when it is READABLE —
+    that is the engine-wide scope, and it is unchanged by the owner's ruling.
+
+    What the ruling changed is only the UNREADABLE case: skip, do not refuse.
+    An iOS profile is on the desktop-arm side of that asymmetry because the flag
+    it would skip is the Client-Hints one, not a `--user-agent` it never gets.
+    """
+    args = _spawn(monkeypatch, tmp_path, Profile(name="fone", os_type="ios"), tag="")
+    assert not any(a.startswith("--fingerprint-brand-version") for a in args)
+    assert "--fingerprint-brand=Chrome" in args
 
 
 def test_ios_presets_carry_no_version_slot():

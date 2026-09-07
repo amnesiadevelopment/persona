@@ -14,6 +14,18 @@ engine interpolates the constant — the next rename is one edit, not a sweep.
 from ..core.strings import CHROMIUM_ENGINE_NAME
 
 CHANGELOG: dict[str, list[str]] = {
+    "3.1.1": [
+        "Google Sheets and other sites that enforce a strict script policy now "
+        "load properly. Such a page could sit on its loading spinner and never "
+        "finish, while the browser filled its console with errors.",
+        "The browser reports one consistent version to websites — the version "
+        "it actually is. Part of it was still announcing an older one.",
+        "Work a page does in the background now reports the same machine as "
+        "the page itself, instead of the real computer's.",
+        "A profile using a proxy typed straight into it now takes its language "
+        "and timezone from where that proxy actually comes out, or refuses to "
+        "launch rather than claim a country it is not in.",
+    ],
     "3.1.0": [
         f"persona now runs its own {CHROMIUM_ENGINE_NAME} browser engine, "
         "built from source with the anti-detect patches compiled in, instead "

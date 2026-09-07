@@ -24,7 +24,7 @@ from ..proxy.store import ProxyStore
 from .bookmarks_seed import seed_bookmarks
 from .process_group import popen_in_new_session, reap_process_group
 from .audio_ext import build_audio_extension
-from .device_ext import build_device_extension
+from .device_ext import build_device_extension, hardware_concurrency_for
 from .env_policy import (
     browser_child_cwd,
     pin_child_tmpdir,
@@ -72,6 +72,7 @@ from .launch_policy import (  # noqa: F401
     _proxy_timezone,
     _timezone_for,
     _windows_timezone_key,
+    declared_locale,
 )
 
 logger = get_logger("browser.process")
@@ -206,6 +207,20 @@ def _mobile_chromium_version(profile: Profile, preset) -> "ChromiumVersion | Non
 
     iOS profiles return None: real Safari ships no UA-CH and its UA carries no
     Chromium version, so there is nothing to derive and nothing to refuse.
+
+    ⚠️ THIS IS THE MOBILE-UA HELPER AND ITS FAIL-CLOSED SCOPE IS DELIBERATELY
+    UNCHANGED. The Client-Hints version every Chromium profile advertises —
+    desktop included — is resolved by ``_chromium_brand_version`` below, which
+    deliberately SKIPS rather than refusing. ⛔ That difference is intentional
+    and must not be "tidied" into consistency: skipping on THIS arm would make
+    the layer type a version the engine does not match (a contradiction), while
+    skipping on the desktop arm leaves the engine answering all three shapes
+    from its own default (coherent, merely less current). Different failure
+    modes, different correct answers — see that helper's docstring for the full
+    table. The two are also separate because they answer different questions:
+    this one decides what goes in ``--user-agent`` (mobile only; desktop passes
+    none), that one decides what goes in ``--fingerprint-brand-version`` (every
+    Chromium launch).
     """
     if preset is None or preset.os_type == "ios":
         return None
@@ -219,6 +234,108 @@ def _mobile_chromium_version(profile: Profile, preset) -> "ChromiumVersion | Non
             f"version the engine underneath does not match — run an engine check "
             f"to record it."
         ) from e
+
+
+def _chromium_brand_version(profile: Profile) -> "ChromiumVersion | None":
+    """The version `--fingerprint-brand-version` advertises, or ``None`` to skip.
+
+    WHAT THE SWITCH BUYS
+    --------------------
+    Without it the engine does NOT report the version it actually is.
+    `002-user-agent-fingerprint.patch`'s ``GetChromiumVersion()`` falls through
+    to a HARDCODED table when the switch is absent::
+
+        constexpr const char* kChromiumVersions[] = {
+            "144.0.7559.132", "144.0.7559.109", "144.0.7559.96", "144.0.7559.59" };
+        ...
+        return kChromiumVersions[seed % std::size(kChromiumVersions)];
+
+    So a profile on the 152 engine advertised Client Hints saying **144** while
+    its reduced user agent said **152** — pixelscan read that as *"masking
+    detected"*, browserscan as *"different browser version"*, creepjs as a
+    version lie. That is not drift; it is the engine's documented default
+    firing because nothing overrode it.
+
+    ⭐ WHY THIS SKIPS WHERE ITS MOBILE SIBLING REFUSES — A DELIBERATE ASYMMETRY
+    --------------------------------------------------------------------------
+    ⛔ DO NOT "FIX" THE INCONSISTENCY WITH ``_mobile_chromium_version``. The two
+    arms have DIFFERENT FAILURE MODES, so they have different correct answers,
+    and this was decided on the owner's ruling of 2026-09-06 after the opposite
+    design was tried and rejected.
+
+    An unreadable version is a REACHABLE TRANSIENT STATE, not a broken install —
+    ``EngineVersionUnreadableError``'s own docstring says ``version.txt`` may be
+    *"absent (a reachable state: the install completeness gate accepts a marker
+    OR a version file)"*, which is what a profile launched mid-update sees. So:
+
+    ================  ==========================  ============================
+    ..                Android (``--user-agent``)  Desktop (Client Hints)
+    ================  ==========================  ============================
+    population        a minority of profiles      ~99% of launches
+    if we skip        the layer would TYPE a      the engine answers from its
+                      version the engine does     OWN built-in default
+                      not match
+    resulting state   a CONTRADICTION between     UA, brands and full-version
+                      the layer and the engine    still agree WITH EACH OTHER
+    cost of refusing  one profile does not run    NO CHROMIUM PROFILE RUNS
+    ================  ==========================  ============================
+
+    The last two rows decide it. The tell this ticket exists to close is the
+    DISAGREEMENT between the shapes; skipping does not reintroduce it, because
+    the engine then answers all three shapes from one source of its own. What
+    is lost is CURRENCY (the advertised version is the engine's built-in
+    default rather than the installed build) — a weaker claim, not an incoherent
+    one. Refusing instead would convert a transient, self-healing condition into
+    "nothing launches at all" for the overwhelming majority of users.
+
+    On mobile the same skip WOULD be incoherent, so ``_mobile_chromium_version``
+    keeps failing closed. Its rationale is unchanged and still correct on its
+    own arm.
+
+    ⛔ THERE IS NO FALLBACK CONSTANT HERE, AND THERE MUST NEVER BE ONE.
+    "Skip" means PASS NO FLAG and let the engine answer. It does NOT mean
+    substituting ``"152.0.7977.75"`` or any other literal — that would
+    re-create, in a new place, the hand-written duplication
+    ``engine_version.py`` exists to remove, and would go stale INVISIBLY the
+    moment the engine moves. The only two outcomes are the READ value or no
+    flag at all.
+
+    ⚠️ THE SKIP IS LOGGED, BECAUSE IT IS A DEGRADED STATE.
+    A profile launching without this flag advertises the engine's built-in
+    version rather than its real one, and an operator wondering why their Client
+    Hints look old needs something to find. The log carries the REASON (the
+    underlying read failure) and the REMEDY, not merely the fact of a skip.
+
+    ⚠️ THE VALUE IS ``.full``, ESTABLISHED FROM THE PATCH — NOT ASSUMED.
+    The engine takes ONE input and fans it out into all three shapes itself::
+
+        chromium_version = GetChromiumVersion();                 # this value
+        chromium_major   = GetMajorVersion(chromium_version);    # engine derives
+        brand_version_list      <- chromium_major                # bare major '152'
+        brand_full_version_list <- chromium_version              # '152.0.7977.75'
+        metadata->full_version  <- chromium_version              # uaFullVersion
+
+    So passing ``.reduced`` (``152.0.0.0``) would land verbatim in
+    ``uaFullVersion`` — the exact tell ``engine_version.parse()`` refuses via
+    its ``full != reduced`` guard (*"a real Chrome never reports a .0.0 full
+    version"*). ``.major`` would truncate the full-version list. ``.full`` is
+    the only value that yields all three correct shapes.
+    """
+    try:
+        return installed_chromium_version()
+    except EngineVersionUnreadableError as e:
+        logger.warning(
+            "Profile %r launches Chromium WITHOUT --fingerprint-brand-version: "
+            "the installed engine's version could not be read (%s). The profile "
+            "still launches, and its user agent, Client Hints brands and "
+            "uaFullVersion still agree with each other — but they will report "
+            "the engine's own built-in version rather than the installed build, "
+            "so they may look out of date. This is usually transient (version.txt "
+            "is absent mid-update); run an engine check to record the version.",
+            profile.name,
+            e,
+        )
+        return None
 
 
 def _profile_locale(profile: Profile, proxy) -> str:
@@ -279,23 +396,37 @@ def _profile_locale(profile: Profile, proxy) -> str:
     try:
         return _locale_for(code)
     except LocaleUnderivableError as e:
-        # Names the COUNTRY, and says the remedy is a code change rather than a
-        # re-check — the same two things the TimezoneUnderivableError arm below
-        # says, and for the same reason: the proxy's check may have passed
-        # moments ago and will keep passing, because what is missing is a table
-        # row. Sending this operator to "check the proxy" wastes their time.
+        # SECOND, NEVER FIRST — the same precedence rule the zone half states at
+        # length in ``_proxy_timezone`` and says not to reorder, applied here.
+        # The table is the product's own derivation and always wins; the
+        # declaration exists for the countries the table cannot answer for, not
+        # because an operator's typing outranks a shipped row. Because it is
+        # consulted only inside this refusal arm, NO currently-launching profile
+        # changes behaviour at all.
         #
-        # It names BOTH tables. Adding one row alone is precisely how this class
-        # of defect is reintroduced, and the correspondence suite fails it in
-        # either direction, so the message asks for the pair.
+        # Gated on the country it was declared for (``declared_locale``), which
+        # also supplies the region half — so a declaration retires itself when a
+        # backconnect exit moves and the launch refuses again, exactly as the
+        # zone half does.
+        declared = declared_locale(proxy)
+        if declared:
+            return declared
+        # Names the COUNTRY, and says the remedy is NOT a re-check — the proxy's
+        # check may have passed moments ago and will keep passing, because what
+        # is missing is a table row. It names BOTH tables (adding one row alone
+        # is precisely how this class of defect is reintroduced, and the
+        # correspondence suite fails it in either direction) and, since PS-332,
+        # the DECLARATION first — because that is the remedy the operator can
+        # reach without shipping a build.
         raise LocaleUnderivableError(
             f"Profile {profile.name!r} has proxy {profile.proxy!r} assigned and its "
             f"exit country is known ({code.upper()}), "
             "but no locale is known for that country. Refusing to launch: falling "
             "back to en-US would declare an American-English browser beside the "
             "exit's own non-US clock — the 'spoofed location' tell this product "
-            "exists to avoid. Re-checking will NOT help; add a row for that "
-            "country to _COUNTRY_LOCALE *and* the matching _COUNTRY_TZ row "
+            "exists to avoid. Re-checking will NOT help; declare the exit's "
+            "language in the proxy editor, or add a row for that country to "
+            "_COUNTRY_LOCALE *and* the matching _COUNTRY_TZ row "
             "(launch_policy.py) to resolve it."
         ) from e
 
@@ -365,6 +496,37 @@ def _profile_timezone(profile: Profile, proxy) -> str:
         ) from e
 
 
+def _launch_geo(store, ref: str | None):
+    """The geography-bearing proxy record a launch must reason about.
+
+    ⭐ WHY THIS INDIRECTION EXISTS, since a bare ``store.geo_for_launch(ref)``
+    would read better. The launch path is driven by ~20 test files that install
+    their own minimal store DOUBLE — a class with ``resolve`` and ``get`` and
+    nothing else. Those doubles are how the QUIC, DoH, VA-API, env-scrub, cwd
+    and cert suites reach the launch at all, and almost none of them are about
+    proxies: they need *a* proxy to exist and assert something else entirely.
+
+    Calling a NEW store method directly makes every one of them raise
+    ``AttributeError`` — measured, 51 failures across five files — which is not a
+    real finding about the product. It is a doubles-out-of-date finding, and
+    "make 51 unrelated tests pass again" is exactly the pressure that produces a
+    rushed edit to a suite nobody re-reads. So the new capability is asked for
+    politely and the old question is the fallback.
+
+    ⚠️ THE FALLBACK IS FOR TEST DOUBLES, NOT FOR PRODUCTION. The real
+    :class:`ProxyStore` always implements ``geo_for_launch``, so the production
+    path ALWAYS takes the first branch — a double that lacks the method gets the
+    pre-PS-358 behaviour, which is correct for a double that hardcodes a stored
+    proxy anyway (an inline ref never reaches it). A test that wants the inline
+    behaviour must provide a store that implements it, which is what the PS-358
+    tests do.
+    """
+    geo = getattr(store, "geo_for_launch", None)
+    if callable(geo):
+        return geo(ref)
+    return store.get(ref) if ref else None
+
+
 def _spawn_invisible(profile: Profile, profile_dir: str, *, in_process: bool = False):
     """Launch the invisible_playwright (patched Firefox 150) engine. SOCKS5
     proxy auth is handled natively (no bridge). Returns a Popen-compatible
@@ -381,7 +543,15 @@ def _spawn_invisible(profile: Profile, profile_dir: str, *, in_process: bool = F
     # Fail CLOSED: never launch FF DIRECT for a profile that HAS a proxy assigned.
     _require_proxy_resolved(profile, _resolved)
     proxy_url = _resolved or ""
-    proxy = store.get(profile.proxy) if profile.proxy else None
+    # `geo_for_launch`, NOT `get`: a plain name lookup answers None for an INLINE
+    # proxy, and None is the no-proxy sentinel the two helpers below read as
+    # "this profile is DIRECT" — so an inline socks5 exiting in Warsaw used to
+    # launch with a US zone and en-US, a language contradicting its own IP
+    # (PS-358). This resolves the exit instead, and where it cannot it returns a
+    # record carrying no geography so the gates below REFUSE rather than fall
+    # back. The named path is unaffected: a stored proxy is returned untouched
+    # and pays no launch-time probe.
+    proxy = _launch_geo(store, profile.proxy)
     # Locale + timezone follow the proxy's geo so they match the exit IP. Always
     # resolve to a CONCRETE zone — never leave it empty: invisible treats an
     # empty timezone as "auto" and blocks the launch ~40s on an egress-IP lookup
@@ -570,7 +740,10 @@ def spawn_browser(profile: Profile, *, in_process: bool = False) -> subprocess.P
         return proc
 
     store = ProxyStore()
-    proxy = store.get(profile.proxy) if profile.proxy else None
+    # `geo_for_launch`, NOT `get` — the chromium arm carried the SAME defect as
+    # the firefox arm above and must be fixed with it, or the mismatch simply
+    # moves to whichever engine was left behind (PS-358).
+    proxy = _launch_geo(store, profile.proxy)
     proxy_url = store.resolve(profile.proxy)
     # Fail CLOSED: never open a DIRECT window for a profile that HAS a proxy.
     _require_proxy_resolved(profile, proxy_url)
@@ -590,6 +763,129 @@ def spawn_browser(profile: Profile, *, in_process: bool = False) -> subprocess.P
     # asked before the profile dir, the desktop entry and the mTLS terminator.
     _lang = _profile_locale(profile, proxy)
 
+    # The version EVERY Chromium profile advertises in its Client Hints — desktop
+    # included, unlike the mobile-only UA version resolved further down.
+    #
+    # Resolved HERE, beside the three fail-closed gates above, even though this
+    # one does NOT refuse. Two reasons, and the second is the durable one:
+    #   * it reads the engine record, which is launch-independent work that has
+    #     no business happening after the profile dir, the host desktop entry and
+    #     the mTLS terminator (PS-283's ordering property);
+    #   * ⭐ if this gate is ever made fail-closed again, it is ALREADY in the
+    #     position that keeps PS-283's invariant. Putting it downstream would
+    #     leave a trap that only fires the day someone changes the policy.
+    # It takes only `profile` — nothing here depends on `preset`, which is why it
+    # can sit this early while `_mobile_chromium_version` cannot.
+    brand_version = _chromium_brand_version(profile)
+
+    # ⭐ WHY THERE IS NO PROFILE MIGRATION ON THIS ARM, THOUGH THE FIREFOX ARM
+    # RUNS A FOUR-PART ONE ON EVERY LAUNCH. A RECORDED POSITION, ESTABLISHED BY
+    # MEASUREMENT (PS-341) — not an oversight, and not an untested assumption.
+    #
+    # The asymmetry is real and it is deliberate. `invisible_launch.py` calls
+    # `_migrate_profile_for_engine_build` on every Firefox launch because that
+    # engine genuinely misbehaves: its own docstring records that a profile
+    # seeded on firefox-18 makes firefox-19 SIGSEGV before the window paints, so
+    # `prefs.js` is dropped, `compatibility.ini` (the downgrade guard) is
+    # removed, and the addon startup cache is invalidated on a revert.
+    #
+    # ⛔ THE PARITY QUESTION IS NOT "WHY IS CHROMIUM MISSING FIREFOX'S GUARD".
+    # It is "does Chromium EXHIBIT THE BEHAVIOUR that guard defends against?"
+    # Only the second is a defect, and it was asked of a REAL ENGINE rather than
+    # reasoned about:
+    #
+    #   Launch a profile on personium-152.0.7977.75, move the engine BACKWARDS
+    #   to 148.0.7778.215 through the shipping operator gesture
+    #   (`updater.revert_to_previous_build`, what ui/app.py's rollback button
+    #   calls — not a hand-swap), relaunch THE SAME profile dir, and read both
+    #   what a RUNNING browser reports and what is left on disk — the two are
+    #   different strengths of evidence and the readings below say which is
+    #   which. Positive control on three independent axes: the version record
+    #   moved, the binary sha256 moved, and the page's own `navigator.userAgent`
+    #   major moved 152 -> 148.
+    #
+    #   * IT OPENS. No refusal, no crash, no SIGSEGV — the Firefox analogue does
+    #     not occur. Forward again (148 -> 152) opens too.
+    #   * CHROMIUM'S OWN DOWNGRADE HANDLING DOES NOT FIRE. `Last Version` is
+    #     WRITTEN and silently OVERWRITTEN (152 -> 148 -> 152); the engine
+    #     treats it as a record, not as a gate. `Default/` is neither renamed
+    #     nor recreated and no backup/reset directory appears.
+    #   * DERIVED STATE SURVIVES. `seed_profile_prefs`'s once-only guard is
+    #     never re-triggered, because nothing removes `Default/Preferences`.
+    #     ⚠️ THE EVIDENCE IS OF TWO DIFFERENT STRENGTHS AND THEY ARE NOT
+    #     INTERCHANGEABLE — a file that survives but is IGNORED is the same
+    #     outcome for the operator as one that was deleted, so only a LIVE read
+    #     settles that, and only three of these five were read live:
+    #       - LIVE, from the running browser on the OLDER build: the profile's
+    #         chosen search engine (`Brave (Default)` on
+    #         chrome://settings/searchEngines), the seeded bookmarks (present in
+    #         chrome://bookmarks), and the cookie jar (the sentinel written on
+    #         build N is served on build N−1).
+    #       - ON DISK ONLY: the Classic theme and dark mode
+    #         (`color_scheme2: 2`). Both are byte-identical across the change
+    #         and nothing renames, resets or removes the file holding them.
+    #         ⭐ That is enough for the question THIS arm actually asks —
+    #         `seed_profile_prefs` keys purely on `Default/Preferences`
+    #         EXISTING, so a surviving file is exactly what stops the operator's
+    #         choice being silently dropped. It is NOT the stronger claim that
+    #         the engine still honours those two values, which was not measured
+    #         here. Do not upgrade it to one without taking the reading.
+    #
+    # So NO MIGRATION IS OWED HERE, and adding one would be a fix for a state
+    # this engine does not enter. That is the whole position; the evidence is in
+    # `readings/ps341-2026-09-07/` and is re-read live by
+    # `tests/test_ps341_engine_continuity_live.py`.
+    #
+    # ⚠️ ONE CAPTURED NUMBER IS NOT EXPLAINED, AND IT IS LEFT OPEN ON PURPOSE.
+    # The legs read `matchMedia('(prefers-color-scheme: dark)').matches` as
+    # FALSE on BOTH builds, though the profile is seeded `color_scheme2: 2` and
+    # launched with `--force-dark-mode` (further down this same arg list). The
+    # obvious explanation — "`--force-dark-mode` is UI-level and does not drive
+    # `prefers-color-scheme`" — was CHECKED AND IS FALSE: on stock chromium
+    # 152, headless, each of the flag alone, the seeded pref alone, and both
+    # together give `dark=true`, against a fresh-profile negative control that
+    # correctly gives `false` (`scripts/ps341_dark_control.py`,
+    # `readings/ps341-2026-09-07/control-dark-mode.json`). Two variables move
+    # between that control and the legs — a STOCK engine vs the packaged
+    # fingerprint build, and headless vs headful-under-Xvfb — and one control
+    # cannot separate them, so the cause is genuinely NOT KNOWN.
+    # ⛔ NOTHING IN THIS POSITION TURNS ON IT: the value is identical on both
+    # builds, so it does not move across a build change and is not a continuity
+    # fact. It is written down rather than left bare in the reading so the next
+    # reader inherits the open question and the control that already ruled out
+    # its most plausible answer, instead of re-deriving both.
+    #
+    # ⚠️ ONE THING DOES MOVE, AND IT IS NOT A MIGRATION PROBLEM — SEE THAT TEST
+    # AND `gpu_ext.py`. The WebGL vendor/renderer pair a page reads CHANGES
+    # across a build change on the WINDOWS arm, which is the only arm where the
+    # ENGINE authors it (`ENGINE_AUTHORED_IDENTITY_ARMS` is
+    # `frozenset({"windows"})`, and that is where persona's own GPU layer
+    # deliberately stands down). Measured across 8 seeds, headful under CDP:
+    # 8/8 moved, and the two builds' card pools do not intersect AT ALL (148
+    # answers Intel integrated parts, 152 answers NVIDIA RTX parts). It is
+    # STABLE within a build — two launches of one build at one seed agree — so
+    # the move is attributable to the build change and to nothing else.
+    #
+    # ⛔ MACOS IS THE CONTRAST, NOT A SECOND INSTANCE OF THIS, and the
+    # difference follows from the mechanism below rather than being an
+    # exception to it. `engine_authors_identity_for_engine_platform("macos")`
+    # is `False`, so `gpu_ext.py` renders `ENGINE_AUTHORS_IDENTITY` false into
+    # the content script there and persona writes the pair ITSELF from its own
+    # `MAC_GPUS` table (gpu_ext.py:969/:992). A table in persona's Python is
+    # not a table in the engine binary, so on macos this pair should be STABLE
+    # across a build change — for precisely the reason it is unstable on
+    # windows. ⚠️ THAT IS AN ARGUMENT, NOT A READING: the macos arm was NOT
+    # measured here (`scripts/ps341_gpu_seeds.py:60` defaults to
+    # `platform="windows"` and both call sites take the default, so all 8 seeds
+    # are windows). Do not restate it as measured without taking it.
+    #
+    # That is a LEVEL-2 (bit-stability across engine updates) continuity fact
+    # about an ENGINE-AUTHORED vector, and NOT something a profile migration
+    # could repair: the value is produced by a table compiled into the engine
+    # binary, so no amount of rewriting the profile directory changes it. It is
+    # recorded rather than fixed here on purpose — the fix, if one is wanted, is
+    # a decision about WHO AUTHORS that pair on those arms, which is
+    # `gpu_ext.py`'s question and not this launch path's.
     seed_profile_prefs(profile_dir, profile.search_engine)
 
     chosen = BookmarkStore().resolve_selection(
@@ -836,7 +1132,131 @@ def spawn_browser(profile: Profile, *, in_process: bool = False) -> subprocess.P
             f"--user-data-dir={profile_dir}",
             f"--fingerprint={profile.fingerprint_seed}",
             f"--fingerprint-platform={engine_platform}",
+            # ⚠️ THE BRAND LINE IS THE GATE FOR THE VERSION FLAG BELOW — DO NOT
+            # REMOVE OR VARY IT.
+            #
+            # `--fingerprint-brand-version` is read by the engine ONLY inside
+            # `if (brand == "chrome")`, after a ToLowerASCII, in
+            # 002-user-agent-fingerprint.patch's GetChromiumVersion(). So this
+            # line gates the one appended just after this list.
+            # Removing it, or offering an Edge/Opera/Vivaldi brand option that
+            # varies it, does not merely change the brand: it SILENTLY disables
+            # the version flag — no error, no log — and the engine reverts to
+            # its hardcoded 144.x table while the reduced UA still says 152.
+            # That mismatch is the whole defect (pixelscan: "masking detected").
+            # ⛔ It is passed UNCONDITIONALLY, including when the version flag is
+            # skipped: the brand claim ("presents as Chrome and nothing else") is
+            # not contingent on the version being readable.
+            # Pinned by tests/test_ps356_brand_version.py.
             "--fingerprint-brand=Chrome",
+            # ⭐ THE VERSION FLAG, CONDITIONAL — THIS IS THE SKIP.
+            #
+            # The value the engine advertises in sec-ch-ua / uaFullVersion, READ
+            # from the installed engine. `.full` is correct for all three shapes
+            # because the engine derives the bare major itself — see
+            # _chromium_brand_version for the fan-out and why `.reduced` is a tell.
+            #
+            # `brand_version is None` means the version could not be read (a
+            # reachable transient state mid-update). We then emit NO FLAG and let
+            # the engine answer from its own built-in default, which keeps the
+            # three shapes agreeing WITH EACH OTHER — less current, not incoherent.
+            # ⛔ There is deliberately no `else` substituting a literal: a fallback
+            # constant is the exact duplication engine_version.py exists to remove
+            # and would go stale invisibly. The skip is logged as a degraded state.
+            #
+            # Spliced in place rather than appended at the end so it stays
+            # ADJACENT TO ITS GATE above — the pair reads as the unit it is, and
+            # tests/test_ps283_refused_launch_does_no_work.py pins argv order.
+            *(
+                [f"--fingerprint-brand-version={brand_version.full}"]
+                if brand_version is not None
+                else []
+            ),
+            # THE SERVICE WORKER'S ONLY AUTHOR (PS-354).
+            #
+            # `applyHwPatch` carries hardwareConcurrency into Web and Shared
+            # Workers, but a ServiceWorkerGlobalScope is reached by NEITHER of
+            # persona's identity authors: it is never CONSTRUCTED by the page,
+            # so `worker_wrap`'s chaining has no constructor to intercept, and
+            # an MV3 content script does not run there. The realm therefore
+            # fell through to the engine's own seed fallback, or on arms the
+            # engine does not spoof, to the HOST. PS-189 measured that directly
+            # -- a linux service worker reported the host's SwiftShader while
+            # ELEVEN sibling realms in the same launch reported the profile's
+            # card.
+            #
+            # The engine authors this before any of our code runs, so it covers
+            # every realm INCLUDING the service worker natively -- no wrapper,
+            # no descriptor, and no observable surface added to a realm we
+            # otherwise never touch (which a JS shim would have done).
+            #
+            # ⛔ THE VALUE IS THE PAGE REALM'S OWN PICK, NOT A CONSTANT. It is
+            # resolved through the same generation-filtered CORES_MEMORY pool,
+            # the same hash and the same salt the emitted device.js uses, so
+            # page and engine agree BY CONSTRUCTION. A hardcoded number would
+            # pass a spot check on whichever profile happens to match it and
+            # would replace a page/worker mismatch with a page/engine mismatch
+            # on every other profile -- the same tell, relocated. Measured
+            # live: profiles resolve to 4, 6, 8 and 16 across the pool, so
+            # "it's 8" is false for most of them.
+            f"--fingerprint-hardware-concurrency="
+            f"{hardware_concurrency_for(profile.fingerprint_seed, profile.hardware_generation)}",
+            # ⛔ THE SWITCH THAT MUST NEVER APPEAR IN THIS LIST: --disable-spoofing.
+            #
+            # A reader auditing the fingerprint switches will notice that patch
+            # 000 declares twelve and this launch passes six, and the natural
+            # next thought is "wire the rest". This one is the counter-example
+            # that makes that instinct wrong, and the reason is recorded HERE —
+            # beside the flags it sits among — rather than in a test, because
+            # this is where the question gets asked.
+            #
+            # --disable-spoofing is the most consumed switch in the whole patch
+            # set after --fingerprint itself: SEVEN patches read it — 003, 006,
+            # 011, 012, 013, 014 and 016.
+            #
+            # ⚠️ THE MECHANISM, because getting it wrong points the warning at
+            # the wrong form of the flag:
+            # it is a value-keyed selective disable, not a boolean kill switch.
+            # Every consumer tests the switch's VALUE for a token, never its
+            # mere presence. The dominant shape (003, 006, 012, 013, 014, 016)
+            # is:
+            #
+            #     if (HasSwitch(kFingerprint) &&
+            #         (!HasSwitch(kDisableSpoofing) ||
+            #          GetSwitchValueASCII(kDisableSpoofing).find("canvas")
+            #              == std::string::npos)) { ...spoof... }
+            #
+            # Trace the BARE flag (empty value) through it: HasSwitch is true,
+            # so the `!HasSwitch` arm is false; then "".find("canvas") returns
+            # npos, so the `== npos` arm is TRUE, the `||` is true, and THE
+            # SPOOFING STILL APPLIES. 011 is the only genuine `return ""`, and
+            # it inverts the test (`find("gpu") != npos`), which an empty value
+            # fails identically. Conclusion:
+            # bare --disable-spoofing is inert across all seven patches.
+            #
+            # ⛔ THE FORM THAT DOES THE DAMAGE IS THE VALUED ONE:
+            # --disable-spoofing=canvas,gpu,audio,font,clientrects
+            #
+            # The tokens are matched by SUBSTRING, one per masking family:
+            # `audio` (003) switches off the AudioContext sample-rate noise,
+            # `font` (006) the font masking, `gpu` (011) the GL
+            # vendor/renderer spoof, `canvas` (012, 013, 016) getImageData /
+            # toDataURL / measureText and WebGL readPixels, `clientrects`
+            # (014) the client-rects offset. That comma list is upstream's
+            # kill switch for the whole masking layer, present so a developer
+            # can A/B the patched engine against stock.
+            # The prohibition is on the VALUED form; the bare form is inert.
+            #
+            # (015 edits code INSIDE the guard 012 authored and adds no read of
+            # its own — it carries the constant on CONTEXT lines only, which is
+            # why the census counts seven consumers and not eight.)
+            #
+            # So its absence from this list is a DELIBERATE POSITION, not an
+            # oversight, and it is the one row of the switch census where
+            # "declared, consumed, and correctly never passed" is the finished
+            # state. Pinned by tests/test_engine_switch_matrix.py, which
+            # re-reads this paragraph so deleting it turns the suite red rather
+            # than silently converting a decision into an unexplained gap.
             f"--lang={lang}",
             f"--accept-lang={lang},{lang.split('-')[0]}",
             f"--load-extension={','.join(extensions)}",

@@ -6,7 +6,11 @@ import flet as ft
 from ...core.strings import get_string
 from ...interfaces.protocols import IProxyService
 from ...models.proxy import Proxy
-from ...services.browser.launch_policy import declared_timezone
+from ...services.browser.launch_policy import declared_locale, declared_timezone
+from ...services.proxy.language_names import (
+    ENGINE_RENAMED_SUBTAGS,
+    is_declarable_language,
+)
 from ...services.proxy.tz_names import is_declarable_zone
 from ...utils.proxy_parse import parse_proxy_line
 from ...utils.proxy_parser import build_proxy_url, split_proxy_url
@@ -72,6 +76,7 @@ def open_proxy_dialog(
     on_check_failed: Callable[[str], None] | None = None,
     ui: Callable[[Callable[[], None]], None] | None = None,
     on_declare_timezone: Callable[[str, str], str | None] | None = None,
+    on_declare_locale: Callable[[str, str], str | None] | None = None,
 ) -> None:
     is_edit = proxy is not None
     fields = split_proxy_url(proxy.url) if proxy is not None else split_proxy_url("")
@@ -150,6 +155,31 @@ def open_proxy_dialog(
         hint_style=_hint, **DLG_INPUT_KWARGS,
     )
     tz_error = ft.Text("", size=12, color=COLORS["error"], visible=False)
+    # THE LOCALE HALF OF THE SAME DOOR (PS-332). The zone field above unblocked
+    # the timezone gate; on the residue that door was built for (NG, ZW — the
+    # countries with no table row at all) the LOCALE gate refused anyway, so a
+    # valid zone was accepted and the profile still would not launch.
+    #
+    # ⚠️ A LANGUAGE, NOT A LOCALE. The region half is this proxy's own checked
+    # exit country — every `_COUNTRY_LOCALE` row is `lang-REGION` with REGION
+    # equal to the key — so typing it here would be the operator's chance to
+    # contradict their own exit, which is the `en-US`-beside-a-non-US-clock
+    # tell the product exists to avoid. The box takes `ha`; the launch ships
+    # `ha-NG`.
+    #
+    # ⚠️ PREFILLED FROM THE COUNTRY-GATED VALUE, NEVER FROM THE RAW STORED
+    # STRING — the same rule as the zone field, for the same reason, and read
+    # from the SAME owner rather than re-derived: `declared_locale` returns the
+    # composed locale in force, and the language half of it is what belongs in
+    # the box. After the exit moves the gate retires the declaration, so the
+    # box goes empty and the operator is not shown a retired value as though it
+    # were live.
+    locale_field = ft.TextField(
+        value=(declared_locale(proxy).split("-")[0] if proxy is not None else ""),
+        hint_text="e.g. ha  — two-letter language, only if launching is refused",
+        hint_style=_hint, **DLG_INPUT_KWARGS,
+    )
+    locale_error = ft.Text("", size=12, color=COLORS["error"], visible=False)
     name_error = ft.Text("", size=12, color=COLORS["error"], visible=False)
     addr_error = ft.Text("", size=12, color=COLORS["error"], visible=False)
 
@@ -346,6 +376,50 @@ def open_proxy_dialog(
             tz_error.visible = True
             page.update()
             return
+        # The locale half, held to every rule the zone half above is held to —
+        # validated here as well as in the store (the same vendored set in both
+        # places, so they cannot disagree), and scoped to a CHANGED value so an
+        # untouched field can never fail a save.
+        language = (locale_field.value or "").strip().lower()
+        locale_prefilled = (
+            declared_locale(proxy).split("-")[0] if proxy is not None else ""
+        )
+        declaring_locale = language != locale_prefilled
+        if declaring_locale and language and language in ENGINE_RENAMED_SUBTAGS:
+            # A REAL language a browser renames (sh -> sr-Latn, tl -> fil,
+            # tw -> ak). Refused for a different reason than a non-language, so
+            # it must not be told it is not a language code — that sentence is
+            # FALSE and leaves the operator no move. Mirrors the store's arm;
+            # the two must not disagree, which is why both read the same
+            # vendored table.
+            answer = ENGINE_RENAMED_SUBTAGS[language]
+            remedy = answer.split("-")[0]
+            # ⛔ ONLY NAME A REMEDY THAT WORKS — bh -> bho and tl -> fil are
+            # three-letter and this field takes two. Naming one would send the
+            # operator back through the same door to be refused again.
+            locale_error.value = (
+                f"'{language}' is a real language code, but a browser reports "
+                f"it back as '{answer}', so the declared language would "
+                "disagree with what a page sees. "
+                + (
+                    f"Use '{remedy}' instead."
+                    if is_declarable_language(remedy)
+                    else f"'{answer}' is not a two-letter subtag this field "
+                    "takes — use the closest two-letter language of the exit."
+                )
+            )
+            locale_error.visible = True
+            page.update()
+            return
+        if declaring_locale and language and not is_declarable_language(language):
+            locale_error.value = (
+                f"'{language}' is not a language code. Use a two-letter "
+                "ISO 639-1 subtag, e.g. ha for Hausa — the country half comes "
+                "from this proxy's own checked exit."
+            )
+            locale_error.visible = True
+            page.update()
+            return
         # A DECLARATION IS MADE *FOR* A COUNTRY, so it needs one on file. Caught
         # here, BEFORE on_save, so an add does not create the proxy and then
         # report an error about a different field — and so the operator is told
@@ -439,6 +513,34 @@ def open_proxy_dialog(
             tz_error.visible = True
             page.update()
             return
+        # THE SAME GATE FOR THE LANGUAGE BOX, and it is a separate branch
+        # rather than an extra term on the one above because the two boxes can
+        # be filled independently and the sentence must name the box the
+        # operator actually typed in. A locale declaration needs a country on
+        # file for a sharper reason than the zone one does: the country IS the
+        # region half of the composed locale, so without it there is nothing to
+        # compose.
+        if declaring_locale and language and not (stored_country or checked_country):
+            check_failed = (pending_check is not None and not pending_check[0]) or (
+                proxy is not None and not moved and proxy.last_check_ok is False
+            )
+            locale_error.value = (
+                "The check failed for this proxy, so its exit country is not "
+                "known — a language is declared for that country, and the "
+                "country is the other half of the locale. Fix the proxy and "
+                "check it again, then declare the language."
+                if check_failed
+                else "Press [ check ] first — a language is declared for this "
+                "proxy's exit country, and there isn't one on file yet."
+            )
+            if _other_edits_pending():
+                locale_error.value += (
+                    " Your other changes here have NOT been saved — clear the "
+                    "language box to save them without a declaration."
+                )
+            locale_error.visible = True
+            page.update()
+            return
 
         error = on_save(name, url, (rotate_field.value or "").strip())
         if error:
@@ -506,6 +608,20 @@ def open_proxy_dialog(
             if tz_err:
                 tz_error.value = tz_err
                 tz_error.visible = True
+                page.update()
+                return
+        # The locale declaration, written under the identical rules: only when
+        # the operator TOUCHED the field, and retiring a stale record first when
+        # the box opened empty — see the block above for why each of those is
+        # load-bearing rather than defensive. It runs AFTER the zone write, so a
+        # proxy needing both declarations gets them in one [ save ].
+        if on_declare_locale is not None and declaring_locale:
+            if not locale_prefilled and getattr(proxy, "manual_locale_language", ""):
+                on_declare_locale(name, "")
+            locale_err = on_declare_locale(name, language)
+            if locale_err:
+                locale_error.value = locale_err
+                locale_error.visible = True
                 page.update()
                 return
         page.pop_dialog()
@@ -605,6 +721,12 @@ def open_proxy_dialog(
                         icon=ft.Icons.SCHEDULE,
                     ),
                     tz_error,
+                    labeled(
+                        "Exit language (optional)",
+                        locale_field,
+                        icon=ft.Icons.TRANSLATE,
+                    ),
+                    locale_error,
                     addr_error,
                     ft.Row(spacing=10, controls=[check_btn, copy_btn]),
                 ],

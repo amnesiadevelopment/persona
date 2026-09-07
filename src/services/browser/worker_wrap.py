@@ -105,6 +105,27 @@ there is nowhere to put our leaf. Suppressing registration outright would close
 the leak and break every site that needs a service worker — a product decision,
 not this module's to take. See PS-189 for the full record.
 
+⭐ UPDATE (PS-354): THE hardwareConcurrency HALF OF THIS REALM NOW HAS AN
+AUTHOR, AND IT IS NOT THIS MODULE. ``process.py`` passes the engine
+``--fingerprint-hardware-concurrency=<the page realm's own pick>``, and the
+engine authors that value before any of our JS runs — so it reaches every realm
+INCLUDING the service worker natively. Measured live on the shipped engine
+(host cores = 8): with no flag the page and the service worker both reported 8
+(the HOST's value); with the flag they reported 13 and 13, then 4 and 4.
+
+⛔ SO DO NOT "FINISH THE JOB" BY CHAINING ServiceWorker HERE. The paragraph
+above still describes this module correctly — there is still no delivery
+technique — but the conclusion has changed: the realm is covered by the engine,
+so a JS author here would be a SECOND author racing the first, and it would add
+observable surface to a realm nothing of ours currently touches. That is the
+route PS-354 considered and rejected.
+``tests/test_ps189_service_worker_realm.py`` pins both halves: that this module
+still does not reach the realm, and that ``process.py`` still does.
+
+⚠️ THE GPU HALF OF THIS REALM IS STILL UNAUTHORED. PS-354 closed
+``hardwareConcurrency`` only; the SwiftShader / Apple-M2 readings above are
+untouched and remain open.
+
 Worker scheme (proven by locale_ext): blob:/data: workers are re-blobbed under
 the same scheme (the site's CSP already allows that scheme, so it stays allowed)
 with the fragment prepended; http(s) workers get an importScripts shim. Module
@@ -546,6 +567,83 @@ def realm_bootstrap_js(
         return _cou.call(_URL, new _Blob([body], { type: "application/javascript" }));
       };
 
+      // --- Trusted Types (PS-357) ------------------------------------------
+      // A site sending `require-trusted-types-for 'script'` (Google does)
+      // BLOCKS a STRING passed to the Worker constructor. Every url `mkurl`
+      // produces is a string, so on such a site EVERY re-blobbed payload above
+      // was refused and the wrapper fell through its own catch to the original
+      // constructor with the page's own url -- the page's worker ran, the page
+      // looked fine, and the spoof was SILENTLY LOST. Workers there reported
+      // real host values. MEASURED in headless Chromium: with the header, a
+      // string blob url gives `BLOCKED TypeError` and a
+      // `require-trusted-types-for` violation naming "Worker constructor";
+      // without it, `CREATED`.
+      //
+      // So the string is minted into a TrustedScriptURL when the platform
+      // requires one. `_ttmk` returns whatever the real constructor will
+      // accept: a TrustedScriptURL where a policy could be made, and the bare
+      // string everywhere else (no Trusted Types, or policy refused) so the
+      // pre-PS-357 behaviour is byte-identical off this path.
+      //
+      // ⛔ WHY NOT THE 'default' POLICY, which is the obvious trick and is
+      // WRONG. Measured: installing it reports `page can read
+      // trustedTypes.defaultPolicy = true`, and the PAGE'S OWN `innerHTML`
+      // then routes through OUR callback. That silently makes us the page's
+      // sanitizer for sinks we were never asked about, changes page behaviour,
+      // and is trivially detectable. A named policy touches only our own call.
+      //
+      // ⚠️ THE NAME IS A FINGERPRINT SURFACE, AND THE LEAK IS NOT WHERE IT
+      // LOOKS. `getPolicyNames` is ABSENT in this engine and duplicate names
+      // do NOT throw, so a page cannot enumerate or probe for us (measured).
+      // What DOES leak is FAILURE: under `trusted-types <allowlist>`, a
+      // refused createPolicy fires a `securitypolicyviolation` whose
+      // `e.sample` IS THE NAME WE TRIED, readable by any page listener.
+      //   measured: sample "default" | "dompurify" for each refused attempt.
+      // Two consequences drive the design:
+      //   1. ONE attempt, never a list. Trying several names would broadcast a
+      //      distinctive SEQUENCE -- a far stronger marker than one string.
+      //   2. The name must not be ours. `core/strings.py` forbids the product
+      //      name reaching anything a page can read (PS-224), and a
+      //      persona-specific string here would identify every one of our
+      //      users on every Trusted-Types site. "dompurify" is the name the
+      //      most widely deployed sanitizer on the web registers, so on the
+      //      sites where it leaks at all it is the least distinguishing string
+      //      available -- it says "this page uses DOMPurify", which is
+      //      unremarkable and true of a large fraction of the web.
+      // ⭐ THE RESIDUAL IS STATED, NOT HIDDEN: creating ANY policy is in
+      // principle observable, and on an allowlist site we emit one violation
+      // we would not otherwise have emitted. That is the accepted trade --
+      // one unremarkable violation against losing the worker spoof entirely on
+      // every enforcing site. It is a REDUCTION either way: today the blocked
+      // string url fires a violation on EVERY worker construction.
+      var _TT = null;
+      try { _TT = G.trustedTypes || null; } catch (e) {}
+      var _ttpol, _tttried = false;
+      var _ttmk = function (u) {
+        // No Trusted Types, or nothing requires them: the string is what the
+        // constructor wants. Untouched path, byte-identical to pre-PS-357.
+        if (!_TT || typeof _TT.createPolicy !== "function") return u;
+        if (!_tttried) {
+          // ONE attempt, cached -- including the FAILURE. Retrying per worker
+          // would emit one violation per construction (the very flood this
+          // ticket was filed for) and broadcast a repeating pattern.
+          _tttried = true;
+          try {
+            _ttpol = _TT.createPolicy("dompurify", { createScriptURL: function (s) { return s; } });
+          } catch (e) { _ttpol = null; }
+        }
+        if (!_ttpol) return u;   // CSP refused us: hand back the string.
+        try { return _ttpol.createScriptURL(u); } catch (e) { return u; }
+      };
+
+      // Applied HERE, at the single choke point every payload url flows
+      // through, rather than at the three construct sites -- one seam cannot
+      // drift out of step with itself, and a fourth sink added later inherits
+      // it for free. The value handed on is a TrustedScriptURL, which the NEXT
+      // link in the chain reads with `String(url)` exactly as it read a string.
+      var mkurlraw = mkurl;
+      mkurl = function (body) { return _ttmk(mkurlraw(body)); };
+
       // This module's one-module payload fragment, rebuilt per construction.
       // It carries the leaf's source and the installer's own source — and
       // nothing else. The next link in the chain prepends its own fragment to
@@ -593,7 +691,34 @@ def realm_bootstrap_js(
               }
             }
             if (/^https?:/i.test(s)) {
-              var body = BOOT + "\ntry{importScripts(" + JSON.stringify(s) + ");}catch(e){}";
+              // ⚠️ `importScripts` IS ITSELF A TRUSTED TYPES SINK, and it runs
+              // in the WORKER realm, not this one. MEASURED in real Chromium:
+              // a blob worker inherits its creator's CSP, so under
+              // `require-trusted-types-for 'script'` a bare
+              // `importScripts("https://…")` inside the payload throws
+              // TypeError ("This document requires 'TrustedScriptURL'
+              // assignment") -- and the console line it emits is sourced to
+              // the BLOB url, which is exactly the confusing symptom the
+              // operator reported.
+              //
+              // Minting the outer blob url is therefore NOT sufficient: the
+              // worker would be created and then immediately fail to load the
+              // page's real script, which BREAKS THE PAGE -- strictly worse
+              // than the masking gap this ticket is about. So the payload
+              // carries its own guarded mint, resolved in the worker realm
+              // where `self.trustedTypes` is the worker's own factory.
+              //
+              // The shape mirrors `_ttmk`: one attempt, cached, and on any
+              // failure fall back to the plain string so a realm that does NOT
+              // enforce behaves exactly as before. The inner `catch` around
+              // importScripts is retained from the original.
+              var body = BOOT +
+                "\ntry{var __u=" + JSON.stringify(s) + ";" +
+                "try{var __t=self.trustedTypes;" +
+                "if(__t&&typeof __t.createPolicy===\"function\"){" +
+                "var __p=__t.createPolicy(\"dompurify\",{createScriptURL:function(x){return x;}});" +
+                "if(__p)__u=__p.createScriptURL(__u);}}catch(e){}" +
+                "importScripts(__u);}catch(e){}";
               return _Ref.construct(Orig, [mkurl(body), options], W);
             }
             if (/^blob:|^data:/i.test(s)) {%(blob_resolve)s
