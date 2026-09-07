@@ -206,6 +206,15 @@ _BAD_TARGET_CHARS = re.compile(r"[\x00-\x20\x7f-\x9f]")
 def _http_connect_target(host: str, port: int) -> str:
     """Render ``host:port`` for an HTTP request line, or REFUSE.
 
+    ⭐ THE CONTRACT IS ON THE RETURN VALUE, NOT ON THE ARGUMENT: the string
+    this returns contains no character a request line cannot carry. State it
+    that way and keep it that way -- an invariant on the argument is exactly
+    what a later transform slips past, which is not hypothetical here. The
+    IDNA step below was inserted between the guard and the return and
+    re-introduced a SP the guard had just rejected, because the guard was
+    written about the input. Any step added to this function must be followed
+    by a check of what it PRODUCED.
+
     ⛔ ``host`` IS UNTRUSTED, AND THIS IS THE ONLY PLACE THAT SAYS SO.
     It arrives from the local SOCKS handshake (`_read_local_handshake`) as a
     length-prefixed byte string that is `.decode()`d with no validation at all.
@@ -274,6 +283,27 @@ def _http_connect_target(host: str, port: int) -> str:
             host = host.encode("idna").decode("ascii")
         except (UnicodeError, UnicodeDecodeError):
             raise _ConnectRejected(_REP_GENERAL_FAILURE) from None
+        # ⛔ RE-CHECK, ON THE TRANSFORM'S OUTPUT. `.encode("idna")` is not a
+        # pure encoding: it runs nameprep (RFC 3491), whose NFKC / RFC 3454
+        # mapping tables fold a set of codepoints -- U+00A0 NO-BREAK SPACE among
+        # them -- to a plain SP, which is the request-target delimiter. None of
+        # them is in `_BAD_TARGET_CHARS`, so they PASS the check above and are
+        # CREATED by the step between. Validating only the INPUT leaves the
+        # guard blind to what the transform produces.
+        #
+        # Measured here exhaustively over U+0080-U+10FFFF: 67 codepoints reach a
+        # SP this way. CR and LF are NOT reachable from any of them, so no header
+        # can be appended and no second request smuggled -- the previous round's
+        # fix stays closed and this is a strictly narrower hole. What it IS is
+        # TARGET CONFUSION: `evil.example\u00a0ignored` renders
+        # `CONNECT evil.example ignored:443`, and a proxy parsing its request
+        # line per RFC 7230 takes the first token -- dialling `evil.example` on
+        # its DEFAULT port, not the port asked for, then handing that socket back
+        # as the requested tunnel. The request line and the `Host:` header below
+        # are still identical to each other; they diverge AT THE PROXY'S PARSER,
+        # downstream of this helper.
+        if _BAD_TARGET_CHARS.search(host):
+            raise _ConnectRejected(_REP_GENERAL_FAILURE)
     return f"{host}:{port}"
 
 

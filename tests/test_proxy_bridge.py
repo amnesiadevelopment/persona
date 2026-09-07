@@ -1287,6 +1287,49 @@ def test_an_IDN_destination_reaches_the_http_proxy_as_punycode():
         upstream.join(timeout=5)
 
 
+def test_a_nameprep_folded_space_cannot_smuggle_a_target_past_the_guard():
+    """The IDNA transform CREATES a character the guard just rejected.
+
+    `_BAD_TARGET_CHARS` was checked on the INPUT and `.encode("idna")` ran after
+    it. That encode is not a pure encoding -- it runs nameprep (RFC 3491), whose
+    NFKC / RFC 3454 mapping tables fold 67 codepoints (measured exhaustively
+    over U+0080-U+10FFFF) to a plain SP. U+00A0 is not in `[\x00-\x20\x7f-\x9f]`,
+    so it sails through the guard and comes out as the one character the guard
+    exists to keep out of a request line.
+
+    ⚠ THIS IS NARROWER THAN THE CRLF CASE ABOVE, DELIBERATELY. Nameprep
+    produces no CR and no LF from anything, so no header can be appended and no
+    second request smuggled. What survives is TARGET CONFUSION: SP is the
+    request-target delimiter, so a proxy parsing per RFC 7230 takes the first
+    token and dials `attacker-chosen.example` on its DEFAULT port -- not the
+    port the browser asked for -- then hands that socket back as the tunnel the
+    browser requested.
+
+    Asserted on the bytes the UPSTREAM OBSERVED (AC1), not on the helper's
+    return value: the point is what reached the operator's authenticated proxy.
+    """
+    hostile = "attacker-chosen.example\u00a0the-rest-is-ignored".encode()
+    upstream, reply, client, bridge = _run_http_bridge_to(hostile)
+    try:
+        head = upstream.request_head or b""
+        if head:
+            target = head.split(b"\r\n", 1)[0].split(b" ")[1:-1]
+            assert len(target) == 1, (
+                f"the request-target reaching the proxy contains a SPACE, so the "
+                f"proxy resolves a name and port the bridge never rendered: "
+                f"{head!r}"
+            )
+        assert len(reply) >= 2, f"the browser got no SOCKS reply at all: {reply!r}"
+        assert reply[1] != 0x00, (
+            f"a target the bridge could not render was reported to the browser "
+            f"as an OPEN TUNNEL: reply={reply!r}"
+        )
+    finally:
+        client.close()
+        bridge.stop()
+        upstream.join(timeout=5)
+
+
 def test_THE_CONTROL_the_same_IDN_host_already_worked_over_socks5():
     """The control for the test above, IN THE SAME RUN.
 
