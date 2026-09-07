@@ -1,0 +1,87 @@
+==============================================================================
+FALSIFICATION — both predicates driven to BOTH verdicts
+==============================================================================
+  [PASS] stock rect x=8 is on the 1/64 lattice
+  [PASS] stock rect x=60.109375 is on the lattice
+  [PASS] stock exempt rect x=13.296875 is on the lattice
+  [PASS] ENGINE rect x=7.999754428863525 is OFF the lattice
+  [PASS] ENGINE rect x=60.108951568603516 is OFF the lattice
+  [PASS] stock measureText width 172.1083984375 is float32-exact
+  [PASS] stock actualBoundingBoxRight 171.90673828125 is float32-exact
+  [PASS] stock actualBoundingBoxLeft -1 is float32-exact
+  [PASS] ENGINE (layer ON) 171.9077136995075 is NOT float32-exact
+  [PASS] ENGINE (layer ON) 172.10937500000003 is NOT float32-exact
+  [PASS] ENGINE (layer OFF) -9.913113367801893e-05 is NOT float32-exact
+
+  11/11 — both predicates demonstrated in BOTH states on measured values.
+
+==============================================================================
+SCORED — PS-344 measured readings (published 152 vs version-matched stock)
+==============================================================================
+build   seed   lyr  realm               rect off/n  metrics off/n neg
+---------------------------------------------------------------------
+ENGINE  24601  ON   iframe_about_blank  4/4         2/3           0  <-- violates
+ENGINE  24601  ON   iframe_same_origin  4/4         2/3           0  <-- violates
+ENGINE  24601  ON   iframe_srcdoc       4/4         2/3           0  <-- violates
+ENGINE  24601  ON   page                4/4         2/3           0  <-- violates
+ENGINE  24601  ON   worker_blob         0/0         0/3           0
+ENGINE  24601  ON   worker_in_iframe    0/0         0/3           0
+ENGINE  24601  ON   worker_nested       0/0         0/3           0
+ENGINE  24601  OFF  iframe_about_blank  4/4         3/3           2  <-- violates
+ENGINE  24601  OFF  iframe_same_origin  4/4         3/3           2  <-- violates
+ENGINE  24601  OFF  iframe_srcdoc       4/4         3/3           2  <-- violates
+ENGINE  24601  OFF  page                4/4         3/3           2  <-- violates
+ENGINE  24601  OFF  worker_blob         0/0         0/3           0
+ENGINE  24601  OFF  worker_in_iframe    0/0         0/3           0
+ENGINE  24601  OFF  worker_nested       0/0         0/3           0
+ENGINE  5150   ON   iframe_about_blank  4/4         3/3           0  <-- violates
+ENGINE  5150   ON   iframe_same_origin  4/4         3/3           0  <-- violates
+ENGINE  5150   ON   iframe_srcdoc       4/4         3/3           0  <-- violates
+ENGINE  5150   ON   page                4/4         3/3           0  <-- violates
+ENGINE  5150   ON   worker_blob         0/0         0/3           0
+ENGINE  5150   ON   worker_in_iframe    0/0         0/3           0
+ENGINE  5150   ON   worker_nested       0/0         0/3           0
+ENGINE  5150   OFF  iframe_about_blank  4/4         3/3           2  <-- violates
+ENGINE  5150   OFF  iframe_same_origin  4/4         3/3           2  <-- violates
+ENGINE  5150   OFF  iframe_srcdoc       4/4         3/3           2  <-- violates
+ENGINE  5150   OFF  page                4/4         3/3           2  <-- violates
+ENGINE  5150   OFF  worker_blob         0/0         0/3           0
+ENGINE  5150   OFF  worker_in_iframe    0/0         0/3           0
+ENGINE  5150   OFF  worker_nested       0/0         0/3           0
+STOCK   24601  ON   iframe_about_blank  0/4         0/3           0
+STOCK   24601  ON   iframe_same_origin  0/4         0/3           0
+STOCK   24601  ON   iframe_srcdoc       0/4         0/3           0
+STOCK   24601  ON   page                0/4         0/3           0
+STOCK   24601  ON   worker_blob         0/0         0/3           0
+STOCK   24601  ON   worker_in_iframe    0/0         0/3           0
+STOCK   24601  ON   worker_nested       0/0         0/3           0
+STOCK   24601  OFF  iframe_about_blank  0/4         0/3           0
+STOCK   24601  OFF  iframe_same_origin  0/4         0/3           0
+STOCK   24601  OFF  iframe_srcdoc       0/4         0/3           0
+STOCK   24601  OFF  page                0/4         0/3           0
+STOCK   24601  OFF  worker_blob         0/0         0/3           0
+STOCK   24601  OFF  worker_in_iframe    0/0         0/3           0
+STOCK   24601  OFF  worker_nested       0/0         0/3           0
+STOCK   5150   ON   iframe_about_blank  0/4         0/3           0
+STOCK   5150   ON   iframe_same_origin  0/4         0/3           0
+STOCK   5150   ON   iframe_srcdoc       0/4         0/3           0
+STOCK   5150   ON   page                0/4         0/3           0
+STOCK   5150   ON   worker_blob         0/0         0/3           0
+STOCK   5150   ON   worker_in_iframe    0/0         0/3           0
+STOCK   5150   ON   worker_nested       0/0         0/3           0
+STOCK   5150   OFF  iframe_about_blank  0/4         0/3           0
+STOCK   5150   OFF  iframe_same_origin  0/4         0/3           0
+STOCK   5150   OFF  iframe_srcdoc       0/4         0/3           0
+STOCK   5150   OFF  page                0/4         0/3           0
+STOCK   5150   OFF  worker_blob         0/0         0/3           0
+STOCK   5150   OFF  worker_in_iframe    0/0         0/3           0
+STOCK   5150   OFF  worker_nested       0/0         0/3           0
+
+==============================================================================
+TOTALS
+==============================================================================
+  ENGINE  rect off-lattice  64/64     TextMetrics off-float32  44/84
+  STOCK   rect off-lattice   0/64     TextMetrics off-float32   0/84
+
+  control (this session, stock Chromium 152.0.7977.82, ps365_domain_probe.html):
+           rect off-lattice   0/6008   TextMetrics off-float32   0/1008

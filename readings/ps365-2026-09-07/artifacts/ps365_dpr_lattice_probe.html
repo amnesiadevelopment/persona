@@ -1,0 +1,105 @@
+<!doctype html>
+<html><body><div id=host></div><span id=sp>ranged text sample</span>
+<!--
+PS-365 rework — the DEVICE-SCALE boundary control for INVARIANT 1.
+
+WHY THIS EXISTS
+  The committed control (ps365_domain_probe.html) established "0 / 6008 rect
+  values off the 1/64 lattice" on stock Chromium. It never varied device scale
+  factor. The code review showed that stock Chromium VIOLATES the CSS-space
+  1/64 invariant in the thousands at non-integer scale, and persona itself
+  ships --force-device-scale-factor (process.py ~1253, from the host's
+  Windows DPI / macOS backing scale). So the committed invariant is a property
+  of stock Blink AT dpr 1, not of stock Blink.
+
+  This probe measures the SAME rect values under a scale sweep against THREE
+  candidate lattices, so the boundary is established by measurement rather
+  than asserted:
+
+    css_1_64     |v*64      - round()| < eps    the committed claim
+    dev_1_64     |v*dpr*64  - round()| < eps    device space, naive
+    dev_exact    exists integer n: f32(n/64/dpr) == v   device space, EXACT
+
+  dev_exact is the load-bearing one, and the epsilon is why the other two
+  are not. Blink divides the device-space LayoutUnit by the scale factor and
+  stores the CSS-pixel result through a FLOAT. That store DISCARDS bits, so
+  multiplying the widened double back by dpr*64 cannot recover an integer in
+  general — only to within a float32 ulp, which at a coordinate near 4000 is
+  far above any fixed epsilon. An epsilon-based device test therefore reports
+  violations that are an artifact of its own tolerance. dev_exact replays the
+  forward pipeline instead and demands exact equality.
+
+RUN (one scale per invocation; ps365_dpr_sweep.sh drives the sweep):
+  chromium --headless --disable-gpu --no-sandbox --enable-logging=stderr \
+           --force-device-scale-factor=$S --virtual-time-budget=6000 \
+           file://$PWD/ps365_dpr_lattice_probe.html 2>&1 | grep -o 'PS365DPR .*'
+
+READING: a lattice is a usable detector invariant only if its violation count
+is 0 at EVERY scale. One non-zero cell disqualifies it.
+-->
+<script>
+const host = document.getElementById('host');
+const f32 = new Float32Array(1);
+const toF32 = v => { f32[0] = v; return f32[0]; };
+const isF32 = v => toF32(v) === v;
+
+// Same geometry as the committed control, so the two are directly comparable.
+const rectVals = [];
+for (let i = 0; i < 500; i++) {
+  const d = document.createElement('div');
+  d.style.cssText = 'position:relative;width:' + (5 + i * 0.37) + 'px;height:' +
+    (2 + (i % 11) * 0.13) + 'px;margin-left:' + ((i * 7) % 29) + 'px;font-size:' +
+    (9 + (i % 20)) + 'px';
+  d.textContent = 'Wg';
+  host.appendChild(d);
+  const r = d.getBoundingClientRect();
+  rectVals.push(r.x, r.y, r.width, r.height, r.top, r.left, r.right, r.bottom);
+  for (const c of d.getClientRects()) rectVals.push(c.x, c.y, c.width, c.height);
+}
+const rg = document.createRange();
+rg.selectNodeContents(document.getElementById('sp'));
+const rr = rg.getBoundingClientRect();
+rectVals.push(rr.x, rr.y, rr.width, rr.height);
+for (const c of rg.getClientRects()) rectVals.push(c.x, c.y, c.width, c.height);
+
+const dpr = window.devicePixelRatio;
+
+// --- the three candidate lattices -------------------------------------------
+// eps is RELATIVE, not absolute: at dpr 3 a coordinate near 4000 carries a
+// double ulp far above any fixed 1e-9, so an absolute epsilon would
+// manufacture violations out of representation error alone.
+const eps = v => Math.max(1e-9, Math.abs(v) * 1e-12);
+const onCss = v => { const p = v * 64;       return Math.abs(p - Math.round(p)) < eps(p); };
+const onDev = v => { const p = v * dpr * 64; return Math.abs(p - Math.round(p)) < eps(p); };
+
+// The EXACT form, and the one that matters. No epsilon at all: derive the
+// candidate integer count of 1/64 device px, then REPLAY Blink's forward
+// pipeline (divide by dpr, store through a float) and demand exact equality.
+// Neighbours are tried because the derivation itself rounds.
+const onExact = v => {
+  const n = Math.round(v * dpr * 64);
+  for (const c of [n - 1, n, n + 1]) if (toF32(c / 64 / dpr) === v) return true;
+  return false;
+};
+
+const off = (pred) => rectVals.filter(v => !pred(v));
+const offCss = off(onCss), offDev = off(onDev), offExact = off(onExact);
+
+const sample = arr => arr.slice(0, 3).map(v => ({
+  v, css: v * 64, dev: v * dpr * 64
+}));
+
+console.log('PS365DPR ' + JSON.stringify({
+  dpr,
+  probed: rectVals.length,
+  css_1_64:  { violations: offCss.length,   sample: sample(offCss) },
+  dev_1_64:  { violations: offDev.length,   sample: sample(offDev) },
+  dev_exact: { violations: offExact.length, sample: sample(offExact) },
+  // Is every CSS-space value itself float32-exact? If Blink stores the
+  // divided result in a float it must be — an independent fourth reading.
+  rect_all_f32: rectVals.filter(v => !isF32(v)).length,
+  // The raw values, so the sweep driver can re-score every formulation
+  // OUT of the page rather than trusting the page's own arithmetic.
+  raw_values: rectVals,
+}));
+</script></body></html>

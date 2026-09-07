@@ -11,8 +11,22 @@ against the SAME registry file. That is the honest in-process stand-in for a
 restart, and it is exact on the point at issue: the new launcher's dicts are
 empty, exactly as a new process's would be, so it can only answer from the
 persisted record. What it does NOT reproduce is a real browser outliving a real
-persona — that is exercised by hand on the user's path (PS-17), because no unit
-test crosses that boundary.
+persona — no test IN THIS FILE crosses that boundary.
+
+⭐ THAT BOUNDARY IS NOW CROSSED AUTOMATICALLY, and this paragraph used to end
+"that is exercised by hand on the user's path (PS-17), because no unit test
+crosses that boundary." PS-348 retired the second half of that sentence:
+``tests/test_unclean_exit_survivors.py`` forks a REAL child persona, has it
+register a REAL surviving process, SIGKILLs the persona, and asks a genuinely
+new process what it believes. Read the two files together — this one pins the
+launcher's LOGIC cheaply and in milliseconds, that one pins the PROCESS
+BOUNDARY the logic is only worth anything across.
+
+⚠️ AND THE SPLIT IS LOAD-BEARING, not tidiness. Measured on PS-348 by making
+the registry in-memory again (i.e. reproducing PS-223 exactly): all 17 tests in
+THIS file passed, and so did all 75 across the whole launch-guard neighbourhood.
+Only the cross-process file went red. So do not read a green run of this file as
+evidence that the durability survives — by construction it cannot be.
 """
 
 import os

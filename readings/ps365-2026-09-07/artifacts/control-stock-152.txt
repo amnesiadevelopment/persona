@@ -1,0 +1,1 @@
+PS365 {"invariant1_rect_lattice":{"probed":6008,"violations":0,"sample":[]},"invariant2_textmetrics_f32":{"probed":1008,"violations":0,"sample":[]},"negative_metrics":0}", source: file:///workspace/persona/readings/ps365-2026-09-07/artifacts/ps365_domain_probe.html (83)

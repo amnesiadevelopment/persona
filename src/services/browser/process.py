@@ -72,6 +72,7 @@ from .launch_policy import (  # noqa: F401
     _proxy_timezone,
     _timezone_for,
     _windows_timezone_key,
+    declared_locale,
 )
 
 logger = get_logger("browser.process")
@@ -395,23 +396,37 @@ def _profile_locale(profile: Profile, proxy) -> str:
     try:
         return _locale_for(code)
     except LocaleUnderivableError as e:
-        # Names the COUNTRY, and says the remedy is a code change rather than a
-        # re-check — the same two things the TimezoneUnderivableError arm below
-        # says, and for the same reason: the proxy's check may have passed
-        # moments ago and will keep passing, because what is missing is a table
-        # row. Sending this operator to "check the proxy" wastes their time.
+        # SECOND, NEVER FIRST — the same precedence rule the zone half states at
+        # length in ``_proxy_timezone`` and says not to reorder, applied here.
+        # The table is the product's own derivation and always wins; the
+        # declaration exists for the countries the table cannot answer for, not
+        # because an operator's typing outranks a shipped row. Because it is
+        # consulted only inside this refusal arm, NO currently-launching profile
+        # changes behaviour at all.
         #
-        # It names BOTH tables. Adding one row alone is precisely how this class
-        # of defect is reintroduced, and the correspondence suite fails it in
-        # either direction, so the message asks for the pair.
+        # Gated on the country it was declared for (``declared_locale``), which
+        # also supplies the region half — so a declaration retires itself when a
+        # backconnect exit moves and the launch refuses again, exactly as the
+        # zone half does.
+        declared = declared_locale(proxy)
+        if declared:
+            return declared
+        # Names the COUNTRY, and says the remedy is NOT a re-check — the proxy's
+        # check may have passed moments ago and will keep passing, because what
+        # is missing is a table row. It names BOTH tables (adding one row alone
+        # is precisely how this class of defect is reintroduced, and the
+        # correspondence suite fails it in either direction) and, since PS-332,
+        # the DECLARATION first — because that is the remedy the operator can
+        # reach without shipping a build.
         raise LocaleUnderivableError(
             f"Profile {profile.name!r} has proxy {profile.proxy!r} assigned and its "
             f"exit country is known ({code.upper()}), "
             "but no locale is known for that country. Refusing to launch: falling "
             "back to en-US would declare an American-English browser beside the "
             "exit's own non-US clock — the 'spoofed location' tell this product "
-            "exists to avoid. Re-checking will NOT help; add a row for that "
-            "country to _COUNTRY_LOCALE *and* the matching _COUNTRY_TZ row "
+            "exists to avoid. Re-checking will NOT help; declare the exit's "
+            "language in the proxy editor, or add a row for that country to "
+            "_COUNTRY_LOCALE *and* the matching _COUNTRY_TZ row "
             "(launch_policy.py) to resolve it."
         ) from e
 
@@ -763,6 +778,114 @@ def spawn_browser(profile: Profile, *, in_process: bool = False) -> subprocess.P
     # can sit this early while `_mobile_chromium_version` cannot.
     brand_version = _chromium_brand_version(profile)
 
+    # ⭐ WHY THERE IS NO PROFILE MIGRATION ON THIS ARM, THOUGH THE FIREFOX ARM
+    # RUNS A FOUR-PART ONE ON EVERY LAUNCH. A RECORDED POSITION, ESTABLISHED BY
+    # MEASUREMENT (PS-341) — not an oversight, and not an untested assumption.
+    #
+    # The asymmetry is real and it is deliberate. `invisible_launch.py` calls
+    # `_migrate_profile_for_engine_build` on every Firefox launch because that
+    # engine genuinely misbehaves: its own docstring records that a profile
+    # seeded on firefox-18 makes firefox-19 SIGSEGV before the window paints, so
+    # `prefs.js` is dropped, `compatibility.ini` (the downgrade guard) is
+    # removed, and the addon startup cache is invalidated on a revert.
+    #
+    # ⛔ THE PARITY QUESTION IS NOT "WHY IS CHROMIUM MISSING FIREFOX'S GUARD".
+    # It is "does Chromium EXHIBIT THE BEHAVIOUR that guard defends against?"
+    # Only the second is a defect, and it was asked of a REAL ENGINE rather than
+    # reasoned about:
+    #
+    #   Launch a profile on personium-152.0.7977.75, move the engine BACKWARDS
+    #   to 148.0.7778.215 through the shipping operator gesture
+    #   (`updater.revert_to_previous_build`, what ui/app.py's rollback button
+    #   calls — not a hand-swap), relaunch THE SAME profile dir, and read both
+    #   what a RUNNING browser reports and what is left on disk — the two are
+    #   different strengths of evidence and the readings below say which is
+    #   which. Positive control on three independent axes: the version record
+    #   moved, the binary sha256 moved, and the page's own `navigator.userAgent`
+    #   major moved 152 -> 148.
+    #
+    #   * IT OPENS. No refusal, no crash, no SIGSEGV — the Firefox analogue does
+    #     not occur. Forward again (148 -> 152) opens too.
+    #   * CHROMIUM'S OWN DOWNGRADE HANDLING DOES NOT FIRE. `Last Version` is
+    #     WRITTEN and silently OVERWRITTEN (152 -> 148 -> 152); the engine
+    #     treats it as a record, not as a gate. `Default/` is neither renamed
+    #     nor recreated and no backup/reset directory appears.
+    #   * DERIVED STATE SURVIVES. `seed_profile_prefs`'s once-only guard is
+    #     never re-triggered, because nothing removes `Default/Preferences`.
+    #     ⚠️ THE EVIDENCE IS OF TWO DIFFERENT STRENGTHS AND THEY ARE NOT
+    #     INTERCHANGEABLE — a file that survives but is IGNORED is the same
+    #     outcome for the operator as one that was deleted, so only a LIVE read
+    #     settles that, and only three of these five were read live:
+    #       - LIVE, from the running browser on the OLDER build: the profile's
+    #         chosen search engine (`Brave (Default)` on
+    #         chrome://settings/searchEngines), the seeded bookmarks (present in
+    #         chrome://bookmarks), and the cookie jar (the sentinel written on
+    #         build N is served on build N−1).
+    #       - ON DISK ONLY: the Classic theme and dark mode
+    #         (`color_scheme2: 2`). Both are byte-identical across the change
+    #         and nothing renames, resets or removes the file holding them.
+    #         ⭐ That is enough for the question THIS arm actually asks —
+    #         `seed_profile_prefs` keys purely on `Default/Preferences`
+    #         EXISTING, so a surviving file is exactly what stops the operator's
+    #         choice being silently dropped. It is NOT the stronger claim that
+    #         the engine still honours those two values, which was not measured
+    #         here. Do not upgrade it to one without taking the reading.
+    #
+    # So NO MIGRATION IS OWED HERE, and adding one would be a fix for a state
+    # this engine does not enter. That is the whole position; the evidence is in
+    # `readings/ps341-2026-09-07/` and is re-read live by
+    # `tests/test_ps341_engine_continuity_live.py`.
+    #
+    # ⚠️ ONE CAPTURED NUMBER IS NOT EXPLAINED, AND IT IS LEFT OPEN ON PURPOSE.
+    # The legs read `matchMedia('(prefers-color-scheme: dark)').matches` as
+    # FALSE on BOTH builds, though the profile is seeded `color_scheme2: 2` and
+    # launched with `--force-dark-mode` (further down this same arg list). The
+    # obvious explanation — "`--force-dark-mode` is UI-level and does not drive
+    # `prefers-color-scheme`" — was CHECKED AND IS FALSE: on stock chromium
+    # 152, headless, each of the flag alone, the seeded pref alone, and both
+    # together give `dark=true`, against a fresh-profile negative control that
+    # correctly gives `false` (`scripts/ps341_dark_control.py`,
+    # `readings/ps341-2026-09-07/control-dark-mode.json`). Two variables move
+    # between that control and the legs — a STOCK engine vs the packaged
+    # fingerprint build, and headless vs headful-under-Xvfb — and one control
+    # cannot separate them, so the cause is genuinely NOT KNOWN.
+    # ⛔ NOTHING IN THIS POSITION TURNS ON IT: the value is identical on both
+    # builds, so it does not move across a build change and is not a continuity
+    # fact. It is written down rather than left bare in the reading so the next
+    # reader inherits the open question and the control that already ruled out
+    # its most plausible answer, instead of re-deriving both.
+    #
+    # ⚠️ ONE THING DOES MOVE, AND IT IS NOT A MIGRATION PROBLEM — SEE THAT TEST
+    # AND `gpu_ext.py`. The WebGL vendor/renderer pair a page reads CHANGES
+    # across a build change on the WINDOWS arm, which is the only arm where the
+    # ENGINE authors it (`ENGINE_AUTHORED_IDENTITY_ARMS` is
+    # `frozenset({"windows"})`, and that is where persona's own GPU layer
+    # deliberately stands down). Measured across 8 seeds, headful under CDP:
+    # 8/8 moved, and the two builds' card pools do not intersect AT ALL (148
+    # answers Intel integrated parts, 152 answers NVIDIA RTX parts). It is
+    # STABLE within a build — two launches of one build at one seed agree — so
+    # the move is attributable to the build change and to nothing else.
+    #
+    # ⛔ MACOS IS THE CONTRAST, NOT A SECOND INSTANCE OF THIS, and the
+    # difference follows from the mechanism below rather than being an
+    # exception to it. `engine_authors_identity_for_engine_platform("macos")`
+    # is `False`, so `gpu_ext.py` renders `ENGINE_AUTHORS_IDENTITY` false into
+    # the content script there and persona writes the pair ITSELF from its own
+    # `MAC_GPUS` table (gpu_ext.py:969/:992). A table in persona's Python is
+    # not a table in the engine binary, so on macos this pair should be STABLE
+    # across a build change — for precisely the reason it is unstable on
+    # windows. ⚠️ THAT IS AN ARGUMENT, NOT A READING: the macos arm was NOT
+    # measured here (`scripts/ps341_gpu_seeds.py:60` defaults to
+    # `platform="windows"` and both call sites take the default, so all 8 seeds
+    # are windows). Do not restate it as measured without taking it.
+    #
+    # That is a LEVEL-2 (bit-stability across engine updates) continuity fact
+    # about an ENGINE-AUTHORED vector, and NOT something a profile migration
+    # could repair: the value is produced by a table compiled into the engine
+    # binary, so no amount of rewriting the profile directory changes it. It is
+    # recorded rather than fixed here on purpose — the fix, if one is wanted, is
+    # a decision about WHO AUTHORS that pair on those arms, which is
+    # `gpu_ext.py`'s question and not this launch path's.
     seed_profile_prefs(profile_dir, profile.search_engine)
 
     chosen = BookmarkStore().resolve_selection(
@@ -1078,6 +1201,62 @@ def spawn_browser(profile: Profile, *, in_process: bool = False) -> subprocess.P
             # "it's 8" is false for most of them.
             f"--fingerprint-hardware-concurrency="
             f"{hardware_concurrency_for(profile.fingerprint_seed, profile.hardware_generation)}",
+            # ⛔ THE SWITCH THAT MUST NEVER APPEAR IN THIS LIST: --disable-spoofing.
+            #
+            # A reader auditing the fingerprint switches will notice that patch
+            # 000 declares twelve and this launch passes six, and the natural
+            # next thought is "wire the rest". This one is the counter-example
+            # that makes that instinct wrong, and the reason is recorded HERE —
+            # beside the flags it sits among — rather than in a test, because
+            # this is where the question gets asked.
+            #
+            # --disable-spoofing is the most consumed switch in the whole patch
+            # set after --fingerprint itself: SEVEN patches read it — 003, 006,
+            # 011, 012, 013, 014 and 016.
+            #
+            # ⚠️ THE MECHANISM, because getting it wrong points the warning at
+            # the wrong form of the flag:
+            # it is a value-keyed selective disable, not a boolean kill switch.
+            # Every consumer tests the switch's VALUE for a token, never its
+            # mere presence. The dominant shape (003, 006, 012, 013, 014, 016)
+            # is:
+            #
+            #     if (HasSwitch(kFingerprint) &&
+            #         (!HasSwitch(kDisableSpoofing) ||
+            #          GetSwitchValueASCII(kDisableSpoofing).find("canvas")
+            #              == std::string::npos)) { ...spoof... }
+            #
+            # Trace the BARE flag (empty value) through it: HasSwitch is true,
+            # so the `!HasSwitch` arm is false; then "".find("canvas") returns
+            # npos, so the `== npos` arm is TRUE, the `||` is true, and THE
+            # SPOOFING STILL APPLIES. 011 is the only genuine `return ""`, and
+            # it inverts the test (`find("gpu") != npos`), which an empty value
+            # fails identically. Conclusion:
+            # bare --disable-spoofing is inert across all seven patches.
+            #
+            # ⛔ THE FORM THAT DOES THE DAMAGE IS THE VALUED ONE:
+            # --disable-spoofing=canvas,gpu,audio,font,clientrects
+            #
+            # The tokens are matched by SUBSTRING, one per masking family:
+            # `audio` (003) switches off the AudioContext sample-rate noise,
+            # `font` (006) the font masking, `gpu` (011) the GL
+            # vendor/renderer spoof, `canvas` (012, 013, 016) getImageData /
+            # toDataURL / measureText and WebGL readPixels, `clientrects`
+            # (014) the client-rects offset. That comma list is upstream's
+            # kill switch for the whole masking layer, present so a developer
+            # can A/B the patched engine against stock.
+            # The prohibition is on the VALUED form; the bare form is inert.
+            #
+            # (015 edits code INSIDE the guard 012 authored and adds no read of
+            # its own — it carries the constant on CONTEXT lines only, which is
+            # why the census counts seven consumers and not eight.)
+            #
+            # So its absence from this list is a DELIBERATE POSITION, not an
+            # oversight, and it is the one row of the switch census where
+            # "declared, consumed, and correctly never passed" is the finished
+            # state. Pinned by tests/test_engine_switch_matrix.py, which
+            # re-reads this paragraph so deleting it turns the suite red rather
+            # than silently converting a decision into an unexplained gap.
             f"--lang={lang}",
             f"--accept-lang={lang},{lang.split('-')[0]}",
             f"--load-extension={','.join(extensions)}",
