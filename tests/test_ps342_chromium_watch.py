@@ -820,3 +820,208 @@ def test_watcher_script_compiles():
     r = subprocess.run([sys.executable, "-m", "py_compile", str(WATCH)],
                        capture_output=True, text=True, encoding="utf-8")
     assert r.returncode == 0, r.stderr
+
+
+# ── the LAST red-and-silent path: we cannot read our own baseline ─────────────
+#
+# Round-3 MAJOR. `invalid_tag_result`'s docstring makes the argument: a cause
+# that stops us measuring must still travel the reporting path, because an
+# uncaught raise exits with a traceback, writes no `$GITHUB_OUTPUT`, files no
+# issue and uploads no artifact — red and SILENT, the failure mode this ticket
+# exists to end. That argument was applied to the two CLI flags (reachable only
+# from a hand dispatch) and NOT to `CURRENT_TAG.txt`, the one tag input EVERY
+# SCHEDULED RUN reads. These pin the asymmetry closed.
+
+
+def _break_current_tag(watch, monkeypatch, exc):
+    """Make `read_current_tag()` fail the way a real corrupt file does.
+
+    Patched at the function rather than by writing a bad file, so the test
+    cannot leave a broken `CURRENT_TAG.txt` behind for the rest of the session
+    if it fails mid-way — `test_current_tag_file_is_a_tag` in this same file
+    would then fail for an unrelated reason and send the reader somewhere wrong.
+    The failure MODES are the real ones (see the parametrize below).
+    """
+    def boom(path=None):
+        raise exc
+    monkeypatch.setattr(watch, "read_current_tag", boom)
+
+
+@pytest.mark.parametrize("exc", [
+    # An editor on Windows writing a BOM — the file still "looks" right.
+    ValueError("CURRENT_TAG.txt does not hold an ungoogled tag: '\ufeff152.0.7977.75-1'"),
+    # A bad rebase deleting it.
+    FileNotFoundError(2, "No such file or directory"),
+    # Saved as UTF-16. UnicodeDecodeError is a ValueError, NOT an OSError —
+    # this is here so the `except` clause cannot be narrowed to OSError alone.
+    UnicodeDecodeError("utf-8", b"\xff\xfe1", 0, 1, "invalid start byte"),
+    # A directory where the file should be.
+    IsADirectoryError(21, "Is a directory"),
+    PermissionError(13, "Permission denied"),
+])
+def test_an_unreadable_baseline_is_reported_not_a_traceback(
+        watch, tmp_path, monkeypatch, exc):
+    """A corrupt baseline must FILE 'I cannot read my own baseline'.
+
+    Before this, `main()` let `read_current_tag()` escape: rc was a traceback,
+    `$GITHUB_OUTPUT` was never written, so the workflow's "File or update the
+    report issue" step (`if: steps.watch.outputs.report == 'true'`) was SKIPPED
+    and the markdown the issue body is read from never existed. The watcher
+    stopped watching, on a schedule, and said nothing.
+    """
+    _break_current_tag(watch, monkeypatch, exc)
+    out, md, js = tmp_path / "out", tmp_path / "r.md", tmp_path / "r.json"
+
+    rc = watch.main(["--github-output", str(out), "--report-md", str(md),
+                     "--report-json", str(js)])
+
+    assert rc == 2, "a baseline we cannot read established nothing"
+    text = out.read_text(encoding="utf-8")
+    assert "status=baseline_unreadable" in text
+    assert "green=false" in text
+    assert "report=true" in text, "the refusal must still reach a human"
+    # every line of the outputs file is still a single key=value
+    for line in text.splitlines():
+        assert "=" in line, line
+    body = md.read_text(encoding="utf-8")
+    assert "NOTHING WAS MEASURED" in body
+    assert json.loads(js.read_text(encoding="utf-8"))["status"] == "baseline_unreadable"
+
+
+def test_an_unreadable_baseline_is_not_green_and_joins_no_green_set(watch):
+    """The central trap, re-asserted for the status this round adds."""
+    assert watch.BASELINE_UNREADABLE not in watch.GREEN_STATUSES
+    assert not watch.is_green(watch.BASELINE_UNREADABLE)
+    assert watch.exit_code_for(watch.BASELINE_UNREADABLE) == 2
+
+
+def test_an_unreadable_baseline_files_under_its_own_title(watch):
+    """Round 2's finding, applied to the status round 3 adds.
+
+    The issue title is the DEDUP KEY — the workflow matches an open issue by
+    EXACT title and comments instead of filing. So if a corrupt CURRENT_TAG.txt
+    borrowed the typo'd-dispatch title, whichever landed first would swallow the
+    other into a comment on itself, and a real broken baseline could sit
+    invisible under a dispatcher's typo.
+    """
+    baseline = watch.baseline_unreadable_result("CURRENT_TAG.txt … BOM")
+    typo = watch.invalid_tag_result("--tag", "152.0.7977.75")
+    outage = {"status": watch.DISCOVERY_FAILED, "current_tag": "152.0.7977.75-1",
+              "newest_tag": None}
+
+    titles = [watch.issue_title(r) for r in (baseline, typo, outage)]
+    assert len(set(titles)) == 3, titles
+    assert "\n" not in titles[0], "a newline in the title forges step outputs"
+    assert "CURRENT_TAG.txt" in titles[0]
+
+
+def test_an_unreadable_baseline_does_not_blame_upstream_or_the_dispatcher(watch):
+    """The three "we do not know" causes have three different remedies.
+
+    Saying "re-dispatch with the full N.N.N.N-N form" — INVALID_TAG's advice —
+    to someone whose repo file is corrupt sends them to a dispatch box that will
+    not help. Saying "could not reach the tag list" is simply false: upstream
+    was never contacted.
+    """
+    body = watch.render_report(
+        watch.baseline_unreadable_result(
+            "engine/patches/fingerprint/CURRENT_TAG.txt could not be read as a "
+            "tag — ValueError: BOM"))
+
+    assert "not an upstream problem" in body.lower()
+    assert "engine/patches/fingerprint/CURRENT_TAG.txt" in body
+    assert "REBASING.md" in body, "tell the reader what to restore it TO"
+    assert "re-dispatch" not in body.lower(), (
+        "that is INVALID_TAG's remedy and it does not apply to a repo file"
+    )
+
+
+def test_workflow_verdict_step_names_the_unreadable_baseline_case(watch):
+    """A status the YAML does not name falls to the catch-all, which is red but
+    prints "the watch step produced no status at all" — false, and it sends the
+    reader hunting a broken step instead of a corrupt file."""
+    y = WORKFLOW.read_text(encoding="utf-8")
+    assert "baseline_unreadable)" in y
+    tail = y.split("baseline_unreadable)", 1)[1]
+    assert "exit 1" in tail, "it must fail the run, not fall through green"
+    assert "CURRENT_TAG.txt" in y
+
+
+def test_a_readable_baseline_still_takes_the_normal_path(watch, tmp_path):
+    """The guard must not swallow the happy path it sits in front of."""
+    out = tmp_path / "out"
+    rc = watch.main(["--tag", "152.0.7977.75-1", "--github-output", str(out)])
+    text = out.read_text(encoding="utf-8")
+
+    assert "status=baseline_unreadable" not in text, text
+    assert "current_tag=%s" % watch.read_current_tag() in text
+    assert rc in (0, 1, 2)
+
+
+# ── every comment that points at a symbol must point at one that exists ───────
+
+
+def test_no_comment_cites_a_symbol_this_file_does_not_define(watch):
+    """Round 3's BLOCKER, pinned so it cannot recur a third time.
+
+    A comment read `see \\`_validated_tag\\`` describing the `$GITHUB_OUTPUT`
+    forgery guard. The guard was real; `_validated_tag` was not, and never had
+    been anywhere in the repo. This file's whole argument is that a FALSE
+    SENTENCE WRAPPED AROUND A CORRECT MEASUREMENT is the defect — so a dangling
+    `see X` sitting on top of the safety machinery is that defect in miniature,
+    and a reader who follows the pointer and finds nothing is left unsure the
+    guard exists at all.
+
+    Scoped to backtick-quoted `identifier`-shaped tokens inside COMMENTS. A
+    citation resolves if the name is defined in this module, is a builtin, is
+    imported here, or appears as a string literal in the source (a dict key like
+    `probe_log` is a real referent, not an invented one) — so prose in backticks
+    (`152.0.7977.75-1`, `key=value`) and real external names both pass, and only
+    a name that exists NOWHERE in the file fails. That is exactly the shape of
+    the defect: `_validated_tag` appeared in the repo only in the comment citing
+    it.
+    """
+    import ast
+    import builtins
+    import re
+    import tokenize
+
+    source = WATCH.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    defined = {n.name for n in ast.walk(tree)
+               if isinstance(n, (ast.FunctionDef, ast.ClassDef))}
+    defined |= {t.id for n in ast.walk(tree) if isinstance(n, ast.Assign)
+                for t in n.targets if isinstance(t, ast.Name)}
+    defined |= {a.asname or a.name.split(".")[0]
+                for n in ast.walk(tree) if isinstance(n, ast.Import)
+                for a in n.names}
+    defined |= {a.asname or a.name
+                for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)
+                for a in n.names}
+    defined |= set(dir(builtins))
+    # String literals: a dict key such as `probe_log` is a real referent the
+    # reader can find, not an invented symbol. Included so the check stays
+    # narrow — it must fire on names that exist NOWHERE, and nothing else.
+    defined |= {n.value for n in ast.walk(tree)
+                if isinstance(n, ast.Constant) and isinstance(n.value, str)}
+
+    # `foo` or `foo()` — an identifier, optionally called. Nothing else.
+    cite = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)(\(\))?$")
+    dangling = []
+    with open(WATCH, "rb") as fh:
+        for tok in tokenize.tokenize(fh.readline):
+            if tok.type != tokenize.COMMENT:
+                continue
+            for quoted in re.findall(r"`([^`]+)`", tok.string):
+                m = cite.match(quoted.strip())
+                if not m:
+                    continue          # prose, a tag, a key=value — not a symbol
+                name = m.group(1)
+                if name in defined:
+                    continue
+                dangling.append((tok.start[0], quoted))
+
+    assert not dangling, (
+        "these comments cite a symbol that does not exist — name the real thing "
+        "or drop the parenthetical: %r" % dangling
+    )

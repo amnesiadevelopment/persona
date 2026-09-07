@@ -73,6 +73,9 @@ STATUSES AND THIS SCRIPT'S OWN EXIT CODE
     invalid_tag         2   an input we were HANDED is not a tag, so there was
                             nothing to look up. Also "we do not know" — but a
                             DIFFERENT cause, and therefore a different status.
+    baseline_unreadable 2   we cannot read CURRENT_TAG.txt, so we do not know
+                            what "our current target" even is. Nothing was
+                            looked up and nothing was measured.
 
 ⚠️ WHY `invalid_tag` IS ITS OWN STATUS RATHER THAN A SECOND USE OF
 `discovery_failed` — the three non-green "we do not know" cases are not
@@ -89,6 +92,24 @@ interchangeable, and the reason is mechanical, not stylistic:
     outage's title would swallow a real googlesource outage that night into a
     comment on a typo. Different news must own a different record; that is the
     whole reason the title carries the status.
+  * `baseline_unreadable` is the same argument applied to OUR OWN file rather
+    than to an input: `CURRENT_TAG.txt` missing or corrupt is neither an
+    upstream outage nor a dispatcher's typo. Reusing `invalid_tag` for it would
+    put a corrupt repo file and a typo'd dispatch box under ONE title — so the
+    day someone fat-fingers the dispatch, an unreadable baseline is suppressed
+    into a comment on it — AND would tell the reader "re-dispatch with the full
+    N.N.N.N-N form", which is advice they cannot act on for a file on main.
+
+⚠️ AND WHY `baseline_unreadable` IS A REPORT RATHER THAN A TRACEBACK. This was
+the LAST red-and-silent path in the script: `read_current_tag()` raises, and an
+uncaught raise writes no `$GITHUB_OUTPUT`, so the workflow's "File or update the
+report issue" step is SKIPPED (`report` is empty), the markdown is never written
+and the artifact upload finds nothing. The run goes red in an Actions tab nobody
+is subscribed to — which this workflow's own comment names as NOT "a form a
+human actually receives". A watcher whose baseline is corrupt must file *I
+cannot read my own baseline*, not vanish. Note it is reached by EVERY SCHEDULED
+RUN (the CLI flags are only reachable by a hand-dispatch), which is why leaving
+it raising was the wrong asymmetry.
 
 The three exit values mirror the probe's own contract deliberately, so the
 distinction the probe is careful to preserve survives one more layer of wiring.
@@ -112,6 +133,9 @@ import urllib.request
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PATCH_DIR = os.path.join(REPO_ROOT, "engine", "patches", "fingerprint")
 CURRENT_TAG_FILE = os.path.join(PATCH_DIR, "CURRENT_TAG.txt")
+# The repo-relative form, for the report a human reads: the absolute path is a
+# runner's scratch directory and means nothing to someone reading a filed issue.
+CURRENT_TAG_REL = "engine/patches/fingerprint/CURRENT_TAG.txt"
 PROBE = os.path.join(REPO_ROOT, "scripts", "ps299_rebase_probe.py")
 REBASING_DOC = "engine/patches/fingerprint/REBASING.md"
 
@@ -132,6 +156,11 @@ DISCOVERY_FAILED = "discovery_failed"
 # separate remedy, and — load-bearing — a separate issue title, which is the
 # dedup key the workflow matches on.
 INVALID_TAG = "invalid_tag"
+# WE CANNOT READ OUR OWN BASELINE. `CURRENT_TAG.txt` is missing, unreadable, or
+# does not hold a tag, so there is no "our current target" to compare anything
+# against. Third distinct cause, third distinct status, for the same mechanical
+# reason INVALID_TAG is not DISCOVERY_FAILED — see the docstring above.
+BASELINE_UNREADABLE = "baseline_unreadable"
 
 # Which statuses mean "we know our patches are fine". Note what is NOT here:
 # UNMEASURED. This set is the single place that question is answered, and the
@@ -145,6 +174,7 @@ EXIT_FOR_STATUS = {
     UNMEASURED: 2,
     DISCOVERY_FAILED: 2,
     INVALID_TAG: 2,
+    BASELINE_UNREADABLE: 2,
 }
 
 
@@ -304,6 +334,7 @@ HEADLINE = {
     UNMEASURED: "A NEWER ungoogled-chromium exists — WE COULD NOT MEASURE IT",
     DISCOVERY_FAILED: "COULD NOT ASK what the newest ungoogled-chromium is",
     INVALID_TAG: "THE TAG WE WERE GIVEN IS NOT A TAG — nothing was looked up",
+    BASELINE_UNREADABLE: "WE CANNOT READ OUR OWN BASELINE — nothing was looked up",
 }
 
 
@@ -332,6 +363,12 @@ def issue_title(result):
         return "[chromium-watch] could not reach the ungoogled-chromium tag list"
     if status == INVALID_TAG:
         return "[chromium-watch] the requested tag is not a valid ungoogled tag"
+    if status == BASELINE_UNREADABLE:
+        # NOT the INVALID_TAG title. A corrupt CURRENT_TAG.txt on main and a
+        # typo in a dispatch box are different news with different remedies,
+        # and this title is the dedup key: sharing one would let whichever
+        # landed first swallow the other into a comment on itself.
+        return "[chromium-watch] cannot read our own baseline (CURRENT_TAG.txt)"
     return "[chromium-watch] ungoogled %s vs our %s — %s" % (
         result.get("newest_tag") or "?", result["current_tag"], status
     )
@@ -350,7 +387,7 @@ def headline(result):
     status = result["status"]
     text = HEADLINE[status]
     if result.get("forced") and status not in (UP_TO_DATE, DISCOVERY_FAILED,
-                                               INVALID_TAG):
+                                               INVALID_TAG, BASELINE_UNREADABLE):
         newest, current = result.get("newest_tag"), result.get("current_tag")
         relation = "an OLDER" if (newest and current and is_newer(current, newest)) \
             else "a HAND-PICKED"
@@ -476,6 +513,35 @@ def render_report(result):
             "that a typo here can never suppress a real upstream outage into a "
             "comment on it."
         )
+    elif status == BASELINE_UNREADABLE:
+        lines.append(
+            "⛔ **NOTHING WAS MEASURED — and nothing was even looked up.** The "
+            "watcher could not read the tag it is supposed to be comparing "
+            "against, so it does not know what \"our current target\" is: `%s`"
+            % result.get("error")
+        )
+        lines.append("")
+        lines.append(
+            "**This is not an upstream problem, and not a bad dispatch input.** "
+            "Upstream was never contacted. `%s` is a file in this repository, "
+            "and it is missing, unreadable, or does not hold an `N.N.N.N-N` "
+            "tag. The usual causes are a bad rebase deleting it, or an editor "
+            "writing it with a UTF-8 BOM or CRLF." % CURRENT_TAG_REL
+        )
+        lines.append("")
+        lines.append(
+            "Restore it to the tag named on the \"Current target\" line of `%s` "
+            "— the two are asserted to agree by "
+            "`tests/test_ps342_chromium_watch.py`, so CI on any PR will "
+            "disagree with you if you pick the wrong one." % REBASING_DOC
+        )
+        lines.append("")
+        lines.append(
+            "It is reported here rather than raised because a traceback out of "
+            "this script writes no step outputs, files no issue and uploads no "
+            "artifact — the run would be red and SILENT, which is the failure "
+            "mode this watcher exists to end."
+        )
 
     log = result.get("probe_log")
     if log:
@@ -518,7 +584,8 @@ def watch(current_tag, token=None, forced_tag=None, probe_timeout=2700,
         # uses rather than a parallel one.
         #
         # VALIDATE IT HERE — this is the LAST line of defence, and `main()`
-        # now also refuses it at the argparse boundary (see `_validated_tag`).
+        # now also refuses it at the argparse boundary (the `bad = None` /
+        # `invalid_tag_result(...)` block just below `ap.parse_args`).
         # Both, deliberately: `watch()` is importable and is called directly by
         # tests and by hand, so a guard that lived only in `main()` would be a
         # guard the function itself does not have.
@@ -602,6 +669,36 @@ def invalid_tag_result(flag, value, current_tag=None, now=None):
     }
 
 
+def baseline_unreadable_result(error, now=None):
+    """The result for "we cannot read our own baseline".
+
+    Same argument as `invalid_tag_result` — the REPORT is this script's
+    deliverable, so a cause that stops us measuring must still travel the normal
+    reporting path rather than escaping as a traceback. This one matters MORE
+    than its sibling, not less: the CLI flags are only reachable from a hand
+    dispatch, while `CURRENT_TAG.txt` is read by EVERY SCHEDULED RUN. Left
+    raising, a corrupt or deleted file meant the watcher silently stopped
+    watching, on a schedule, with the only trace a red run in an Actions tab
+    this workflow's own comment says nobody receives.
+
+    ⚠️ The path is interpolated but the FILE CONTENTS are not: `error` carries
+    the offending value (via `read_current_tag`'s `%r`) and `error` reaches only
+    the issue BODY, written with `--body-file`. It never reaches `title=`, which
+    is a bare `key=value` line in `$GITHUB_OUTPUT` that an embedded newline
+    would forge additional outputs through.
+    """
+    return {
+        "current_tag": "<unreadable>",
+        "newest_tag": None,
+        "status": BASELINE_UNREADABLE,
+        "probe_exit": None,
+        "probe_log": None,
+        "error": error,
+        "measured_at": now or _utcnow(),
+        "forced": False,
+    }
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -637,13 +734,38 @@ def main(argv=None):
         result = invalid_tag_result(bad[0], bad[1],
                                     current_tag=args.current_tag)
     else:
-        current = args.current_tag or read_current_tag()
-        result = watch(
-            current,
-            token=os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN"),
-            forced_tag=args.tag,
-            probe_timeout=args.probe_timeout,
-        )
+        # READING OUR OWN BASELINE IS ALSO A WAY THIS RUN CAN FAIL, and until
+        # this was wrapped it was the ONLY tag input on the scheduled path still
+        # failing red-and-silent — the exact mode `invalid_tag_result`'s
+        # docstring condemns, applied to the two flags a human dispatch reaches
+        # but not to the file every scheduled run reads.
+        #
+        # Caught by class rather than by a bare `except Exception`. The two
+        # named classes cover every way reading this file fails:
+        #   * `OSError` — missing (FileNotFoundError), a directory
+        #     (IsADirectoryError), unreadable (PermissionError)
+        #   * `ValueError` — the file exists but does not hold a tag. This
+        #     covers BOTH `read_current_tag`'s own raise (BOM, CRLF, a
+        #     half-written rebase artefact) AND `UnicodeDecodeError` from the
+        #     `open(..., encoding="utf-8")`, which is a ValueError subclass and
+        #     not an OSError one (checked, not assumed) — so a UTF-16 or
+        #     latin-1 file lands here rather than escaping.
+        # A genuine programming error in this module still escapes and still
+        # reddens the run, which is right: that one is a bug to fix, not news to
+        # file.
+        try:
+            current = args.current_tag or read_current_tag()
+        except (ValueError, OSError) as e:
+            result = baseline_unreadable_result(
+                "%s could not be read as a tag — %s: %s"
+                % (CURRENT_TAG_REL, type(e).__name__, e))
+        else:
+            result = watch(
+                current,
+                token=os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN"),
+                forced_tag=args.tag,
+                probe_timeout=args.probe_timeout,
+            )
 
     body = render_report(result)
     print("== PS-342 chromium upstream watch ==")
