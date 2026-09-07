@@ -3973,9 +3973,11 @@ def _launch_and_watch(cfg, profile_dir, emit, _finish, stop_event, in_thread):
     # detector can see, to change a value that leaks nothing. The matrix cell
     # is `not_covered_recorded` on this reading, and
     # `test_the_recorded_device_absence_is_still_an_absence` guards it from
-    # both sides — the emitted source AND the spoof registry — so a device
-    # spoof appearing here turns that suite red rather than silently
-    # contradicting this paragraph.
+    # THREE sides — the source the builders emit, the `_install_spoof`
+    # registry, and this function's own AST-unparsed code, which is the only
+    # one of the three that can see an override concatenated INLINE here into
+    # an already-registered label's payload — so a device spoof appearing here
+    # turns that suite red rather than silently contradicting this paragraph.
     #
     # ⚠️ ONE LEG OF THAT READING IS UNMEASURED AND MUST NOT BE INFERRED: no
     # host with REAL audio/video devices exists in this fleet, so "the roster

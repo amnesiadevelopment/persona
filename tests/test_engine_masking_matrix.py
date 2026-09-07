@@ -703,21 +703,48 @@ def _launch_site_code():
     is the tree's record of what that class costs: "the PS-302 bypass it took
     four vectors to notice."
 
-    ⚠️ AST-UNPARSED, NOT ``inspect.getsource``, and the difference is the whole
-    reason this helper exists as a helper. The plain module-text read is the
-    oracle the NOT_ESTABLISHED sweep refuses in its own words — "a sweep over
-    the module would also match a comment ABOUT a vector" — and PS-330 wrote
-    exactly such a comment INSIDE this function, so the text form went red on
-    the prose explaining an absence. ``ast.unparse`` drops comments and
-    docstrings and keeps every executable string literal, so this reads the CODE
-    and cannot be fooled by prose OR by a rename of a spoof's label.
+    ⚠️ AST-UNPARSED WITH THE DOCSTRING STRIPPED, not ``inspect.getsource``, and
+    the difference is the whole reason this helper exists as a helper. The plain
+    module-text read is the oracle the NOT_ESTABLISHED sweep refuses in its own
+    words — "a sweep over the module would also match a comment ABOUT a vector"
+    — and PS-330 wrote exactly such a comment INSIDE this function, so the text
+    form went red on the prose explaining an absence.
+
+    TWO KINDS OF PROSE LIVE IN A FUNCTION AND ``ast.unparse`` ONLY DROPS ONE OF
+    THEM. Comments are not AST nodes, so unparsing discards them for free. A
+    DOCSTRING IS NOT PROSE TO THE AST — it is an ordinary ``Expr(Constant(str))``
+    statement, and ``ast.unparse`` round-trips it verbatim like any other. Round
+    2 of PS-330 claimed this helper "drops comments and docstrings"; the second
+    half was false, ``_launch_and_watch`` carries a 13-line docstring, and one
+    documentation sentence mentioning the token turned this guard red with a
+    message insisting the token was in the CODE. That is the same false-positive
+    class the round-1 form died of, one layer down — so the docstring is
+    stripped HERE, explicitly, rather than assumed away.
+
+    What survives is executable code INCLUDING every string literal, which is
+    what a spoof payload actually is. So this reads the code and is immune to
+    prose in both of its forms, and to a rename of a spoof's label.
+
+    ⛔ ONE STATED BOUND: only the TOP-LEVEL docstring is stripped. A docstring on
+    a function nested inside this one is retained and would read as code. None
+    mentions any vector token today; a future one that does is a false positive
+    to fix here, not a hole that hides a spoof — this oracle's errors run toward
+    red, never toward a silent green.
     """
     fn = next(
         n
         for n in ast.walk(ast.parse(inspect.getsource(il)))
         if isinstance(n, ast.FunctionDef) and n.name == "_launch_and_watch"
     )
-    return ast.unparse(fn)
+    body = fn.body
+    if (
+        body
+        and isinstance(body[0], ast.Expr)
+        and isinstance(body[0].value, ast.Constant)
+        and isinstance(body[0].value.value, str)
+    ):
+        body = body[1:]
+    return ast.unparse(ast.Module(body=body, type_ignores=[]))
 
 
 # --- the census: the list cannot drift from the product ----------------------
@@ -952,7 +979,9 @@ def test_firefox_not_established_cells_are_not_quietly_covered():
         # "device" left it in PS-330 by exactly the same route and under
         # exactly the same rule: ``enumerateDevices`` is still swept, in
         # ``test_the_recorded_device_absence_is_still_an_absence``, against
-        # both oracles.
+        # THREE oracles — the two this sweep uses, plus the launch site's own
+        # AST-unparsed code, which is the only one that can see an override
+        # concatenated inline into an already-registered label's payload.
     }
     for vector, names in tokens.items():
         assert MATRIX[vector]["firefox"][0] == NOT_ESTABLISHED
@@ -1038,11 +1067,14 @@ def test_the_recorded_device_absence_is_still_an_absence():
         "before trusting the absence."
     )
     assert "enumerateDevices" not in launch_code, (
-        "'enumerateDevices' now appears in _launch_and_watch's own CODE (not "
-        "its comments — this oracle is AST-unparsed). A Firefox device spoof "
-        "written inline at the launch site emits from no builder and registers "
-        "no new label, so neither oracle above can see it. Either the engine's "
-        "behaviour changed (RE-MEASURE with "
+        "'enumerateDevices' now appears in _launch_and_watch's own CODE. This "
+        "oracle is AST-unparsed with the top-level docstring stripped, so "
+        "neither a comment nor that docstring can trigger it — but a docstring "
+        "on a function NESTED inside it can, and that would be a false "
+        "positive to fix in _launch_site_code rather than a spoof. Otherwise: a "
+        "Firefox device spoof written inline at the launch site emits from no "
+        "builder and registers no new label, so neither oracle above can see "
+        "it. Either the engine's behaviour changed (RE-MEASURE with "
         "scripts/ps330_ff_devices_reading.py, then restate the cell) or the "
         "spoof is the defect."
     )
@@ -1114,11 +1146,33 @@ def test_firefox_device_screen_half_is_pinned_at_the_engine_layer():
     # The coverage is restored on an oracle that survives BOTH problems:
     # ``_launch_site_code`` AST-unparses this function, which drops comments (so
     # the recorded reason is invisible to it) and keeps executable code (so the
-    # inline mutation is not). The screen-half reads above are on the text form
-    # deliberately: they are POSITIVE assertions, where a comment match can only
-    # cost a false green on a line that is separately proven by the pin's own
-    # keys — whereas the device read is a NEGATIVE, where an oracle that sees
-    # too much is the whole failure.
+    # inline mutation is not).
+    #
+    # ROUND 2 THEN GOT THE SAME CLASS OF ERROR ONE LAYER DOWN, and the next
+    # reviewer caught it the same way. That helper's docstring claimed
+    # ``ast.unparse`` "drops comments AND DOCSTRINGS". It does not: a docstring
+    # is an ordinary ``Expr(Constant(str))`` statement and round-trips
+    # verbatim, this function carries a 13-line one, and a single sentence of
+    # documentation mentioning the token turned the guard RED with a message
+    # insisting the token was in the CODE. ``_launch_site_code`` now strips the
+    # top-level docstring EXPLICITLY rather than assuming ``ast.unparse`` did
+    # it, and says which prose it can and cannot see.
+    #
+    # THE STANDING RULE THIS LEAVES, learned twice at cost: *a claim about what
+    # an oracle can see is itself falsifiable, and must be mutated rather than
+    # reasoned about.* The battery for this guard is four rows, and the last
+    # one exists only because someone ran it:
+    #
+    #   inline override in an already-registered payload -> RED   (the oracle)
+    #   `_install_spoof("device", ...)` registered       -> RED   (registry)
+    #   `enumerateDevices` emitted by a shipped builder  -> RED   (emitted src)
+    #   one documentation sentence naming the token      -> GREEN (no false +)
+    #
+    # The screen-half reads above are on the text form deliberately: they are
+    # POSITIVE assertions, where a prose match can only cost a false green on a
+    # line that is separately proven by the pin's own keys — whereas the device
+    # read is a NEGATIVE, where an oracle that sees too much is the whole
+    # failure.
     assert MATRIX["device"]["firefox"][0] == NOT_COVERED_RECORDED
 
 
@@ -1382,7 +1436,8 @@ def test_the_open_cells_are_the_deliverable_and_are_named():
         # Its deletion IS that commit's record; the cell now reads
         # NOT_COVERED_RECORDED and its reason is re-read out of the tree by
         # ``test_recorded_reasons_still_in_tree``, with the absence itself
-        # still guarded from both sides by
+        # still guarded from THREE sides — emitted source, spoof registry, and
+        # the launch site's own AST-unparsed code — by
         # ``test_the_recorded_device_absence_is_still_an_absence``.
         #
         # "firefox:geo" was here until PS-312 established it BY MEASUREMENT.
