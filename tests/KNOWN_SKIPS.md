@@ -104,9 +104,10 @@ it checks — that the create-time discriminator survives the OS genuinely
 handing a recorded pid back to a different process — *is* covered on every run
 by the fast discriminator test in the same file. What only the opt-in test
 covers is whether our idea of pid reuse matches the kernel's. It has been run
-to completion on this container and passed: `pid_max` 4,194,304, the allocator
-wrapped at t=+487s, a fork landed on the exact recorded pid at t=+490s, and the
-product's probe answered `GONE`.
+to completion on this container and **passed**: `pid_max` 4,194,304, the
+allocator wrapped at t=+487s, a fork landed on the exact recorded pid at
+t=+490s, the product's probe answered `GONE`, and the test reported
+`1 passed in 515.75s`.
 
 Deliberately carries **no capability**, so declaring
 `PERSONA_REQUIRED_CAPABILITIES=browser` does not turn this skip into a failure.

@@ -575,13 +575,14 @@ def test_a_reused_pid_is_not_mistaken_for_the_browser_that_had_it(
 def test_real_os_pid_reuse_does_not_resurrect_a_dead_browser(tmp_path, reaper):
     """THE SAME CLAIM, WITH THE KERNEL ACTUALLY HANDING THE PID BACK.
 
-    ⭐ MEASURED, NOT ASSUMED. This was run to completion on the CI-equivalent
-    Linux container: ``pid_max`` 4,194,304, the allocator advanced at ~9,200
-    pids/s by cycling threads, the counter wrapped at **t=+487s**, and a fork
-    landed on the exact recorded pid at **t=+490s** — a genuinely different
-    process wearing the number a dead "browser" used to have. The product's
-    probe answered ``GONE``. So the create-time check is not merely reasoned
-    about here; it has been defeated-tested against the real thing.
+    ⭐ MEASURED, NOT ASSUMED. This has been RUN TO COMPLETION as a pytest test
+    on the CI-equivalent Linux container: ``pid_max`` 4,194,304, the allocator
+    advanced at ~9,200 pids/s by cycling threads, the counter wrapped at
+    **t=+487s**, and a fork landed on the exact recorded pid at **t=+490s** — a
+    genuinely different process wearing the number a dead "browser" used to
+    have. The product's probe answered ``GONE``. Total runtime **515s**,
+    ``1 passed``. So the create-time check is not merely reasoned about here;
+    it has been defeated-tested against the real thing.
 
     WHY IT IS OPT-IN RATHER THAN DELETED, and why the fast test above is not
     considered a substitute for it but its stand-in. This is the only check in
