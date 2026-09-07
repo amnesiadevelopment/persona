@@ -422,6 +422,19 @@ def default_scratch_home(min_name_budget: int = 0) -> str:
     # the Windows CI runner demonstrated, rejecting a launchable
     # C:\Users\RUNNER~1\AppData\Local\Temp at -13 bytes.
     if singleton_socket_is_bound() and budget < min_name_budget:
+        # ⭐ THE REFUSAL TAKES ITS OWN DIRECTORY WITH IT. The home has to be
+        # CREATED before it can be measured — mkdtemp's suffix is part of the
+        # length, and re-deriving it here would duplicate a stdlib internal
+        # that is free to change. So the measurement happens on the real path
+        # and the refusal cleans up after itself, because this module's rule is
+        # that a check must not leave the machine dirtier than it found it
+        # (`_sweep_group`'s docstring is the argument). Unswept, every refusal
+        # left an empty scratch directory behind — small in bytes, unbounded on
+        # a self-hosted or cached runner, and precisely the shape this harness
+        # exists to refuse in the product.
+        import shutil
+
+        shutil.rmtree(home, ignore_errors=True)
         raise UnsafeEnvironment(
             f"refusing to run: the scratch home {home!r} leaves only {budget} "
             f"byte(s) for a profile name, and the checks need {min_name_budget}"
