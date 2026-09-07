@@ -758,6 +758,32 @@ class FakeHttpUpstream(threading.Thread):
                 conn.sendall(b"HTTP/1.1 200 Connection established\r\n\r\n")
                 return
         self.request_head = head
+        # --- malformed answers: an upstream whose reply cannot be believed ---
+        if self.behavior == "close":
+            # Closes without replying at all. -> IncompleteReadError
+            return
+        if self.behavior == "garbage":
+            # Answers something that is not an HTTP response -- the shape a
+            # SOCKS proxy misconfigured as `http://` produces.
+            conn.sendall(b"NOT-HTTP AT ALL\r\n\r\n")
+            return
+        if self.behavior == "unterminated":
+            # A plausible status line whose head is never terminated, then EOF.
+            conn.sendall(b"HTTP/1.1 200 Connection established\r\n")
+            return
+        if self.behavior == "badstatus":
+            # HTTP-shaped, but the status is not a number.
+            conn.sendall(b"HTTP/1.1 zzz Weird\r\n\r\n")
+            return
+        if self.behavior == "oversized":
+            # A terminated head far past _HTTP_REPLY_LIMIT (64 KiB) and well
+            # under the stream's 8 MiB -- the band the explicit check exists for.
+            conn.sendall(
+                b"HTTP/1.1 200 Connection established\r\nX-Pad: "
+                + b"a" * (128 * 1024)
+                + b"\r\n\r\n"
+            )
+            return
         if self.behavior == "authfail":
             conn.sendall(
                 b"HTTP/1.1 407 Proxy Authentication Required\r\n"
@@ -994,3 +1020,86 @@ def test_a_long_credential_is_refused_for_socks5_but_allowed_for_http():
         ProxyBridge(f"socks5://{long_user}:p@1.2.3.4:1080")
     b = ProxyBridge(f"http://{long_user}:p@1.2.3.4:8080")
     assert b._up_user == long_user
+
+
+# --- The malformed-upstream family -------------------------------------------
+#
+# ⚠️ WHY THESE EXIST, so nobody deletes them as redundant with the 407/403 pair.
+#
+# The 407 and 403 tests take the STATUS branch, which maps to SOCKS5 0x02. These
+# five take the OTHER branches -- the ones where the upstream's answer cannot be
+# parsed at all -- and those were each written as `_ConnectRejected(0)`. `0x00`
+# is SOCKS5's `succeeded`: the handler writes `rep` back verbatim, so every one
+# of them told the browser THE TUNNEL WAS OPEN and then handed it an empty
+# socket. Measured through the real listener before the fix:
+#
+#     mode=close         reply=b'\x05\x00\x00\x01...'  rep=0x00  <- "succeeded"
+#     mode=garbage       reply=b'\x05\x00\x00\x01...'  rep=0x00  <- "succeeded"
+#     mode=unterminated  reply=b'\x05\x00\x00\x01...'  rep=0x00  <- "succeeded"
+#     mode=badstatus     reply=b'\x05\x00\x00\x01...'  rep=0x00  <- "succeeded"
+#     mode=oversized     reply=b'\x05\x00\x00\x01...'  rep=0x00  <- "succeeded"
+#     mode=403 (control) reply=b'\x05\x02\x00\x01...'  rep=0x02  <- refused
+#
+# The assertion is `reply[1] != 0x00` -- the transport result the driver
+# receives (AC1), REFUSED vs GRANTED, never a literal byte (Correction 1). It is
+# deliberately not `== 0x01`: which non-zero code is chosen is an
+# implementation's business, that it is non-zero is the contract.
+
+
+def _assert_refused(behavior: str) -> None:
+    """Drive one malformed upstream end-to-end and require a refusal."""
+    upstream, reply, client, bridge = _run_http_bridge_case(behavior)
+    try:
+        assert len(reply) >= 2, f"the browser got no SOCKS reply at all: {reply!r}"
+        assert reply[1] != 0x00, (
+            f"upstream mode {behavior!r}: a failed CONNECT was reported to the "
+            f"browser as an OPEN TUNNEL (0x00 is SOCKS5 'succeeded'): "
+            f"reply={reply!r}"
+        )
+        # And nothing is carried -- the refusal is the end of it.
+        assert client.recv(4096) == b""
+    finally:
+        client.close()
+        bridge.stop()
+        upstream.join(timeout=5)
+
+
+def test_an_upstream_that_closes_without_replying_is_a_refusal_not_a_tunnel():
+    _assert_refused("close")
+
+
+def test_an_upstream_answering_non_http_is_a_refusal_not_a_tunnel():
+    """The `http://`-mislabelled SOCKS proxy: refuse rather than guess."""
+    _assert_refused("garbage")
+
+
+def test_an_unterminated_reply_head_is_a_refusal_not_a_tunnel():
+    """A 200 whose head never ends is not a tunnel, however promising it looks."""
+    _assert_refused("unterminated")
+
+
+def test_an_unparseable_status_is_a_refusal_not_a_tunnel():
+    _assert_refused("badstatus")
+
+
+def test_an_oversized_reply_head_is_a_refusal_not_a_tunnel():
+    """The 64 KiB bound. Under the stream's own 8 MiB limit, so this is the
+    branch `_HTTP_REPLY_LIMIT` exists for -- and it must refuse, not succeed."""
+    _assert_refused("oversized")
+
+
+def test_a_rejection_can_never_carry_the_socks5_success_code():
+    """The guard, asserted directly.
+
+    Every test above drives one path that could regress. This one closes the
+    class: a future leg that invents a sixth failure branch cannot express
+    "rejected with 0x00" at all, so it cannot repeat this bug quietly.
+    """
+    import pytest
+
+    with pytest.raises(ValueError):
+        bridge_mod._ConnectRejected(0x00)
+    # Non-zero codes are unaffected -- the SOCKS5 leg passes the upstream's own
+    # rep through here, and the HTTP leg its mapped equivalents.
+    for rep in (0x01, 0x02, 0x05, 0xFF):
+        assert bridge_mod._ConnectRejected(rep).rep == rep

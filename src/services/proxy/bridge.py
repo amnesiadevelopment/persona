@@ -191,7 +191,32 @@ def _is_http_upstream(scheme: str | None) -> bool:
 
 
 class _ConnectRejected(ConnectionError):
+    """A DEFINITIVE upstream refusal, carrying the SOCKS5 `rep` to send back.
+
+    ⛔ `rep` MUST NOT be `0x00`. The handler writes this byte back to the browser
+    verbatim (`b"\\x05" + bytes([rep]) + ...`) and `0x00` is SOCKS5's
+    `succeeded`, so a "rejection" carrying zero tells the browser the tunnel is
+    OPEN and then hands it an empty socket -- a failure reported as a success,
+    which is the one shape this whole leg exists to avoid.
+
+    That is not hypothetical. The HTTP leg's five malformed-upstream paths were
+    first written as `_ConnectRejected(0)`, and every one of them reported a
+    FAILED CONNECT to the browser as a SUCCESSFUL one; measured through the real
+    listener, an upstream that simply closed produced
+    `b"\\x05\\x00\\x00\\x01..."` -- `succeeded` -- followed by nothing.
+
+    The SOCKS5 leg cannot express it (`_read_connect_reply` raises only under
+    `rep != 0x00`), so the constructor is where the invariant is cheapest to
+    state and impossible for a future leg to forget.
+    """
+
     def __init__(self, rep: int) -> None:
+        if rep == 0x00:
+            raise ValueError(
+                "a rejection cannot carry the SOCKS5 success code (0x00): the "
+                "handler writes rep back to the browser verbatim, so this would "
+                "report a failed CONNECT as an open tunnel"
+            )
         super().__init__(f"upstream CONNECT failed: {rep}")
         self.rep = rep
 
@@ -558,10 +583,25 @@ async def _read_local_handshake(
     return host, port
 
 
-#: Cap on an HTTP proxy's CONNECT response head. A proxy that never sends the
-#: blank line terminating its headers would otherwise be read until memory ran
-#: out, so the read is bounded and a violation is a rejection, not a hang.
+#: Cap on an HTTP proxy's CONNECT response head.
+#:
+#: ⚠️ It is a SECOND bound, not the only one, and the difference matters to
+#: anyone reading this later. `readuntil` is already bounded by the stream's own
+#: `limit` -- `_STREAM_LIMIT`, 8 MiB (`open_connection` above) -- so an
+#: unterminated head cannot be read "until memory ran out": at 8 MiB
+#: `LimitOverrunError` fires. `readuntil` takes no per-call limit before Python
+#: 3.13, and the connection's limit is deliberately sized for TUNNELLED PAYLOAD
+#: rather than for a status line, so this check is what actually refuses a head
+#: between 64 KiB and 8 MiB. A CONNECT response is a status line and a handful
+#: of headers; 64 KiB is already generous. Both bounds are rejections, not hangs.
 _HTTP_REPLY_LIMIT = 64 * 1024
+
+#: SOCKS5 `rep` = "general SOCKS server failure". What the HTTP leg reports when
+#: the upstream's answer is UNUSABLE (absent, truncated, oversized, or not HTTP
+#: at all) rather than a definite HTTP refusal. It matches the handler's own
+#: default for an unanticipated exception, and -- the point -- it is NON-ZERO,
+#: so the browser is told the tunnel FAILED. See `_ConnectRejected`.
+_REP_GENERAL_FAILURE = 0x01
 
 
 async def _read_http_connect_reply(reader: asyncio.StreamReader) -> None:
@@ -580,29 +620,33 @@ async def _read_http_connect_reply(reader: asyncio.StreamReader) -> None:
     request fails.
 
     Raises `_ConnectRejected` so this leg fails through the SAME path the SOCKS5
-    leg does; the `rep` carried is the HTTP status, which is a diagnostic, never
-    a value any caller should match on.
+    leg does. ⛔ EVERY raise here carries a NON-ZERO `rep`, because the handler
+    writes that byte straight back to the browser and `0x00` means `succeeded`:
+    a malformed upstream must read as a REFUSAL, never as an open tunnel that
+    then carries nothing. `_ConnectRejected` enforces it; this is the reminder
+    at the site where the temptation to write a bare `0` actually arises.
     """
     try:
         head = await reader.readuntil(b"\r\n\r\n")
     except asyncio.LimitOverrunError as e:
-        raise _ConnectRejected(0) from e
+        # The head blew the stream's own 8 MiB bound without a terminator.
+        raise _ConnectRejected(_REP_GENERAL_FAILURE) from e
     except asyncio.IncompleteReadError as e:
         # The proxy closed (or spoke a protocol that never terminates a head)
         # before completing its response. Fail CLOSED.
-        raise _ConnectRejected(0) from e
+        raise _ConnectRejected(_REP_GENERAL_FAILURE) from e
     if len(head) > _HTTP_REPLY_LIMIT:
-        raise _ConnectRejected(0)
+        raise _ConnectRejected(_REP_GENERAL_FAILURE)
     first = head.split(b"\r\n", 1)[0].decode("latin-1", "replace")
     parts = first.split(None, 2)
     if len(parts) < 2 or not parts[0].upper().startswith("HTTP/"):
         # Not an HTTP response at all -- e.g. a SOCKS proxy misconfigured as
         # `http://`. Refuse rather than guess.
-        raise _ConnectRejected(0)
+        raise _ConnectRejected(_REP_GENERAL_FAILURE)
     try:
         status = int(parts[1])
     except ValueError:
-        raise _ConnectRejected(0) from None
+        raise _ConnectRejected(_REP_GENERAL_FAILURE) from None
     if not (200 <= status < 300):
         # ⚠️ MAP TO A SOCKS5 REPLY CODE -- do NOT pass the HTTP status through.
         # `rep` is written back to the browser as ONE byte
