@@ -3940,6 +3940,53 @@ def _launch_and_watch(cfg, profile_dir, emit, _finish, stop_event, in_thread):
     # that DID get the init script is unaffected.
     _install_spoof("audio", firefox_audio_init_script(seed))
 
+    # PS-330: THERE IS DELIBERATELY NO `_install_spoof("device", ...)` HERE,
+    # and this comment is that decision's record rather than its absence.
+    #
+    # Chromium's `device_ext.py` installs a five-entry mediaDevices roster with
+    # `deviceId`/`groupId` derived per profile from the seed. Firefox installs
+    # nothing, and until this ticket no reason for that was written down — the
+    # masking matrix recorded the cell as an UNKNOWN for exactly that reason.
+    #
+    # MEASURED, not reasoned, on a real headful launch through this launch path
+    # (`readings/ps330-2026-09-07/`, engine firefox-20 / FF 151.0, three
+    # profiles with three distinct seeds, on a secure loopback origin):
+    #
+    #   * every profile received the SAME list — one `audioinput` and one
+    #     `videoinput`, on a host with NO /dev/snd and NO /dev/video* at all.
+    #     So the roster is NOT the host's device list; there is no host fact
+    #     here for a spoof to displace.
+    #   * `deviceId` and `groupId` came back as the EMPTY STRING on every
+    #     device of every profile. They are not per-profile identifiers, so
+    #     they carry no cross-profile linkage to break.
+    #   * that is not a pre-permission placeholder waiting to fill in: a third
+    #     launch with camera and microphone permission GRANTED (a test-side
+    #     pref overlay, never shipped) reported `permissions.query` state
+    #     `granted` for both and still received the same two devices with the
+    #     same empty ids.
+    #   * `Function.prototype.toString` on `enumerateDevices` renders
+    #     `[native code]`.
+    #
+    # So the engine already answers with something synthetic and constant, and
+    # shipping a JS override in front of it would be a NET LOSS under
+    # Invariant #0: it would replace a native-rendering method with one a
+    # detector can see, to change a value that leaks nothing. The matrix cell
+    # is `not_covered_recorded` on this reading, and
+    # `test_the_recorded_device_absence_is_still_an_absence` guards it from
+    # THREE sides — the source the builders emit, the `_install_spoof`
+    # registry, and this function's own AST-unparsed code, which is the only
+    # one of the three that can see an override concatenated INLINE here into
+    # an already-registered label's payload — so a device spoof appearing here
+    # turns that suite red rather than silently contradicting this paragraph.
+    #
+    # ⚠️ ONE LEG OF THAT READING IS UNMEASURED AND MUST NOT BE INFERRED: no
+    # host with REAL audio/video devices exists in this fleet, so "the roster
+    # would still be 1+1 on a machine that has four microphones" is NOT
+    # established. What is established is the direction that matters here — a
+    # host with no devices is told it has two — and if a reading on a
+    # device-carrying host ever shows the roster tracking that host, this is a
+    # host-fact leak and the decision above must be revisited.
+
     # ORDER IS LOAD-BEARING (PS-302). `_apply_spoofs_to_open_tabs` reads
     # `_spoof_scripts` at CALL time and runs exactly ONCE, so every spoof must
     # be registered ABOVE this line or it silently loses already-open-tab
