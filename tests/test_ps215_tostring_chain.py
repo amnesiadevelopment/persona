@@ -1,11 +1,20 @@
-"""PS-215: what a 13-DEEP ``Function.prototype.toString`` chain looks like.
+"""PS-215: what a 14-DEEP ``Function.prototype.toString`` chain looks like.
 
 WHY THIS FILE EXISTS. ``WorkerCloak.setup`` is spliced INSIDE ``__pnaInstall``,
-and every module riding ``realm_bootstrap_js`` carries that function — thirteen
+and every module riding ``realm_bootstrap_js`` carries that function — fourteen
 of them. So the cloak's ``Function.prototype.toString`` patch is not installed
 once per realm, it is installed ONCE PER RIDER, each closing over the previous
 as its delegate. Before PS-215 that count was one on Chromium (``native_ext``'s
-single ``__pnaName``-driven patch); it is now thirteen.
+single ``__pnaName``-driven patch); it is now fourteen.
+
+⭐ THE COUNT MOVED FROM 13 TO 14 UNDER PS-320, and this file's pin is what
+caught it — on CI, not locally, because the whole suite has to run to reach
+it. ``device_ext`` gained a THIRD leaf (``applyDevicesPatch``, carrying
+``mediaDevices.enumerateDevices`` onto the realm registry so a page-built child
+realm stops reading the engine's device list). That is a real deepening of
+every realm's toString chain, so it is exactly the change the pin exists to
+force someone to look at rather than absorb: the depth assertions below were
+re-run at 14 and still hold byte-identically.
 
 A reviewer asked for that consequence to be MEASURED rather than reasoned
 about, and the question is a fair one: a detector stringifying
@@ -64,7 +73,7 @@ _SRC = pathlib.Path(__file__).resolve().parents[1] / "src" / "services" / "brows
 # rider in silence — the precise outcome the pin exists to prevent. This is also
 # the depth the probes run at, so the number a detector would observe and the
 # number this file claims cannot drift apart.
-_RIDER_COUNT = 13
+_RIDER_COUNT = 14
 
 
 def _rider_count() -> int:
@@ -200,8 +209,8 @@ _FIREFOX = realm_bootstrap_js("applyPatch", firefox_worker_cloak())
 _SPIDERMONKEY_TS = "function toString() {\n    [native code]\n}"
 
 
-def test_rider_count_is_thirteen():
-    """The chain depth is a property of the TREE, and it is 13.
+def test_rider_count_is_fourteen():
+    """The chain depth is a property of the TREE, and it is 14.
 
     Pinned so that adding a fourteenth rider is a deliberate act that updates
     this file, rather than a silent widening of every realm's toString chain.
@@ -221,10 +230,10 @@ def test_rider_count_is_thirteen():
     [("chromium", _CHROMIUM), ("firefox", _FIREFOX)],
     ids=["chromium", "firefox"],
 )
-def test_thirteen_chainings_leave_tostring_indistinguishable(engine, boot, tmp_path):
+def test_fourteen_chainings_leave_tostring_indistinguishable(engine, boot, tmp_path):
     """THE HEADLINE (reviewer question (b)).
 
-    After thirteen installations in one realm, `Function.prototype.toString`
+    After fourteen installations in one realm, `Function.prototype.toString`
     must still stringify BYTE-IDENTICALLY to the pristine intrinsic, and an
     untouched native must be unaffected. This is the assertion the whole chain
     exists to keep true, measured at the depth the splice point actually
@@ -234,7 +243,7 @@ def test_thirteen_chainings_leave_tostring_indistinguishable(engine, boot, tmp_p
 
     expected = r["pristine_host"] if engine == "chromium" else _SPIDERMONKEY_TS
     assert r["ts_self"] == expected, (
-        f"[{engine}] after 13 chainings Function.prototype.toString does not "
+        f"[{engine}] after 14 chainings Function.prototype.toString does not "
         f"read as this arm's target-engine native form.\n"
         f"  expected: {expected!r}\n"
         f"  got:      {r['ts_self']!r}"
@@ -249,7 +258,7 @@ def test_thirteen_chainings_leave_tostring_indistinguishable(engine, boot, tmp_p
     )
     assert r["ts_name"] == "toString", f"[{engine}] name tell: {r['ts_name']!r}"
     assert r["enumerable_globals"] == [], (
-        f"[{engine}] 13 installs published a shared enumerable name — the exact "
+        f"[{engine}] 14 installs published a shared enumerable name — the exact "
         f"PS-48 disclosure chaining exists to avoid: {r['enumerable_globals']}"
     )
 
@@ -260,7 +269,7 @@ def test_thirteen_chainings_leave_tostring_indistinguishable(engine, boot, tmp_p
     ids=["chromium", "firefox"],
 )
 def test_chain_is_depth_invariant(engine, boot, tmp_path):
-    """One install and thirteen must be INDISTINGUISHABLE to a detector.
+    """One install and fourteen must be INDISTINGUISHABLE to a detector.
 
     This is what "chaining composes" has to mean operationally. If depth were
     observable, the number of riders would itself be a fingerprint.
@@ -271,7 +280,7 @@ def test_chain_is_depth_invariant(engine, boot, tmp_path):
     for key in ("ts_self", "untouched_native", "ts_own_props", "ts_name", "ts_length"):
         assert one[key] == many[key], (
             f"[{engine}] chain DEPTH is observable through {key!r}: "
-            f"1 install -> {one[key]!r}, 13 installs -> {many[key]!r}"
+            f"1 install -> {one[key]!r}, 14 installs -> {many[key]!r}"
         )
 
 

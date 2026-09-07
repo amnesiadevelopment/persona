@@ -1,10 +1,10 @@
-"""PS-215: what the DOM-INSERTION wrappers cost at 13 riders.
+"""PS-215: what the DOM-INSERTION wrappers cost at 14 riders.
 
 WHY THIS FILE EXISTS, AND WHY ``test_ps215_tostring_chain.py`` DOES NOT COVER
 IT. That suite pins depth-invariance for ``Function.prototype.toString``, and
-explicitly for ``toString`` only. Both chains are thirteen deep for the same
+explicitly for ``toString`` only. Both chains are fourteen deep for the same
 reason — ``WorkerCloak.setup`` and the reach are spliced INSIDE
-``__pnaInstall``, which all thirteen riders carry — but the two chains have
+``__pnaInstall``, which all fourteen riders carry — but the two chains have
 completely different cost shapes, and a result measured on one does NOT
 transfer to the other:
 
@@ -223,7 +223,8 @@ const out = vm.runInContext(`(function () {
 console.log(JSON.stringify(out));
 """
 
-# 13 distinct leaves, inserted through creepjs's own gesture and read BY INDEX.
+# _RIDER_COUNT distinct leaves, inserted through creepjs's own gesture and read
+# BY INDEX.
 # This is the arm that keeps the rejected wrap-once design rejected.
 _DELIVERY_PROBE = r"""
 const vm = require("vm");
@@ -309,7 +310,7 @@ _DOORS = ("appendChild_element", "appendChild_fragment", "innerHTML_set")
 # --------------------------------------------------------------------------
 @pytest.mark.parametrize("engine,boot", _ARMS, ids=_IDS)
 def test_one_scan_per_insertion_at_every_depth(engine, boot, tmp_path):
-    """ONE subtree scan per insertion, whether one rider is installed or 13.
+    """ONE subtree scan per insertion, whether one rider is installed or 14.
 
     This is the DOM-axis counterpart of ``test_chain_is_depth_invariant``. If
     the scan count tracked the rider count, the number of riders would be
@@ -410,8 +411,8 @@ def test_the_static_tells_are_still_closed(engine, boot, tmp_path):
 # THE OTHER HALF: cheap must not mean broken.
 # --------------------------------------------------------------------------
 @pytest.mark.parametrize("engine,boot", _ARMS, ids=_IDS)
-def test_all_thirteen_leaves_still_reach_the_indexed_realm(engine, boot, tmp_path):
-    """One scan, thirteen leaves.
+def test_all_fourteen_leaves_still_reach_the_indexed_realm(engine, boot, tmp_path):
+    """One scan, fourteen leaves.
 
     The guard deduplicates the SCAN. It must not deduplicate the DELIVERY: each
     rider's wrapper closes over a different ``LEAF``, and the phantom realm
@@ -495,7 +496,7 @@ def test_wrap_once_would_break_delivery(engine, boot, tmp_path):
     the SCAN is deduplicated and the WRAPPERS are not.
 
     The guard is expressed here the only way it CAN be across riders — a name
-    all thirteen can spell, i.e. on the global object — which is independently
+    all fourteen can spell, i.e. on the global object — which is independently
     the PS-48 disclosure this design also avoids.
     """
     anchor = (

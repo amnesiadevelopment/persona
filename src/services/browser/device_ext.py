@@ -318,49 +318,15 @@ _CONTENT_SCRIPT = r"""
   }
   function pick(arr, salt) { return arr[h32(salt) % arr.length]; }
 
-  function nativeWrap(orig, replacement) {
-    // RE-HOUSE the caller's function EXPRESSION inside a real method shorthand.
-    //
-    // A sloppy-mode function expression owns `prototype`, `arguments` and
-    // `caller`; a native method owns exactly ["length","name"]. So the FORM the
-    // callsite happened to type is a one-line tell, readable by
-    // Object.getOwnPropertyNames without calling anything — an axis entirely
-    // independent of the toString cloak below. `delete replacement.prototype`
-    // cannot repair it (non-configurable: it returns false in sloppy mode and
-    // throws in strict), so the shape has to be right AT CREATION. Doing it
-    // here rather than at ~18 callsites means no spoofed VALUE is disturbed.
-    //
-    // `.apply(this, arguments)` keeps the receiver and the full argument list,
-    // so a re-housed wrapper is behaviourally identical to the expression.
-    var shell;
-    try {
-      shell = ({ m() { return replacement.apply(this, arguments); } }).m;
-    } catch (e) {
-      // If the shorthand form is somehow unavailable, a correctly-spoofing
-      // wrapper with a wrong shape beats no wrapper at all.
-      shell = replacement;
-    }
-    try {
-      // Arity is a second axis: a shape fix that moves `length` swaps one tell
-      // for another. Copy it from the ORIGINAL at runtime — never a literal,
-      // which would go stale silently against a future engine.
-      Object.defineProperty(shell, 'length', { value: orig.length });
-      Object.defineProperty(shell, 'name', { value: orig.name });
-      // Mark for the native_ext Function.prototype.toString patch so a detector
-      // calling Function.prototype.toString.call(replacement) reads native. A
-      // plain replacement.toString override is bypassed by that .call form.
-      //
-      // This marker is READ AS AN OWN PROPERTY (`this.__pnaName`, see
-      // native_ext.py's applyNativePatch), so a Chromium wrapper the cloak can
-      // serve necessarily owns it and the best achievable shape here is
-      // ["__pnaName","length","name"]. That is a deliberate trade, not an
-      // oversight: it drops the three ENGINE-shaped leaks that identify a
-      // wrapper generically. The Firefox helper carries its marker in a WeakMap
-      // and therefore does reach the exact native set.
-      Object.defineProperty(shell, '__pnaName', { value: orig.name });
-    } catch (e) {}
-    return shell;
-  }
+  // NOTE: this IIFE used to define a top-level `nativeWrap`. Its LAST callsite
+  // was the `mediaDevices.enumerateDevices` install, which PS-320 moved into
+  // `applyDevicesPatch` — and a leaf carries its OWN wrapper (`nw`) inside its
+  // body, because the body is what crosses realms. So the readable copy became
+  // ~10 lines of unreachable JS shipped into every realm, and it is deleted
+  // rather than left. Each of the three leaves below declares its own minified
+  // `nw`; there is no shared one, deliberately. This is not tidiness: a dead
+  // readable copy is exactly what let a PS-314 falsification arm pass against
+  // code that never runs, one function over in this same file.
   function def(obj, prop, val) {
     try {
       // A REAL ACCESSOR, pulled back out of an object literal — not a function
@@ -416,10 +382,15 @@ __SCREEN_REALM_SLOT__
     var DPR = IS_MAC ? 2 : 1;
     function h(x){var v=SEED^(x|0);v=Math.imul(v^(v>>>16),0x85ebca6b);v=Math.imul(v^(v>>>13),0xc2b2ae35);return (v^(v>>>16))>>>0;}
     var def=function(o,k,val){try{var g=Object.getOwnPropertyDescriptor({get m(){return val;}},'m').get;try{Object.defineProperty(g,'name',{value:'get '+k});Object.defineProperty(g,'__pnaName',{value:'get '+k});}catch(e){}Object.defineProperty(o,k,{get:g,configurable:true,enumerable:true});}catch(e){}};
-    // The MINIFIED twin of the readable `nativeWrap` above, and the copy that
-    // actually serves `G.matchMedia` — the readable one has no callsite in this
-    // seam. Re-housed identically: shorthand shell, arity copied from `orig` at
-    // runtime, marker pinned last. Fixing the readable copy alone left
+    // The LEAF-LOCAL wrapper builder that serves `G.matchMedia`. PS-314 built
+    // this as the minified twin of a readable top-level `nativeWrap`; that
+    // readable copy is gone (its last callsite was the `enumerateDevices`
+    // install this ticket moved into `applyDevicesPatch` — see the note beside
+    // `pick`), so this is now the only copy in the seam, and it has to be: the
+    // leaf body is what crosses realms, so a helper reached from the enclosing
+    // IIFE would be undefined in a child. Re-housed per PS-314: shorthand
+    // shell, arity copied from `orig` at runtime, marker pinned last. Fixing
+    // the readable copy alone left
     // matchMedia reading ["__pnaName","arguments","caller","length","name",
     // "prototype"]; measured from a realm, not reasoned.
     var nw=function(orig,rep){var s;try{s=({m(){return rep.apply(this,arguments);}}).m;}catch(e){s=rep;}try{Object.defineProperty(s,'length',{value:orig.length});Object.defineProperty(s,'name',{value:orig.name});Object.defineProperty(s,'__pnaName',{value:orig.name});}catch(e){}return s;};
@@ -537,39 +508,101 @@ __SCREEN_REALM_BOOTSTRAP__
   // A believable consumer-desktop set: one mic + one default mic, one webcam,
   // one speaker + one default speaker. Labels stay '' (real browsers hide them
   // until getUserMedia permission). deviceId/groupId are stable per profile.
-  function hx(n, salt) {
-    var s = '';
-    for (var i = 0; i < n; i++) {
-      s += (h32(salt + i * 2654435761) % 16).toString(16);
+  //
+  // ⭐ THIS RIDES THE REALM REGISTRY (PS-320). It used to be installed at the
+  // content script's TOP LEVEL, which reaches only the realms chromium injects
+  // into (`all_frames: True` covers frames the BROWSER creates). A realm the
+  // PAGE builds at runtime — a Web Worker, a fresh about:blank/srcdoc iframe, a
+  // worker spawned inside one — never received it, so such a realm reported the
+  // ENGINE's device list while `screen`/`devicePixelRatio`/`hardwareConcurrency`
+  // beside it were the profile's. Measured before the move: the page realm read
+  // this spoofed list while a page-built child read the engine default, in a run
+  // where the registry demonstrably DID transport its other two leaves. A
+  // cross-realm mismatch is a stronger tell than a modified value, which is the
+  // founding rationale of this registry.
+  //
+  // EVERYTHING THE LEAF NEEDS IS DECLARED INSIDE ITS BODY, because the body is
+  // what crosses realms: `applyDevicesPatch.toString()` is re-evaluated in the
+  // child, so anything referenced from the enclosing IIFE would be undefined
+  // there. The three helpers this block used to close over were IIFE-scoped —
+  // `h32` above, the since-deleted top-level `nativeWrap` (see the note beside
+  // `pick`), and `hx`, which was declared here — and none of them survives the
+  // trip. `applyHwPatch` below is the in-tree precedent and does exactly this
+  // with its own SEED/`h`/`def`.
+  //
+  // THE GUARD SITS BELOW THIS LEAF'S REAL PRECONDITION, NOT AT THE TOP OF THE
+  // BODY. `mediaDevices` is not universally present — it is absent from a
+  // worker realm, and a page-built realm can be installed into BEFORE the page
+  // has attached it — so `!G.navigator` is a weaker check that passes in realms
+  // this leaf then bails out of. `realm_guard_js`'s own docstring states the
+  // rule and names canvas_ctx/measuretext as the leaves that already obey it: a
+  // realm where the leaf did NO work must not be recorded as covered, or the
+  // later invocation that COULD have patched it returns early against an empty
+  // realm and that realm reports the ENGINE's device list permanently. That is
+  // this ticket's own defect reintroduced through the recovery path, and it is
+  // silent — the structural suite asserts the guard's PRESENCE and UNIQUENESS,
+  // never its POSITION. test_a_realm_installed_into_before_mediadevices_exists
+  // is the value-read that gates it.
+  function applyDevicesPatch(G) {
+   try {
+    if (!G || !G.navigator) return;
+    var md = G.navigator.mediaDevices;
+    if (!md || !md.enumerateDevices) return;
+__DEVICES_REALM_GUARD__
+    var SEED = __SEED__;
+    function h32(x) {
+      var h = SEED ^ (x | 0);
+      h = Math.imul(h ^ (h >>> 16), 0x85ebca6b);
+      h = Math.imul(h ^ (h >>> 13), 0xc2b2ae35);
+      return (h ^ (h >>> 16)) >>> 0;
     }
-    return s;
+    function hx(n, salt) {
+      var s = '';
+      for (var i = 0; i < n; i++) {
+        s += (h32(salt + i * 2654435761) % 16).toString(16);
+      }
+      return s;
+    }
+    // The leaf's own copy of the wrapper, in the shape PS-314 established: a
+    // real method shorthand (a function EXPRESSION owns prototype/arguments/
+    // caller, which is a one-line tell), with `length`/`name` copied from the
+    // ORIGINAL at runtime rather than pinned as literals, and the `__pnaName`
+    // marker the native_ext toString cloak reads as an own property.
+    var nw = function (orig, rep) {
+      var s;
+      try { s = ({ m() { return rep.apply(this, arguments); } }).m; }
+      catch (e) { s = rep; }
+      try {
+        Object.defineProperty(s, 'length', { value: orig.length });
+        Object.defineProperty(s, 'name', { value: orig.name });
+        Object.defineProperty(s, '__pnaName', { value: orig.name });
+      } catch (e) {}
+      return s;
+    };
+    var grpMic = hx(64, 0xa11), grpCam = hx(64, 0xb22), grpSpk = hx(64, 0xc33);
+    var list = [
+      { kind: 'audioinput',  gid: grpMic, did: 'default' },
+      { kind: 'audioinput',  gid: grpMic, did: hx(64, 0x111) },
+      { kind: 'videoinput',  gid: grpCam, did: hx(64, 0x222) },
+      { kind: 'audiooutput', gid: grpSpk, did: 'default' },
+      { kind: 'audiooutput', gid: grpSpk, did: hx(64, 0x333) },
+    ];
+    md.enumerateDevices = nw(
+      md.enumerateDevices,
+      function () {
+        return Promise.resolve(list.map(function (d) {
+          return {
+            deviceId: d.did, groupId: d.gid, kind: d.kind, label: '',
+            toJSON: function () {
+              return { deviceId: d.did, groupId: d.gid, kind: d.kind, label: '' };
+            },
+          };
+        }));
+      }
+    );
+   } catch (e) {}
   }
-  try {
-    if (navigator.mediaDevices && navigator.mediaDevices.enumerateDevices) {
-      var grpMic = hx(64, 0xa11), grpCam = hx(64, 0xb22), grpSpk = hx(64, 0xc33);
-      var list = [
-        { kind: 'audioinput',  gid: grpMic, did: 'default' },
-        { kind: 'audioinput',  gid: grpMic, did: hx(64, 0x111) },
-        { kind: 'videoinput',  gid: grpCam, did: hx(64, 0x222) },
-        { kind: 'audiooutput', gid: grpSpk, did: 'default' },
-        { kind: 'audiooutput', gid: grpSpk, did: hx(64, 0x333) },
-      ];
-      var orig = navigator.mediaDevices.enumerateDevices.bind(navigator.mediaDevices);
-      navigator.mediaDevices.enumerateDevices = nativeWrap(
-        navigator.mediaDevices.enumerateDevices,
-        function () {
-          return Promise.resolve(list.map(function (d) {
-            return {
-              deviceId: d.did, groupId: d.gid, kind: d.kind, label: '',
-              toJSON: function () {
-                return { deviceId: d.did, groupId: d.gid, kind: d.kind, label: '' };
-              },
-            };
-          }));
-        }
-      );
-    }
-  } catch (e) {}
+__DEVICES_REALM_BOOTSTRAP__
 
   // --- navigator.hardwareConcurrency / deviceMemory ---
   // fingerprint-chromium leaves these at the host's real values on a desktop
@@ -705,9 +738,19 @@ def build_device_extension(
     ).replace(
         "__HW_REALM_BOOTSTRAP__", realm_bootstrap_js("applyHwPatch")  # noqa: E501
     ).replace(
+        # PS-320. A THIRD leaf, with its OWN guard key. Deliberately not folded
+        # into `applyHwPatch`: the guard is per-key, so sharing "hw" would mean
+        # a realm where applyHwPatch had already run SKIPS the devices install
+        # entirely — and silently, because a skipped guard is indistinguishable
+        # from a completed one. That is the same argument GUARD_SITES' own
+        # comment makes for why device.js already carries two leaves.
+        "__DEVICES_REALM_BOOTSTRAP__", realm_bootstrap_js("applyDevicesPatch")
+    ).replace(
         "__SCREEN_REALM_GUARD__", realm_guard_js("screen")
     ).replace(
         "__HW_REALM_GUARD__", realm_guard_js("hw")
+    ).replace(
+        "__DEVICES_REALM_GUARD__", realm_guard_js("devices")
     ).replace(
         "__SCREEN_REALM_SLOT__", realm_slot_js()
     )
