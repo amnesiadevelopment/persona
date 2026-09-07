@@ -203,7 +203,7 @@ class WorkerCloak(NamedTuple):
     crossing the PS-78 boundary and a reader who carries it needs to find where
     it ended. ``setup`` is spliced INSIDE ``__pnaInstall`` — which every module
     riding this bootstrap carries — so it does not ship to the frame-related
-    modules, it ships to ALL THIRTEEN. Measured, by generating every rider's
+    modules, it ships to ALL FOURTEEN. Measured, by generating every rider's
     bundle at the merge-base and at HEAD and diffing the trees:
 
     * Every rider's bundle grew by EXACTLY the shared bootstrap's own delta
@@ -238,22 +238,22 @@ class WorkerCloak(NamedTuple):
     * It is additive per realm and reaches no value channel, so no digest moves
       — ``tests/test_realm_value_channels.py`` is the neighbour that pins that.
 
-    THE THIRTEEN-DEEP CHAIN IS THE PRICE OF THAT SPLICE POINT, and it was
+    THE FOURTEEN-DEEP CHAIN IS THE PRICE OF THAT SPLICE POINT, and it was
     measured rather than reasoned about (``tests/test_ps215_tostring_chain.py``).
-    Thirteen riders means thirteen installations per realm, each closing over
-    the previous as ``__hpts``. After thirteen chainings, in one realm:
+    Fourteen riders means fourteen installations per realm, each closing over
+    the previous as ``__hpts``. After fourteen chainings, in one realm:
     ``Function.prototype.toString`` still stringifies BYTE-IDENTICALLY to the
     pristine intrinsic; an untouched native (``Array.prototype.map``) is
     likewise unchanged; the patch's own properties are exactly
     ``["length", "name"]``; and a marked wrapper renders the native form exactly
     ONCE whether it was marked by the innermost or the outermost installation.
-    Delegating through all thirteen is not a cost worth optimising ON THIS
+    Delegating through all fourteen is not a cost worth optimising ON THIS
     CHAIN: a marked hit answered at the innermost link measured FASTER than an
     unmarked passthrough (372ns vs 426ns), because the passthrough reaches the
     real intrinsic anyway.
 
     ⚠️ THAT RESULT IS ABOUT ``Function.prototype.toString`` AND DOES NOT
-    TRANSFER TO THE DOM-INSERTION WRAPPERS, which are thirteen deep for the same
+    TRANSFER TO THE DOM-INSERTION WRAPPERS, which are fourteen deep for the same
     reason and have a completely different cost shape. Each ``toString`` link is
     an O(1) delegation; each INSERTION link runs ``collectFrames``, i.e. a
     ``querySelectorAll`` walk over the whole inserted subtree. Measured on the
@@ -287,15 +287,15 @@ class WorkerCloak(NamedTuple):
     link. ``test_wrap_once_would_break_delivery`` keeps the rejected design
     executable so it cannot quietly come back.
 
-    WHY THIRTEEN COPIES RATHER THAN ONE SHARED INSTALLATION GUARDED PER REALM:
+    WHY FOURTEEN COPIES RATHER THAN ONE SHARED INSTALLATION GUARDED PER REALM:
     a single installation needs the N riders to COORDINATE, and they are
     separate content scripts in one MAIN world with no shared closure and no
-    guaranteed load order — so the guard has to live under a name all thirteen
+    guaranteed load order — so the guard has to live under a name all fourteen
     can spell, i.e. on the global object. That is precisely the enumerable
     ``G.__pnaToStringPatched`` flag PS-48 removed: ``Object.keys(window)`` finds
     it in one line, in EVERY realm, at every worker/iframe depth, under
     persona's own prefix — positive identification of a persona-family tool.
-    Chaining costs thirteen delegations and publishes NO shared name at all
+    Chaining costs fourteen delegations and publishes NO shared name at all
     (measured: zero matching enumerable globals). The module docstring's
     "CHAINING answers the same question without any shared state" is the same
     argument; this is that argument holding at N=13 rather than N=2.
@@ -758,7 +758,7 @@ def realm_bootstrap_js(
         var nativeCW = null;
         // The CHAINED contentWindow getter, captured AFTER this rider added its
         // own link below. Reading a frame's window through THIS runs every
-        // rider's accessor wrapper, so one read delivers all thirteen leaves --
+        // rider's accessor wrapper, so one read delivers all fourteen leaves --
         // which is what lets the connection trigger below do its work exactly
         // ONCE per insertion instead of once per rider. Captured as a
         // REFERENCE, so replacing the property afterwards (as the AC3 suite's
@@ -886,12 +886,12 @@ def realm_bootstrap_js(
           // Deliver into each now-connected frame's window. Read through the
           // CHAINED accessor (`chainedCW`) rather than the native one: that
           // chain is every rider's link, each with its OWN leaf and its OWN
-          // `fresh()` guard, so ONE read here installs all thirteen leaves.
+          // `fresh()` guard, so ONE read here installs all fourteen leaves.
           // This is what makes the single-scan guard below correct rather than
           // merely cheap -- the scan is redundant across riders, but the
           // WRAPPERS ARE NOT: each closes over a different LEAF. Suppressing
-          // twelve wrappers to save twelve scans would silently deliver ONE
-          // leaf into the phantom realm instead of thirteen, which is the very
+          // thirteen wrappers to save thirteen scans would silently deliver ONE
+          // leaf into the phantom realm instead of fourteen, which is the very
           // defect this ticket exists to fix. Measured, not assumed: a
           // wrap-once build reaches the realm with 1 of 13 leaves present.
           //
@@ -944,8 +944,8 @@ def realm_bootstrap_js(
               // its own `this` and `arguments` (an arrow would not).
               var wrapped = ({
                 m() {
-                  // ONLY THE OUTERMOST RIDER SCANS. Thirteen riders nest
-                  // thirteen wrappers here, and -- unlike the `toString` chain,
+                  // ONLY THE OUTERMOST RIDER SCANS. Fourteen riders nest
+                  // fourteen wrappers here, and -- unlike the `toString` chain,
                   // where each link is an O(1) delegation -- each link of THIS
                   // chain would otherwise run `collectFrames`, i.e. a
                   // `querySelectorAll` walk over the whole inserted subtree.
@@ -985,14 +985,14 @@ def realm_bootstrap_js(
                   // "an outer NON-RIDER will not". A rider knows the wrapper it
                   // built and the one it wrapped; it cannot know which riders
                   // installed after it, so the rider sitting highest among the
-                  // thirteen cannot tell a fourteenth rider above it from a
+                  // fourteen cannot tell a fifteenth rider above it from a
                   // page script that wrapped the chain later. If a page wraps
                   // these methods AFTER document_start, `proto[prop]` matches
                   // no rider's `wrapped`, every rider reads "not outermost",
                   // and the connection trigger goes quiet for that method.
                   //
                   // A fail-open default was tried and rejected: it inverts the
-                  // failure, so the NORMAL thirteen-rider case scans thirteen
+                  // failure, so the NORMAL fourteen-rider case scans fourteen
                   // times again and the amplification comes straight back.
                   //
                   // What the boundary costs is bounded, and the bound is why it

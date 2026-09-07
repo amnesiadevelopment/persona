@@ -40,8 +40,14 @@ def test_script_spoofs_screen_and_mediadevices(tmp_path):
     assert "enumerateDevices" in js
     assert "videoinput" in js
     # masked as native
-    assert "[native code]" not in js  # we keep real toString via nativeWrap
-    assert "nativeWrap" in js
+    assert "[native code]" not in js  # we keep real toString via the leaves' own nw
+    # PS-320 removed the top-level `nativeWrap`: its last callsite moved into
+    # `applyDevicesPatch`, which carries its own wrapper because the leaf BODY is
+    # what crosses realms. The old `assert "nativeWrap" in js` here survived that
+    # removal off the definition and five COMMENTS alone, so it was green on a
+    # build where nothing called it. Assert the marker the native_ext toString
+    # cloak actually reads instead — a property of the emitted wrapper, not a word.
+    assert "__pnaName" in js
 
 
 def test_spoofs_hardware_concurrency_and_device_memory(tmp_path):
