@@ -1,0 +1,33 @@
+# Output of probe_harness — BEFORE the guard (shipped patch at 649f6ae)
+
+shim self-test: PASS
+
+== A. pixelscan reference probe, as REed by feder (70x5, 14 bands) ==
+   budget arithmetic: (70*5)/128 = 2  -> after clamp = 2
+   seed=0         modified reference pixels = 2   FAILS probe (byte-exact readback broken)
+   seed=12345     modified reference pixels = 2   FAILS probe (byte-exact readback broken)
+   seed=deadbeef  modified reference pixels = 2   FAILS probe (byte-exact readback broken)
+
+== B. is it the geometry or the algorithm? sweep small canvases ==
+   size         w*h/128  budget   modified
+   16x16        2        2        2
+   32x32        8        8        7
+   70x5         2        2        2
+   64x64        32       10       9
+   100x30       23       10       8
+   128x128      128      10       8
+   280x60       131      10       8
+   256x256      512      10       10
+
+== C. uniform (single-colour) render — the degenerate reference ==
+   16x16        modified = 0  (byte-exact)
+   32x32        modified = 0  (byte-exact)
+   70x5         modified = 0  (byte-exact)
+   64x64        modified = 0  (byte-exact)
+   100x30       modified = 0  (byte-exact)
+   128x128      modified = 0  (byte-exact)
+   280x60       modified = 0  (byte-exact)
+   256x256      modified = 0  (byte-exact)
+
+== D. determinism: same seed twice, different seeds differ ==
+   280x60 seed=12345 run1=8 run2=8 (stable=yes), seed=99999 -> 8

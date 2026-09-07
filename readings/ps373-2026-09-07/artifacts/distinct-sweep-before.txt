@@ -1,0 +1,30 @@
+# Output of distinct_sweep — BEFORE the guard
+
+== How many distinct colours does OUR implicit guard tolerate? ==
+(a byte-exact row means the render survives a reference-equality probe)
+
+   colours   70x5 probe     300x150        verdict@70x5
+   1         0              0              byte-exact
+   2         1              1              ALTERED -> isCanvas=false
+   3         2              2              ALTERED -> isCanvas=false
+   4         2              3              ALTERED -> isCanvas=false
+   8         2              7              ALTERED -> isCanvas=false
+   14        1              9              ALTERED -> isCanvas=false
+   16        2              9              ALTERED -> isCanvas=false
+   17        2              10             ALTERED -> isCanvas=false
+   24        2              8              ALTERED -> isCanvas=false
+   32        2              7              ALTERED -> isCanvas=false
+
+== Would a size floor of 64*64*4 bytes cost real protection? ==
+(the floor feder applies: skip buffers under 16384 bytes)
+   size         bytes      modified   under floor?
+   70x5         1400       1          YES     (pixelscan probe)
+   16x16        1024       2          YES     (icon)
+   32x32        4096       7          YES     (favicon)
+   64x64        16384      7          no      (exactly at floor)
+   100x30       12000      9          YES     (small fp canvas)
+   128x128      65536      9          no      (medium)
+   220x30       26400      10         no      (classic fp text canvas)
+   280x60       67200      10         no      (classic fp text canvas)
+   300x150      180000     9          no      (canvas default size)
+   500x200      400000     9          no      (large fp canvas)
