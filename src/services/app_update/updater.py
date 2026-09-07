@@ -1225,6 +1225,20 @@ def _revert_windows_fast_path(_say, log) -> str:
     this arm must not re-acquire on a new platform). _set_hold is best-effort
     by its own contract: an unwritable settings file logs and does not fail a
     revert that is otherwise going to succeed.
+
+    ...AND THE ONE ARM THAT COMES BACK TAKES IT OFF AGAIN. Writing the hold
+    early is forced, but it is only CORRECT for the path that never returns.
+    The spawn-failure arm below does return, and it returns having changed
+    nothing on disk — so a hold left behind there is a standing "not that
+    release" instruction recorded for a revert that DID NOT HAPPEN. That is not
+    a cosmetic leftover: _app_rollback_row reads the held state FIRST and
+    returns early, so the operator who just failed to go back loses the very
+    "go back" row they would retry from, and the only control left on the panel
+    offers to RESUME the release they are trying to escape — strictly worse
+    than the no-button state this ticket started from. The two shipped
+    platforms cannot reach this because they write the hold only once the
+    rename has already succeeded; this arm restores that invariant (hold ⇔ a
+    revert that really happened) by undoing rather than by reordering.
     """
     from . import fast_update
 
@@ -1249,8 +1263,29 @@ def _revert_windows_fast_path(_say, log) -> str:
     try:
         fast_update._spawn_bat(bat)
     except Exception as e:
-        # Nothing has moved: the script was never started, so the live pair is
-        # untouched and the retained pair is still there to try again with.
+        # Nothing has moved — INCLUDING THE HOLD. The script was never started,
+        # so the live pair is untouched and the retained pair is still there to
+        # try again with; the hold had to be written before the handoff (there
+        # is no "after" on the success path), so this — the one arm that DOES
+        # come back — is where it comes off again. Leaving it would hide the
+        # go-back row behind a "resume updates" button for a revert that never
+        # happened.
+        #
+        # NOT resume_app_updates(log=log), deliberately, though it is the same
+        # single write: that helper narrates "automatic updates resumed", which
+        # is an OPERATOR GESTURE this operator did not make, and it would land
+        # between the two messages that describe what really happened. So the
+        # undo is silent when it works — restoring the state they were already
+        # in needs no announcement — and speaks only when it does NOT, because
+        # a hold that cannot be cleared is the one case where they are left
+        # holding something invisible. Best-effort in both directions: a
+        # refusal that is otherwise safe to retry must not become an exception.
+        try:
+            from ...core import settings
+
+            settings.set_app_update_hold("")
+        except Exception as clear_err:
+            _say(f"Update: couldn't clear the update hold ({clear_err}).")
         _say(f"Update: couldn't go back to the previous version ({e}).")
         return ""
     fast_update.exit_for_restart()

@@ -31,7 +31,7 @@ import pytest
 
 from src.services.app_update import fast_update as fu
 from src.services.app_update import updater as au
-from src.ui.app import _ROLLBACK_LABEL
+from src.ui.app import _RESUME_LABEL, _ROLLBACK_LABEL
 
 # The file-step executor and the emitted-script helpers, reused rather than
 # re-written — AC2 is explicit that there must not be a second parser.
@@ -282,7 +282,7 @@ def test_the_go_back_row_is_absent_on_windows_when_nothing_is_retained(
     assert _ROLLBACK_LABEL not in texts
 
 
-def _real_windows_panel_texts(monkeypatch):
+def _real_windows_panel_texts(monkeypatch, hold=None):
     """The version panel built with the REAL rollback_target — nothing about
     the retention stubbed, only the flet host.
 
@@ -292,12 +292,22 @@ def _real_windows_panel_texts(monkeypatch):
     does. This drives the row off whatever the install dir genuinely holds, so
     restoring the confirm-time deletion takes the button off the panel exactly
     as it does in production.
+
+    `hold` exists because the held state is read FIRST and short-circuits the
+    row. It defaults to a stub returning "" — right for the retention tests,
+    whose subject is the .prev pair and which must not be perturbed by settings
+    they never touch. Pass the REAL `au.held_version` when the hold is what is
+    under test: without it a caller asking "is the go-back row still there
+    after a failed revert?" gets a panel that could not have shown the resume
+    row whatever the hold said, i.e. an assertion that passes on the defect.
     """
     from src.ui import app as app_mod
     from tests.test_app_ui import make_app
 
     monkeypatch.setattr(app_mod._platform, "IS_WINDOWS", True)
-    monkeypatch.setattr(app_mod.app_update, "held_version", lambda: "")
+    monkeypatch.setattr(
+        app_mod.app_update, "held_version", hold or (lambda: "")
+    )
     monkeypatch.setattr(
         app_mod.app_settings, "is_auto_update_enabled", lambda: False
     )
@@ -403,6 +413,29 @@ def test_a_windows_revert_does_not_corrupt_the_path_via_the_bak_strip(
     # after it written against that derivation. The Windows arm branches ABOVE
     # that line; this proves the corrupted path is never touched and the real
     # one is.
+    #
+    # ⚠️ ASSERTED ON THE DIRECTORY LISTING, NOT ON os.path.exists(corrupted),
+    # and that is forced rather than stylistic — this test simulates Windows
+    # but the CI matrix also RUNS it on a real one, where the two differ.
+    # Win32 strips trailing dots during path canonicalisation, so
+    # "…/app.zip." resolves to "…/app.zip" and `os.path.exists` on it is True
+    # for the perfectly healthy install this test wants to accept: the probe
+    # cannot return False on that platform for ANY implementation, correct or
+    # broken, so it measured the OS rather than the code. (It duly failed on
+    # windows-latest while every other assertion here passed.) A listing
+    # entry is a real directory entry, is compared as text, and no platform
+    # canonicalises it — so it says the thing meant: nothing named `app.zip.`
+    # was ever created beside the live pair.
+    #
+    # WHICH ASSERTION CATCHES TRAP 1 ON WHICH PLATFORM, since the same
+    # canonicalisation splits that too and it is better said than left to be
+    # rediscovered. Here (POSIX) `app.zip.` is a distinct name, so a Windows
+    # arm that fell through to the `.bak` strip would create a real stray entry
+    # and the listing check below names it. On Win32 that same write lands on
+    # `app.zip` ITSELF — no stray entry exists to find — and it is the BYTES
+    # assertion at the end that fires, because the live pair would then hold
+    # the derivation's leavings rather than the restored release. Neither check
+    # is redundant; each is the load-bearing one on one platform.
     dst_zip, dst_hash = _windows_install(monkeypatch, tmp_path)
     _retain(dst_zip, dst_hash)
     target = au.rollback_target()
@@ -411,11 +444,13 @@ def test_a_windows_revert_does_not_corrupt_the_path_via_the_bak_strip(
 
     _drive_windows_revert(monkeypatch, tmp_path, dst_zip, dst_hash)
 
-    assert not os.path.exists(corrupted), (
-        "the .bak strip produced a path and something wrote to it"
+    install_dir = dst_zip.parent
+    entries = sorted(os.listdir(install_dir))
+    assert os.path.basename(corrupted) not in entries, (
+        f"the .bak strip produced a path and something wrote to it: {entries}"
     )
-    assert not os.path.exists(str(dst_zip) + ".reverting"), (
-        "the macOS/Linux park semantics ran on a Windows revert"
+    assert not any(e.endswith(".reverting") for e in entries), (
+        f"the macOS/Linux park semantics ran on a Windows revert: {entries}"
     )
     assert dst_zip.read_bytes() == b"WORKING-RELEASE-CODE"
 
@@ -447,6 +482,26 @@ def test_a_windows_revert_whose_handoff_fails_leaves_everything_in_place(
     # The one failure that can happen after the script is written: nothing has
     # moved, because the script does all the work and it was never started.
     # The operator keeps a live install AND the retained pair to retry with.
+    #
+    # "EVERYTHING IN PLACE" INCLUDES THE SETTINGS FILE, and that is the half
+    # this test originally forgot to ask about. The hold is written BEFORE the
+    # handoff (there is no "after" on the success path — os._exit(0) is the
+    # last statement), so this arm is the only place it can come off again.
+    # A hold surviving a revert that did not happen is not an untidy leftover:
+    # _app_rollback_row reads the held state first and returns early, so the
+    # go-back row the operator would retry from disappears and is replaced by
+    # a button offering to RESUME the release they are trying to escape. The
+    # panel assertion below is the one that says "they can try again", which
+    # is the property actually at stake; the store assertion says why.
+    store: dict[str, str] = {}
+    from src.core import settings
+
+    monkeypatch.setattr(
+        settings, "set_app_update_hold", lambda v: store.__setitem__("held", v)
+    )
+    monkeypatch.setattr(settings, "app_update_hold", lambda: store.get("held", ""))
+    monkeypatch.setattr(au, "APP_VERSION", "9.9.9")
+
     dst_zip, dst_hash = _windows_install(monkeypatch, tmp_path)
     prev_zip, prev_hash = _retain(dst_zip, dst_hash)
 
@@ -465,6 +520,113 @@ def test_a_windows_revert_whose_handoff_fails_leaves_everything_in_place(
     assert os.path.isfile(prev_zip) and os.path.isfile(prev_hash), (
         "a failed handoff consumed the retained pair"
     )
+    # the settings file is part of "in place"
+    assert store.get("held", "") == "", (
+        f"a revert that never happened left a hold behind: {store}"
+    )
+    assert au.held_version() == ""
+    # …and therefore the operator can still SEE the way back. Asserted on the
+    # rendered panel rather than on held_version alone, per AC5: the flag being
+    # clear is the mechanism, the row being there is the outcome.
+    assert _ROLLBACK_LABEL in _real_windows_panel_texts(
+        monkeypatch, hold=au.held_version
+    ), "a failed revert took the go-back row off the panel"
+    # and the operator is told it failed rather than being left guessing
+    assert any("couldn't go back" in m.lower() for m in msgs), msgs
+    # the silent-undo contract: restoring the state they were already in is not
+    # narrated, so no message claims a gesture they did not make
+    assert not any("resumed" in m.lower() for m in msgs), msgs
+
+
+def test_a_surviving_hold_would_have_taken_the_go_back_row_off_the_panel(
+    monkeypatch, tmp_path
+):
+    # The POSITIVE CONTROL for the panel assertion above, and the reason it is
+    # worth anything. That test asserts a row is PRESENT; a presence assertion
+    # is only meaningful if something could have made it absent. This drives
+    # the same real panel, off the same real install dir with the same real
+    # retained pair, changing ONE thing — the hold is set — and shows the row
+    # goes away and "resume updates" takes its place.
+    #
+    # So it measures the defect's blast radius directly: this is exactly what
+    # the operator saw after a failed handoff before the undo was added, and it
+    # is why leaving a stale hold is worse than the no-button state this ticket
+    # started from — the button does not merely fail, it DISAPPEARS, and the
+    # one control left offers to reinstall the release being escaped.
+    store: dict[str, str] = {}
+    from src.core import settings
+
+    monkeypatch.setattr(
+        settings, "set_app_update_hold", lambda v: store.__setitem__("held", v)
+    )
+    monkeypatch.setattr(settings, "app_update_hold", lambda: store.get("held", ""))
+    monkeypatch.setattr(au, "APP_VERSION", "9.9.9")
+
+    dst_zip, dst_hash = _windows_install(monkeypatch, tmp_path)
+    _retain(dst_zip, dst_hash)
+
+    # control: with no hold, the row is there — same fixture, same panel
+    assert _ROLLBACK_LABEL in _real_windows_panel_texts(
+        monkeypatch, hold=au.held_version
+    )
+
+    store["held"] = "9.9.9"
+    texts = _real_windows_panel_texts(monkeypatch, hold=au.held_version)
+
+    assert _ROLLBACK_LABEL not in texts, (
+        "the hold did not suppress the go-back row — the assertion it makes "
+        "falsifiable is not measuring anything"
+    )
+    assert _RESUME_LABEL in texts, texts
+
+
+def test_a_windows_revert_whose_handoff_and_hold_undo_both_fail_still_returns(
+    monkeypatch, tmp_path
+):
+    # The undo has its own failure arm, and an unexercised failure arm is a
+    # liability rather than a safeguard. If clearing the hold raises (a
+    # read-only settings file — the same condition _set_hold is best-effort
+    # about in the other direction), the refusal must still RETURN "" rather
+    # than turn into an exception: the whole point of this path is that nothing
+    # moved and the operator can retry, and a raise here would propagate out of
+    # a gesture that is otherwise safe.
+    #
+    # It must also SAY so. This is the one case where the operator is genuinely
+    # left holding something they cannot see — the silent-undo contract above
+    # trades silence for the case where the state is restored, and this is the
+    # case where it is not, so the trade is off.
+    from src.core import settings
+
+    calls: list[str] = []
+
+    def setter(v):
+        calls.append(v)
+        if v == "":
+            raise OSError("settings.json is read-only")
+
+    monkeypatch.setattr(settings, "set_app_update_hold", setter)
+    monkeypatch.setattr(settings, "app_update_hold", lambda: "9.9.9")
+    monkeypatch.setattr(au, "APP_VERSION", "9.9.9")
+
+    dst_zip, dst_hash = _windows_install(monkeypatch, tmp_path)
+    prev_zip, _prev_hash = _retain(dst_zip, dst_hash)
+
+    monkeypatch.setattr(
+        fu, "_spawn_bat", lambda b: (_ for _ in ()).throw(OSError("refused"))
+    )
+    monkeypatch.setattr(fu, "exit_for_restart", lambda: pytest.fail("exited"))
+
+    msgs: list[str] = []
+    assert au.revert_to_previous_build(log=msgs.append) == ""
+
+    # the undo was ATTEMPTED (that is the fix firing), it just could not land
+    assert calls == ["9.9.9", ""], calls
+    # nothing on disk moved either way — the refusal is still safe to retry
+    assert dst_zip.read_bytes() == b"NEW-BAD-RELEASE"
+    assert os.path.isfile(prev_zip)
+    # and BOTH facts reach the operator: the revert failed, and so did the undo
+    assert any("couldn't clear the update hold" in m.lower() for m in msgs), msgs
+    assert any("couldn't go back" in m.lower() for m in msgs), msgs
 
 
 # --- AC7: the hold makes the revert DURABLE --------------------------------
