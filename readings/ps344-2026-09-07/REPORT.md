@@ -238,8 +238,8 @@ So the guard is demonstrated in **three** states, on real measured inputs:
 | stock, labelled as the product | PATCHES ABSENT (10/10) | **1** |
 | the published engine with ONE realm on ONE seed sabotaged | PATCHES ABSENT (1/10) | **1** |
 
-`verify_claims.py` was falsified the same way and correctly failed (`74 passed,
-1 FAIL`), so its 75-check pass is a real signal rather than a vacuous one.
+`verify_claims.py` was falsified the same way and correctly failed (`83 passed,
+1 FAIL`), so its 84-check pass is a real signal rather than a vacuous one.
 
 ---
 
