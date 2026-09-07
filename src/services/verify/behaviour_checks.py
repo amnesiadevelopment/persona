@@ -1149,10 +1149,17 @@ def _survivor_profile(ctx: Context, name: str):
     path is N bytes too long. Measuring it here converts an opaque symptom into
     the sentence that names the cure.
     """
-    from .behaviour import profile_name_budget, singleton_socket_length
+    from .behaviour import (
+        profile_name_budget,
+        singleton_socket_is_bound,
+        singleton_socket_length,
+    )
 
     budget = profile_name_budget(ctx.home)
-    if len(name) > budget:
+    # Scoped to the platforms whose engine binds a UNIX socket — see
+    # `singleton_socket_is_bound`. Windows uses a named mutex and has no
+    # sun_path, so this arithmetic describes nothing there.
+    if singleton_socket_is_bound() and len(name) > budget:
         raise BehaviourCheckError(
             f"the scratch home {ctx.home!r} is too long to launch chromium "
             f"under: profile {name!r} puts its process-singleton socket at "
