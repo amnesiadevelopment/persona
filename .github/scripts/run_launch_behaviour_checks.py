@@ -97,8 +97,59 @@ there); forgiving one is invisible, which is why only the first is admissible.
 ⚠️ WHEN PS-2 FIXES THE CANVAS COLLISION, add ``two-profile-unlinkability`` to
 both ``SELECTED_CHECKS`` and ``EXPECTED_CHECKS`` below in the same change. The
 registry-agreement test in ``tests/test_ps336_launch_behaviour_venue.py`` names
-it as the ONE permitted omission and says why, so that edit is prompted by a
-test rather than left to be remembered.
+it as a permitted omission and says why, so that edit is prompted by a test
+rather than left to be remembered.
+
+⭐ THE SECOND OMISSION, AND IT IS A DIFFERENT REASON — NOT A WIDENED CARVE-OUT
+------------------------------------------------------------------------------
+``no-process-survives-a-closed-session`` (PS-347) is the fifth
+``needs_launch=True`` check and is likewise neither SELECTED nor in the FLOOR.
+Its reason is NOT the one above, and collapsing the two into a single "known
+exclusions" set would hide that — so they are recorded separately and pinned
+separately.
+
+**This lane provisions FIREFOX, and that check launches CHROMIUM by
+construction.** The engine step calls
+``src.services.engine.firefox.download_engine`` against ``engine-baseline.txt``
+(today ``firefox-20``); no chromium binary exists on this runner. PS-347's
+check launches ``os_type=linux`` — and therefore chromium — DELIBERATELY, and
+its own registry entry argues why: the leak it guards is a property of the
+WRAPPER, multi-process launch, so the same measurement taken on this lane's
+firefox fixtures would be VACUOUS. It is the one launch-backed check whose
+engine this venue does not have.
+
+**Measured on this branch rather than reasoned, by removing the chromium engine
+and running the check under a real display:**
+
+    [CANNOT RUN] no-process-survives-a-closed-session
+      the falsification could not run: FileNotFoundError:
+      '/tmp/pb-j3rzu3m_/engine/fpchrome.AppImage'
+    0 passed, 0 finding(s), 1 could not run    ->  EXIT 2
+
+So including it would make this gate PERMANENTLY EXIT 2 — "nothing was
+measured" — which is the precise failure this whole venue was built to remove,
+and which this header already refuses in the ``two-profile-unlinkability`` case
+under its other colour. The control that makes that a statement about the
+VENUE rather than about a broken check: with the chromium engine present, the
+same command on the same branch under the same display reports ``[PASS] ...
+peak live tree: 10 process(es) ... survivors after terminate(): 0``, exit 0,
+and its falsifier reports 9 survivors when descendant teardown is sabotaged.
+The check works; this runner cannot host it.
+
+⛔ AND THE GAP IS NOT THIS TICKET'S TO CLOSE BY HAND. ``ci.yml`` already names
+it, at length and deliberately (:427-455): ``browser_chromium`` is *"a real
+capability nothing declares"*, *"THE ENGINE THE PRODUCT DEFAULTS TO IS THE ONE
+NO GATE LAUNCHES"*, and closing it *"is a separate slice, and it is not one
+line"* — the product launches fingerprint-chromium, not playwright's build, so
+which build, which pin and which runner are all open questions. Provisioning it
+here on the way past would answer them by accident. PS-347's check is therefore
+falsified on a hand-built chromium venue and recorded in its PR, exactly as the
+ticket required, and stays out of this lane until that slice lands.
+
+⚠️ WHEN A CHROMIUM ENGINE IS PROVISIONED FOR CI, add
+``no-process-survives-a-closed-session`` to both constants below in the same
+change. The registry-agreement test names it and says why, so that edit is
+prompted rather than remembered.
 
 WHY A SEPARATE FLOOR AND NOT AN EXTENSION OF PS-315'S
 ------------------------------------------------------
@@ -229,10 +280,11 @@ MODULE = "src.services.verify.behaviour_cli"
 MODULE_FILE = REPO_ROOT.joinpath(*MODULE.split(".")).with_suffix(".py")
 
 #: THE CHECKS THIS LANE SELECTS — the launch-backed bodies that were DARK
-#: before this venue existed. `two-profile-unlinkability` is absent
-#: DELIBERATELY; the header argues why at length and a test pins the omission
-#: by name. `--check` is repeatable and VALIDATES each name, so a rename or a
-#: retirement fails loudly here instead of silently shrinking the lane.
+#: before this venue existed. TWO launch-backed checks are absent DELIBERATELY,
+#: for two DIFFERENT reasons that must not be collapsed into one carve-out; the
+#: header argues both at length and a test pins each by name. `--check` is
+#: repeatable and VALIDATES each name, so a rename or a retirement fails loudly
+#: here instead of silently shrinking the lane.
 SELECTED_CHECKS = (
     "restart-continuity",
     "benign-edit-stability",
