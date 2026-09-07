@@ -1048,3 +1048,256 @@ class TestSingletonSocketBudget:
 
         assert "SOCKET_BOUND_PROFILE_NAMES" in source
         assert "SOCKET_BOUND_PROFILE_NAMES" in falsify
+
+
+class TestTheCLIProvisionsALaunchableHome:
+    """The SEAM the defect actually lived in: what the CLI hands the checks.
+
+    ⭐ THIS CLASS EXISTS BECAUSE THE ARITHMETIC WAS NEVER WRONG. ``TestSingletonSocketBudget``
+    above pins ``default_scratch_home`` — the helper — and every one of its
+    assertions was already true of the broken build, because the helper did not
+    exist yet. The defect was that ``behaviour_cli.main`` provisioned a home
+    without consulting ANY budget: ``tempfile.mkdtemp(prefix="persona-behaviour-")``,
+    31 bytes under ``/tmp``, 113-byte socket, ``CANNOT RUN`` on every default
+    invocation. So the fix was pinned only on the side that was already correct,
+    and the CLI could revert byte-for-byte to the pre-fix shape with the whole
+    suite green — measured, not supposed: 130 passed and the CI no-launch gate
+    at exit 0 under exactly that mutant.
+
+    That is this ticket's own charter turned on itself — a fixed defect with no
+    gate that would catch its return — so the assertion belongs on the CALLER.
+
+    ``main``'s only externally-visible act before the re-exec is
+    ``os.execve(..., env)``, so intercepting it captures the ``PERSONA_HOME``
+    the checks will actually receive. No browser, no display and no store: these
+    run wherever the rest of this file runs.
+    """
+
+    @staticmethod
+    def _capture_home(monkeypatch, argv):
+        """Run the CLI up to its re-exec and return the PERSONA_HOME it hands on.
+
+        Returns ``(exit_code, home_or_None)``. ``home`` is None when the CLI
+        never got as far as re-execing, which is what a refusal looks like from
+        here and is a real answer rather than a missing one.
+        """
+        from src.services.verify import behaviour_cli
+
+        captured: "dict[str, str]" = {}
+
+        def fake_execve(path, args, env):
+            captured["home"] = env["PERSONA_HOME"]
+            raise SystemExit(0)
+
+        monkeypatch.setattr(os, "execve", fake_execve)
+        monkeypatch.delenv("PERSONA_BEHAVIOUR_CLI_REEXEC", raising=False)
+
+        try:
+            code = behaviour_cli.main(argv)
+        except SystemExit as exc:  # our fake_execve, i.e. the re-exec happened
+            code = exc.code
+        return code, captured.get("home")
+
+    def test_the_cli_provisions_a_home_the_checks_can_launch_under(
+        self, monkeypatch
+    ):
+        """THE REGRESSION TEST FOR THE SEAM, asserted where the defect lived.
+
+        Not "the helper computes a budget" — the broken build would have agreed
+        with that too, had it had a helper. The claim is that the home the CLI
+        actually hands the checks fits the profile names those checks actually
+        create.
+        """
+        import shutil
+
+        from src.services.verify.behaviour import (
+            SUN_PATH_LIMIT,
+            singleton_socket_is_bound,
+            singleton_socket_length,
+        )
+        from src.services.verify.behaviour_checks import SOCKET_BOUND_PROFILE_NAMES
+
+        if not singleton_socket_is_bound():
+            pytest.skip(
+                "the engine binds a UNIX socket for its singleton on POSIX "
+                "only (process_singleton_posix.cc); Windows uses a named "
+                "mutex, so there is no sun_path budget to assert here"
+            )
+
+        _, home = self._capture_home(monkeypatch, ["run"])
+
+        # ⛔⛔ THE PRECONDITION, ASSERTED RATHER THAN ASSUMED. Without this the
+        # test passes when the CLI never re-execs at all — a green taken from
+        # a thing that never happened, which is the exact shape this whole
+        # check exists to refuse.
+        assert home is not None, (
+            "the CLI never re-execed, so nothing was measured: this test "
+            "asserts a property of the home it hands the checks, and there "
+            "was no home"
+        )
+
+        try:
+            for name in SOCKET_BOUND_PROFILE_NAMES:
+                length = singleton_socket_length(home, name)
+                assert length <= SUN_PATH_LIMIT, (
+                    f"the CLI's own default home {home!r} puts profile "
+                    f"{name!r}'s singleton socket at {length} bytes, over the "
+                    f"{SUN_PATH_LIMIT}-byte limit. The engine will exit FATAL "
+                    "'Socket path too long' seconds into every launch and the "
+                    "launch-backed checks will report CANNOT RUN under the "
+                    "invocation this module's own docstring prescribes."
+                )
+        finally:
+            shutil.rmtree(home, ignore_errors=True)
+
+    def test_the_cli_asks_for_the_budget_the_checks_actually_need(
+        self, monkeypatch
+    ):
+        """The CLI must ask for the REAL name budget, not merely ask.
+
+        ⚠️ THE TEST ABOVE CANNOT CATCH THIS ONE, and the pair is deliberate. A
+        CLI that calls ``default_scratch_home(0)`` — consulting the sizing and
+        requiring nothing of it — still lands on this machine's short ``/tmp``
+        and still fits, so the seam test goes green over a budget nobody asked
+        for. That mutant was measured surviving the whole suite.
+
+        The two arms differ only in a NARROW BAND of base lengths: where the
+        home leaves a non-negative budget that is nevertheless SMALLER than the
+        names the checks create. Below the band both refuse (the budget is
+        negative, so even zero is impossible); above it both accept. So the
+        band is staged deliberately and its width is ASSERTED, because a venue
+        that missed it would let this test pass for the same reason the defect
+        hid.
+
+        In the band, asking for the real budget REFUSES while asking for zero
+        hands over a home the engine will exit FATAL under.
+        """
+        import shutil
+        import tempfile
+
+        from src.services.verify.behaviour import (
+            EXIT_CANNOT_RUN,
+            default_scratch_home,
+            profile_name_budget,
+            singleton_socket_is_bound,
+        )
+        from src.services.verify.behaviour_checks import (
+            longest_socket_bound_profile_name,
+        )
+
+        if not singleton_socket_is_bound():
+            pytest.skip("POSIX-only: no sun_path budget to refuse against")
+
+        needed = longest_socket_bound_profile_name()
+
+        # A base sized so that a home provisioned under it lands INSIDE the
+        # band: budget >= 0 (asking zero succeeds) and budget < needed (asking
+        # for the real requirement refuses). Not pytest's tmp_path, whose
+        # length is incidental and far past the band.
+        parent = tempfile.mkdtemp(prefix="pb-band-")
+        try:
+            probe_home_len = len(parent) + 1 + len("pb-") + 8
+            band_base = parent
+            while profile_name_budget("x" * probe_home_len) >= needed:
+                band_base = os.path.join(band_base, "d")
+                os.mkdir(band_base)
+                probe_home_len = len(band_base) + 1 + len("pb-") + 8
+
+            # THE PRECONDITION, ASSERTED RATHER THAN ASSUMED. Both halves: a
+            # budget below zero would make the two arms agree by refusing, and
+            # a budget at or above `needed` would make them agree by accepting.
+            band_budget = profile_name_budget("x" * probe_home_len)
+            assert 0 <= band_budget < needed, (
+                f"the staged base leaves a budget of {band_budget}, outside "
+                f"the [0, {needed}) band where asking for zero and asking for "
+                "the real requirement give different answers — this venue "
+                "cannot tell the two apart"
+            )
+
+            monkeypatch.setenv("TMPDIR", band_base)
+            monkeypatch.setattr(tempfile, "tempdir", band_base)
+            assert tempfile.gettempdir() == band_base
+
+            # The hardened half: /tmp exists but this user may not write it, so
+            # the shortest-base fallback cannot rescue the run.
+            real_access = os.access
+
+            def no_writable_tmp(path, mode, *a, **kw):
+                if str(path) == "/tmp" and mode & os.W_OK:
+                    return False
+                return real_access(path, mode, *a, **kw)
+
+            monkeypatch.setattr(os, "access", no_writable_tmp)
+
+            # ⭐ THE POSITIVE CONTROL, and it is what makes the refusal below
+            # ATTRIBUTABLE. In this venue asking for nothing SUCCEEDS — so a
+            # refusal here cannot be the base being unwritable, the fallback
+            # misfiring, or the venue being broken in some way that would
+            # refuse whatever was asked. The only difference between the two
+            # calls is the number, which is the thing under test.
+            asking_for_nothing = default_scratch_home(0)
+            try:
+                assert os.path.isdir(asking_for_nothing), (
+                    "the control must actually succeed, or the refusal below "
+                    "is not attributable to the budget the CLI asks for"
+                )
+            finally:
+                shutil.rmtree(asking_for_nothing, ignore_errors=True)
+
+            code, home = self._capture_home(monkeypatch, ["run"])
+
+            assert home is None, (
+                f"the CLI re-execed with PERSONA_HOME={home!r}, which leaves "
+                f"only {profile_name_budget(home)} byte(s) for a profile name "
+                f"and the checks need {needed} — the engine would exit FATAL "
+                "'Socket path too long' and the check would report a launch "
+                "that never happened"
+            )
+            assert code == EXIT_CANNOT_RUN, (
+                "a home the checks cannot launch under is 'nothing was "
+                f"measured', which is exit {EXIT_CANNOT_RUN} — never 0, and "
+                "never 1, which is reserved for a finding about the product"
+            )
+        finally:
+            shutil.rmtree(parent, ignore_errors=True)
+
+    def test_the_refusal_does_not_leave_its_own_scratch_directory_behind(
+        self, tmp_path
+    ):
+        """A refusal must take its directory with it.
+
+        The home has to be CREATED before it can be measured (mkdtemp's suffix
+        is part of the length), so the refusal path runs with a real directory
+        already on disk. Unswept, every refusal left an empty ``pb-*`` behind —
+        3 of 3 refusals, and the test suite itself left 2 — in a module whose
+        stated discipline is that a check must not leave the machine dirtier
+        than it found it. Unbounded on a self-hosted or cached runner.
+        """
+        from src.services.verify.behaviour import (
+            _SCRATCH_PREFIX,
+            UnsafeEnvironment,
+            default_scratch_home,
+            singleton_socket_is_bound,
+        )
+
+        if not singleton_socket_is_bound():
+            pytest.skip("POSIX-only: no sun_path budget to refuse against")
+
+        import tempfile
+
+        base = tempfile.gettempdir()
+        before = {p for p in os.listdir(base) if p.startswith(_SCRATCH_PREFIX)}
+
+        refusals = 0
+        for _ in range(3):
+            with pytest.raises(UnsafeEnvironment):
+                default_scratch_home(200)
+            refusals += 1
+
+        assert refusals == 3, "the venue must actually have refused three times"
+
+        after = {p for p in os.listdir(base) if p.startswith(_SCRATCH_PREFIX)}
+        assert after - before == set(), (
+            f"3 refusals left {len(after - before)} scratch director(ies) "
+            f"behind in {base}: {sorted(after - before)}"
+        )
