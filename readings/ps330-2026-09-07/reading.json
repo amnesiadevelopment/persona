@@ -1,0 +1,152 @@
+{
+  "ticket": "PS-330",
+  "taken_at": "2026-09-07T09:35:25.264934+00:00",
+  "head": "db6d528237a8c5ed381293252b64792e7cc5a396",
+  "engine_build": "firefox-20",
+  "display": ":90",
+  "host": {
+    "dev_snd": [],
+    "dev_video": [],
+    "has_audio_device": false,
+    "has_video_device": false
+  },
+  "ac3_leg_measured": "host WITHOUT audio/video devices",
+  "ac3_leg_unmeasured": "host WITH real audio/video devices",
+  "readings": [
+    {
+      "profile": "ps330-probe-0",
+      "permission_granted_overlay": false,
+      "host_devices": {
+        "dev_snd": [],
+        "dev_video": [],
+        "has_audio_device": false,
+        "has_video_device": false
+      },
+      "seed": 2952235449,
+      "hardware_generation": 1,
+      "channel_control": 2,
+      "href": "http://127.0.0.1:42063/",
+      "secure_context": true,
+      "api_present": true,
+      "enumerate_present": true,
+      "native_source": "function enumerateDevices() {\n    [native code]\n}",
+      "permission_camera": "prompt",
+      "permission_microphone": "prompt",
+      "devices": {
+        "outcome": "list",
+        "devices": [
+          {
+            "kind": "audioinput",
+            "deviceId": "",
+            "groupId": "",
+            "label_len": 0,
+            "label_empty": true
+          },
+          {
+            "kind": "videoinput",
+            "deviceId": "",
+            "groupId": "",
+            "label_len": 0,
+            "label_empty": true
+          }
+        ],
+        "kindCounts": {
+          "audioinput": 1,
+          "videoinput": 1
+        },
+        "count": 2,
+        "elapsed_ms": 9
+      }
+    },
+    {
+      "profile": "ps330-probe-1",
+      "permission_granted_overlay": false,
+      "host_devices": {
+        "dev_snd": [],
+        "dev_video": [],
+        "has_audio_device": false,
+        "has_video_device": false
+      },
+      "seed": 2635390347,
+      "hardware_generation": 1,
+      "channel_control": 2,
+      "href": "http://127.0.0.1:37787/",
+      "secure_context": true,
+      "api_present": true,
+      "enumerate_present": true,
+      "native_source": "function enumerateDevices() {\n    [native code]\n}",
+      "permission_camera": "prompt",
+      "permission_microphone": "prompt",
+      "devices": {
+        "outcome": "list",
+        "devices": [
+          {
+            "kind": "audioinput",
+            "deviceId": "",
+            "groupId": "",
+            "label_len": 0,
+            "label_empty": true
+          },
+          {
+            "kind": "videoinput",
+            "deviceId": "",
+            "groupId": "",
+            "label_len": 0,
+            "label_empty": true
+          }
+        ],
+        "kindCounts": {
+          "audioinput": 1,
+          "videoinput": 1
+        },
+        "count": 2,
+        "elapsed_ms": 17
+      }
+    },
+    {
+      "profile": "ps330-probe-granted",
+      "permission_granted_overlay": true,
+      "host_devices": {
+        "dev_snd": [],
+        "dev_video": [],
+        "has_audio_device": false,
+        "has_video_device": false
+      },
+      "seed": 2278800404,
+      "hardware_generation": 1,
+      "channel_control": 2,
+      "href": "http://127.0.0.1:43907/",
+      "secure_context": true,
+      "api_present": true,
+      "enumerate_present": true,
+      "native_source": "function enumerateDevices() {\n    [native code]\n}",
+      "permission_camera": "granted",
+      "permission_microphone": "granted",
+      "devices": {
+        "outcome": "list",
+        "devices": [
+          {
+            "kind": "audioinput",
+            "deviceId": "",
+            "groupId": "",
+            "label_len": 0,
+            "label_empty": true
+          },
+          {
+            "kind": "videoinput",
+            "deviceId": "",
+            "groupId": "",
+            "label_len": 0,
+            "label_empty": true
+          }
+        ],
+        "kindCounts": {
+          "audioinput": 1,
+          "videoinput": 1
+        },
+        "count": 2,
+        "elapsed_ms": 18
+      }
+    }
+  ]
+}
