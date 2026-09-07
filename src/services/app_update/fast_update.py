@@ -161,11 +161,33 @@ def restore_steps(dst_zip: str, dst_hash: str) -> "list[tuple[str, str, str]]":
     ]
 
 
-def drop_retained_steps(dst_zip: str, dst_hash: str) -> "list[tuple[str, str, str]]":
-    """Discard the retained pair — the new release booted, so it has earned the
-    slot. Nothing accumulates across updates."""
-    prev_zip, prev_hash = retained_paths(dst_zip, dst_hash)
-    return [("del", prev_zip, ""), ("del", prev_hash, "")]
+# NOTE — there is deliberately NO `drop_retained_steps` here any more, and its
+# absence is the point of PS-328 rather than an oversight.
+#
+# It existed, and the swap script's SUCCESS arm ran it: a confirmed-good boot
+# deleted the retained pair ~3s after `start`. PS-80's AC4 stated the goal that
+# deletion served — "one previous version, replaced per update, never
+# accumulating" — and that goal is met IDENTICALLY without it, because
+# `stage_steps` above already `move`s the live pair OVER the retained one on the
+# next update. The bound is depth, not duration: exactly one retained pair
+# either way, replaced rather than expired. That is the same policy the macOS
+# arm states in place (updater.py, "each update's retained bundle REPLACES the
+# last one rather than accumulating") and the Firefox engine states at
+# browser/engine_install.py.
+#
+# What the deletion cost was the ONLY thing an operator could have gone back to.
+# The recovery arm (restore_steps, above) consumed the retained pair for the
+# AUTOMATIC case — a release that will not come up at all — and then the
+# success arm destroyed it for every other case, including the one that matters
+# most: a release that boots, registers in tasklist, and is broken. Windows had
+# no revert control on the version panel because rollback_target() had nothing
+# to resolve; it had nothing to resolve because this function ran.
+#
+# The retained pair now survives the confirm, which is what makes
+# updater.rollback_target() / revert_to_previous_build() answer on Windows.
+# Cost: one app.zip + hash (~1MB, see the module docstring) held until the next
+# update replaces it — against the ~200MB .app bundle macOS retains and the
+# AppImage Linux retains, both indefinitely.
 
 
 def render_steps_bat(steps: "list[tuple[str, str, str]]") -> str:
@@ -216,8 +238,9 @@ def _write_appzip_swap_bat(exe: str, new_zip: str, new_hash: str,
         # this the script falls through to a dead install whose own updater
         # shipped inside the file it just overwrote.
         recover_body=render_steps_bat(restore_steps(dst_zip, dst_hash)),
-        # It booted: the retained pair has been superseded, so drop it.
-        confirm_body=render_steps_bat(drop_retained_steps(dst_zip, dst_hash)),
+        # NO confirm_body. It booted — and the retained pair STAYS, which is
+        # what gives the operator a way back from a release that comes up and
+        # is broken. See the note above drop_retained_steps' former home.
     )
     return relaunch_bat.write_bat(content, prefix="persona-fastswap-")
 
@@ -242,6 +265,121 @@ def _download_small(url: str, dst: str, attempts: int = 5) -> bool:
         timeout_args=["--connect-timeout", "15", "--max-time", "180"],
         attempts=attempts,
     )
+
+
+def _spawn_bat(bat: str) -> bool:
+    """Spawn a generated script detached from this process, True on success.
+
+    Detached, its own process group, no console: the script outlives this
+    persona on purpose — its whole first section is a wait loop for our pid,
+    and a child that died with us could never reach the file operations.
+    """
+    subprocess.Popen(
+        ["cmd", "/c", bat],
+        close_fds=True,
+        env=install_env.relaunch_env(),
+        cwd=tempfile.gettempdir(),
+        creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        | getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    return True
+
+
+def exit_for_restart() -> None:
+    """Leave, so the scheduled script's wait loop can proceed.
+
+    A SEPARATE call rather than a tail of the spawn, because it is the one step
+    a test cannot execute: everything either side of it is assertable, and this
+    is the seam a test stubs to keep asserting past it.
+    """
+    try:
+        sys.stdout.flush()
+        sys.stderr.flush()
+    except Exception:
+        pass
+    os._exit(0)
+
+
+def _write_appzip_restore_bat(exe: str, dst_zip: str, dst_hash: str,
+                              old_pid: int) -> str:
+    """A temp .bat that waits for THIS persona to exit, puts the RETAINED pair
+    back over the live one, and relaunches.
+
+    The same generated-script route the swap takes, and for the same reason:
+    app.zip cannot be replaced while flet holds it (errno-32, #195), so the
+    restore has to happen after this process is gone. That is what makes a
+    Windows revert unable to honour the "return after the swap" contract the
+    macOS and Linux arms keep — see revert_to_previous_build in updater.py.
+
+    A STAGE-ONLY caller: no `recover_body`, no `confirm_body`. There is nothing
+    to recover TO (the retained pair is what we are consuming) and nothing to
+    drop on success. That also keeps this the cheapest shape the shared
+    generator emits — one extra label over the full installer's no-arm script.
+    """
+    checks = relaunch_bat.pid_check(old_pid) + relaunch_bat.image_check(
+        os.path.basename(exe)
+    )
+    content = relaunch_bat.build_bat(
+        exe,
+        wait_checks=checks,
+        stage_label="restore",
+        # `move`, not `copy`: the retained pair is CONSUMED by the restore, so
+        # a reverted install holds exactly one good pair and no leftovers. The
+        # hash goes back with the zip — that mismatch is what makes flet
+        # re-extract, since its marker records the release being reverted from.
+        stage_body=render_steps_bat(restore_steps(dst_zip, dst_hash)),
+    )
+    return relaunch_bat.write_bat(content, prefix="persona-fastrevert-")
+
+
+def stage_retained_restore(log=None) -> str:
+    """Write the restore-and-relaunch script and return its path, or "" when
+    the revert cannot be staged.
+
+    NOTHING ON DISK HAS CHANGED when this returns — the script does the work
+    after this process exits. That split is deliberate: every way this can fail
+    fails HERE, while the operator is still running something, so the caller
+    can refuse cleanly instead of discovering a problem after the current build
+    has been moved aside.
+    """
+    def say(msg: str) -> None:
+        if log is not None:
+            try:
+                log(msg)
+            except Exception:
+                pass
+
+    if not _platform.IS_WINDOWS:
+        return ""
+    dst_zip, dst_hash = install_app_zip_paths()
+    if not dst_zip or not dst_hash:
+        say("Update: the install layout wasn't found; can't go back.")
+        return ""
+    prev_zip, prev_hash = retained_paths(dst_zip, dst_hash)
+    # BOTH halves or nothing — the hash going back with the zip is what makes
+    # flet re-extract, so a lone zip is not a revert we can honour.
+    #
+    # THIS ARM SPEAKS FOR ITSELF, like its three siblings above and below, and
+    # that uniformity is the property rather than a tidy-up. The message used
+    # to live in the caller, fired UNCONDITIONALLY on every "" this function
+    # returns — so an operator whose %TEMP% was locked or whose persona.exe had
+    # moved was told, on the line AFTER the true reason, that no previous
+    # version is retained, while the pair was on disk and the panel was still
+    # rendering the go-back row off it. "Nothing retained" is the phrase that
+    # tells someone to STOP TRYING, and those conditions are transient and
+    # worth retrying. A refusal reason belongs to the branch that knows it.
+    if not (os.path.isfile(prev_zip) and os.path.isfile(prev_hash)):
+        say("Update: nothing to go back to — no previous version is retained.")
+        return ""
+    exe = install_env.installed_windows_exe()
+    if not exe:
+        say("Update: couldn't locate persona.exe; can't go back.")
+        return ""
+    try:
+        return _write_appzip_restore_bat(exe, dst_zip, dst_hash, os.getpid())
+    except Exception as e:
+        say(f"Update: couldn't stage going back ({e}).")
+        return ""
 
 
 def apply_code_only_and_restart(app_zip_url: str, expected_sha256: str, log=None):
@@ -308,21 +446,9 @@ def apply_code_only_and_restart(app_zip_url: str, expected_sha256: str, log=None
         return False
 
     try:
-        subprocess.Popen(
-            ["cmd", "/c", bat],
-            close_fds=True,
-            env=install_env.relaunch_env(),
-            cwd=tempfile.gettempdir(),
-            creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-            | getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
+        _spawn_bat(bat)
     except Exception as e:
         say(f"Fast update: couldn't schedule the swap ({e}); keeping current.")
         return False
     say("Update: restarting…")
-    try:
-        sys.stdout.flush()
-        sys.stderr.flush()
-    except Exception:
-        pass
-    os._exit(0)
+    exit_for_restart()
