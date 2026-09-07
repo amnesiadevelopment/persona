@@ -358,7 +358,18 @@ def stage_retained_restore(log=None) -> str:
     prev_zip, prev_hash = retained_paths(dst_zip, dst_hash)
     # BOTH halves or nothing — the hash going back with the zip is what makes
     # flet re-extract, so a lone zip is not a revert we can honour.
+    #
+    # THIS ARM SPEAKS FOR ITSELF, like its three siblings above and below, and
+    # that uniformity is the property rather than a tidy-up. The message used
+    # to live in the caller, fired UNCONDITIONALLY on every "" this function
+    # returns — so an operator whose %TEMP% was locked or whose persona.exe had
+    # moved was told, on the line AFTER the true reason, that no previous
+    # version is retained, while the pair was on disk and the panel was still
+    # rendering the go-back row off it. "Nothing retained" is the phrase that
+    # tells someone to STOP TRYING, and those conditions are transient and
+    # worth retrying. A refusal reason belongs to the branch that knows it.
     if not (os.path.isfile(prev_zip) and os.path.isfile(prev_hash)):
+        say("Update: nothing to go back to — no previous version is retained.")
         return ""
     exe = install_env.installed_windows_exe()
     if not exe:

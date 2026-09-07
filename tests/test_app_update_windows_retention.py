@@ -476,6 +476,153 @@ def test_a_windows_revert_with_nothing_retained_refuses_and_returns(
     assert any("nothing to go back to" in m.lower() for m in msgs), msgs
 
 
+def _refuse_after_the_pair_is_real(monkeypatch, tmp_path, break_it):
+    """Drive the REAL revert_to_previous_build into one of the refusal arms
+    that fire AFTER the retained pair has been resolved, and return what the
+    operator was told.
+
+    A pair genuinely on disk is the whole point: these arms are the ones where
+    a "nothing retained" message is FALSE, and a fixture without the pair could
+    not tell a correct implementation from the one that says it anyway.
+    """
+    dst_zip, dst_hash = _windows_install(monkeypatch, tmp_path)
+    prev_zip, prev_hash = _retain(dst_zip, dst_hash)
+    # fixture control: there IS something to go back to at this exact moment,
+    # and the panel is offering it. Without this the assertions below could
+    # pass on an install that genuinely retained nothing.
+    assert os.path.isfile(prev_zip) and os.path.isfile(prev_hash)
+    assert au.rollback_target().endswith(".prev"), au.rollback_target()
+
+    break_it(monkeypatch)
+    monkeypatch.setattr(
+        fu, "exit_for_restart", lambda: pytest.fail("exited on a refusal")
+    )
+    monkeypatch.setattr(
+        fu, "_spawn_bat", lambda bat: pytest.fail("spawned on a refusal")
+    )
+
+    msgs: list[str] = []
+    assert au.revert_to_previous_build(log=msgs.append) == ""
+    return msgs, dst_zip
+
+
+def test_a_windows_revert_that_cannot_find_the_exe_does_not_claim_nothing_is_retained(
+    monkeypatch, tmp_path
+):
+    # THE OPERATOR MUST NOT BE TOLD TWO CONTRADICTORY THINGS AT ONCE. The
+    # refusal message used to be emitted unconditionally by the caller on every
+    # "" the staging returned, while three of the staging's four refusal arms
+    # had ALREADY said a different — and true — reason. So an operator whose
+    # persona.exe had moved read "couldn't locate persona.exe" and then, on the
+    # very next line, "no previous version is retained" — with the pair sitting
+    # on disk and the go-back row still rendered off it three inches away.
+    #
+    # "Nothing retained" is the phrase that means STOP TRYING, and this
+    # condition is not that: it is recoverable, and the panel correctly still
+    # offers the retry. The first assertion below is the one that matters — it
+    # is what says the app does not contradict itself; the second says the true
+    # reason survived rather than being silenced along with the false one.
+    msgs, _dst_zip = _refuse_after_the_pair_is_real(
+        monkeypatch,
+        tmp_path,
+        lambda mp: mp.setattr(
+            fu.install_env, "installed_windows_exe", lambda: ""
+        ),
+    )
+
+    assert not any("nothing to go back to" in m.lower() for m in msgs), msgs
+    assert any("couldn't locate persona.exe" in m.lower() for m in msgs), msgs
+    # and the contradiction it would have been: the row IS still on the panel
+    assert _ROLLBACK_LABEL in _real_windows_panel_texts(monkeypatch), (
+        "the fixture stopped offering the retry, so the contradiction this "
+        "test exists for could not have arisen — it is measuring nothing"
+    )
+
+
+def test_a_windows_revert_that_cannot_write_the_script_does_not_claim_nothing_is_retained(
+    monkeypatch, tmp_path
+):
+    # The same defect on the arm that matters most in practice. %TEMP% locked
+    # by AV is the threat model this suite already cites one step later, for
+    # the spawn failure — and it is transient, so telling the operator nothing
+    # is retained is exactly the wrong instruction: clearing the lock and
+    # retrying would work.
+    def unwritable_temp(mp):
+        def _raise(*a, **k):
+            raise OSError("%TEMP% is read-only")
+
+        mp.setattr(fu.relaunch_bat, "write_bat", _raise)
+
+    msgs, dst_zip = _refuse_after_the_pair_is_real(
+        monkeypatch, tmp_path, unwritable_temp
+    )
+
+    assert not any("nothing to go back to" in m.lower() for m in msgs), msgs
+    assert any("couldn't stage going back" in m.lower() for m in msgs), msgs
+    assert dst_zip.read_bytes() == b"NEW-BAD-RELEASE", "the live pair moved"
+
+
+def test_every_windows_refusal_gives_the_operator_exactly_one_reason(
+    monkeypatch, tmp_path
+):
+    # The structural form of the two tests above, over ALL FOUR refusal arms
+    # rather than the two that were wrong — because the defect was not a bad
+    # message, it was a message emitted by a caller that could not know which
+    # refusal it was composing on top of. One reason per refusal is the
+    # property; asserting it arm by arm is what keeps a future fifth arm from
+    # quietly re-acquiring the doubling.
+    #
+    # The nothing-retained arm is in here deliberately: its message MOVED, it
+    # did not vanish, and an operator on the full-installer lane must still be
+    # told plainly that there is nothing to go back to.
+    def _layout_gone(mp):
+        mp.setattr(fu, "install_app_zip_paths", lambda: ("", ""))
+
+    def _exe_gone(mp):
+        mp.setattr(fu.install_env, "installed_windows_exe", lambda: "")
+
+    def _temp_locked(mp):
+        def _raise(*a, **k):
+            raise OSError("%TEMP% is read-only")
+
+        mp.setattr(fu.relaunch_bat, "write_bat", _raise)
+
+    arms = [
+        ("layout", _layout_gone, "install layout wasn't found", False),
+        ("nothing retained", lambda mp: None, "nothing to go back to", False),
+        ("exe", _exe_gone, "couldn't locate persona.exe", True),
+        ("temp", _temp_locked, "couldn't stage going back", True),
+    ]
+
+    for name, break_it, expected, needs_pair in arms:
+        with monkeypatch.context() as mp:
+            root = tmp_path / name
+            root.mkdir()
+            dst_zip, dst_hash = _windows_install(mp, root)
+            if needs_pair:
+                _retain(dst_zip, dst_hash)
+            break_it(mp)
+            mp.setattr(
+                fu, "exit_for_restart", lambda: pytest.fail(f"{name}: exited")
+            )
+            mp.setattr(
+                fu, "_spawn_bat", lambda bat: pytest.fail(f"{name}: spawned")
+            )
+
+            msgs: list[str] = []
+            assert au.revert_to_previous_build(log=msgs.append) == ""
+
+            # A refusal says its reason and nothing else — no success line is
+            # reached, so one message IS one reason. Counting the whole log
+            # rather than grepping for refusal-shaped phrases is deliberate:
+            # the defect was an EXTRA message, and a filter is exactly what
+            # would let the next extra one through.
+            assert len(msgs) == 1, f"{name}: {msgs}"
+            assert expected in msgs[0].lower(), f"{name}: {msgs}"
+            if name != "nothing retained":
+                assert "nothing to go back to" not in msgs[0].lower(), msgs
+
+
 def test_a_windows_revert_whose_handoff_fails_leaves_everything_in_place(
     monkeypatch, tmp_path
 ):

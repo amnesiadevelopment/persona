@@ -1248,11 +1248,21 @@ def _revert_windows_fast_path(_say, log) -> str:
         _say(f"Update: couldn't go back to the previous version ({e}).")
         return ""
     if not bat:
-        # stage_retained_restore has already said anything specific (a missing
-        # install layout, an unlocatable exe). The plain "nothing retained"
-        # case is silent there and gets the ordinary refusal here, so the two
-        # never both speak.
-        _say("Update: nothing to go back to — no previous version is retained.")
+        # SILENT HERE, DELIBERATELY. Every one of stage_retained_restore's four
+        # refusal arms now says its own reason exactly once — including the
+        # nothing-retained case, which is the one that used to be silent there
+        # and got a blanket message here. That blanket message was WRONG on the
+        # other three: it fired on top of a true, specific reason (a missing
+        # install layout, an unlocatable persona.exe, an unwritable %TEMP%) and
+        # told the operator no previous version was retained while the pair was
+        # on disk and _app_rollback_row was still rendering the go-back row off
+        # it. Two contradictory facts on one screen, with the phrase that means
+        # "stop trying" attached to conditions that are worth retrying.
+        #
+        # So this arm adds nothing. Anything said about WHY a stage failed is
+        # said by the branch that knows — which is what makes "exactly one
+        # reason reaches the operator" a structural property here rather than a
+        # claim this comment has to be trusted about.
         return ""
     # Held value is APP_VERSION — the release being rejected, which is exactly
     # the one this process is running.

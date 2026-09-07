@@ -742,6 +742,13 @@ def test_staging_a_restore_refuses_when_nothing_is_retained(tmp_path, monkeypatc
     # The full-installer lane leaves no `.prev` pair (Inno upgrades in place
     # under a fixed AppId), so the revert must refuse rather than emit a script
     # whose `if exist` guards would all no-op into a relaunch of the SAME build.
+    #
+    # AND IT SAYS SO ITSELF. This arm used to be the one silent refusal, with
+    # its message supplied by the caller — which fired that message on the
+    # other three arms too, telling an operator whose %TEMP% was locked that
+    # nothing was retained while the pair sat on disk. Each arm owning its own
+    # reason is what makes "exactly one reason reaches the operator" true by
+    # construction rather than by the caller guessing.
     dst_zip, dst_hash, _nz, _nh = _install_dir(tmp_path)
     monkeypatch.setattr(fu._platform, "IS_WINDOWS", True)
     monkeypatch.setattr(
@@ -749,12 +756,20 @@ def test_staging_a_restore_refuses_when_nothing_is_retained(tmp_path, monkeypatc
     )
     monkeypatch.setattr(fu.install_env, "installed_windows_exe", lambda: "p.exe")
 
-    assert fu.stage_retained_restore() == ""
+    msgs: list[str] = []
+    assert fu.stage_retained_restore(log=msgs.append) == ""
+    assert msgs == [
+        "Update: nothing to go back to — no previous version is retained."
+    ], msgs
 
 
 def test_staging_a_restore_refuses_on_a_half_retained_pair(tmp_path, monkeypatch):
     # A lone .prev zip is not a revert this can honour: without the hash going
     # back too, flet keeps the extraction of the release being reverted from.
+    # The operator hears the same thing they hear when nothing is retained,
+    # because from where they stand that is what it is — there is no pair to
+    # go back to. Previously this arm was silent and the caller's blanket
+    # message covered it by accident.
     dst_zip, dst_hash, _nz, _nh = _install_dir(tmp_path)
     prev_zip, _prev_hash = fu.retained_paths(str(dst_zip), str(dst_hash))
     with open(prev_zip, "wb") as f:
@@ -765,4 +780,6 @@ def test_staging_a_restore_refuses_on_a_half_retained_pair(tmp_path, monkeypatch
     )
     monkeypatch.setattr(fu.install_env, "installed_windows_exe", lambda: "p.exe")
 
-    assert fu.stage_retained_restore() == ""
+    msgs: list[str] = []
+    assert fu.stage_retained_restore(log=msgs.append) == ""
+    assert any("nothing to go back to" in m.lower() for m in msgs), msgs
