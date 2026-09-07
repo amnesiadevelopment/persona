@@ -87,7 +87,7 @@ Correct everywhere except the named platform. Not a provisioning gap on Linux.
 | Where | Reason given |
 |---|---|
 | `test_apply_restart.py:131`, `:136` | no real AppImage available |
-| `test_ps341_engine_continuity_live.py` (×23) | `PS-341 evidence not present at readings/ps341-2026-09-07/…` |
+| `test_ps341_engine_continuity_live.py` (×22) | `PS-341 evidence not present at readings/ps341-2026-09-07/…` |
 
 #### The PS-341 guard, and why it is shaped that way
 
@@ -138,8 +138,23 @@ It is committed anyway, for the same reason the reading is: a control that is
 only *describable* is not a control.
 
 That split is the point: hiding the reading must not silently take the
-position's own guards with it. Verified by removing the directory — **2 passed,
-21 skipped**, never a green 23.
+position's own guards with it. Verified by removing the directory — **3 passed,
+23 skipped**, never a green 26.
+
+⚠️ **`23` there is the file's TOTAL skip count, and the `(×22)` on line 90 is
+the count for the ONE reason written beside it** — the two numbers differ by
+exactly the dark-mode control test, which skips for the *other* reason and is
+already accounted for in its own table above. They are not the same figure and
+neither is a typo for the other.
+
+Every number in the two paragraphs above is **measured, not asserted** — each
+was re-taken by actually removing the file and running the module, on the tree
+these words ship in (a docs-only change over `4ca4c97`, so nothing in this
+commit can have moved them; both figures were re-taken *after* the edit
+anyway). If you change the test count, re-take them the same way rather than
+adjusting them by arithmetic: the totals move for reasons the diff does not
+show (a `parametrize` list changing length moves the skip count by ten without
+adding a test).
 
 **The measurement itself needs `browser_chromium`**, the capability nothing
 provisions today (see below). Re-running it needs a real fingerprint-chromium,

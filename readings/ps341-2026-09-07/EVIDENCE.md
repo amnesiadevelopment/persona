@@ -172,6 +172,24 @@ It is **recorded, not fixed**: the fix — if one is wanted — is a decision ab
 launch path's. Filed as a separate finding rather than silently widened into
 this ticket.
 
+#### One captured number that NOTHING rests on: `audioPending`
+
+`scripts/ps341_engine_continuity.py:202` records `audioPending` on both legs
+(`true` / `true`). It is **not** in `STABLE_VECTORS`, no test reads it, and no
+sentence here or in the recorded position argues from it. It is disclosed
+rather than left silently sitting in `reading.json`, because an unremarked
+number in a committed reading is exactly what a later reader mines for a claim
+it cannot support.
+
+⚠️ **It is not an audio fingerprint reading, and it could not have detected an
+audio-vector move even in principle.** All it records is that an
+`OfflineAudioContext` was *constructed and started without throwing* — no
+buffer is ever rendered and **no coefficient is ever compared**, on either leg
+or between them. So `true`/`true` means "the audio API existed on both builds",
+which is a liveness breadcrumb for the probe itself and nothing more. Read it
+as evidence about the *instrument*, never about the audio vector; if the audio
+vector is the question, that is an unmeasured cell and needs its own reading.
+
 ## ⚠️ Two false positives, caught by controls
 
 Both looked like headline findings. Both were the instrument.
