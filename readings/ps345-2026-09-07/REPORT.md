@@ -80,15 +80,46 @@ carries thirteen `*=` assignments and scales every metric `measureText` returns.
 spec-legal, and off by seven orders of magnitude.
 
 Roughly **half of all seeds** land here, because `norm_x` is centred on 0 and its
-sign is a coin flip. The consequence for anyone writing a detector or a guard:
+sign is a coin flip. Both prior readings drew two seeds (24601, 5150) and both
+happened to be negative, so this class had not been seen before. The consequence
+for anyone writing a detector or a guard:
 
-> **A check keyed on `width < 0` passes seed 777 and reports the engine healthy.**
+> **A rule keyed on `width < 0` alone passes seed 777 and reports the engine
+> healthy.**
 
 The real invariant is that the factor is centred on **0** where the consumer needs
-one centred on **1**; the sign is incidental. The guard shipped with this reading is
-keyed on **ratio magnitude**, not on sign, for exactly this reason — and its
-self-test carries seed 777 as a named case so the weaker rule cannot be
-reintroduced without a test going red.
+one centred on **1**; the sign is incidental.
+
+**⚠️ That is a statement about the RULE, not about our guard — and the difference
+matters, so it is stated plainly rather than left to be inferred.**
+`scripts/ps301_measuretext_repro.py` **already catches seed 777** and always did.
+It does not stop at the negative-width test: its second branch condemns a ratio
+that is *constant across strings AND implausible*, which is exactly the
+positive-but-collapsed shape, and its own comment says so ("one constant factor
+applied to every string is a MULTIPLY"). Run against this reading's own
+seed-777 file it exits **1, DEFECT**:
+
+```
+$ python3 scripts/ps301_measuretext_repro.py \
+    --observed readings/ps345-2026-09-07/artifacts/patched-777.json \
+    --stock    readings/ps345-2026-09-07/artifacts/stock.json
+DEFECT: observed/stock ratio is CONSTANT across 4 strings (spread 0.000e+00)
+        at 1.011058e-06 — a multiply by an offset-shaped value, not a perturbation
+exit 1  (DEFECT)
+```
+
+So this reading found **no blind spot in a committed instrument**. An earlier
+draft of this report claimed it had; that claim was false and is retracted here
+rather than softened. What seed 777 actually contributes is a sharper statement
+of *why* the guard is right — it condemns on the factor's centre, and the
+negative-width branch it happens to hit first on other seeds is the weaker of its
+two reasons. That is worth having, and it is a smaller claim than the one it
+replaces.
+
+What was therefore added to the guard is the **opposite of a fix**: seed 777 is
+pinned as a named `--self-test` case, recording behaviour already present so the
+strong branch cannot be dropped as redundant by a later reader who sees only the
+negative-width rule. See §4.
 
 ### 2.4 This is louder than a leak
 
@@ -174,28 +205,43 @@ shipping an unverified patch edit dressed as a completed fix.
 
 ## 4. Reproducing
 
+The verdict runs through **`scripts/ps301_measuretext_repro.py`** — the project's
+one authoritative measureText guard. This reading adds an input reader for its
+JSON shape (`--observed`/`--stock`, four strings per file) and a self-test case;
+it does **not** add a second guard. A `ps345_verdict.py` was written during this
+work and **deliberately dropped**: it restated the same predicates and was
+behaviourally identical (0 disagreements across 15 factor scenarios, non-constant
+and mixed-sign inputs included, plus all four readings below), so committing it
+would have left two unreferenced, equivalent instruments and no way for a reader
+to tell which was authoritative.
+
 ```bash
 # the guard, and proof it can go red — no browser needed
-python3 artifacts/ps345_verdict.py --self-test
+python3 scripts/ps301_measuretext_repro.py --self-test
 
-# the verdict on each committed reading
-python3 artifacts/ps345_verdict.py --observed artifacts/patched-24601.json \
-                                   --stock artifacts/stock.json   # exit 1 (DEFECT)
-python3 artifacts/ps345_verdict.py --observed artifacts/patched-777.json \
-                                   --stock artifacts/stock.json   # exit 1 (DEFECT, POSITIVE widths)
-python3 artifacts/ps345_verdict.py --observed artifacts/patched-noseed.json \
-                                   --stock artifacts/stock.json   # exit 0 (patch stands down)
+# the verdict on each committed reading (run from the repo root)
+R=readings/ps345-2026-09-07/artifacts
+python3 scripts/ps301_measuretext_repro.py --observed $R/patched-24601.json \
+                                           --stock $R/stock.json   # exit 1 (DEFECT, negative)
+python3 scripts/ps301_measuretext_repro.py --observed $R/patched-777.json \
+                                           --stock $R/stock.json   # exit 1 (DEFECT, POSITIVE widths)
+python3 scripts/ps301_measuretext_repro.py --observed $R/patched-noseed.json \
+                                           --stock $R/stock.json   # exit 0 (patch stands down)
 
 # re-take the readings (downloads the published AppImage + stock CFT 152)
-python3 artifacts/measure.py <chrome> <label> [--fingerprint=SEED]
+python3 $R/measure.py <chrome> <label> [--fingerprint=SEED]
 ```
 
-`ps345_verdict.py` **exits non-zero when the defect is present**, so it is RED
-today and turns GREEN the day an engine carrying the corrected patch is measured.
-**Its redness is the finding, not a broken script.** Its `--self-test` reaches all
-three verdicts on real measured inputs — including a *healthy-but-constant* arm,
-which is the case that proves the constant-ratio signature alone does not condemn
-(a correct `Shuffle()` factor is constant across strings too).
+The guard **exits non-zero when the defect is present**, so it is RED today on
+the seeded arms and turns GREEN the day an engine carrying the corrected patch is
+measured. **Its redness is the finding, not a broken script.** Its `--self-test`
+reaches all three verdicts on real measured inputs — including a
+*healthy-but-constant* arm, which is the case that proves the constant-ratio
+signature alone does not condemn (a correct `Shuffle()` factor is constant across
+strings too), and the seed-777 arm described in §2.3.
+
+`tests/test_ps345_measuretext_guard.py` pins all of the above against the
+committed readings, so the behaviour cannot regress silently.
 
 ---
 
@@ -209,3 +255,18 @@ which is the case that proves the constant-ratio signature alone does not condem
    on Linux x86_64. That is out of scope here and is not fixed by this ticket.
 3. **The shipped 152 engines remain defective on all three platforms** until a
    rebuilt engine ships. This reading does not change what users have.
+4. **The release manifest now disagrees with the tree, deliberately.**
+   `engine/releases/personium-152.0.7977.75.json` records
+   `015-canvas-measure-text.patch` at sha256 `773a27ce…`; on this branch the file
+   hashes to `10e59276…`. **That is correct and must NOT be "fixed".** The
+   manifest records what was *shipped*, and the shipped engine genuinely carries
+   the pre-fix patch — editing it to match the tree would make the record claim a
+   build that does not exist.
+
+   It is noted here because the manifest's stated purpose is to let a future
+   reader tell an unchanged patch set from a drifted one, and it is now drifted
+   with the reason living only in this paragraph. Nothing checks these per-file
+   digests against the tree (`ps343_verify_release_provenance.py` does not), so
+   no test catches it either way. **The digest is expected to stay stale until a
+   rebuilt engine ships**, at which point that release's manifest records the
+   corrected patch and the divergence closes on its own.
