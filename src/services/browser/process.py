@@ -1102,14 +1102,46 @@ def spawn_browser(profile: Profile, *, in_process: bool = False) -> subprocess.P
             # beside the flags it sits among — rather than in a test, because
             # this is where the question gets asked.
             #
-            # --disable-spoofing is the MOST consumed switch in the whole patch
-            # set after --fingerprint itself: patches 003, 006, 011, 012, 013,
-            # 014, 015 and 016 each read it as an EARLY RETURN that stands the
-            # patch down. Passing it would switch OFF audio noise, font
-            # masking, GPU-info spoofing, canvas getImageData/toDataURL, client
-            # rects, measureText and WebGL readPixels — in one flag.
-            # It is upstream's kill switch for the whole masking layer, present
-            # so a developer can A/B the patched engine against stock.
+            # --disable-spoofing is the most consumed switch in the whole patch
+            # set after --fingerprint itself: SEVEN patches read it — 003, 006,
+            # 011, 012, 013, 014 and 016.
+            #
+            # ⚠️ THE MECHANISM, because getting it wrong points the warning at
+            # the wrong form of the flag:
+            # it is a value-keyed selective disable, not a boolean kill switch.
+            # Every consumer tests the switch's VALUE for a token, never its
+            # mere presence. The dominant shape (003, 006, 012, 013, 014, 016)
+            # is:
+            #
+            #     if (HasSwitch(kFingerprint) &&
+            #         (!HasSwitch(kDisableSpoofing) ||
+            #          GetSwitchValueASCII(kDisableSpoofing).find("canvas")
+            #              == std::string::npos)) { ...spoof... }
+            #
+            # Trace the BARE flag (empty value) through it: HasSwitch is true,
+            # so the `!HasSwitch` arm is false; then "".find("canvas") returns
+            # npos, so the `== npos` arm is TRUE, the `||` is true, and THE
+            # SPOOFING STILL APPLIES. 011 is the only genuine `return ""`, and
+            # it inverts the test (`find("gpu") != npos`), which an empty value
+            # fails identically. Conclusion:
+            # bare --disable-spoofing is inert across all seven patches.
+            #
+            # ⛔ THE FORM THAT DOES THE DAMAGE IS THE VALUED ONE:
+            # --disable-spoofing=canvas,gpu,audio,font,clientrects
+            #
+            # The tokens are matched by SUBSTRING, one per masking family:
+            # `audio` (003) switches off the AudioContext sample-rate noise,
+            # `font` (006) the font masking, `gpu` (011) the GL
+            # vendor/renderer spoof, `canvas` (012, 013, 016) getImageData /
+            # toDataURL / measureText and WebGL readPixels, `clientrects`
+            # (014) the client-rects offset. That comma list is upstream's
+            # kill switch for the whole masking layer, present so a developer
+            # can A/B the patched engine against stock.
+            # The prohibition is on the VALUED form; the bare form is inert.
+            #
+            # (015 edits code INSIDE the guard 012 authored and adds no read of
+            # its own — it carries the constant on CONTEXT lines only, which is
+            # why the census counts seven consumers and not eight.)
             #
             # So its absence from this list is a DELIBERATE POSITION, not an
             # oversight, and it is the one row of the switch census where

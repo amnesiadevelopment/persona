@@ -39,12 +39,14 @@ patch, and the PASSED column is matched against THAT — never against a name
 derived from the constant.
 
 ⛔ "WIRE EVERYTHING" IS THE WRONG SHAPE, AND ONE ROW PROVES IT.
-``--disable-spoofing`` is consumed by EIGHT patches and is correctly never
-passed: it is upstream's kill switch, and passing it would switch off audio
-noise, font masking, GPU-info spoofing, canvas, client rects, measureText and
-WebGL readPixels in a single flag. A contract demanding every declared switch be
-passed would demand a security regression on its very first row. Hence a
-RECORDED POSITION per row, not a wiring campaign.
+``--disable-spoofing`` is consumed by SEVEN patches and is correctly never
+passed. ⚠️ IT IS A VALUE-KEYED SELECTIVE DISABLE, NOT A BOOLEAN KILL SWITCH —
+the BARE flag is inert through every consumer, and the harmful form is
+``--disable-spoofing=canvas,gpu,audio,font,clientrects``, whose substring-
+matched tokens switch off audio noise, font masking, GPU-info spoofing, canvas,
+client rects, measureText and WebGL readPixels. A contract demanding every
+declared switch be passed would demand a security regression on its very first
+row. Hence a RECORDED POSITION per row, not a wiring campaign.
 
 WHERE EACH COLUMN READS, and each choice is load-bearing:
 
@@ -52,10 +54,16 @@ WHERE EACH COLUMN READS, and each choice is load-bearing:
   ungoogled header that already held three ``kFingerprintingCanvas*Noise``
   constants; those arrive as CONTEXT lines, and a parser that read the whole
   hunk would silently claim three switches this patch does not declare.
-* CONSUMED — the other fifteen patches, matched by constant name OR by the
-  literal flag string, because a patch could plausibly hard-code
-  ``"fingerprint-screen-width"`` without naming the constant. Neither alone is
-  sufficient and the pair is cheap.
+* CONSUMED — the other fifteen patches, ⭐ ALSO ``+`` LINES ONLY, held to the
+  identical standard for the identical reason. Context lines are code a patch
+  merely sits NEXT TO (often code an earlier patch in the same series
+  authored), and removed lines are the OPPOSITE of a consumption. This is not
+  theoretical: reading whole patch text credited ``015`` as an eighth consumer
+  of ``kDisableSpoofing``, which it carries on context lines only, quoting the
+  guard ``012`` wrote. Matched by constant name OR by the literal flag string,
+  because a patch could plausibly hard-code ``"fingerprint-screen-width"``
+  without naming the constant. Neither alone is sufficient and the pair is
+  cheap.
 * PASSED — ⭐ read off the argv A REAL LAUNCH PRODUCES, through the existing
   spawn harness, and NOT by grepping ``src/``. This is the same rule the masking
   matrix states for its own Chromium column ("a sentinel that reads below the
@@ -109,9 +117,16 @@ itself. PS-344 re-measured the same three switches on the PUBLISHED
 ``152.0.7977.75`` binary and reproduced the result, so the screen-trio cells
 below rest on the 152 reading and cite the 144 one only as its predecessor.
 
-THE SPLIT THIS FILE PINS IS 6 / 4 / 2, AND IT WAS 4 / 4 / 4 WHEN THE WORK WAS
-COMMISSIONED. Two rows moved in the days between, both by the same route — a
-human finding one row by hand and a ticket closing it:
+THE SPLIT THIS FILE PINS IS 6 FULLY-WIRED / 2 CONSUMED-NOT-PASSED / 4
+DECLARED-NEVER-CONSUMED, AND IT WAS 4 / 4 / 4 IN THOSE SAME THREE BUCKETS WHEN
+THE WORK WAS COMMISSIONED. ⚠️ THE BUCKETS ARE NAMED RATHER THAN ORDERED, on
+purpose: on a file whose whole value proposition is that the numbers are
+DERIVED rather than written down, the one number written by hand must not
+depend on a reader guessing which bucket a position in the sequence refers to
+(the first version of this docstring said "6 / 4 / 2" while the code's own
+bucket order said "6 / 2 / 4", and both were defensible). Two rows moved in the
+days between commissioning and writing, both by the same route — a human
+finding one row by hand and a ticket closing it:
 
 * ``--fingerprint-brand-version`` (PS-356, commit 5014250) — consumed-not-passed
   became fully wired.
@@ -138,7 +153,7 @@ The matrix, one row per declared switch:
 | fingerprint-hardware-concurrency | 005              | YES    | COVERED (PS-354)  |
 | fingerprint-platform             | 002,006,011      | YES    | COVERED           |
 | timezone                         | 018              | YES    | COVERED           |
-| disable-spoofing                 | 8 patches        | NO     | NOT_COVERED_RECORDED |
+| disable-spoofing                 | 7 patches        | NO     | NOT_COVERED_RECORDED |
 | fingerprint-platform-version     | 002              | NO     | ⭐ NOT_ESTABLISHED |
 | fingerprint-screen-width         | <NOBODY>         | NO     | COVERED_ELSEWHERE |
 | fingerprint-screen-height        | <NOBODY>         | NO     | COVERED_ELSEWHERE |
@@ -217,6 +232,31 @@ def declared_switches():
 def consumer_patches(constant, flag):
     """The other patches that READ this switch, as sorted numeric prefixes.
 
+    ⛔ ``+`` LINES ONLY, held to EXACTLY the standard ``declared_switches``
+    is held to, and for the identical reason. A unified diff carries three
+    kinds of line, and only the added ones are what the patch DOES:
+
+    * a CONTEXT line (leading space) is code the patch merely sits next to —
+      often code an EARLIER patch in the same series authored, quoted so the
+      hunk can be located. Counting it credits this patch with reading a
+      switch it does not read.
+    * a REMOVED line (leading ``-``) is the opposite of a consumption: a patch
+      that DELETES a read would be counted as performing one, moving a row in
+      exactly the wrong direction and silently.
+
+    ⭐ THE CONTEXT HAZARD IS NOT THEORETICAL — IT FIRED, and a code review
+    caught it. ``015-canvas-measure-text.patch`` adds NO ``kDisableSpoofing``
+    line: both of its occurrences are context lines quoting the ``if`` that
+    ``012`` authored. The first version of this census read whole patch text
+    and credited 015 as an eighth consumer of a switch it never reads. The
+    counter-example is pinned by
+    ``test_a_context_only_patch_is_not_counted_as_a_consumer`` so it cannot
+    evaporate.
+
+    ⚠️ ``+++ b/path`` header lines also begin with ``+``; they are excluded
+    explicitly rather than left to the matchers, because a patch whose
+    FILENAME happened to contain a flag literal would otherwise self-consume.
+
     Matched by CONSTANT NAME **or** by the quoted FLAG STRING. Neither alone is
     sufficient: the constant is how every consumer in the tree happens to read
     it today, and the literal is how a future patch might, so a census keyed on
@@ -232,8 +272,12 @@ def consumer_patches(constant, flag):
     for patch in sorted(PATCH_DIR.glob("*.patch")):
         if patch.name == DECLARING_PATCH.name:
             continue
-        text = patch.read_text(encoding="utf-8")
-        if by_constant.search(text) or by_literal.search(text):
+        added = "\n".join(
+            line
+            for line in patch.read_text(encoding="utf-8").splitlines()
+            if line.startswith("+") and not line.startswith("+++")
+        )
+        if by_constant.search(added) or by_literal.search(added):
             out.append(patch.name.split("-")[0])
     return sorted(out)
 
@@ -339,15 +383,31 @@ MATRIX = {
     "disable-spoofing": (
         NOT_COVERED_RECORDED,
         "⛔ THE ROW THAT MAKES 'wire everything' THE WRONG SHAPE. Consumed by "
-        "EIGHT patches — 003, 006, 011, 012, 013, 014, 015, 016 — each reading "
-        "it as an early return that stands the patch down. It is upstream's "
-        "kill switch for the whole masking layer, present so a developer can "
-        "A/B the patched engine against stock. Passing it would switch off "
-        "audio noise, font masking, GPU-info spoofing, canvas "
-        "getImageData/toDataURL, client rects, measureText and WebGL "
-        "readPixels in one flag. Its absence is therefore the FINISHED state "
-        "of this row, not a gap — and the reason is recorded in process.py "
-        "beside the flags it sits among, where the question gets asked.",
+        "SEVEN patches — 003, 006, 011, 012, 013, 014, 016. "
+        "⚠️ IT IS A VALUE-KEYED SELECTIVE DISABLE, NOT A BOOLEAN KILL SWITCH, "
+        "and the first version of this cell got that wrong: every consumer "
+        "tests the switch's VALUE for a token, never its mere presence. The "
+        "dominant shape is `HasSwitch(kFingerprint) && (!HasSwitch(kDisable"
+        "Spoofing) || GetSwitchValueASCII(kDisableSpoofing).find(\"canvas\") "
+        "== npos)`, through which the BARE flag is INERT — HasSwitch is true "
+        "so the first arm is false, then \"\".find(...) is npos so the second "
+        "is true, and the spoofing still applies. 011 is the only genuine "
+        "`return \"\"` and it inverts the test (`find(\"gpu\") != npos`), "
+        "which an empty value fails identically. "
+        "⛔ THE HARMFUL FORM IS THE VALUED ONE: "
+        "--disable-spoofing=canvas,gpu,audio,font,clientrects, whose tokens "
+        "are matched by substring, one per masking family — audio (003), font "
+        "(006), gpu (011), canvas (012, 013, 016: getImageData, toDataURL, "
+        "measureText, WebGL readPixels), clientrects (014). That comma list is "
+        "upstream's kill switch for the whole masking layer, present so a "
+        "developer can A/B the patched engine against stock. Its absence is "
+        "therefore the FINISHED state of this row, not a gap — and the reason "
+        "is recorded in process.py beside the flags it sits among, where the "
+        "question gets asked. "
+        "⚠️ 015 IS NOT A CONSUMER: it carries kDisableSpoofing on CONTEXT "
+        "lines only, quoting the guard 012 authored, which is why this row "
+        "reads seven and not eight. Pinned by "
+        "test_a_context_only_patch_is_not_counted_as_a_consumer.",
     ),
     # --- the three the engine ACCEPTS AND DISCARDS ---------------------------
     #
@@ -458,7 +518,31 @@ MATRIX = {
 RECORDED_REASON_SOURCES = {
     "disable-spoofing": (
         "src/services/browser/process.py",
-        "It is upstream's kill switch for the whole masking layer",
+        "bare --disable-spoofing is inert across all seven patches.",
+    ),
+}
+
+# ⚠️ THE SECOND CLAUSE OF THE SAME RECORDED REASON, pinned SEPARATELY because
+# the two halves fail differently and a single quote cannot catch both.
+#
+# The first version of this cell described --disable-spoofing as a boolean kill
+# switch that each consumer reads "as an EARLY RETURN that stands the patch
+# down". That is FALSE, and a code review caught it: seven of the eight
+# candidate consumers are value-keyed guards, and the BARE flag is inert
+# through every one of them (trace it: HasSwitch true -> `!HasSwitch` false;
+# "".find("canvas") -> npos -> `== npos` true -> the `||` is true -> the
+# spoofing still applies). 011 is the only genuine `return ""` and it inverts
+# the test, which an empty value fails identically.
+#
+# ⛔ SO THE PROHIBITION IS ON THE **VALUED** FORM, and that is the half most
+# worth guarding: a reader who believes the danger is a boolean flag will not
+# think to check for `--disable-spoofing=canvas`, which is the argument that
+# actually causes harm. A quote pinned only on the inertness sentence would let
+# the valued-form warning be deleted while the suite stayed green.
+RECORDED_REASON_SECOND_CLAUSES = {
+    "disable-spoofing": (
+        "src/services/browser/process.py",
+        "The prohibition is on the VALUED form; the bare form is inert.",
     ),
 }
 # The evidence the COVERED_ELSEWHERE screen cells rest on, re-read for the same
@@ -627,9 +711,14 @@ def test_the_consumer_column_is_read_from_the_other_patches():
         "012",
         "013",
         "014",
-        "015",
         "016",
-    ]
+    ], (
+        "the consumer set for --disable-spoofing has moved. ⚠️ SEVEN, NOT "
+        "EIGHT: 015 carries kDisableSpoofing on CONTEXT lines only (it edits "
+        "code inside the guard 012 authored) and is NOT a consumer. If 015 is "
+        f"back in this list ({consumers['disable-spoofing']}), the ``+``-only "
+        "rule in consumer_patches has been dropped."
+    )
 
     # NEGATIVE: the four that are read by nobody. Only trustworthy because the
     # positives above fired in the same call.
@@ -649,6 +738,72 @@ def test_the_consumer_column_is_read_from_the_other_patches():
     # NEGATIVE CONTROL: a switch that does not exist is consumed by nobody, and
     # a matcher that returned patches for it would be matching noise.
     assert consumer_patches("kFingerprintNope", "fingerprint-nope") == []
+
+
+def test_a_context_only_patch_is_not_counted_as_a_consumer():
+    # ⭐ THE COUNTER-EXAMPLE THAT PROVES THE ``+``-ONLY RULE NECESSARY ON THE
+    # CONSUMER COLUMN, pinned in the same shape
+    # test_the_declaration_parse_excludes_ungoogled_context_constants pins it
+    # on the DECLARED column — because the first version of this file held the
+    # two columns to DIFFERENT standards and never said why.
+    #
+    # The declared parse was scrupulously ``+``-only, with a whole test
+    # explaining that reading the full hunk makes "a census lying about its own
+    # subject". The consumer column read whole patch text — context and removed
+    # lines included — with no guard at all. A code review found it FIRING:
+    # 015-canvas-measure-text.patch adds no kDisableSpoofing line, but quotes
+    # the guard 012 authored on two CONTEXT lines, and was credited as an
+    # eighth consumer of a switch it does not read. That inflated 8 was then
+    # asserted in four places and leaned on rhetorically ("the most consumed
+    # switch").
+    #
+    # BOTH ARMS ARE ASSERTED, and the second is the positive control: the
+    # constant IS in the file, on context lines, in exactly the shape that
+    # would fool a whole-text matcher. Without it this test would pass
+    # identically against a 015 that no longer mentions the switch at all — and
+    # a future reader would take its silence as evidence the rule is unneeded.
+    patch = PATCH_DIR / "015-canvas-measure-text.patch"
+    lines = patch.read_text(encoding="utf-8").splitlines()
+
+    context_reads = [
+        line
+        for line in lines
+        if line.startswith(" ") and "kDisableSpoofing" in line
+    ]
+    added_reads = [
+        line
+        for line in lines
+        if line.startswith("+")
+        and not line.startswith("+++")
+        and "kDisableSpoofing" in line
+    ]
+    assert context_reads, (
+        "015 no longer carries kDisableSpoofing on a CONTEXT line. The "
+        "``+``-only rule on consumer_patches is still correct, but the "
+        "counter-example proving it necessary has evaporated — do not read "
+        "this test's silence as evidence the rule is unneeded."
+    )
+    assert not added_reads, (
+        "015 now ADDS a read of kDisableSpoofing, so it is a genuine consumer "
+        "and this test's premise is gone. Add it back to the consumer list in "
+        "test_the_consumer_column_is_read_from_the_other_patches and correct "
+        "the SEVEN figure in this file's docstring, the disable-spoofing cell "
+        "and process.py's recorded reason — together."
+    )
+
+    assert "015" not in consumer_patches("kDisableSpoofing", "disable-spoofing"), (
+        "015 is being counted as a consumer of --disable-spoofing on the "
+        "strength of CONTEXT lines. consumer_patches is reading whole patch "
+        "text instead of added lines."
+    )
+
+    # ⛔ AND THE CORRECTION DOES NOT MOVE THE HEADLINE, which is worth pinning
+    # rather than assuming: dropping 015 leaves --disable-spoofing consumed by
+    # seven patches and still unpassed, so the row does not change bucket and
+    # the 6 / 2 / 4 split survives the methodology fix. A census whose headline
+    # moved under a correction to its own method would be a different
+    # conversation entirely.
+    assert consumer_patches("kDisableSpoofing", "disable-spoofing") != []
 
 
 def test_the_passed_column_is_read_off_a_real_launch(monkeypatch, tmp_path):
@@ -685,9 +840,14 @@ def test_the_passed_column_is_read_off_a_real_launch(monkeypatch, tmp_path):
     # it reads as the standing prohibition it is rather than as one absence
     # among five.
     assert "disable-spoofing" not in passed, (
-        "--disable-spoofing is on the command line. This switch stands down "
-        "EIGHT masking patches at once (003, 006, 011, 012, 013, 014, 015, "
-        "016). Do not pass it."
+        "--disable-spoofing is on the command line. ⚠️ Read the mechanism "
+        "before assuming this is harmless: the switch is a VALUE-KEYED "
+        "selective disable, so a BARE --disable-spoofing is inert through all "
+        "seven consumers (003, 006, 011, 012, 013, 014, 016) — but "
+        "--disable-spoofing=canvas,gpu,audio,font,clientrects stands those "
+        "patches down one masking family per token. launch_switches strips "
+        "=value deliberately, so this assertion catches BOTH forms. Do not "
+        "pass it."
     )
 
 
@@ -719,11 +879,22 @@ def test_the_grep_shortcut_this_file_refuses_would_be_wrong_today():
 
 
 def test_the_split_is_reproduced_as_data(monkeypatch, tmp_path):
-    # AC1: the 6 / 4 / 2 split, DERIVED from the three columns rather than
-    # written down. This is the headline the ticket commissioned — it read
-    # 4 / 4 / 4 when the work was scoped, and two rows moved before it was
-    # written (PS-356 and PS-354, both closed by a human finding one row by
+    # AC1: the split, DERIVED from the three columns rather than written down —
+    # 6 FULLY-WIRED / 2 CONSUMED-NOT-PASSED / 4 DECLARED-NEVER-CONSUMED, named
+    # rather than ordered so the headline cannot be misread off a bare
+    # sequence. This is what the ticket commissioned — it read 4 / 4 / 4 in the
+    # same three buckets when the work was scoped, and two rows moved before it
+    # was written (PS-356 and PS-354, both closed by a human finding one row by
     # hand). That drift is the argument for pinning the census as data.
+    #
+    # ⚠️ THE SPLIT SURVIVED A CORRECTION TO THE CENSUS'S OWN METHOD. A code
+    # review found consumer_patches reading whole patch text, which credited
+    # 015 as a consumer of --disable-spoofing on context lines alone. Fixing it
+    # to ``+``-only drops that row's count from 8 to 7 and moves NOTHING here:
+    # the switch is still consumed and still unpassed, so it stays in the
+    # second bucket and these three assertions are unchanged. A census whose
+    # headline had moved under a fix to its own method would be a different
+    # conversation, so this is stated rather than assumed.
     declared = declared_switches()
     passed = launch_switches(monkeypatch, tmp_path)
 
@@ -808,6 +979,22 @@ def test_recorded_reasons_still_in_tree():
             f"the recorded reason for the {flag!r} cell is gone from {path}. "
             "Either restore it or restate the cell's position — do not leave a "
             "cell citing a reason the tree no longer holds."
+        )
+
+    # ⛔ THE SECOND CLAUSE, pinned separately. See RECORDED_REASON_SECOND_
+    # CLAUSES for why one quote cannot hold this cell honest: the mechanism
+    # (bare form inert) and the prohibition (valued form forbidden) are
+    # separable sentences, and deleting either one leaves the cell asserting
+    # something the tree no longer says. The valued-form half is the one that
+    # actually protects somebody.
+    for flag, (path, quote) in RECORDED_REASON_SECOND_CLAUSES.items():
+        assert MATRIX[flag][0] == NOT_COVERED_RECORDED
+        text = (REPO_ROOT / path).read_text(encoding="utf-8")
+        assert _collapse(quote) in _collapse(text), (
+            f"the VALUED-FORM prohibition for the {flag!r} cell is gone from "
+            f"{path}. The inertness sentence alone would leave a reader "
+            "believing the bare flag is the danger — it is not; "
+            "--disable-spoofing=canvas is. Restore the warning."
         )
 
 
