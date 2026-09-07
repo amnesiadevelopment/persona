@@ -614,6 +614,46 @@ def declared_timezone(proxy) -> str:
     return zone
 
 
+def declared_locale(proxy) -> str:
+    """The locale the OPERATOR declared for this exit, or "" when none applies.
+
+    The locale twin of ``declared_timezone`` above (PS-332), byte-for-byte the
+    same gate, and pure for the same reason — attribute reads and a string
+    compare, no IO — so it is safe on a render as well as on a launch.
+
+    ⭐ IT COMPOSES rather than returns. The operator declares a LANGUAGE; the
+    REGION half is the exit country already on file, never something they type.
+    That is measured rather than assumed: all 241 ``_COUNTRY_LOCALE`` rows are
+    ``lang-REGION`` with REGION equal to the table key, so a locale whose
+    region disagreed with the exit country would be a value the product's own
+    table can never produce — and it is precisely the ``en-US``-beside-a-non-US
+    -clock contradiction ``_locale_for`` refuses to invent. Composing here
+    makes it unrepresentable rather than merely refused.
+
+    GATED ON THE COUNTRY, identically to the zone half, and the gate does
+    double duty here: it retires the declaration when the exit moves, AND it is
+    what supplies the region. A declaration made for an NG exit cannot leak
+    into a ``ha-CZ`` for a moved one, because the country that would compose it
+    is the country the gate has already refused to match.
+
+    An unchecked proxy has no country on file, so nothing matches and this
+    answers "" — a declaration cannot manufacture geography that was never
+    measured.
+
+    Read via ``getattr`` so the duck-typed proxy stand-ins on the launch-path
+    tests (which model geography but not these fields) answer too, exactly as
+    ``declared_timezone`` and ``proxy_indicator_state`` do.
+    """
+    language = (getattr(proxy, "manual_locale_language", "") or "").strip()
+    if not language:
+        return ""
+    declared_for = (getattr(proxy, "manual_locale_country", "") or "").upper()
+    country = (getattr(proxy, "country_code", "") or "").upper()
+    if not declared_for or declared_for != country:
+        return ""
+    return f"{language.lower()}-{country}"
+
+
 def _proxy_timezone(proxy) -> str:
     """The timezone for a proxied profile — or a REFUSAL when there isn't one.
 
@@ -854,11 +894,19 @@ def proxy_unlaunchable_remedy(proxy) -> str | None:
         try:
             _locale_for(code)
         except GeographyUnknownError:
-            # Both gates refuse. Since PS-240 made the two tables SET-EQUAL
-            # (test_country_table_correspondence.py enforces it in both
-            # directions), this is EVERY country with no zone row — which is
-            # why the distinction is the whole population and not a corner.
-            return UNLAUNCHABLE_UNSUPPORTED_COUNTRY
+            # The locale gate's TABLE refuses. Since PS-240 made the two tables
+            # SET-EQUAL (test_country_table_correspondence.py enforces it in
+            # both directions), this is EVERY country with no zone row — which
+            # is why the distinction is the whole population and not a corner.
+            #
+            # ⚠️ ASK THE DECLARATION BEFORE CONCLUDING "UNSUPPORTED" (PS-332).
+            # The launcher does: `_profile_locale` consults `declared_locale`
+            # in exactly this arm, so a render that stopped at the table would
+            # report a proxy as unfixable while the launcher was about to
+            # accept it — the same drift, in the same predicate, that round 6
+            # of PS-274 closed on the other gate.
+            if not declared_locale(proxy):
+                return UNLAUNCHABLE_UNSUPPORTED_COUNTRY
         return UNLAUNCHABLE_DECLARABLE
     # The zone gate answers. The locale gate is asked anyway, because a launch
     # it refuses is still a launch that does not happen, and a row that says
@@ -869,7 +917,12 @@ def proxy_unlaunchable_remedy(proxy) -> str | None:
     try:
         _locale_for(code)
     except GeographyUnknownError:
-        return UNLAUNCHABLE_UNSUPPORTED_COUNTRY
+        # Same PS-332 correction as the arm above, and it is REACHABLE here
+        # rather than theoretical: an operator who declares a LANGUAGE but not
+        # a zone reaches the arm above; one who declares BOTH reaches this one,
+        # and the row must stop marking them once the launch actually succeeds.
+        if not declared_locale(proxy):
+            return UNLAUNCHABLE_UNSUPPORTED_COUNTRY
     return None
 
 

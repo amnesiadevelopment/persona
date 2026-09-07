@@ -11,6 +11,7 @@ from ...utils.atomic import atomic_write_json
 from ...utils.proxy_parser import parse_proxy_server
 from ...utils.store_guard import StoreGuardMixin
 from ...utils.trashable import TrashableMixin, restore_kwargs
+from .language_names import is_declarable_language
 from .tz_names import is_declarable_zone
 
 logger = get_logger("proxy.store")
@@ -80,6 +81,15 @@ class ProxyStore(StoreGuardMixin, TrashableMixin):
                         manual_timezone=p.get("manual_timezone", ""),
                         manual_timezone_country=p.get(
                             "manual_timezone_country", ""
+                        ),
+                        # Absent in a pre-PS-332 proxies.json, for the same
+                        # reason and with the same consequence as the pair
+                        # above: an old file upgrades with no migration.
+                        manual_locale_language=p.get(
+                            "manual_locale_language", ""
+                        ),
+                        manual_locale_country=p.get(
+                            "manual_locale_country", ""
                         ),
                     )
                 except Exception:
@@ -332,6 +342,15 @@ class ProxyStore(StoreGuardMixin, TrashableMixin):
                 manual_timezone_country=(
                     old.manual_timezone_country if keep_geo else ""
                 ),
+                # The locale declaration rides `keep_geo` with its timezone
+                # twin, for the identical reason: a rename or a rotate-url
+                # edit leaves the exit where it was, a URL change moves it.
+                manual_locale_language=(
+                    old.manual_locale_language if keep_geo else ""
+                ),
+                manual_locale_country=(
+                    old.manual_locale_country if keep_geo else ""
+                ),
             )
             self._save()
         logger.info("Updated proxy: %s -> %s", original_name, new_name)
@@ -408,6 +427,13 @@ class ProxyStore(StoreGuardMixin, TrashableMixin):
                 # so it is cleared at the WRITE like everything else here.
                 proxy.manual_timezone = ""
                 proxy.manual_timezone_country = ""
+                # Invalidated WITH the zone declaration, not beside it. A
+                # locale is declared FOR a country too, so a rotation that
+                # replaces the exit leaves it describing nothing — and the
+                # crash-between-write-and-check window this docstring is about
+                # applies to it identically.
+                proxy.manual_locale_language = ""
+                proxy.manual_locale_country = ""
             proxy.url = url
             self._save()
         return True
@@ -605,6 +631,114 @@ class ProxyStore(StoreGuardMixin, TrashableMixin):
             proxy.manual_timezone_country = country
             self._save()
         logger.info("Declared timezone for proxy %s: %s", name, zone)
+        return True, ""
+
+    def set_manual_locale(self, name: str, language: str) -> tuple[bool, str]:
+        """Record the LANGUAGE the operator declares for this proxy's exit.
+
+        The locale twin of ``set_manual_timezone`` above (PS-332), and a
+        deliberate mirror of it rather than a variation: every rule that method
+        carries was paid for once already, and each one holds here for the same
+        reason. Read that docstring for the long form of all four refusals; the
+        differences are stated below and nowhere else.
+
+        ⭐ THE OPERATOR DECLARES A LANGUAGE, NOT A LOCALE, and this is the
+        ticket's one real design decision rather than an economy. All 241 rows
+        of ``_COUNTRY_LOCALE`` are ``lang-REGION`` with the REGION equal to the
+        table key — measured, 0 exceptions — so the region half of a declared
+        locale is not the operator's to choose: it is the exit country already
+        on file. Storing the language alone and composing
+        ``<lang>-<country_code>`` at the read (``declared_locale``) makes an
+        ``en-GB`` typed against a Nigerian exit UNREPRESENTABLE rather than
+        merely refused. Accepting a full locale string would have needed a
+        ``region == country_code`` assertion to avoid shipping a NEW way to
+        create the ``en-US``-beside-a-non-US-clock contradiction
+        ``_locale_for`` exists to prevent — a rule that can be forgotten, in
+        place of a shape that cannot express the mistake.
+
+        VALIDATED HERE, at the write, against the VENDORED subtag list
+        (``language_names.py``), which is why the accepted set is byte-identical
+        on Windows, macOS and Linux and why no OS locale database is consulted.
+        It is a SET test, not a pattern test: ``[a-z]{2}`` would accept ``xx``
+        and ``qq``, and the composed value is handed to a browser engine as
+        fact.
+
+        WHY THIS IS NOT ``set_manual_timezone`` WITH A PARAMETER. The two
+        validate against different oracles, compose different values, and — the
+        durable reason — a proxy can legitimately need ONE of them and not the
+        other. A multi-zone country (RU: one ``_COUNTRY_TZ`` row for eleven
+        zones) needs a declared ZONE and has a perfectly good locale row; a
+        residue country (NG, ZW) needs BOTH. Folding them into one setter would
+        make an operator declare a value they have no reason to have an opinion
+        about, and would tie the retirement of one to the other.
+
+        An EMPTY language clears the declaration and clears the country with it,
+        so no half-record survives.
+
+        Returns ``(ok, error)``. The error is the operator-facing sentence; it
+        is empty on success.
+        """
+        language = (language or "").strip().lower()
+        with self._lock:
+            proxy = self.proxies.get(name)
+            if proxy is None:
+                return False, f"No proxy named {name!r}."
+            if not language:
+                proxy.manual_locale_language = ""
+                proxy.manual_locale_country = ""
+                self._save()
+                return True, ""
+            country = (proxy.country_code or "").upper()
+            declared_for = (proxy.manual_locale_country or "").upper()
+            # NO RE-STAMP. The country gate is a READ-side guard that retires a
+            # declaration when the exit moves; re-stamping the country from the
+            # CURRENT one on every call would let any caller re-arm a
+            # declaration the gate had already retired. Reachable without
+            # anyone typing anything — the dialog prefills its field, so a bare
+            # [ save ] re-submits it.
+            if language == proxy.manual_locale_language and declared_for:
+                if declared_for == country:
+                    return True, ""
+                return False, (
+                    f"{language!r} is already on file for this proxy, declared "
+                    f"for the {declared_for} exit, and the exit is now in "
+                    f"{country or 'an unknown country'}. A language is declared "
+                    "FOR a country, so it is not re-used automatically: clear "
+                    "the field and save, then enter the language for the "
+                    "current exit."
+                )
+            if not is_declarable_language(language):
+                return False, (
+                    f"{language!r} is not a language code. Enter a two-letter "
+                    "ISO 639-1 subtag, e.g. 'en' for English or 'ha' for "
+                    "Hausa — the country half is taken from this proxy's own "
+                    "checked exit, so it is not typed here."
+                )
+            if not country:
+                return False, (
+                    "This proxy has no checked exit country yet, and a "
+                    "language is declared FOR a country — press [ check ] "
+                    "first, then declare the language."
+                )
+            # A DISPROVEN EXIT IS NOT A COUNTRY ON FILE EITHER — see the twin
+            # above. A failed check leaves `country_code` populated from the
+            # last successful one, so the country term passes and the
+            # declaration would be stored against a country nobody can
+            # currently confirm the proxy exits from. Inert rather than
+            # dangerous, which is exactly the problem: a success and a closed
+            # dialog for a value that changes nothing.
+            if proxy.last_check_ok is False:
+                return False, (
+                    f"This proxy's last check FAILED, so its exit country "
+                    f"({country}) is the previous one and cannot be confirmed "
+                    "— and a language is declared FOR the country the exit is "
+                    "actually in. Fix the proxy and check it again, then "
+                    "declare the language."
+                )
+            proxy.manual_locale_language = language
+            proxy.manual_locale_country = country
+            self._save()
+        logger.info("Declared locale language for proxy %s: %s", name, language)
         return True, ""
 
     def mark_check_failed(self, name: str) -> bool:

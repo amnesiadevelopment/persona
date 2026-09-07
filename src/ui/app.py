@@ -2421,6 +2421,17 @@ class App:
             self._safe_update()
             return None
 
+        def on_declare_locale(proxy_name: str, language: str) -> str | None:
+            # Same contract as its timezone twin above, and for the same
+            # reason: the store owns the vendored-set validation, the country
+            # gate and the no-re-stamp rule, and this only carries the string.
+            ok, err = self.pstore.set_manual_locale(proxy_name, language)
+            if not ok:
+                return err
+            self._render_active_page()
+            self._safe_update()
+            return None
+
         open_proxy_dialog(
             page,
             self.ps,
@@ -2430,6 +2441,7 @@ class App:
             on_check_failed=on_check_failed,
             ui=self._ui,
             on_declare_timezone=on_declare_timezone,
+            on_declare_locale=on_declare_locale,
         )
 
     def _edit_proxy(self, name: str) -> None:
