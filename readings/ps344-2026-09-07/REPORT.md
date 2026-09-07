@@ -144,9 +144,14 @@ Measured through the harness (page realm, layer OFF):
 A **negative** text width is impossible per spec. The direct, non-CDP
 reproduction (`artifacts/repro-transcript.txt`) shows the signature exactly:
 every observed value is the stock value multiplied by one constant factor
-`k = -5.7598e-07`, spread across strings `0.0`, 4/4 strings, both seeds. With no
-`--fingerprint` the patch stands down and widths are the sane stock values, so
-the defect is the patch's, not the browser's. `ps301_measuretext_repro.py` exits
+**per seed** — `k = -5.759808e-07` at seed 24601 and `k = -3.873258e-06` at
+seed 5150, spread across strings `0.0` in both, 4/4 strings. The two differ by
+a factor of 6.7, so the factor **is seed-derived** (patch 015 is being driven
+by the seed, which is the patch working) — but it is applied as a
+MULTIPLICATION where an offset was intended, so the widths come out negative.
+With no `--fingerprint` the patch stands down and widths are the sane stock
+values, so the defect is the patch's, not the browser's.
+`scripts/ps301_measuretext_repro.py` exits
 **1 (DEFECT PRESENT)** against the published binary.
 
 It is **DOM-only**: the worker realms read `172.1083984375`, identical to stock —
@@ -282,7 +287,7 @@ bash readings/ps301-2026-09-05/artifacts/ps301_repro.sh \
 #   → exit 1: the patch-015 defect, in the SHIPPED binary
 
 # 7. the report still describes these artifacts
-python3 readings/ps344-2026-09-07/artifacts/verify_claims.py   # 75 checks
+python3 readings/ps344-2026-09-07/artifacts/verify_claims.py   # 84 checks
 ```
 
 ### The guard the scope guidance names was respected
@@ -313,7 +318,7 @@ verdict, went through the unmodified resolver, which emits that flag itself.
 | `verdicts-falsification.txt` | the same table for the falsification arm |
 | `verdict-product.txt` / `verdict-falsification.txt` | the deciding verdict, both directions |
 | `repro-transcript.txt` | the direct, non-CDP reproductions (exit 1 = patch 015) |
-| `verify_claims.py` | 75 checks re-deriving every figure above; falsified |
+| `verify_claims.py` | 84 checks re-deriving every figure above; falsified |
 | `ps344_launch_published.py`, `ps344_verdict.py`, `pub-wrapper.sh` | committed copies of the tooling |
 
 ---

@@ -179,10 +179,12 @@ def arms(tmp_path):
 
     def _write(product=None, control=None, name="readings-published-152.json"):
         (tmp_path / name).write_text(
-            json.dumps(product or _arm(engine_id="published-152", patched=True))
+            json.dumps(product or _arm(engine_id="published-152", patched=True)),
+            encoding="utf-8",
         )
         (tmp_path / "readings-stock-cft-152.json").write_text(
-            json.dumps(control or _arm(engine_id="stock-cft-152", patched=False))
+            json.dumps(control or _arm(engine_id="stock-cft-152", patched=False)),
+            encoding="utf-8",
         )
         return tmp_path
 
@@ -364,7 +366,8 @@ def test_a_timed_out_realm_is_indeterminate_not_a_pass(arms, capsys):
 def test_a_missing_arm_is_indeterminate_not_a_pass(tmp_path, capsys):
     mod = _load()
     (tmp_path / "readings-published-152.json").write_text(
-        json.dumps(_arm(engine_id="published-152", patched=True))
+        json.dumps(_arm(engine_id="published-152", patched=True)),
+        encoding="utf-8",
     )
     # No control arm written at all.
     assert mod.main(["--dir", str(tmp_path)]) == 2

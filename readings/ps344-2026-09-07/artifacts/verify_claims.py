@@ -249,6 +249,35 @@ check(
     repr(realm(product, 24601, "off", "worker_blob")["canvas"]["measuretext_width"]),
 )
 
+# The noise factor itself. REPORT.md §1 claims the observed width is the stock
+# width times one constant factor PER SEED, and that the two seeds' factors
+# DIFFER — i.e. the factor is seed-derived. That distinction is load-bearing:
+# a factor constant ACROSS seeds would be the constant-fake shape that
+# ``needs_seed_derived`` in ps344_verdict.py exists to reject, and would mean
+# patch 015 is not being driven by the seed at all. An earlier draft of the
+# report asserted exactly that (wrongly), and none of the checks above read the
+# ratio, so the banner certified a figure this file never computed. It does now.
+k24 = mt24 / smt
+k51 = mt51 / smt
+check(
+    "patch 015: the noise factor is SEED-DERIVED, not one constant across seeds",
+    abs(k24 - k51) > 1e-9,
+    f"k24={k24:.6e} k51={k51:.6e}",
+)
+check("patch 015: k at seed 24601", round(k24, 13) == round(-5.759808038305448e-07, 13), f"{k24:.13e}")
+check("patch 015: k at seed 5150", round(k51, 13) == round(-3.873257860279004e-06, 13), f"{k51:.13e}")
+# ...and constant WITHIN a seed: the same k scales every measured leaf, which is
+# the half of the claim that IS a constant. Checked so neither half can drift.
+for _seed, _k in ((24601, k24), (5150, k51)):
+    for _leaf in ("measuretext_width", "measuretext_actual_left", "measuretext_actual_right"):
+        _p = realm(product, _seed, "off", "page")["canvas"][_leaf]
+        _c = realm(control, _seed, "off", "page")["canvas"][_leaf]
+        check(
+            f"patch 015: k is constant within seed {_seed} ({_leaf})",
+            abs(_p / _c - _k) < 1e-15,
+            f"{_p / _c:.13e} vs {_k:.13e}",
+        )
+
 # --- patch 003 audio: the PARTIAL result, asserted rather than omitted -------
 #
 # Recorded as a check so it cannot quietly change: at seed 5150 the product's

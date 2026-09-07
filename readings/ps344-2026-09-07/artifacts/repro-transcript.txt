@@ -1,6 +1,16 @@
 ############################################################
 # PS-301 direct reproductions
-# self-built: /tmp/ps344/pub-wrapper.sh
+#
+# ⚠️ LABEL NOTE: "self-built" below is `ps301_repro.sh`'s PARAMETER NAME
+#   (its $1 is documented as "path to the self-built patched chrome"). It is
+#   NOT a claim about this artifact. The binary under test here is the
+#   PUBLISHED personium-152.0.7977.75 AppImage, downloaded from the release
+#   and reached through /tmp/ps344/pub-wrapper.sh. Nothing in this run was
+#   built locally. This ticket exists because "a locally-built binary" and
+#   "the published binary" were previously conflated, so the word is called
+#   out rather than left to be inferred from the header.
+#
+# self-built: /tmp/ps344/pub-wrapper.sh   <- the PUBLISHED AppImage (see above)
 #   Chromium 152.0.7977.75 
 # stock:      /tmp/ps344/chrome-linux64/chrome
 #   Google Chrome for Testing 152.0.7977.75 
