@@ -1,0 +1,27 @@
+PROBE SELF-TEST — can this census see each shape it claims to read?
+  [PASS] inline std::hash argument (the 006 shape)
+  [PASS] named-binding hash input (the 012 shape)
+  [PASS] seed-only expression is NOT scored per-call
+  [PASS] non-determinism detector fires on RandDouble, not on a seeded hash
+
+PS-365 ARITY CENSUS — can this spoof's value be carried by one flag?
+====================================================================================================
+patch                          per-CALL inputs to the value                 verdict
+----------------------------------------------------------------------------------------------------
+003-audio-fingerprint          the page's requested buffer length, the page's requested sample rate UNMOVABLE — needs a per-call value
+006-font-fingerprint           the page's requested font family             UNMOVABLE — needs a per-call value
+011-gpu-info                   (none — seed / launch config only)           ARITY PERMITS A FLAG
+012-canvas-get-image-data      the pixel's x coordinate, the pixel's y coordinate UNMOVABLE — needs a per-call value
+013-canvas-toDataURL           (delegates to 012)                           UNMOVABLE — needs a per-call value
+014-client-rects               (none — seed / launch config only)           ARITY PERMITS A FLAG
+015-canvas-measure-text        (none — seed / launch config only)           ARITY PERMITS A FLAG
+016-webgl-readPixels           (delegates to 012)                           UNMOVABLE — needs a per-call value
+----------------------------------------------------------------------------------------------------
+
+CONTROL — the assertion that makes this census meaningful:
+  non-deterministic sources in ADDED lines, all 8 patches:  0
+  non-deterministic sources on DELETED lines:              5
+  i.e. upstream REPLACED per-read randomness with seed-derived hashing.
+  So 'it varies per read' is NOT why anything here is unmovable — ARITY is.
+
+All assertions held.

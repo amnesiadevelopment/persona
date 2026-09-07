@@ -1,0 +1,39 @@
+A/B #1 SNIPPET — validated on STOCK Chromium 152.0.7977.82 (the negative control)
+extracted verbatim from REPORT.md; every value below must be the PREDICTED-STOCK answer
+
+scale=0.5   dpr=0.5   VALID=True  integral_dev=True  fractional_dev=True  frac_css=True  metrics_f32=True
+scale=1     dpr=1     VALID=True  integral_dev=True  fractional_dev=True  frac_css=True  metrics_f32=True
+scale=1.25  dpr=1.25  VALID=False integral_dev=True  fractional_dev=False frac_css=False metrics_f32=True
+scale=1.5   dpr=1.5   VALID=False integral_dev=True  fractional_dev=False frac_css=False metrics_f32=True
+scale=1.75  dpr=1.75  VALID=False integral_dev=False fractional_dev=False frac_css=False metrics_f32=True
+scale=2     dpr=2     VALID=True  integral_dev=True  fractional_dev=True  frac_css=False metrics_f32=True
+scale=4     dpr=4     VALID=True  integral_dev=True  fractional_dev=True  frac_css=False metrics_f32=True
+
+READING — this is the NEGATIVE CONTROL for A/B #1, not a persona measurement.
+
+  Every row is STOCK Chromium. The A/B predicts the engine returns FALSE for
+  fractional_dev and metrics_f32; stock must therefore return TRUE for them
+  wherever the A/B claims to be valid, or the instrument cannot discriminate.
+
+  1. At every VALID=True scale (0.5, 1, 2, 4) stock returns
+     fractional_dev=True and metrics_f32=True — the predicted-stock answer.
+     The A/B can therefore distinguish engine from stock at those scales.
+
+  2. VALID correctly reads False at 1.25 / 1.5 / 1.75, which is the guard the
+     code review asked for. At those scales fractional_dev=False on STOCK —
+     i.e. without the guard the A/B would have returned the "engine detected"
+     answer on an unmodified browser.
+
+  3. integral_dev is True on 6 of 7 rows including two invalid ones, which is
+     why the report tells the owner to read the fractional_ row. The first
+     draft of this A/B used integral geometry ALONE and would have answered
+     True at 1.25 and 1.5 — a confirming reading on hardware that proves
+     nothing. That is the defect the review caught, reproduced here.
+
+  4. frac_css is False at dpr 2 and 4 while frac_dev is True — the CSS-space
+     form of the invariant fails on STOCK at power-of-two scales above 1. This
+     is the direct measurement showing the committed CSS-space formulation had
+     to be replaced rather than merely annotated.
+
+  5. metrics_f32 is True on ALL SEVEN rows, invalid scales included: invariant
+     2 carries no dpr precondition. Confirms inv2-scale-sweep.txt.

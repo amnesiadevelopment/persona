@@ -1,0 +1,44 @@
+{
+  "build": "152.0.7977.75",
+  "origin": "http://127.0.0.1:43225/",
+  "legs": [
+    {
+      "label": "write",
+      "opened": true,
+      "document_cookie": "ps341=matrix",
+      "ctx_cookies": [
+        {
+          "name": "ps341",
+          "value": "matrix",
+          "domain": "127.0.0.1",
+          "path": "/",
+          "expires": 1791367143.344859,
+          "httpOnly": false,
+          "secure": false,
+          "sameSite": "Lax"
+        }
+      ],
+      "browser_version": "152.0.7977.75",
+      "db_rows_after": []
+    },
+    {
+      "label": "restart-read",
+      "opened": true,
+      "document_cookie": "",
+      "ctx_cookies": [],
+      "browser_version": "152.0.7977.75",
+      "db_rows_after": [
+        {
+          "host": "127.0.0.1",
+          "name": "ps341",
+          "plain_value": "",
+          "enc_len": 51,
+          "enc_prefix": "v10"
+        }
+      ]
+    }
+  ],
+  "cookie_served_after_restart": false,
+  "row_present_after_restart": true,
+  "verdict": "row present but NOT served"
+}
