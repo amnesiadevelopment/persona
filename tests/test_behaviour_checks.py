@@ -1177,6 +1177,8 @@ class TestTheCLIProvisionsALaunchableHome:
 
         from src.services.verify.behaviour import (
             EXIT_CANNOT_RUN,
+            SUN_PATH_LIMIT,
+            _SINGLETON_SOCKET_FIXED_COST,
             default_scratch_home,
             profile_name_budget,
             singleton_socket_is_bound,
@@ -1192,16 +1194,38 @@ class TestTheCLIProvisionsALaunchableHome:
 
         # A base sized so that a home provisioned under it lands INSIDE the
         # band: budget >= 0 (asking zero succeeds) and budget < needed (asking
-        # for the real requirement refuses). Not pytest's tmp_path, whose
-        # length is incidental and far past the band.
-        parent = tempfile.mkdtemp(prefix="pb-band-")
+        # for the real requirement refuses).
+        #
+        # ⚠️ BUILT TO A TARGET ABSOLUTE LENGTH, NOT GROWN FROM THE PLATFORM'S
+        # OWN TEMP BASE, and macOS is why: `/var/folders/…` is ~53 bytes, which
+        # is already PAST the band (budget -42), so a loop that only lengthens
+        # starts below it and can never arrive. Caught by the macos-latest CI
+        # leg — and caught as a REFUSAL rather than a false pass, because the
+        # precondition below is asserted rather than assumed.
+        #
+        # `/tmp` is the root because it is the shortest thing POSIX guarantees;
+        # the band is a handful of bytes wide, so there is no room to start
+        # from a long one. This is a staged venue, not the platform's own.
+        home_len_wanted = SUN_PATH_LIMIT - _SINGLETON_SOCKET_FIXED_COST - 1
+        mkdtemp_suffix = 1 + len("pb-") + 8  # "/" + prefix + mkdtemp's 8 chars
+        base_len_wanted = home_len_wanted - mkdtemp_suffix
+
+        root = tempfile.mkdtemp(prefix="pb-band-", dir="/tmp")
         try:
-            probe_home_len = len(parent) + 1 + len("pb-") + 8
-            band_base = parent
-            while profile_name_budget("x" * probe_home_len) >= needed:
-                band_base = os.path.join(band_base, "d")
+            band_base = root
+            if len(band_base) > base_len_wanted:
+                pytest.skip(
+                    f"cannot stage the band: /tmp root {band_base!r} is "
+                    f"already {len(band_base)} bytes, past the "
+                    f"{base_len_wanted}-byte target"
+                )
+            # Pad to the exact length with one nested component.
+            pad = base_len_wanted - len(band_base) - 1
+            if pad >= 1:
+                band_base = os.path.join(band_base, "d" * pad)
                 os.mkdir(band_base)
-                probe_home_len = len(band_base) + 1 + len("pb-") + 8
+
+            probe_home_len = len(band_base) + mkdtemp_suffix
 
             # THE PRECONDITION, ASSERTED RATHER THAN ASSUMED. Both halves: a
             # budget below zero would make the two arms agree by refusing, and
@@ -1259,7 +1283,7 @@ class TestTheCLIProvisionsALaunchableHome:
                 "never 1, which is reserved for a finding about the product"
             )
         finally:
-            shutil.rmtree(parent, ignore_errors=True)
+            shutil.rmtree(root, ignore_errors=True)
 
     def test_the_refusal_does_not_leave_its_own_scratch_directory_behind(
         self, tmp_path
