@@ -17,6 +17,7 @@ appearing at their exit IP.
 import asyncio
 import base64
 import os
+import re
 import socket
 import ssl
 import struct
@@ -188,6 +189,92 @@ _HTTP_UPSTREAM_SCHEMES = frozenset({"http", "https"})
 def _is_http_upstream(scheme: str | None) -> bool:
     """True when the upstream proxy speaks HTTP `CONNECT`, not SOCKS5."""
     return (scheme or "").lower() in _HTTP_UPSTREAM_SCHEMES
+
+
+
+#: Everything an HTTP request line cannot carry inside the request-target.
+#:
+#: CRLF is the injection vector; SP terminates the request-target; the rest are
+#: the control characters RFC 7230 forbids in field content. Matched as a
+#: DENY-set over the raw host rather than as an allow-list of hostname
+#: characters, because the destination is a name the browser resolved and this
+#: bridge is not the place to decide what a legal hostname looks like -- only to
+#: decide what cannot be put in a request line.
+_BAD_TARGET_CHARS = re.compile(r"[\x00-\x20\x7f-\x9f]")
+
+
+def _http_connect_target(host: str, port: int) -> str:
+    """Render ``host:port`` for an HTTP request line, or REFUSE.
+
+    ⛔ ``host`` IS UNTRUSTED, AND THIS IS THE ONLY PLACE THAT SAYS SO.
+    It arrives from the local SOCKS handshake (`_read_local_handshake`) as a
+    length-prefixed byte string that is `.decode()`d with no validation at all.
+    That is harmless on the SOCKS5 leg -- SOCKS5 is BINARY and length-prefixed,
+    so a CRLF inside a hostname is just two bytes in a counted field and cannot
+    end a frame. HTTP is LINE-DELIMITED TEXT, so the same input is a
+    request-injection primitive: measured on this bridge before this helper
+    existed, a host field of
+
+        b"evil.com:443 HTTP/1.1\r\nX-Injected: yes\r\nHost: evil.com"
+
+    put an attacker-chosen header into the request the operator's authenticated
+    proxy received, and a host field carrying a BLANK LINE smuggled a whole
+    second ``CONNECT secret-internal.corp:22`` through it -- a target and a port
+    the bridge never sanctioned, spent against the operator's credential and
+    appearing at their exit IP. The browser was still told ``rep=0x00``.
+
+    The peer gate (`core.peerauth`) stands in front of this and admits only the
+    browser process tree, so the reachable attacker is content INSIDE the
+    browser rather than any local process. That narrows it; it does not close
+    it -- a hostname is attacker-influenceable content in a browser by
+    definition, and the gate has a documented degrade-open arm for
+    installations with no mechanism, where it is not in front of this at all.
+
+    Three jobs, one place, because all three are the same missing step -- the
+    destination has to be made expressible in a request line BEFORE it is
+    formatted into one:
+
+    1. REFUSE anything the request line cannot carry. Refusal, not
+       sanitise-and-continue: silently rewriting a target sends the operator's
+       credential somewhere neither they nor the browser asked for. This is the
+       same choice `http.client._validate_host` makes (`InvalidURL` on control
+       characters, CVE-2019-18348).
+    2. BRACKET an IPv6 literal. `_read_local_handshake` renders ``atyp=0x04``
+       with `inet_ntop`, giving a bare ``2001:db8::1``; interpolated it becomes
+       ``2001:db8::1:443``, which RFC 7230 5.3.3 forbids and Python's own
+       parser rejects (`urlsplit` raises). SOCKS5 carries the family
+       structurally and never had this problem.
+    3. IDNA-ENCODE a non-ASCII host. The request is encoded `latin-1`, which
+       cannot represent one at all; the same host over the SOCKS5 leg succeeds
+       (UTF-8 in a counted field), so without this the HTTP leg silently LOSES a
+       capability on a ticket whose whole purpose is to make the two schemes
+       equivalent for the operator.
+
+    ⚠ THE PUNYCODE STEP IS A TRANSFORMATION OF THE NAME, NOT A RESOLUTION OF
+    IT. No DNS query is made here and none may be added: remote DNS is the
+    property the SOCKS5 leg gets from ``atyp=0x03``, and resolving locally would
+    leak a query for every page from the operator's real resolver.
+
+    Every refusal raises `_ConnectRejected(_REP_GENERAL_FAILURE)` so it fails
+    through the SAME path as every other definitive refusal -- fast, with no
+    retry, and with a NON-ZERO reply byte reaching the browser. A construction
+    failure is never transient, so the retry arm would burn three attempts and a
+    second of sleep on something that can never succeed.
+    """
+    if _BAD_TARGET_CHARS.search(host):
+        raise _ConnectRejected(_REP_GENERAL_FAILURE)
+    try:
+        socket.inet_pton(socket.AF_INET6, host)
+    except OSError:
+        pass
+    else:
+        return f"[{host}]:{port}"  # RFC 7230 5.3.3
+    if not host.isascii():
+        try:
+            host = host.encode("idna").decode("ascii")
+        except (UnicodeError, UnicodeDecodeError):
+            raise _ConnectRejected(_REP_GENERAL_FAILURE) from None
+    return f"{host}:{port}"
 
 
 class _ConnectRejected(ConnectionError):
@@ -451,10 +538,14 @@ class ProxyBridge:
           exists. The bridge is started precisely because Chromium cannot send
           one, so omitting it here would send unauthenticated traffic -- the
           fail-open shape the module docstring forbids.
-        * The DESTINATION HOSTNAME is sent verbatim, never pre-resolved. Remote
-          DNS is the property the SOCKS5 leg gets from `atyp=0x03`, and
-          resolving locally would leak a DNS query for every page from the
-          operator's real resolver.
+        * The DESTINATION is rendered by `_http_connect_target`, which is the
+          load-bearing part: `host` is UNTRUSTED input off the local SOCKS
+          handshake, and HTTP's line-delimited framing turns it into a
+          request-injection primitive that SOCKS5's binary framing made
+          structurally impossible. Read that helper before touching this
+          request. It never RESOLVES the name -- remote DNS is the property the
+          SOCKS5 leg gets from `atyp=0x03`, and resolving locally would leak a
+          DNS query for every page from the operator's real resolver.
 
         `https://` upstreams differ only in that the hop to the PROXY is TLS.
         """
@@ -474,7 +565,7 @@ class ProxyBridge:
         )
         _tune_tunnel_socket(_sock_of(w))
         try:
-            target = f"{host}:{port}"
+            target = _http_connect_target(host, port)
             lines = [
                 f"CONNECT {target} HTTP/1.1",
                 f"Host: {target}",

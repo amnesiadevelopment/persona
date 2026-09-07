@@ -1103,3 +1103,214 @@ def test_a_rejection_can_never_carry_the_socks5_success_code():
     # rep through here, and the HTTP leg its mapped equivalents.
     for rep in (0x01, 0x02, 0x05, 0xFF):
         assert bridge_mod._ConnectRejected(rep).rep == rep
+
+
+# ---------------------------------------------------------------------------
+# PS-329 round 3. The request DIRECTION of the new HTTP leg.
+#
+# Rounds 1 and 2 hardened what the upstream SAYS BACK. These cover where the
+# UNTRUSTED input actually enters: the destination host, which arrives from the
+# local SOCKS handshake as a length-prefixed byte string that is `.decode()`d
+# with no validation (`_read_local_handshake`) and was then interpolated
+# straight into an HTTP request line.
+#
+# That is safe on the SOCKS5 leg and unsafe on the HTTP one for a structural
+# reason, not an incidental one: SOCKS5 is BINARY and length-prefixed, so a CRLF
+# in a hostname is two bytes in a counted field; HTTP is LINE-DELIMITED TEXT, so
+# the same bytes end a header and start another. Measured on this branch before
+# the fix, through the real listener with the existing `_claim`:
+#
+#   host field b"evil.com:443 HTTP/1.1\r\nX-Injected: yes\r\nHost: evil.com"
+#     -> the upstream received an X-Injected header; browser told rep=0x00
+#   host field with a BLANK LINE
+#     -> the upstream received THREE "CONNECT " occurrences, including a whole
+#        second `CONNECT secret-internal.corp:22`; browser told rep=0x00
+#   atyp=0x04 (2001:db8::1)
+#     -> `CONNECT 2001:db8::1:443 HTTP/1.1`, which RFC 7230 5.3.3 forbids
+#   IDN host
+#     -> UnicodeEncodeError, whole leg failed (rep=0x01) while the SAME host
+#        over the SOCKS5 leg returned rep=0x00 and carried payload
+#
+# Every assertion below is on the BYTES THE UPSTREAM SERVER OBSERVED and on the
+# SOCKS reply the driver receives (AC1) -- never that a helper was called, and
+# never a literal reply byte (Correction 1: refused vs granted).
+
+
+def _socks5_connect(
+    port: int,
+    addr: bytes,
+    atyp: int = 0x03,
+    dst_port: int = 443,
+) -> tuple[socket.socket, bytes]:
+    """Handshake with the bridge and CONNECT to an ARBITRARY address.
+
+    The sibling of `_socks5_request`, which pins `example.com`/`atyp=0x03`. The
+    address is written as the browser would write it, so a hostile host field is
+    delivered exactly the way a renderer's resolved name would be -- the bridge
+    is not asked to do anything unusual to reach these paths.
+    """
+    s = socket.create_connection(("127.0.0.1", port), timeout=5)
+    s.sendall(b"\x05\x01\x00")
+    assert _recvn(s, 2) == b"\x05\x00"
+    body = bytes([len(addr)]) + addr if atyp == 0x03 else addr
+    s.sendall(b"\x05\x01\x00" + bytes([atyp]) + body + struct.pack(">H", dst_port))
+    return s, _recvn(s, 10)
+
+
+def _run_http_bridge_to(
+    addr: bytes,
+    atyp: int = 0x03,
+    dst_port: int = 443,
+    behavior: str = "ok",
+) -> tuple[FakeHttpUpstream, bytes, socket.socket, ProxyBridge]:
+    upstream = FakeHttpUpstream(behavior)
+    upstream.start()
+    bridge = _claim(ProxyBridge(upstream.url))
+    bridge.start()
+    try:
+        client, reply = _socks5_connect(bridge.port, addr, atyp, dst_port)
+    except Exception:
+        bridge.stop()
+        raise
+    return upstream, reply, client, bridge
+
+
+def test_a_CRLF_in_the_destination_host_cannot_inject_a_header():
+    """The injection primitive, asserted on what the PROXY received.
+
+    The operator's proxy is authenticated with their credential, so a header
+    this bridge did not author reaching it is the operator's request being
+    rewritten by page content.
+    """
+    hostile = b"evil.com:443 HTTP/1.1\r\nX-Injected: yes\r\nHost: evil.com"
+    upstream, reply, client, bridge = _run_http_bridge_to(hostile)
+    try:
+        head = upstream.request_head or b""
+        assert b"X-Injected" not in head, (
+            f"an attacker-chosen header reached the operator's authenticated "
+            f"proxy: {head!r}"
+        )
+        assert head.count(b"CONNECT ") <= 1, (
+            f"more than one request head reached the upstream: {head!r}"
+        )
+        assert len(reply) >= 2, f"the browser got no SOCKS reply at all: {reply!r}"
+        assert reply[1] != 0x00, (
+            f"a target the bridge could not render was reported to the browser "
+            f"as an OPEN TUNNEL: reply={reply!r}"
+        )
+    finally:
+        client.close()
+        bridge.stop()
+        upstream.join(timeout=5)
+
+
+def test_a_blank_line_in_the_destination_host_cannot_smuggle_a_second_CONNECT():
+    """Full request smuggling: two CONNECTs from one bridge connection.
+
+    Sharper than the header case -- the second request names a target and a PORT
+    the bridge never sanctioned, spent against the operator's credential and
+    appearing at their exit IP.
+    """
+    hostile = (
+        b"good.com:443 HTTP/1.1\r\nHost: good.com\r\n\r\n"
+        b"CONNECT secret-internal.corp:22 HTTP/1.1\r\nHost: secret-internal.corp"
+    )
+    upstream, reply, client, bridge = _run_http_bridge_to(hostile)
+    try:
+        head = upstream.request_head or b""
+        assert head.count(b"CONNECT ") <= 1, (
+            f"a second CONNECT was smuggled to the upstream proxy: {head!r}"
+        )
+        assert b"secret-internal.corp" not in head, (
+            f"an unsanctioned target reached the operator's proxy: {head!r}"
+        )
+        assert len(reply) >= 2 and reply[1] != 0x00, (
+            f"an unrenderable target was reported as an open tunnel: {reply!r}"
+        )
+    finally:
+        client.close()
+        bridge.stop()
+        upstream.join(timeout=5)
+
+
+def test_an_ipv6_destination_is_bracketed_in_the_request_line():
+    """RFC 7230 5.3.3. Unbracketed is genuinely ambiguous, not merely untidy.
+
+    `urlsplit("//2001:db8::1:443")` raises ValueError on the unbracketed form,
+    so a proxy that parses its request line the way Python does cannot honour
+    it. The SOCKS5 leg carries the family structurally and never had this
+    problem -- this is the HTTP leg being brought level.
+    """
+    v6 = socket.inet_pton(socket.AF_INET6, "2001:db8::1")
+    upstream, reply, client, bridge = _run_http_bridge_to(v6, atyp=0x04)
+    try:
+        head = upstream.request_head or b""
+        assert head.startswith(b"CONNECT [2001:db8::1]:443 HTTP/1.1\r\n"), (
+            f"the upstream received a malformed request line: {head!r}"
+        )
+        assert b"Host: [2001:db8::1]:443\r\n" in head, (
+            f"the Host header was not bracketed either: {head!r}"
+        )
+        assert len(reply) >= 2 and reply[1] == 0x00
+    finally:
+        client.close()
+        bridge.stop()
+        upstream.join(timeout=5)
+
+
+def test_an_IDN_destination_reaches_the_http_proxy_as_punycode():
+    """A capability the HTTP leg lost relative to the SOCKS5 one.
+
+    The request is encoded latin-1 and simply cannot carry a non-ASCII host: the
+    encode raised, and because a UnicodeEncodeError is a plain Exception it took
+    the RETRY arm -- three attempts and two sleeps for something deterministic.
+
+    The payload echo makes this a claim about a working TUNNEL rather than about
+    a handshake that returned. And the A-label is a TRANSFORMATION of the name,
+    not a RESOLUTION of it: the upstream still receives a name to resolve
+    itself, so remote DNS is intact.
+    """
+    upstream, reply, client, bridge = _run_http_bridge_to("пример.рф".encode())
+    try:
+        head = upstream.request_head or b""
+        assert head.startswith(b"CONNECT xn--e1afmkfd.xn--p1ai:443 HTTP/1.1\r\n"), (
+            f"the upstream did not receive the punycode A-label: {head!r}"
+        )
+        assert len(reply) >= 2 and reply[1] == 0x00, (
+            f"an IDN destination was refused by the http leg: reply={reply!r}"
+        )
+        client.sendall(b"ping")
+        assert _recvn(client, 4) == b"ping", "the IDN tunnel carried nothing"
+    finally:
+        client.close()
+        bridge.stop()
+        upstream.join(timeout=5)
+
+
+def test_THE_CONTROL_the_same_IDN_host_already_worked_over_socks5():
+    """The control for the test above, IN THE SAME RUN.
+
+    Without it, "the http leg now carries an IDN host" is not obviously a gap
+    being closed -- it could be a capability neither leg ever had. The SOCKS5 leg
+    carries the name UTF-8 in a length-prefixed field and always did.
+    """
+    upstream = FakeUpstream("ok")
+    upstream.start()
+    bridge = _claim(ProxyBridge(upstream.url))
+    bridge.start()
+    client = None
+    try:
+        client, reply = _socks5_connect(bridge.port, "пример.рф".encode())
+        assert len(reply) >= 2 and reply[1] == 0x00, (
+            f"the socks5 leg refused an IDN host: reply={reply!r}"
+        )
+        assert upstream.target == ("пример.рф", 443), (
+            f"the socks5 upstream saw {upstream.target!r}"
+        )
+        client.sendall(b"ping")
+        assert _recvn(client, 4) == b"ping"
+    finally:
+        if client is not None:
+            client.close()
+        bridge.stop()
+        upstream.join(timeout=5)
