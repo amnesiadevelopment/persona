@@ -23,7 +23,7 @@ from ...core import platform as _platform
 from ...utils.httpdl import atomic_replace, curl_download, digest_ok, sha256_file
 from . import install_env, relaunch_bat
 
-APP_VERSION = "3.1.0"
+APP_VERSION = "3.1.1"
 APP_REPO = "amnesiadevelopment/persona"
 
 # THE APPLICATION'S OWN TAG SHAPE: `v<X.Y.Z>`.
