@@ -73,6 +73,7 @@ from .launch_policy import (  # noqa: F401
     _timezone_for,
     _windows_timezone_key,
     declared_locale,
+    host_workarea_dip,
 )
 
 logger = get_logger("browser.process")
@@ -1404,19 +1405,75 @@ def spawn_browser(profile: Profile, *, in_process: bool = False) -> subprocess.P
             # AUTO IS UNTOUCHED: `parse_resolution("auto")` is None, so this
             # arm cannot fire and the AUTO branch keeps floor-picking a screen
             # that contains the real window, exactly as before.
-            args.append(
-                f"--window-size={desktop_resolution[0]},{desktop_resolution[1]}"
-            )
+            # ⭐ FIT TO THE HOST WORK AREA (PS-352). The cap above is the
+            # operator's PICK, which can legitimately exceed the physical
+            # monitor — a 2560x1440 pick on a 1920x1080 host overflows even at
+            # scale 1.0, so this is a SEPARATE constraint from the DIP/scale
+            # collision and neither one subsumes the other.
+            #
+            # `host_workarea_dip()` answers in DIP (the unit --window-size is
+            # read in) and returns None when it cannot tell — non-Windows, or a
+            # failed reading. ⛔ None must SKIP the fit, never become a zero:
+            # min(pick, 0) is a zero-sized window, which is why the helper
+            # refuses to express "unknown" as (0, 0).
+            #
+            # ⛔ screen.* IS NOT TOUCHED. The extension still reports the
+            # operator's full pick; only the WINDOW shrinks. Shrinking the
+            # reported screen to fit the host would change the identity of
+            # every profile on every small-monitor machine — a masking
+            # regression wearing the costume of a window fix (PS-167/PS-327).
+            win_w, win_h = desktop_resolution[0], desktop_resolution[1]
+            workarea = host_workarea_dip()
+            if workarea is not None:
+                win_w = min(win_w, workarea[0])
+                win_h = min(win_h, workarea[1])
+            args.append(f"--window-size={win_w},{win_h}")
 
-        # Render scale is decoupled from the fingerprint: the device/mobile
-        # extension pins the JS-visible screen.*, devicePixelRatio and the
-        # matchMedia dppx answers, while --force-device-scale-factor only sets how
-        # many physical pixels draw one CSS px. Without it a dpr-1 profile paints
-        # 1:1 physical on a 150%/200% display, so a 2560x1440 profile renders
-        # unreadably small even though scanners see the correct 2K/dpr-1 screen.
-        scale = _host_display_scale()
-        if scale != 1.0:
-            args.append(f"--force-device-scale-factor={scale:g}")
+        # RENDER SCALE — a THREE-WAY platform split, and the asymmetry is
+        # deliberate. Do not "tidy" it into one branch (PS-352).
+        #
+        #   macOS          -> force the Retina 2x explicitly
+        #   Windows/Linux  -> force NOTHING; Chromium uses native per-monitor DPI
+        #
+        # ⛔ WHY THE FLAG WAS REMOVED ON WINDOWS (overturning a deliberate
+        # decision, so the reasoning is recorded rather than deleted). The old
+        # comment here argued FOR forcing the host scale: "without it a dpr-1
+        # profile paints 1:1 physical on a 150%/200% display, so a 2560x1440
+        # profile renders unreadably small." That concern was real, but the
+        # flag was not the only way to avoid it — and forcing it caused two
+        # operator-visible defects on a 4K@150% host:
+        #
+        #   1. --window-size is interpreted in DIP, and this flag REDEFINES what
+        #      a DIP is. A 2560x1440 pick under scale 1.5 asked for 3840x2160
+        #      PHYSICAL — a window filling a 4K monitor edge to edge.
+        #   2. ⭐ The forced-vs-native DPI mismatch MISLOCATED Chromium's own
+        #      popups: on a dual-monitor host the three-dot menu opened on the
+        #      ADJACENT MONITOR. A window-size cap alone could never have fixed
+        #      this one, and it is why the first diagnosis was incomplete.
+        #
+        # WHAT SCALES THE UI NOW: Chromium's own per-monitor DPI awareness. It
+        # applies the host's real scale itself, which is what the flag was
+        # trying to force — verified live by the operator: content readable,
+        # popups correctly positioned, window fits.
+        #
+        # macOS KEEPS the explicit 2x: it is single-scale (no per-monitor
+        # mismatch, so no popup defect), and without the flag the UI paints
+        # tiny. Mirrors the Firefox engine's macOS dpr fix.
+        #
+        # ⭐ THE FINGERPRINT IS UNAFFECTED, and this is the load-bearing check
+        # on the removal. Render scale is DECOUPLED from the fingerprint: the
+        # device/mobile extension pins the JS-visible screen.*,
+        # devicePixelRatio and the matchMedia dppx answers, while
+        # --force-device-scale-factor only sets how many physical pixels draw
+        # one CSS px. The extension's DPR is `IS_MAC ? 2 : 1` — derived from
+        # the PROFILE'S DECLARED OS, never from the host's scale — so what a
+        # scanner reads is authored there and cannot move when this flag goes.
+        # Pinned by tests/test_ps352_hidpi_window.py, which reads the values
+        # from a page rather than from the argv.
+        if _platform.IS_MACOS:
+            scale = _host_display_scale()
+            if scale != 1.0:
+                args.append(f"--force-device-scale-factor={scale:g}")
 
         # Always pin a concrete timezone. With a proxy it follows the exit geo; with
         # NO proxy it must AGREE with the forced en-US language (lang above), not leak

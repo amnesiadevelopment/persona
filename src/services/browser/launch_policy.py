@@ -580,6 +580,52 @@ def _host_display_scale() -> float:
         return 1.0
 
 
+def host_workarea_dip() -> "tuple[int, int] | None":
+    """The host's usable desktop in DIP (device-independent pixels), or None.
+
+    ``None`` means "no work-area information" and callers MUST skip work-area
+    sizing on it. It is deliberately NOT ``(0, 0)``:
+
+    ⛔ ``(0, 0)`` is a value arithmetic silently accepts, and ``min(resolution,
+    0)`` yields a ZERO-SIZED WINDOW — a plausible-looking number that produces
+    an unusable browser. ``None`` cannot be multiplied or min()'d by accident,
+    so a caller that forgets to handle it fails loudly instead of shipping a
+    collapsed window. The Win32 helper this delegates to uses the older ``(0,
+    0)`` convention; that value is translated here and never escapes.
+
+    WHY IT DELEGATES RATHER THAN CALLING SPI_GETWORKAREA ITSELF. That call is
+    already implemented twice on main — ``invisible_launch._work_area()`` and
+    ``ui/theme/page.py`` — and the first already carries the hard-won detail
+    (``SetProcessDpiAwareness(2)``, the divide-by-DPR instruction, the failure
+    convention). A third copy would be the same Win32 call in three places,
+    each free to drift on DPI awareness and taskbar handling. So this is a
+    UNIT CONVERSION over the existing helper, not a new reader.
+
+    THE UNIT MATTERS AND IS THE WHOLE POINT: ``_work_area()`` returns PHYSICAL
+    pixels, while ``--window-size`` is interpreted in DIP. Dividing by the host
+    scale converts one to the other, which is exactly the reconciliation whose
+    absence was PS-352.
+    """
+    # Imported lazily: invisible_launch imports heavy Firefox launch machinery,
+    # and launch_policy is imported on render paths that must stay cheap.
+    try:
+        from .invisible_launch import _work_area
+    except Exception:
+        return None
+    try:
+        physical = _work_area()
+    except Exception:
+        return None
+    if not physical or physical[0] <= 0 or physical[1] <= 0:
+        # (0, 0) is the helper's "non-Windows or failed" reading. Translate it
+        # to None here so it can never reach a min().
+        return None
+    scale = _host_display_scale() or 1.0
+    if scale <= 0:
+        return None
+    return (int(physical[0] / scale), int(physical[1] / scale))
+
+
 def declared_timezone(proxy) -> str:
     """The zone the OPERATOR declared for this exit, or "" when none applies.
 
