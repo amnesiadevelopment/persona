@@ -88,6 +88,32 @@ Correct everywhere except the named platform. Not a provisioning gap on Linux.
 |---|---|
 | `test_apply_restart.py:131`, `:136` | no real AppImage available |
 
+### Opt-in — deliberately not run unless asked for
+
+Neither a provisioning gap nor a platform bound: the machine is fully capable
+and the test is expensive enough that running it on every PR would not pay.
+Distinguished from every other section here because there is **nothing to
+provision** — the remedy is an environment variable, not an install.
+
+| Where | Reason given | How to run it |
+|---|---|---|
+| `test_unclean_exit_survivors.py` (real-wrap pid reuse) | `exhausts the whole pid space (~8 min, measured): set PERSONA_PID_WRAP_TEST=1 to run the real-wrap pid-reuse test` | `PERSONA_PID_WRAP_TEST=1 python -m pytest tests/test_unclean_exit_survivors.py` |
+
+⚠️ **Read a skip here as UNMEASURED, never as measured-and-fine.** The property
+it checks — that the create-time discriminator survives the OS genuinely
+handing a recorded pid back to a different process — *is* covered on every run
+by the fast discriminator test in the same file. What only the opt-in test
+covers is whether our idea of pid reuse matches the kernel's. It has been run
+to completion on this container and passed: `pid_max` 4,194,304, the allocator
+wrapped at t=+487s, a fork landed on the exact recorded pid at t=+490s, and the
+product's probe answered `GONE`.
+
+Deliberately carries **no capability**, so declaring
+`PERSONA_REQUIRED_CAPABILITIES=browser` does not turn this skip into a failure.
+A capability declares "this machine is provisioned for X and a skip is
+therefore a fault"; that is the wrong shape for a test whose skip is a
+deliberate cost decision on a machine that could run it perfectly well.
+
 ### Guards that did NOT fire here
 
 Worth recording, because a *future* skip from one of these is a change of
