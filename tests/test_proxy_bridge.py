@@ -1,3 +1,4 @@
+import base64
 import os
 import socket
 import struct
@@ -676,3 +677,320 @@ def test_redaction_is_applied_by_the_SINK_so_every_trace_site_inherits_it(
     assert "0th3r" not in written
     assert "bob" not in written
     assert "***:***@" in written
+
+
+# --- PS-329: the bridge must speak its UPSTREAM's protocol -------------------
+#
+# THE DEFECT, measured at f626386 before the fix. `ProxyBridge` discarded the
+# upstream scheme (`grep -c scheme bridge.py` -> 0) and wrote a SOCKS5 greeting
+# unconditionally, so an authenticated `http://` proxy -- a configuration
+# `PROXY_SCHEMES` offers and the proxy dialog's Type dropdown derives from --
+# received binary SOCKS and answered HTTP:
+#
+#     SUBJECT  http:// + creds    REFUSED rep=0x50
+#     CONTROL  socks5:// + creds  GRANTED (rep=0x00)
+#     bytes the HTTP proxy received: [b'\x05\x02\x00\x02']   <- a SOCKS5 greeting
+#
+# Only the scheme differed, which is what makes it a gap and not a category.
+#
+# WHAT THESE ASSERT, and why it is shaped this way (AC1):
+#   * the TRANSPORT RESULT the driver receives, or the bytes the upstream server
+#     actually observed -- never that a helper was called, never a source
+#     substring.
+#   * REFUSED vs GRANTED, never a literal reply byte. The pre-fix `0x50` is just
+#     the 'P' of the upstream's ASCII "HTTP/1.1" surfacing in the reply slot; a
+#     test pinned to it would be a test about the fixture.
+#   * nothing about TIMING. The ticket's source proposal claimed a ~91s hang;
+#     that did not reproduce (refusal is immediate against a prompt upstream),
+#     and the hang belongs to a SILENT upstream rather than to this defect.
+#
+# The peer gate is NOT weakened: these use the same `_claim` every other test in
+# this file uses, which is the call the launcher makes after spawning the
+# browser (PS-25 ground).
+
+
+class FakeHttpUpstream(threading.Thread):
+    """Scripted single-connection HTTP proxy that expects CONNECT.
+
+    Deliberately a REAL socket speaking real HTTP rather than a stub on the
+    bridge's own method: the whole defect was that the bytes on the wire were
+    the wrong protocol, so the assertion has to be able to see those bytes.
+    """
+
+    def __init__(self, behavior: str = "ok") -> None:
+        super().__init__(daemon=True)
+        self.behavior = behavior
+        self.request_head: bytes | None = None
+        self._srv = socket.socket()
+        self._srv.bind(("127.0.0.1", 0))
+        self._srv.listen(1)
+        self._srv.settimeout(5)
+        self.port = self._srv.getsockname()[1]
+        self.url = f"http://alice:secret@127.0.0.1:{self.port}"
+
+    def run(self) -> None:
+        try:
+            conn, _ = self._srv.accept()
+        except OSError:
+            return
+        self._srv.close()
+        conn.settimeout(5)
+        try:
+            self._serve(conn)
+        except OSError:
+            pass
+        finally:
+            conn.close()
+
+    def _serve(self, conn: socket.socket) -> None:
+        head = b""
+        while b"\r\n\r\n" not in head:
+            chunk = conn.recv(4096)
+            if not chunk:
+                self.request_head = head
+                return
+            head += chunk
+            # A SOCKS5 greeting is 4 binary bytes and no CRLFCRLF ever arrives.
+            # Record what we got and stop, so the pre-fix behaviour is
+            # OBSERVABLE here rather than hanging the test.
+            if not head.startswith(b"CONNECT") and len(head) >= 4:
+                self.request_head = head
+                conn.sendall(b"HTTP/1.1 200 Connection established\r\n\r\n")
+                return
+        self.request_head = head
+        if self.behavior == "authfail":
+            conn.sendall(
+                b"HTTP/1.1 407 Proxy Authentication Required\r\n"
+                b"Proxy-Authenticate: Basic realm=\"p\"\r\n\r\n"
+            )
+            return
+        if self.behavior == "reject":
+            conn.sendall(b"HTTP/1.1 403 Forbidden\r\n\r\n")
+            return
+        conn.sendall(b"HTTP/1.1 200 Connection established\r\n\r\n")
+        while True:
+            data = conn.recv(4096)
+            if not data:
+                return
+            conn.sendall(data)
+
+
+def _run_http_bridge_case(
+    behavior: str,
+) -> tuple[FakeHttpUpstream, bytes, socket.socket, ProxyBridge]:
+    upstream = FakeHttpUpstream(behavior)
+    upstream.start()
+    bridge = _claim(ProxyBridge(upstream.url))
+    bridge.start()
+    try:
+        client, reply = _socks5_request(bridge.port)
+    except Exception:
+        bridge.stop()
+        raise
+    return upstream, reply, client, bridge
+
+
+def test_an_authenticated_http_proxy_carries_a_request_end_to_end():
+    """THE SUBJECT. Driven through the real listener, with a claimed peer.
+
+    Pre-fix this reply byte was NON-ZERO (a refusal) because the upstream got a
+    SOCKS5 greeting. The payload echo is what makes this a claim about a working
+    TUNNEL rather than about a handshake that merely returned.
+    """
+    upstream, reply, client, bridge = _run_http_bridge_case("ok")
+    try:
+        assert reply[1] == 0x00, (
+            f"an authenticated http:// proxy did not carry the request: "
+            f"reply={reply!r}"
+        )
+        client.sendall(b"ping")
+        assert _recvn(client, 4) == b"ping", "the tunnel did not carry payload"
+    finally:
+        client.close()
+        upstream.join(timeout=5)
+        bridge.stop()
+
+
+def test_the_http_upstream_receives_CONNECT_and_not_a_socks_greeting():
+    """The bytes ON THE WIRE, which is where the defect actually lived.
+
+    Pre-fix `request_head` was exactly b"\x05\x02\x00\x02".
+    """
+    upstream, reply, client, bridge = _run_http_bridge_case("ok")
+    try:
+        head = upstream.request_head or b""
+        assert not head.startswith(b"\x05"), (
+            f"the bridge spoke SOCKS to an HTTP proxy: {head[:16]!r}"
+        )
+        assert head.startswith(b"CONNECT example.com:443 HTTP/1.1\r\n"), (
+            f"unexpected request line: {head[:64]!r}"
+        )
+        # RFC 7231 requires Host on HTTP/1.1; several proxies refuse without it.
+        assert b"\r\nHost: example.com:443\r\n" in head
+    finally:
+        client.close()
+        upstream.join(timeout=5)
+        bridge.stop()
+
+
+def test_the_credential_is_SENT_to_the_http_proxy_not_dropped():
+    """⛔ The prohibited resolution was to drop the credentials and send
+    unauthenticated traffic -- the fail-open shape this module exists to
+    prevent. This asserts the credential really is on the wire, decoded."""
+    upstream, reply, client, bridge = _run_http_bridge_case("ok")
+    try:
+        head = (upstream.request_head or b"").decode("latin-1")
+        line = [
+            ln for ln in head.split("\r\n")
+            if ln.lower().startswith("proxy-authorization:")
+        ]
+        assert line, f"no Proxy-Authorization header was sent: {head!r}"
+        token = line[0].split()[-1]
+        assert base64.b64decode(token).decode() == "alice:secret"
+    finally:
+        client.close()
+        upstream.join(timeout=5)
+        bridge.stop()
+
+
+def test_the_destination_hostname_is_not_resolved_locally():
+    """Remote DNS. The SOCKS5 leg gets this from atyp=0x03; the HTTP leg must
+    not regress it by resolving before CONNECT -- that would leak a DNS query
+    from the operator's real resolver for every page."""
+    upstream, reply, client, bridge = _run_http_bridge_case("ok")
+    try:
+        head = (upstream.request_head or b"").decode("latin-1")
+        assert "CONNECT example.com:443" in head, (
+            f"the destination was not sent as a hostname: {head[:64]!r}"
+        )
+    finally:
+        client.close()
+        upstream.join(timeout=5)
+        bridge.stop()
+
+
+def test_a_407_from_the_http_proxy_is_a_refusal_not_a_tunnel():
+    """A wrong credential must FAIL. Handing the browser a socket carrying an
+    error page would be indistinguishable from a working proxy until every
+    request failed."""
+    upstream, reply, client, bridge = _run_http_bridge_case("authfail")
+    try:
+        assert reply[1] != 0x00, f"a 407 was treated as a tunnel: reply={reply!r}"
+        assert client.recv(4096) == b""
+    finally:
+        client.close()
+        bridge.stop()
+        upstream.join(timeout=5)
+
+
+def test_a_403_from_the_http_proxy_is_a_refusal_not_a_tunnel():
+    """A refused destination must fail too -- any non-2xx head, not just 407."""
+    upstream, reply, client, bridge = _run_http_bridge_case("reject")
+    try:
+        assert reply[1] != 0x00, f"a 403 was treated as a tunnel: reply={reply!r}"
+        assert client.recv(4096) == b""
+    finally:
+        client.close()
+        bridge.stop()
+        upstream.join(timeout=5)
+
+
+def test_THE_CONTROL_an_authenticated_socks5_upstream_still_works():
+    """AC2, non-waivable and IN THE SAME RUN as the subject above.
+
+    A subject-only reading proves nothing: if the SOCKS5 leg had been broken by
+    the dispatch, the subject passing would be worthless.
+    """
+    upstream, reply, client, bridge = _run_bridge_case("ok")
+    try:
+        assert reply[1] == 0x00
+        assert upstream.target == ("example.com", 443)
+        assert upstream.auth == ("alice", "secret")
+        client.sendall(b"ping")
+        assert _recvn(client, 4) == b"ping"
+    finally:
+        client.close()
+        upstream.join(timeout=5)
+        bridge.stop()
+
+
+def test_THE_CONTROL_an_unauthenticated_http_proxy_still_takes_no_bridge():
+    """AC2's second control: the un-credentialed path must be byte-identical.
+
+    `_proxy_arg` starts a bridge only for a credentialed URL. An unauthenticated
+    http:// proxy goes to --proxy-server verbatim and must not acquire a bridge
+    as a side effect of this change.
+    """
+    from src.services.browser.process import _proxy_arg
+
+    for url in ("http://1.2.3.4:8080", "https://1.2.3.4:8443", "socks5://1.2.3.4:1080"):
+        arg, br = _proxy_arg(url)
+        try:
+            assert br is None, f"{url} unexpectedly started a bridge"
+            assert arg == url, f"{url} was rewritten to {arg!r}"
+        finally:
+            if br is not None:
+                br.stop()
+
+
+def test_an_https_upstream_is_dialled_over_TLS_to_the_proxy_itself():
+    """`https://` means the hop to the PROXY is TLS.
+
+    Asserted at the connection attempt rather than with a TLS fixture: the
+    observable is that an ssl context is handed to the connection for `https`
+    and NOT for `http`, which is what distinguishes the two schemes here.
+    """
+    import asyncio
+
+    seen = {}
+
+    async def _fake_open_connection(host, port, **kw):
+        seen["ssl"] = kw.get("ssl")
+        raise ConnectionRefusedError("stop here: the kwargs are all this needs")
+
+    async def _drive(url):
+        b = ProxyBridge(url)
+        try:
+            await b._open_upstream("example.com", 443)
+        except ConnectionRefusedError:
+            pass
+
+    loop = asyncio.new_event_loop()
+    try:
+        orig = bridge_mod.asyncio.open_connection
+        bridge_mod.asyncio.open_connection = _fake_open_connection
+        try:
+            loop.run_until_complete(_drive("https://u:p@127.0.0.1:8443"))
+            assert seen.get("ssl") is not None, "https upstream was dialled in the clear"
+            loop.run_until_complete(_drive("http://u:p@127.0.0.1:8080"))
+            assert seen.get("ssl") is None, "http upstream was wrapped in TLS"
+        finally:
+            bridge_mod.asyncio.open_connection = orig
+    finally:
+        loop.close()
+
+
+def test_an_http_upstream_defaults_to_8080_not_the_socks_port():
+    """A portless http:// upstream must not be dialled on 1080."""
+    assert ProxyBridge("http://u:p@proxy.example")._up_port == 8080
+    assert ProxyBridge("https://u:p@proxy.example")._up_port == 8080
+    assert ProxyBridge("socks5://u:p@proxy.example")._up_port == 1080
+    # The scheme-less fallback still implies socks5, and so 1080.
+    assert ProxyBridge("u:p@proxy.example")._up_port == 1080
+
+
+def test_a_long_credential_is_refused_for_socks5_but_allowed_for_http():
+    """The 255-byte cap is SOCKS5's length-prefix, not a universal rule.
+
+    HTTP Proxy-Authorization base64-encodes user:pass with no length field, so
+    refusing a long credential there would remove a working configuration in the
+    name of a constraint that does not apply to it. The SOCKS5 refusal is
+    unchanged.
+    """
+    import pytest
+
+    long_user = "u" * 300
+    with pytest.raises(ValueError):
+        ProxyBridge(f"socks5://{long_user}:p@1.2.3.4:1080")
+    b = ProxyBridge(f"http://{long_user}:p@1.2.3.4:8080")
+    assert b._up_user == long_user

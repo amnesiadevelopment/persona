@@ -15,8 +15,10 @@ appearing at their exit IP.
 """
 
 import asyncio
+import base64
 import os
 import socket
+import ssl
 import struct
 import threading
 import time
@@ -177,6 +179,17 @@ def _sock_of(writer: "asyncio.StreamWriter") -> "socket.socket | None":
         return None
 
 
+#: Upstream schemes that speak HTTP `CONNECT` rather than SOCKS5 (PS-329).
+#: `https` means the hop to the PROXY is TLS; the tunnelled payload is
+#: end-to-end TLS either way.
+_HTTP_UPSTREAM_SCHEMES = frozenset({"http", "https"})
+
+
+def _is_http_upstream(scheme: str | None) -> bool:
+    """True when the upstream proxy speaks HTTP `CONNECT`, not SOCKS5."""
+    return (scheme or "").lower() in _HTTP_UPSTREAM_SCHEMES
+
+
 class _ConnectRejected(ConnectionError):
     def __init__(self, rep: int) -> None:
         super().__init__(f"upstream CONNECT failed: {rep}")
@@ -187,7 +200,27 @@ class ProxyBridge:
     def __init__(self, upstream_url: str) -> None:
         p = urlparse(upstream_url if "://" in upstream_url else "socks5://" + upstream_url)
         self._up_host = p.hostname or ""
-        self._up_port = p.port or 1080
+        # THE DEFAULT PORT FOLLOWS THE SCHEME. 1080 is the SOCKS default and is
+        # wrong for an HTTP proxy; a portless `http://host` reaching here would
+        # otherwise be dialled on 1080 and simply fail to connect. The
+        # scheme-less fallback above still implies socks5, and so 1080.
+        self._up_port = p.port or (8080 if _is_http_upstream(p.scheme) else 1080)
+        # THE UPSTREAM'S SCHEME, WHICH THIS CLASS USED TO DISCARD (PS-329).
+        #
+        # `_open_upstream` wrote a SOCKS5 greeting unconditionally, so an
+        # authenticated `http://` proxy -- a configuration `PROXY_SCHEMES` offers
+        # and the dialog's Type dropdown derives from -- received
+        # `\x05\x02\x00\x02` and answered `HTTP/1.1 200 ...`. The bridge read
+        # the ASCII as a method byte and refused the connection, so the proxy
+        # could not carry a single Chromium request. Measured before the fix:
+        #
+        #     SUBJECT  http:// + creds    REFUSED rep=0x50   <- 'P' of "HTTP/1.1"
+        #     CONTROL  socks5:// + creds  GRANTED (rep=0x00)
+        #
+        # Only the scheme differed, which is what made it a gap rather than a
+        # category. Keeping the scheme is the whole fix; `_open_upstream`
+        # dispatches on it.
+        self._up_scheme = (p.scheme or "socks5").lower()
         # Decode percent-encoded creds (build_proxy_url encodes them) so the SOCKS5
         # auth sends the real username/password, not the %XX form (audit6 #8).
         self._up_user = unquote(p.username) if p.username else ""
@@ -197,7 +230,16 @@ class ProxyBridge:
         # CLOSED): a credential that can't be sent means we can't authenticate to
         # the proxy, and launching anyway would fall through to a DIRECT clearnet
         # connection.
-        if len(self._up_user.encode("utf-8")) > 255 or len(self._up_pass.encode("utf-8")) > 255:
+        #
+        # THIS BOUND IS SOCKS5's, SO IT IS ASSERTED ONLY FOR SOCKS5 UPSTREAMS.
+        # HTTP `Proxy-Authorization` base64-encodes `user:pass` with no length
+        # field, so a 300-byte credential is perfectly sendable to an HTTP proxy
+        # and refusing it would remove a working configuration in the name of a
+        # constraint that does not apply to it. The SOCKS5 refusal is unchanged.
+        if not _is_http_upstream(self._up_scheme) and (
+            len(self._up_user.encode("utf-8")) > 255
+            or len(self._up_pass.encode("utf-8")) > 255
+        ):
             raise ValueError("SOCKS5 username/password exceeds 255 bytes")
         self._port = 0
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -352,6 +394,95 @@ class ProxyBridge:
         host: str,
         port: int,
     ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+        """Open a tunnel to ``host:port`` THROUGH the upstream proxy.
+
+        Dispatches on the upstream's own scheme (PS-329). This method used to
+        write a SOCKS5 greeting unconditionally, which meant an authenticated
+        `http://` proxy -- offered by `PROXY_SCHEMES` and reachable in two clicks
+        in the proxy dialog -- was sent binary SOCKS and answered with HTTP,
+        carrying nothing. The two legs are separate coroutines so neither
+        protocol's framing can drift into the other's.
+
+        Both legs raise on failure and neither ever returns an un-tunnelled
+        socket: a bridge that yielded a direct connection when the proxy leg
+        failed would be the fail-OPEN shape this class exists to prevent.
+        """
+        if _is_http_upstream(self._up_scheme):
+            return await self._open_upstream_http(host, port)
+        return await self._open_upstream_socks5(host, port)
+
+    async def _open_upstream_http(
+        self,
+        host: str,
+        port: int,
+    ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+        """Tunnel through an HTTP proxy with `CONNECT` + `Proxy-Authorization`.
+
+        The request is deliberately minimal and its shape is load-bearing:
+
+        * `CONNECT host:port HTTP/1.1` with a matching `Host:` -- required by
+          RFC 7231 for HTTP/1.1 and rejected by several proxies without it.
+        * `Proxy-Authorization: Basic base64(user:pass)` ONLY when a credential
+          exists. The bridge is started precisely because Chromium cannot send
+          one, so omitting it here would send unauthenticated traffic -- the
+          fail-open shape the module docstring forbids.
+        * The DESTINATION HOSTNAME is sent verbatim, never pre-resolved. Remote
+          DNS is the property the SOCKS5 leg gets from `atyp=0x03`, and
+          resolving locally would leak a DNS query for every page from the
+          operator's real resolver.
+
+        `https://` upstreams differ only in that the hop to the PROXY is TLS.
+        """
+        ssl_ctx = None
+        if self._up_scheme == "https":
+            # TLS to the PROXY ITSELF. Verified against the proxy's own
+            # hostname with the system trust store -- an unverified context
+            # here would let anything on the path impersonate the operator's
+            # proxy and read the CONNECT target (and the credential with it).
+            ssl_ctx = ssl.create_default_context()
+        r, w = await asyncio.open_connection(
+            self._up_host,
+            self._up_port,
+            limit=_STREAM_LIMIT,
+            ssl=ssl_ctx,
+            server_hostname=self._up_host if ssl_ctx else None,
+        )
+        _tune_tunnel_socket(_sock_of(w))
+        try:
+            target = f"{host}:{port}"
+            lines = [
+                f"CONNECT {target} HTTP/1.1",
+                f"Host: {target}",
+            ]
+            if self._up_user or self._up_pass:
+                token = base64.b64encode(
+                    f"{self._up_user}:{self._up_pass}".encode()
+                ).decode("ascii")
+                lines.append(f"Proxy-Authorization: Basic {token}")
+            req = ("\r\n".join(lines) + "\r\n\r\n").encode("latin-1")
+            w.write(req)
+            await w.drain()
+            await _read_http_connect_reply(r)
+            return r, w
+        except BaseException:
+            with _suppress():
+                w.close()
+            raise
+
+    async def _open_upstream_socks5(
+        self,
+        host: str,
+        port: int,
+    ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+        """Tunnel through a SOCKS5 proxy. Unchanged behaviour (PS-329 moved it).
+
+        ⚠️ This leg is also what a `socks4`/`socks4h` upstream still receives.
+        That is a MEASURED, REPORTED gap and not an oversight -- see the PR.
+        SOCKS4 is a different wire format with no username/password
+        sub-negotiation, so speaking it is separate work rather than a branch
+        here, and silently "fixing" it under this ticket would ship an
+        unmeasured protocol.
+        """
         r, w = await asyncio.open_connection(
             self._up_host, self._up_port, limit=_STREAM_LIMIT
         )
@@ -425,6 +556,67 @@ async def _read_local_handshake(
         return None
     port = struct.unpack(">H", await reader.readexactly(2))[0]
     return host, port
+
+
+#: Cap on an HTTP proxy's CONNECT response head. A proxy that never sends the
+#: blank line terminating its headers would otherwise be read until memory ran
+#: out, so the read is bounded and a violation is a rejection, not a hang.
+_HTTP_REPLY_LIMIT = 64 * 1024
+
+
+async def _read_http_connect_reply(reader: asyncio.StreamReader) -> None:
+    """Consume an HTTP proxy's CONNECT response; raise unless it is 2xx.
+
+    Reads exactly up to the blank line that ends the response head and NOT ONE
+    BYTE FURTHER: whatever follows is already tunnelled payload belonging to the
+    browser, and swallowing it here would corrupt the first TLS record of every
+    page load.
+
+    ⚠️ THE STATUS IS PARSED, NOT PATTERN-MATCHED. A proxy answering `407 Proxy
+    Authentication Required` is a wrong or missing credential; `403` is a
+    refused destination. Both must FAIL -- a bridge that treated a non-2xx head
+    as success would hand the browser a socket carrying an error page instead of
+    a tunnel, which is indistinguishable from a working proxy until every
+    request fails.
+
+    Raises `_ConnectRejected` so this leg fails through the SAME path the SOCKS5
+    leg does; the `rep` carried is the HTTP status, which is a diagnostic, never
+    a value any caller should match on.
+    """
+    try:
+        head = await reader.readuntil(b"\r\n\r\n")
+    except asyncio.LimitOverrunError as e:
+        raise _ConnectRejected(0) from e
+    except asyncio.IncompleteReadError as e:
+        # The proxy closed (or spoke a protocol that never terminates a head)
+        # before completing its response. Fail CLOSED.
+        raise _ConnectRejected(0) from e
+    if len(head) > _HTTP_REPLY_LIMIT:
+        raise _ConnectRejected(0)
+    first = head.split(b"\r\n", 1)[0].decode("latin-1", "replace")
+    parts = first.split(None, 2)
+    if len(parts) < 2 or not parts[0].upper().startswith("HTTP/"):
+        # Not an HTTP response at all -- e.g. a SOCKS proxy misconfigured as
+        # `http://`. Refuse rather than guess.
+        raise _ConnectRejected(0)
+    try:
+        status = int(parts[1])
+    except ValueError:
+        raise _ConnectRejected(0) from None
+    if not (200 <= status < 300):
+        # ⚠️ MAP TO A SOCKS5 REPLY CODE -- do NOT pass the HTTP status through.
+        # `rep` is written back to the browser as ONE byte
+        # (`bytes([rep])` in the handler), so a status like 407 raises
+        # ValueError inside the failure path and the browser gets NO reply at
+        # all -- a hung request instead of a clean refusal. Measured while
+        # writing this: the client received b"" and the connection just closed.
+        #
+        # 0x02 is "connection not allowed by ruleset", which is the honest
+        # SOCKS5 equivalent of both 407 (auth refused) and 403 (destination
+        # refused). The real status is preserved in the trace, where it can
+        # actually help, rather than in a field that cannot hold it.
+        _trace(f"upstream HTTP CONNECT refused: status={status}")
+        raise _ConnectRejected(0x02)
 
 
 async def _read_connect_reply(reader: asyncio.StreamReader) -> None:
