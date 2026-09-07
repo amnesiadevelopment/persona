@@ -382,10 +382,15 @@ __SCREEN_REALM_SLOT__
     var DPR = IS_MAC ? 2 : 1;
     function h(x){var v=SEED^(x|0);v=Math.imul(v^(v>>>16),0x85ebca6b);v=Math.imul(v^(v>>>13),0xc2b2ae35);return (v^(v>>>16))>>>0;}
     var def=function(o,k,val){try{var g=Object.getOwnPropertyDescriptor({get m(){return val;}},'m').get;try{Object.defineProperty(g,'name',{value:'get '+k});Object.defineProperty(g,'__pnaName',{value:'get '+k});}catch(e){}Object.defineProperty(o,k,{get:g,configurable:true,enumerable:true});}catch(e){}};
-    // The MINIFIED twin of the readable `nativeWrap` above, and the copy that
-    // actually serves `G.matchMedia` — the readable one has no callsite in this
-    // seam. Re-housed identically: shorthand shell, arity copied from `orig` at
-    // runtime, marker pinned last. Fixing the readable copy alone left
+    // The LEAF-LOCAL wrapper builder that serves `G.matchMedia`. PS-314 built
+    // this as the minified twin of a readable top-level `nativeWrap`; that
+    // readable copy is gone (its last callsite was the `enumerateDevices`
+    // install this ticket moved into `applyDevicesPatch` — see the note beside
+    // `pick`), so this is now the only copy in the seam, and it has to be: the
+    // leaf body is what crosses realms, so a helper reached from the enclosing
+    // IIFE would be undefined in a child. Re-housed per PS-314: shorthand
+    // shell, arity copied from `orig` at runtime, marker pinned last. Fixing
+    // the readable copy alone left
     // matchMedia reading ["__pnaName","arguments","caller","length","name",
     // "prototype"]; measured from a realm, not reasoned.
     var nw=function(orig,rep){var s;try{s=({m(){return rep.apply(this,arguments);}}).m;}catch(e){s=rep;}try{Object.defineProperty(s,'length',{value:orig.length});Object.defineProperty(s,'name',{value:orig.name});Object.defineProperty(s,'__pnaName',{value:orig.name});}catch(e){}return s;};
