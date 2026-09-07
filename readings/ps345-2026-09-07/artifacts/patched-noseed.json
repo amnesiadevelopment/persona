@@ -1,0 +1,55 @@
+{
+ "label": "personium-152-noseed",
+ "binary": "./squashfs-root/opt/ungoogled-chromium/chrome",
+ "args": [],
+ "metrics": {
+  "A": {
+   "width": 10.9453125,
+   "abbL": 0,
+   "abbR": 11,
+   "fbbA": 15,
+   "fbbD": 4,
+   "abbA": 12,
+   "abbD": 0,
+   "alphabetic": 0,
+   "hanging": 12,
+   "ideographic": -4
+  },
+  "hello": {
+   "width": 38.6640625,
+   "abbL": -1,
+   "abbR": 37.875,
+   "fbbA": 15,
+   "fbbD": 4,
+   "abbA": 12,
+   "abbD": 0,
+   "alphabetic": 0,
+   "hanging": 12,
+   "ideographic": -4
+  },
+  "persona-PS345": {
+   "width": 120.765625,
+   "abbL": -1,
+   "abbR": 119.5859375,
+   "fbbA": 15,
+   "fbbD": 4,
+   "abbA": 12,
+   "abbD": 3,
+   "alphabetic": 0,
+   "hanging": 12,
+   "ideographic": -4
+  },
+  "The quick brown fox jumps": {
+   "width": 215.3671875,
+   "abbL": 1,
+   "abbR": 215.03125,
+   "fbbA": 15,
+   "fbbD": 4,
+   "abbA": 12,
+   "abbD": 3,
+   "alphabetic": 0,
+   "hanging": 12,
+   "ideographic": -4
+  }
+ }
+}

@@ -2,7 +2,7 @@ diff --git a/third_party/blink/renderer/modules/canvas/canvas2d/base_rendering_c
 index e366476291..af2d2c832c 100644
 --- a/third_party/blink/renderer/modules/canvas/canvas2d/base_rendering_context_2d.cc
 +++ b/third_party/blink/renderer/modules/canvas/canvas2d/base_rendering_context_2d.cc
-@@ -1191,13 +1191,21 @@ TextMetrics* BaseRenderingContext2D::measureText(const String& text) {
+@@ -1191,13 +1191,25 @@ TextMetrics* BaseRenderingContext2D::measureText(const String& text) {
    if (command_line->HasSwitch(switches::kFingerprint) &&
        (!command_line->HasSwitch(switches::kDisableSpoofing) ||
         command_line->GetSwitchValueASCII(switches::kDisableSpoofing).find("canvas") == std::string::npos)) {
@@ -11,8 +11,12 @@ index e366476291..af2d2c832c 100644
 +    uint32_t hash_val_x = std::hash<std::string>{}(combined_rects_x);
 +     // 映射到[-0.5, 0.5]范围
 +    double norm_x = (hash_val_x & 0xFFFFFFFF) / 4294967295.0 - 0.5;
-+    // 使用 0.00001 作为因子 (相当于原来的 1/100000.0)
-+    double noise_x = norm_x * 0.00001;
++    // TextMetrics::Shuffle() MULTIPLIES every metric by this value, so it must
++    // be a factor centred on 1 (like the upstream GetNoiseFactorX() it replaces),
++    // NOT the offset-shaped value patch 014 computes for rect.Offset(). Feeding
++    // Shuffle() a value centred on 0 collapses every metric to ~0 and makes half
++    // of all seeds report a NEGATIVE width. Range: 1 ± 5e-6 (±0.0005%).
++    double noise_x = 1.0 + norm_x * 0.00001;
      if (HostAsOffscreenCanvas()) {
        if (auto* window = DynamicTo<LocalDOMWindow>(GetTopExecutionContext())) {
 -        if (window->GetFrame() && window->GetFrame()->GetDocument())
