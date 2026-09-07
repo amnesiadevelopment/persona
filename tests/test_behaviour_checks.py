@@ -304,6 +304,11 @@ class TestRegistry:
             "launch-refuses-broken-geography",
             "certificate-key-material",
             "trash-restore-and-wipe",
+            # PS-347. Pinned by NAME because deleting the registry entry
+            # otherwise leaves the whole suite green — an unmeasured surface
+            # looking measured, which is this check's own charter turned on
+            # itself.
+            "no-process-survives-a-closed-session",
         ):
             assert required in names, f"no check observes {required}"
 
