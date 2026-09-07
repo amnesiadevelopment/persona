@@ -344,7 +344,24 @@ def main() -> int:
         )
         return 2
 
-    home = tempfile.mkdtemp(prefix="persona-behaviour-ci-")
+    # ⚠️ THE PREFIX IS SHORT FOR A MEASURED REASON, not for tidiness. The
+    # profile a chromium launch check creates lives under this home, and
+    # chromium's process singleton binds a UNIX socket under the profile whose
+    # path may not exceed 107 bytes — over that the engine exits FATAL "Socket
+    # path too long" seconds into the launch, which reads from outside as a
+    # browser that started and vanished. `persona-behaviour-ci-` spent 21 of
+    # the ~35 bytes /tmp leaves, and on a GitHub runner TMPDIR is
+    # `/home/runner/work/_temp` rather than /tmp, which spends most of the rest.
+    #
+    # ⛔ THIS LANE IS `--skip-launch`, so no chromium profile is created on it
+    # TODAY and the length is not currently load-bearing here. It is short
+    # anyway because the day this script grows a launch lane (PS-336) is
+    # exactly the day a long prefix would turn the new lane into a silent
+    # CANNOT RUN — the failure this shape already produced once. The harness's
+    # OWN default home is sized and REFUSES when it does not fit
+    # (`behaviour.default_scratch_home`); this parent sets PERSONA_HOME itself,
+    # so that sizing does not run here and this comment is the guard.
+    home = tempfile.mkdtemp(prefix="pb-ci-")
     env = dict(os.environ)
     env["PERSONA_HOME"] = home
     env[REEXEC_FLAG] = "1"
