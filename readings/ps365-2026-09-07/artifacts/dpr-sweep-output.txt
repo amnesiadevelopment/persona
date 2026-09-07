@@ -1,0 +1,26 @@
+binary: Chromium 152.0.7977.82 built on Debian GNU/Linux 13 (trixie)
+probe:  ps365_dpr_lattice_probe.html  (500 simple divs x 8 rect fields)
+
+scale    dpr        pow2     probed   css_1_64   dev_1_64   dev_exact   non_f32
+-------- ---------- ------   ------   --------   --------   ---------   -------
+0.5      0.5        True       6008          0          0           0         0
+0.75     0.75       False      6008       2914       2914        1643       345
+1        1          True       6008          0          0           0         0
+1.1      1.1        False      6008       5833       6008        1709       903
+1.25     1.25       False      6008       3591       3591        1229       477
+1.3333   1.3333     False      6008       6005       6008        2957       884
+1.5      1.5        False      6008       2925       2925        1552       344
+1.75     1.75       False      6008       4877       4877        3503       715
+2        2          True       6008       1810          0           0         0
+2.5      2.5        False      6008       3156       3156        1135       482
+3        3          False      6008       2188       2188        1250       342
+4        4          True       6008       3306          0           0         0
+5        5          False      6008       3801       3801        1222       570
+6        6          False      6016       3793       3037        1661       389
+8        8          True       6016       3441          0           0         0
+
+READING: a column that is 0 on EVERY row is a scale-independent invariant.
+         a column with any non-zero cell is CONDITIONAL on device scale.
+         Compare the clean rows against the pow2 column before concluding
+         anything about integral vs fractional scale — they are not the
+         same set, and the difference is the finding.

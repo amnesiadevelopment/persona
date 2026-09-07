@@ -1,0 +1,29 @@
+INVARIANT 2 (TextMetrics float32-exact) across the scale sweep
+committed probe ps365_domain_probe.html, stock Chromium 152.0.7977.82
+
+scale      probed    off_f32   rect_off
+0.5          1008          0          0
+1            1008          0          0
+1.1          1008          0       5833
+1.25         1008          0       3591
+1.5          1008          0       2925
+1.75         1008          0       4877
+2            1008          0       1810
+2.5          1008          0       3156
+3            1008          0       2188
+4            1008          0       3306
+
+READING
+  INVARIANT 2 is 0/1008 at EVERY scale, including the ones where invariant 1
+  collapses in the thousands. The asymmetry is structural, not luck:
+
+    invariant 1 is a lattice claim about a value Blink DIVIDED by the scale
+    factor, so the divisor decides whether the float32 store is lossless.
+    invariant 2 is a REPRESENTATION claim about a value that never passes
+    through the scale factor at all — canvas text metrics are computed in
+    float and widened at the bindings layer regardless of device scale.
+
+  A representation invariant survives a transform that a lattice invariant
+  cannot, because "is this double a float32" is closed under nothing the
+  scale factor does to it. That is why invariant 2 needs no dpr precondition
+  and invariant 1 does.
