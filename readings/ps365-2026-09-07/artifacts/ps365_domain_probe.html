@@ -1,0 +1,92 @@
+<!doctype html>
+<html><body><div id=host></div><span id=sp>ranged text sample</span>
+<!--
+PS-365 — the DOMAIN control.
+
+Two structural invariants that a real Blink obeys and that a perturbation
+computed in DOUBLE space breaks. Neither is a persona value: both are
+properties of stock Chromium, so a violation is positive evidence that
+SOMETHING rewrote the number after Blink produced it.
+
+  INVARIANT 1  every client-rect coordinate is an exact multiple of 1/64.
+               Blink stores layout in LayoutUnit, a 1/64-px fixed-point type.
+  INVARIANT 2  every canvas TextMetrics field is a float32-exact double.
+               Blink computes text metrics in float and widens on the way out.
+
+Run:
+  chromium --headless --disable-gpu --no-sandbox --enable-logging=stderr \
+           --virtual-time-budget=6000 file://$PWD/ps365_domain_probe.html \
+    2>&1 | grep -o 'PS365 .*'
+
+Exit reading: both violation counts must be 0 on a stock engine.
+-->
+<script>
+const host = document.getElementById('host'), f32 = new Float32Array(1);
+const isF32 = v => { f32[0] = v; return f32[0] === v; };
+const onLat = (v, d) => Math.abs(v * d - Math.round(v * d)) < 1e-9;
+
+// --- INVARIANT 1: 1/64 LayoutUnit lattice, detector-authored geometry --------
+// Deliberately SIMPLE geometry: no transforms, no percentages. A fingerprinter
+// authors its own probe element, so it can guarantee this shape — which is why
+// the invariant is reachable by a detector and not merely by us.
+const rectVals = [];
+for (let i = 0; i < 500; i++) {
+  const d = document.createElement('div');
+  d.style.cssText = 'position:relative;width:' + (5 + i * 0.37) + 'px;height:' +
+    (2 + (i % 11) * 0.13) + 'px;margin-left:' + ((i * 7) % 29) + 'px;font-size:' +
+    (9 + (i % 20)) + 'px';
+  d.textContent = 'Wg';
+  host.appendChild(d);
+  const r = d.getBoundingClientRect();
+  rectVals.push(r.x, r.y, r.width, r.height, r.top, r.left, r.right, r.bottom);
+  for (const c of d.getClientRects()) rectVals.push(c.x, c.y, c.width, c.height);
+}
+// Range rects too — patch 014 also offsets Range::getBoundingClientRect and
+// Range::getClientRects, so a probe that only reads Element misses half of it.
+const rg = document.createRange();
+rg.selectNodeContents(document.getElementById('sp'));
+const rr = rg.getBoundingClientRect();
+rectVals.push(rr.x, rr.y, rr.width, rr.height);
+for (const c of rg.getClientRects()) rectVals.push(c.x, c.y, c.width, c.height);
+
+const rectOff = rectVals.filter(v => !onLat(v, 64));
+
+// --- INVARIANT 2: float32-exact TextMetrics ---------------------------------
+// Every metric field, not just width: the ticket's family perturbs the whole
+// TextMetrics object, and actualBoundingBox* survive persona's own repair.
+const ctx = document.createElement('canvas').getContext('2d');
+const fonts = ['16px sans-serif', '13.7px serif', '11px monospace', '27.3px sans-serif',
+  '40px sans-serif', '9.13px sans-serif', '63.7px serif', '8px monospace',
+  '100px sans-serif', '12.5px cursive', 'italic bold 22.4px serif', '300 17.9px sans-serif'];
+const strs = ['a', 'Wg', 'iIl1', 'Hello measured text', '\u65e5\u672c\u8a9e\u30c6\u30ad\u30b9\u30c8',
+  '\u0645\u0631\u062d\u0628\u0627', 'x'.repeat(97), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ',
+  '.,;:!?', '\u{1F600}\u{1F601}', '   ', 'The quick brown fox jumps over the lazy dog'];
+const fields = ['width', 'actualBoundingBoxLeft', 'actualBoundingBoxRight',
+  'actualBoundingBoxAscent', 'actualBoundingBoxDescent',
+  'fontBoundingBoxAscent', 'fontBoundingBoxDescent'];
+
+const mtVals = [], mtOff = [];
+for (const f of fonts) {
+  ctx.font = f;
+  for (const s of strs) {
+    const m = ctx.measureText(s);
+    for (const k of fields) {
+      const v = m[k];
+      if (typeof v === 'number' && isFinite(v)) {
+        mtVals.push(v);
+        if (!isF32(v)) mtOff.push([f, s.slice(0, 8), k, v]);
+      }
+    }
+  }
+}
+
+console.log('PS365 ' + JSON.stringify({
+  invariant1_rect_lattice: { probed: rectVals.length, violations: rectOff.length,
+                             sample: rectOff.slice(0, 4) },
+  invariant2_textmetrics_f32: { probed: mtVals.length, violations: mtOff.length,
+                                sample: mtOff.slice(0, 4) },
+  // A negative width is impossible per spec; counted separately because it is
+  // the coarser, already-known symptom (PS-345) rather than the domain test.
+  negative_metrics: mtVals.filter(v => v < 0 && Math.abs(v) < 1).length,
+}));
+</script></body></html>
