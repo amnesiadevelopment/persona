@@ -72,6 +72,7 @@ from .launch_policy import (  # noqa: F401
     _proxy_timezone,
     _timezone_for,
     _windows_timezone_key,
+    declared_locale,
 )
 
 logger = get_logger("browser.process")
@@ -395,23 +396,37 @@ def _profile_locale(profile: Profile, proxy) -> str:
     try:
         return _locale_for(code)
     except LocaleUnderivableError as e:
-        # Names the COUNTRY, and says the remedy is a code change rather than a
-        # re-check — the same two things the TimezoneUnderivableError arm below
-        # says, and for the same reason: the proxy's check may have passed
-        # moments ago and will keep passing, because what is missing is a table
-        # row. Sending this operator to "check the proxy" wastes their time.
+        # SECOND, NEVER FIRST — the same precedence rule the zone half states at
+        # length in ``_proxy_timezone`` and says not to reorder, applied here.
+        # The table is the product's own derivation and always wins; the
+        # declaration exists for the countries the table cannot answer for, not
+        # because an operator's typing outranks a shipped row. Because it is
+        # consulted only inside this refusal arm, NO currently-launching profile
+        # changes behaviour at all.
         #
-        # It names BOTH tables. Adding one row alone is precisely how this class
-        # of defect is reintroduced, and the correspondence suite fails it in
-        # either direction, so the message asks for the pair.
+        # Gated on the country it was declared for (``declared_locale``), which
+        # also supplies the region half — so a declaration retires itself when a
+        # backconnect exit moves and the launch refuses again, exactly as the
+        # zone half does.
+        declared = declared_locale(proxy)
+        if declared:
+            return declared
+        # Names the COUNTRY, and says the remedy is NOT a re-check — the proxy's
+        # check may have passed moments ago and will keep passing, because what
+        # is missing is a table row. It names BOTH tables (adding one row alone
+        # is precisely how this class of defect is reintroduced, and the
+        # correspondence suite fails it in either direction) and, since PS-332,
+        # the DECLARATION first — because that is the remedy the operator can
+        # reach without shipping a build.
         raise LocaleUnderivableError(
             f"Profile {profile.name!r} has proxy {profile.proxy!r} assigned and its "
             f"exit country is known ({code.upper()}), "
             "but no locale is known for that country. Refusing to launch: falling "
             "back to en-US would declare an American-English browser beside the "
             "exit's own non-US clock — the 'spoofed location' tell this product "
-            "exists to avoid. Re-checking will NOT help; add a row for that "
-            "country to _COUNTRY_LOCALE *and* the matching _COUNTRY_TZ row "
+            "exists to avoid. Re-checking will NOT help; declare the exit's "
+            "language in the proxy editor, or add a row for that country to "
+            "_COUNTRY_LOCALE *and* the matching _COUNTRY_TZ row "
             "(launch_policy.py) to resolve it."
         ) from e
 
