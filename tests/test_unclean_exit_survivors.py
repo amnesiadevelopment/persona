@@ -266,6 +266,11 @@ def _launch_persona(reaper: _Reaper, registry_path: str, profile: str) -> dict:
         ],
         stdout=subprocess.PIPE,
         text=True,
+        # NAME THE ENCODING. `text=True` alone decodes with the platform's
+        # preferred encoding — cp1252 on Windows — while the child writes
+        # utf-8 via json.dumps. tests/test_encoding_discipline.py enforces
+        # this project-wide, and it caught this line.
+        encoding="utf-8",
     )
     reaper.watch(proc.pid)
 
@@ -638,7 +643,8 @@ def test_real_os_pid_reuse_does_not_resurrect_a_dead_browser(tmp_path, reaper):
         pytest.skip("no /proc/sys/kernel/ns_last_pid: cannot observe the allocator")
 
     def _counter() -> int:
-        return int(open(last_pid_path).read().strip())
+        with open(last_pid_path, encoding="utf-8") as fh:
+            return int(fh.read().strip())
 
     departed = subprocess.Popen([sys.executable, "-c", "pass"])
     target = departed.pid
