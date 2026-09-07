@@ -1,0 +1,17 @@
+# Output of clearrect_probe — CreepJS clearRect trap
+
+== CreepJS clearRect trap, measured ==
+   canvas 300x150, left half cleared to (0,0,0,0)
+
+   pixels modified inside the CLEARED region : 0
+   pixels modified outside it                : 8
+   cleared pixels that read back NON-ZERO    : 0
+
+   verdict: cleared pixels read back as zero -> CreepJS lied=true is NOT tripped
+
+== the residual: pixels with a zero CHANNEL but not pure black ==
+   canvas with R==0 everywhere: 10 pixels modified, 8 had R perturbed
+   -> a zero channel IS writable by our loop (feder's guard would not
+      write it). Whether any detector reads that specific case is a
+      host question; it is NOT the CreepJS clearRect trap, which is
+      measured above and which we already survive.

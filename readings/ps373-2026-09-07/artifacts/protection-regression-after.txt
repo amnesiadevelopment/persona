@@ -1,0 +1,24 @@
+# Output of protection_regression — the negative control
+
+== the two populations, counted ==
+   realistic fp canvas 220x30  :   6224 distinct colours
+   realistic fp canvas 280x60  :  13924 distinct colours
+   realistic fp canvas 300x150 :  34438 distinct colours
+   realistic fp canvas 500x200 :  45551 distinct colours
+   pixelscan reference probe   :     14 distinct colours (per feder RE)
+   guard ceiling kMaxRefColors :     16
+
+== REGRESSION: real fingerprinting canvases must STILL be noised ==
+   220x30  modified = 8    OK (protection preserved)
+   280x60  modified = 8    OK (protection preserved)
+   300x150 modified = 8    OK (protection preserved)
+   500x200 modified = 9    OK (protection preserved)
+
+== REGRESSION: noise must still be seed-dependent (unlinkability) ==
+   two different seeds differ : yes OK
+   same seed reproduces       : yes OK
+
+== REGRESSION: reference-like renders must be byte-exact ==
+   70x5 / 14 colours modified = 0   OK (passes equality probe)
+
+ALL CHECKS PASSED: probe exempted AND protection preserved.
