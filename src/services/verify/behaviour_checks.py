@@ -24,6 +24,7 @@ from .behaviour import (
     CANNOT_RUN,
     FINDING,
     PASS,
+    SUN_PATH_LIMIT,
     BehaviourCheckError,
     Check,
     Context,
@@ -1058,6 +1059,34 @@ _TREE_GROW_TIMEOUT = 90.0
 #: rather than mid-exit.
 _TEARDOWN_GRACE = 5.0
 
+#: THE PROFILE NAMES THIS CHECK LAUNCHES CHROMIUM UNDER — named here, once,
+#: because they are the only names in this module whose LENGTH is a
+#: correctness property rather than a label.
+#:
+#: Chromium's process singleton binds a UNIX socket under the profile, and
+#: ``behaviour.SUN_PATH_LIMIT`` is a hard wall the engine enforces by exiting
+#: FATAL mid-launch. Every OTHER check here launches FIREFOX (see
+#: ``UNCOVERED_SURFACES``), which binds no such socket, so these two are the
+#: names a scratch home has to leave room for.
+#:
+#: ⛔ LENGTHENING EITHER OF THESE IS A BEHAVIOUR CHANGE, NOT A RENAME. The
+#: budget is asserted against them by
+#: ``tests/test_behaviour_checks.py::TestSingletonSocketBudget``, so a name
+#: that no longer fits under the CLI's own default home turns that test red
+#: rather than turning this check into a silent CANNOT RUN.
+SOCKET_BOUND_PROFILE_NAMES: "tuple[str, ...]" = ("p347a", "p347b")
+
+
+def longest_socket_bound_profile_name() -> int:
+    """The budget a scratch home must leave for this module's chromium names.
+
+    Derived from the registry rather than typed as a number, so a home is
+    sized against the names the checks ACTUALLY create — a hand-copied figure
+    is a figure that goes stale the first time a name changes.
+    """
+    return max(len(n) for n in SOCKET_BOUND_PROFILE_NAMES)
+
+
 
 def _survivors_or_refuse(pgid: int) -> "list[int]":
     """The live members of ``pgid``, or a refusal saying we could not look.
@@ -1087,18 +1116,54 @@ def _survivor_profile(ctx: Context, name: str):
     combination that resolves to firefox (see UNCOVERED_SURFACES), and firefox
     is not the arm PS-192 was measured on.
 
-    ⚠️ THE NAME IS DELIBERATELY SHORT, and the reason is measured rather than
-    stylistic. Chromium's process singleton binds a UNIX socket at
+    ⚠️ THE NAME IS DELIBERATELY SHORT, AND ITS LENGTH IS MEASURED RATHER THAN
+    STYLISTIC — see :data:`SOCKET_BOUND_PROFILE_NAMES`, which is where the two
+    names live and where the arithmetic that sizes them is stated. Chromium's
+    process singleton binds a UNIX socket at
     ``<user-data-dir>/.persona-tmp/org.chromium.Chromium.XXXXXX/
     SingletonSocket``, and ``sun_path`` is 108 bytes. The profile name is a
-    path COMPONENT of that, and this module runs under a mkdtemp'd
-    PERSONA_HOME, so a descriptive name like ``ps347-survivors-falsify``
-    pushed it over: chromium exited FATAL "Socket path too long" ~6s in, which
-    reads from outside as a tree that started and then vanished. That is a
-    launch this check must never mistake for a teardown — and it did not (the
-    settle guard refused it) — but the cure is the short name rather than a
-    looser guard.
+    path COMPONENT of that, under a scratch PERSONA_HOME, so a descriptive
+    name like ``ps347-survivors-falsify`` pushed it over: chromium exited FATAL
+    "Socket path too long" ~6s in, which reads from outside as a tree that
+    started and then vanished. That is a launch this check must never mistake
+    for a teardown — and it did not (the settle guard refused it) — but the
+    cure is the short name rather than a looser guard.
+
+    ⭐ AND SHORTENING THE NAME IS ONLY HALF THE CURE, which the first attempt
+    at this check got wrong: ``ps347-live`` (10 bytes) fits under a home an
+    operator names by hand and does NOT fit under the one the CLI provisioned
+    itself (31 bytes, leaving 4), so the check was green under
+    ``--home /tmp/x`` and reported CANNOT RUN under its own documented
+    invocation. The home is now sized against these names
+    (``behaviour.default_scratch_home``) and the pair is asserted together by
+    ``TestSingletonSocketBudget`` — a budget checked on one side only is a
+    budget that fails on the other.
+
+    ⭐ AND IT REFUSES BEFORE LAUNCHING when the operator's own ``--home`` is
+    too long for the name, which the CLI's sizing cannot cover: ``--home`` is
+    an arbitrary path this module never chose. Unguarded, that case reaches the
+    engine and comes back as FATAL several seconds in — a tree that grew to 5
+    and vanished — which the settle guard correctly refuses but can only
+    describe as "no browser tree was observed running". The operator is then
+    told the launch did not settle, when the actionable fact is that their home
+    path is N bytes too long. Measuring it here converts an opaque symptom into
+    the sentence that names the cure.
     """
+    from .behaviour import profile_name_budget, singleton_socket_length
+
+    budget = profile_name_budget(ctx.home)
+    if len(name) > budget:
+        raise BehaviourCheckError(
+            f"the scratch home {ctx.home!r} is too long to launch chromium "
+            f"under: profile {name!r} puts its process-singleton socket at "
+            f"{singleton_socket_length(ctx.home, name)} bytes, and the limit "
+            f"is {SUN_PATH_LIMIT}. The engine does not degrade here — it exits "
+            "FATAL 'Socket path too long' seconds into the launch, which looks "
+            "from outside like a browser that started and then vanished, so "
+            "NOTHING would be measured. This home leaves "
+            f"{budget} byte(s) for a profile name. Use a shorter --home, or "
+            "omit --home and let the harness provision one that fits."
+        )
     return ctx.make_profile(name, os_type="linux", engine="chromium")
 
 
@@ -1289,7 +1354,7 @@ def _launch_and_grow(
 def _run_no_process_survives_a_closed_session(ctx: Context) -> Outcome:
     from ..browser.process import terminate
 
-    name = "ps347-live"
+    name = SOCKET_BOUND_PROFILE_NAMES[0]
     profile = _survivor_profile(ctx, name)
     proc, pgid, peak = _launch_and_grow(ctx, profile)
 
@@ -1370,7 +1435,7 @@ def _falsify_no_process_survives_a_closed_session(ctx: Context) -> str:
     """
     import signal
 
-    name = "ps347-fals"
+    name = SOCKET_BOUND_PROFILE_NAMES[1]
     profile = _survivor_profile(ctx, name)
     proc, pgid, peak = _launch_and_grow(ctx, profile)
 
@@ -1481,4 +1546,9 @@ def check_names() -> tuple[str, ...]:
     return tuple(c.name for c in CHECKS)
 
 
-__all__ = ["CHECKS", "check_names"]
+__all__ = [
+    "CHECKS",
+    "SOCKET_BOUND_PROFILE_NAMES",
+    "check_names",
+    "longest_socket_bound_profile_name",
+]

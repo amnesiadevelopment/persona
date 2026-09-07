@@ -721,3 +721,251 @@ class TestMissingDisplayCannotRunRatherThanFinding:
             "defect when nothing was measured at all"
         )
         assert "CANNOT RUN:" in capsys.readouterr().err
+
+
+class TestSingletonSocketBudget:
+    """The launch-blocking arithmetic, pinned so a machine catches it.
+
+    ⭐ THIS CLASS IS THE POINT OF PS-347's REWORK, and it is worth stating why
+    it is a test rather than a comment. The first version of the survivor check
+    was CORRECT — it observed a real leak, counted it from the OS, and killed
+    its own mutant — and it was still unrunnable, because chromium's process
+    singleton binds a UNIX socket under the profile and ``sun_path`` is 108
+    bytes. Under the CLI's own default home the path came to 113, so the engine
+    exited FATAL "Socket path too long" ~3s into every launch and the check
+    reported CANNOT RUN on every invocation that did not pass a short
+    ``--home`` by hand — including the one the module's docstring prescribes.
+
+    A gate whose default invocation is structurally incapable of reaching green
+    measures nothing, which is the very failure the gate exists to prevent,
+    reproduced inside it. Nothing caught it because nothing exercised the
+    arithmetic: the launch path has no unit test by construction (it needs an
+    engine and a display), so the budget went unasserted and was wrong by six
+    bytes.
+
+    So the ARITHMETIC is tested even though the LAUNCH is not. These tests need
+    no browser, no display and no store — they run in the dev container with
+    every other test in this file, and they go red the moment a profile name is
+    lengthened or the scratch prefix grows.
+
+    THE BOUNDARY BELOW IS MEASURED, NOT ASSUMED. Isolated on
+    personium-152.0.7977.75 under Xvfb, one variable — the home path's length —
+    moved by exactly one byte between the two arms:
+
+        home len 25 -> socket path 107 bytes -> launched, tree settled at 11
+        home len 26 -> socket path 108 bytes -> FATAL, peak 5 then 0
+    """
+
+    def test_the_engine_measured_boundary_is_the_constant_we_encode(self):
+        """107 usable bytes, because the 108th is the NUL terminator."""
+        from src.services.verify.behaviour import SUN_PATH_LIMIT
+
+        assert SUN_PATH_LIMIT == 107, (
+            "sizeof(sun_path) is 108 and the last byte is the terminator, so "
+            "107 is the longest path chromium's singleton can bind. Measured "
+            "on a real engine: 107 launches, 108 exits FATAL."
+        )
+
+    def test_the_socket_length_matches_the_path_the_engine_actually_reported(self):
+        """The formula is checked against a path an engine printed, not against
+        itself.
+
+        This exact string came off chromium's stdout on the product launch path
+        while reproducing the defect, and it is 113 bytes. A formula validated
+        only against its own re-derivation would agree with a wrong constant.
+        """
+        from src.services.verify.behaviour import singleton_socket_length
+
+        observed = (
+            "/tmp/persona-behaviour-SidVU7bF/persona_data/ps347-live"
+            "/.persona-tmp/org.chromium.Chromium.eAfYAT/SingletonSocket"
+        )
+        assert len(observed) == 113  # the engine's own FATAL line
+
+        assert (
+            singleton_socket_length("/tmp/persona-behaviour-SidVU7bF", "ps347-live")
+            == 113
+        ), "the formula does not reproduce a socket path the engine reported"
+
+    def test_the_default_scratch_home_leaves_room_for_the_checks_own_profiles(
+        self,
+    ):
+        """THE REGRESSION TEST. The pair the harness ships must fit together.
+
+        Not "the home is short" and not "the names are short" — either alone
+        was true of the broken version. The claim is about the PAIR, which is
+        the thing that was wrong.
+        """
+        import shutil
+
+        from src.services.verify.behaviour import (
+            SUN_PATH_LIMIT,
+            default_scratch_home,
+            singleton_socket_length,
+        )
+        from src.services.verify.behaviour_checks import (
+            SOCKET_BOUND_PROFILE_NAMES,
+            longest_socket_bound_profile_name,
+        )
+
+        home = default_scratch_home(longest_socket_bound_profile_name())
+        try:
+            for name in SOCKET_BOUND_PROFILE_NAMES:
+                length = singleton_socket_length(home, name)
+                assert length <= SUN_PATH_LIMIT, (
+                    f"profile {name!r} under the harness's OWN default home "
+                    f"{home!r} puts chromium's singleton socket at {length} "
+                    f"bytes, over the {SUN_PATH_LIMIT}-byte limit. The engine "
+                    "will exit FATAL 'Socket path too long' seconds into the "
+                    "launch and every launch-backed check will report CANNOT "
+                    "RUN — a gate that cannot reach green under its own "
+                    "default invocation."
+                )
+        finally:
+            shutil.rmtree(home, ignore_errors=True)
+
+    def test_a_home_that_cannot_fit_the_names_is_refused_not_returned(self):
+        """The sizing REFUSES rather than handing back a home that will FATAL.
+
+        A silent return is what made the original defect so hard to see: the
+        symptom arrived seconds later, from the engine, as a tree that grew and
+        vanished. The refusal names the actionable fact instead.
+        """
+        from src.services.verify.behaviour import (
+            UnsafeEnvironment,
+            default_scratch_home,
+        )
+
+        with pytest.raises(UnsafeEnvironment) as exc:
+            # No prefix is short enough to leave 200 bytes for a name.
+            default_scratch_home(200)
+
+        assert "Socket path too long" in str(exc.value), (
+            "the refusal must name the engine's own failure, so an operator "
+            "can connect it to what they would otherwise see in the log"
+        )
+
+    def test_the_budget_is_negative_rather_than_clamped_when_home_is_too_long(
+        self,
+    ):
+        """A home that has already spent the budget reports a NEGATIVE number.
+
+        Clamping at zero would render "no name fits at all" identically to "a
+        zero-length name fits", and the caller compares against a required
+        length — so the clamp would silently admit an impossible home.
+        """
+        from src.services.verify.behaviour import profile_name_budget
+
+        assert profile_name_budget("/x" * 80) < 0
+
+    def test_an_over_long_operator_home_is_refused_before_the_launch(self):
+        """``--home`` is arbitrary, so the CLI's sizing cannot cover it.
+
+        Unguarded this reaches the engine and returns as a FATAL the settle
+        guard can only describe as "no browser tree was observed running" —
+        true, unhelpful, and pointing away from the cure.
+        """
+        from src.services.verify.behaviour_checks import (
+            SOCKET_BOUND_PROFILE_NAMES,
+            _survivor_profile,
+        )
+
+        long_home = "/tmp/" + "d" * 90
+        ctx = Context(home=long_home)
+
+        with pytest.raises(BehaviourCheckError) as exc:
+            _survivor_profile(ctx, SOCKET_BOUND_PROFILE_NAMES[0])
+
+        message = str(exc.value)
+        assert "Socket path too long" in message
+        assert "--home" in message, "the refusal must name the flag that cures it"
+
+    def test_a_long_TMPDIR_does_not_decide_where_the_scratch_home_lands(
+        self, tmp_path, monkeypatch
+    ):
+        """THE ARM THAT CARRIES THE FIX ON A REAL RUNNER, and the one this
+        machine's own /tmp cannot exercise.
+
+        The budget is comfortable under a bare ``/tmp`` (4 bytes) and is spent
+        before a profile is named under the bases real CI hands out: a GitHub
+        runner's ``/home/runner/work/_temp`` is 23 and macOS's
+        ``/var/folders/...`` is 53. ``tempfile.mkdtemp()`` honours ``TMPDIR``,
+        so accepting it would reproduce the whole defect on exactly the venue
+        PS-336 will supply — while every test above stayed green here, because
+        the developer's ``/tmp`` hides it.
+
+        So the base is CHOSEN (shortest writable candidate) rather than
+        inherited, and this asserts the choice rather than the outcome.
+        """
+        import shutil
+        import tempfile
+
+        from src.services.verify.behaviour import (
+            SUN_PATH_LIMIT,
+            default_scratch_home,
+            singleton_socket_length,
+        )
+        from src.services.verify.behaviour_checks import (
+            SOCKET_BOUND_PROFILE_NAMES,
+            longest_socket_bound_profile_name,
+        )
+
+        # A stand-in for the runner's base, the same shape as
+        # /home/runner/work/_temp, created under pytest's tmp_path so nothing
+        # outside the test is touched.
+        long_base = tmp_path / "work" / "_temp"
+        long_base.mkdir(parents=True)
+
+        # ⚠️ SETTING TMPDIR IS NOT ENOUGH, AND THE FIRST VERSION OF THIS TEST
+        # WAS VACUOUS FOR EXACTLY THAT REASON. `tempfile.gettempdir()` resolves
+        # the directory ONCE and caches it in `tempfile.tempdir`, so by the
+        # time any test runs the value is already pinned to this machine's
+        # /tmp and a later setenv changes nothing. The test then "passed"
+        # against a 4-byte base — i.e. it asserted nothing about a long one,
+        # which is the single thing it exists to assert. Caught by mutating
+        # the base-selection away and watching this test stay green.
+        monkeypatch.setenv("TMPDIR", str(long_base))
+        monkeypatch.setattr(tempfile, "tempdir", str(long_base))
+
+        # THE PRECONDITION, ASSERTED RATHER THAN ASSUMED. If the override ever
+        # stops taking effect this fails loudly instead of quietly measuring
+        # /tmp again.
+        assert tempfile.gettempdir() == str(long_base)
+        assert len(str(long_base)) > 20, (
+            "the stand-in base must actually be long, or this test passes for "
+            "the same reason the defect hid: a short base fits either way"
+        )
+
+        home = default_scratch_home(longest_socket_bound_profile_name())
+        try:
+            for name in SOCKET_BOUND_PROFILE_NAMES:
+                length = singleton_socket_length(home, name)
+                assert length <= SUN_PATH_LIMIT, (
+                    f"with TMPDIR={long_base!s} the harness provisioned "
+                    f"{home!r}, which puts {name!r}'s singleton socket at "
+                    f"{length} bytes — over the {SUN_PATH_LIMIT}-byte limit. "
+                    "A long TMPDIR must not decide where the scratch home "
+                    "lands; that is the CI venue reproducing the defect."
+                )
+        finally:
+            shutil.rmtree(home, ignore_errors=True)
+
+    def test_the_check_reads_its_profile_names_from_the_pinned_constant(self):
+        """The names the budget is asserted against must be the names the check
+        creates.
+
+        A check that hardcoded its own string would pass every assertion above
+        while launching under something else entirely — the budget would be
+        pinned for names nobody uses.
+        """
+        import inspect
+
+        from src.services.verify import behaviour_checks
+
+        source = inspect.getsource(behaviour_checks._run_no_process_survives_a_closed_session)
+        falsify = inspect.getsource(
+            behaviour_checks._falsify_no_process_survives_a_closed_session
+        )
+
+        assert "SOCKET_BOUND_PROFILE_NAMES" in source
+        assert "SOCKET_BOUND_PROFILE_NAMES" in falsify
