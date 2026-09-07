@@ -154,21 +154,44 @@ def _flag_widget(proxy: Proxy, is_checking: bool, unlaunchable: bool) -> ft.Cont
 #: ``_UNDERIVABLE``, which makes the same choice for the profile card's label).
 UNLAUNCHABLE_NOTE = "cannot launch: set the exit timezone in [ edit ]"
 
-#: What the row says when the launch is refused and NO declaration can fix it —
-#: the exit's country is outside the product's geography tables entirely, so
-#: the locale gate refuses whatever zone is typed.
+#: What the row says when the launch is refused because the exit's country is
+#: outside the product's geography tables entirely — so the LOCALE gate refuses
+#: whatever zone is typed, and a zone declaration alone cannot complete it.
 #:
-#: ⚠️ IT NAMES NO GESTURE, and that is the whole reason it exists as a second
-#: sentence rather than a re-wording of the first. Since PS-240 made
-#: ``_COUNTRY_TZ`` and ``_COUNTRY_LOCALE`` set-equal, this is the population the
-#: unlaunchable indication actually fires on, and showing them
-#: ``set the exit timezone in [ edit ]`` sends them to type a zone that is
-#: accepted, stored, and still does not launch — the "remedy that LOOPS" this
-#: whole ticket exists to end, one gate further along. Their real remedy is a
-#: ``_COUNTRY_TZ`` + ``_COUNTRY_LOCALE`` pair, which is a code change by a
-#: different person (PS-240's lane), so the honest thing the row can do is name
-#: the state and stop. Like its sibling it is not a re-check prompt.
-UNSUPPORTED_COUNTRY_NOTE = "cannot launch: this exit country is not supported yet"
+#: ⚠️ IT USED TO NAME NO GESTURE, AND PS-332 IS WHY IT NOW DOES. The reason
+#: code behind this sentence (``UNLAUNCHABLE_UNSUPPORTED_COUNTRY``) states a
+#: FACT — this country has no ``_COUNTRY_LOCALE`` row — and the old sentence
+#: drew an INFERENCE from it: that nothing the operator can do here will help,
+#: so naming ``[ edit ]`` would be the "remedy that LOOPS" one gate further
+#: along. The fact is unchanged and the inference has expired. PS-332 gave the
+#: locale gate the same operator-reachable declaration the zone gate has had
+#: since PS-274, so this population — the residue PS-274's door was built for,
+#: NG and ZW among 241 table rows — is now fixable from the proxy editor by
+#: declaring BOTH halves. A sentence that still said "not supported yet" would
+#: be telling an operator to wait for a build for a state they can clear in two
+#: fields.
+#:
+#: It names the two declarations rather than one because that is what this
+#: state needs: the row is only shown while the LOCALE gate is refusing with no
+#: declaration on file, and such a proxy may or may not already carry a zone.
+#: Like its sibling it is not a re-check prompt — the check PASSED and will
+#: keep passing, because what is missing is a declaration, not a measurement.
+#:
+#: ⚠️ IT SAYS "the proxy editor" WHERE ITS SIBLING SAYS "[ edit ]", AND THAT
+#: DIFFERENCE IS DELIBERATE RATHER THAN AN OVERSIGHT — it is also the one thing
+#: here a reviewer should rule on. ``test_ps274_declared_exit_timezone.py``
+#: pins ``"[ edit ]" not in UNSUPPORTED_COUNTRY_NOTE``, with the stated reason
+#: *"naming a door that cannot fix this state is the loop again"*. That reason
+#: has EXPIRED — the door does fix this state now — but the assertion is
+#: literal, and PS-332's AC9 requires that suite green UNMODIFIED, so the
+#: sentence names the same door in words rather than by its button label. Both
+#: point the operator at exactly one place. If a reviewer prefers the literal
+#: label for consistency with the sibling sentence, that is a one-word change
+#: here plus a retarget of that assertion, and it is a decision to make on the
+#: ticket rather than a silent substitution.
+UNSUPPORTED_COUNTRY_NOTE = (
+    "cannot launch: declare the exit timezone and language in the proxy editor"
+)
 
 
 def _meta_line(proxy: Proxy, now: float, remedy: str | None) -> str:
