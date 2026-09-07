@@ -328,12 +328,39 @@ def singleton_socket_length(home: str, profile_name: str) -> int:
     return len(home) + len(profile_name) + _SINGLETON_SOCKET_FIXED_COST
 
 
+def singleton_socket_is_bound() -> bool:
+    """Whether this platform's engine binds a UNIX socket for its singleton.
+
+    ⛔ THE LIMIT IS A POSIX FACT, NOT A UNIVERSAL ONE, and the caught mistake
+    was applying it everywhere. The engine's own FATAL names the file that
+    enforces it — ``chrome/browser/process_singleton_posix.cc:313`` — because
+    ``sun_path`` is a property of the UNIX-domain socket that arm binds.
+    Windows' process singleton is a NAMED MUTEX plus a hidden message window;
+    it binds no socket, so there is no 107-byte wall to measure and MAX_PATH
+    (260, or effectively unbounded with long paths enabled) is a different
+    constraint entirely.
+
+    Measured, not reasoned: refusing on the Windows CI runner rejected a
+    perfectly launchable ``C:\\Users\\RUNNER~1\\AppData\\Local\\Temp`` — a
+    guard inventing a failure on a platform whose engine cannot have it, which
+    is worse than the defect it was written for.
+    """
+    from ...core import platform as _platform
+
+    return not _platform.IS_WINDOWS
+
+
 def profile_name_budget(home: str) -> int:
     """The longest profile name that still fits under ``home``.
 
     Negative when the home ALONE has already spent the budget, which is a real
     answer rather than an error: no profile name, however short, launches under
     such a home, and a caller that clamps this at zero would hide exactly that.
+
+    ⚠️ THIS IS THE POSIX ARITHMETIC AND IT IS ANSWERED ON EVERY PLATFORM, on
+    purpose — it is the pure calculation, and the tests pin it as one. Whether
+    the answer BINDS is :func:`singleton_socket_is_bound`'s question, asked by
+    the callers that refuse.
     """
     return SUN_PATH_LIMIT - len(home) - _SINGLETON_SOCKET_FIXED_COST
 
@@ -389,7 +416,12 @@ def default_scratch_home(min_name_budget: int = 0) -> str:
 
     home = tempfile.mkdtemp(prefix=_SCRATCH_PREFIX, dir=bases[0])
     budget = profile_name_budget(home)
-    if budget < min_name_budget:
+    # ⛔ ONLY WHERE THE ENGINE ACTUALLY BINDS A SOCKET. On Windows the
+    # singleton is a named mutex and this arithmetic describes nothing, so
+    # refusing there invents a failure on a platform that cannot have it — as
+    # the Windows CI runner demonstrated, rejecting a launchable
+    # C:\Users\RUNNER~1\AppData\Local\Temp at -13 bytes.
+    if singleton_socket_is_bound() and budget < min_name_budget:
         raise UnsafeEnvironment(
             f"refusing to run: the scratch home {home!r} leaves only {budget} "
             f"byte(s) for a profile name, and the checks need {min_name_budget}"

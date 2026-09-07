@@ -801,12 +801,20 @@ class TestSingletonSocketBudget:
         from src.services.verify.behaviour import (
             SUN_PATH_LIMIT,
             default_scratch_home,
+            singleton_socket_is_bound,
             singleton_socket_length,
         )
         from src.services.verify.behaviour_checks import (
             SOCKET_BOUND_PROFILE_NAMES,
             longest_socket_bound_profile_name,
         )
+
+        if not singleton_socket_is_bound():
+            pytest.skip(
+                "the engine binds a UNIX socket for its singleton on POSIX "
+                "only (process_singleton_posix.cc); Windows uses a named "
+                "mutex, so there is no sun_path budget to assert here"
+            )
 
         home = default_scratch_home(longest_socket_bound_profile_name())
         try:
@@ -834,7 +842,11 @@ class TestSingletonSocketBudget:
         from src.services.verify.behaviour import (
             UnsafeEnvironment,
             default_scratch_home,
+            singleton_socket_is_bound,
         )
+
+        if not singleton_socket_is_bound():
+            pytest.skip("POSIX-only: no sun_path budget to refuse against")
 
         with pytest.raises(UnsafeEnvironment) as exc:
             # No prefix is short enough to leave 200 bytes for a name.
@@ -865,10 +877,14 @@ class TestSingletonSocketBudget:
         guard can only describe as "no browser tree was observed running" —
         true, unhelpful, and pointing away from the cure.
         """
+        from src.services.verify.behaviour import singleton_socket_is_bound
         from src.services.verify.behaviour_checks import (
             SOCKET_BOUND_PROFILE_NAMES,
             _survivor_profile,
         )
+
+        if not singleton_socket_is_bound():
+            pytest.skip("POSIX-only: no sun_path budget to refuse against")
 
         long_home = "/tmp/" + "d" * 90
         ctx = Context(home=long_home)
@@ -903,12 +919,19 @@ class TestSingletonSocketBudget:
         from src.services.verify.behaviour import (
             SUN_PATH_LIMIT,
             default_scratch_home,
+            singleton_socket_is_bound,
             singleton_socket_length,
         )
         from src.services.verify.behaviour_checks import (
             SOCKET_BOUND_PROFILE_NAMES,
             longest_socket_bound_profile_name,
         )
+
+        if not singleton_socket_is_bound():
+            pytest.skip(
+                "POSIX-only: the sun_path budget this asserts exists only "
+                "where the engine binds a UNIX socket for its singleton"
+            )
 
         # A stand-in for the runner's base, the same shape as
         # /home/runner/work/_temp, created under pytest's tmp_path so nothing
@@ -949,6 +972,62 @@ class TestSingletonSocketBudget:
                 )
         finally:
             shutil.rmtree(home, ignore_errors=True)
+
+    def test_the_budget_binds_only_where_the_engine_binds_a_socket(
+        self, monkeypatch
+    ):
+        """⛔ THE LIMIT IS A POSIX FACT, AND THIS PINS THAT IT IS SCOPED.
+
+        Caught by the Windows CI leg rather than by reasoning: the first
+        version applied the budget everywhere and REFUSED a perfectly
+        launchable `C:\\Users\\RUNNER~1\\AppData\\Local\\Temp` at -13
+        bytes. The engine's own FATAL names the file that enforces it —
+        `chrome/browser/process_singleton_posix.cc` — because `sun_path`
+        belongs to the UNIX-domain socket that arm binds. Windows' singleton is
+        a named mutex; it binds no socket and has no such wall.
+
+        A guard that invents a failure on a platform which cannot have it is
+        worse than the defect it was written for, so this asserts the SCOPE and
+        not merely the arithmetic.
+        """
+        import shutil
+
+        from src.services.verify import behaviour
+        from src.services.verify.behaviour import (
+            default_scratch_home,
+            singleton_socket_is_bound,
+        )
+
+        monkeypatch.setattr("src.core.platform.IS_WINDOWS", True, raising=False)
+        assert not singleton_socket_is_bound()
+
+        # An impossible budget on any platform. On Windows it must NOT refuse,
+        # because there is no socket path for it to be impossible against.
+        home = default_scratch_home(200)
+        try:
+            assert os.path.isdir(home)
+        finally:
+            shutil.rmtree(home, ignore_errors=True)
+
+        monkeypatch.setattr("src.core.platform.IS_WINDOWS", False, raising=False)
+        assert singleton_socket_is_bound()
+        with pytest.raises(behaviour.UnsafeEnvironment):
+            default_scratch_home(200)
+
+    def test_the_arithmetic_itself_is_answered_on_every_platform(self):
+        """The CALCULATION is platform-independent; only the REFUSAL is scoped.
+
+        Keeping the arithmetic universal is what lets the scoping be tested at
+        all — a `profile_name_budget` that returned None off-POSIX would make
+        the two questions inseparable.
+        """
+        from src.services.verify.behaviour import (
+            profile_name_budget,
+            singleton_socket_length,
+        )
+
+        assert singleton_socket_length("/tmp/pb-abcdefgh", "p347a") == 93
+        assert isinstance(profile_name_budget("/tmp/pb-abcdefgh"), int)
 
     def test_the_check_reads_its_profile_names_from_the_pinned_constant(self):
         """The names the budget is asserted against must be the names the check
