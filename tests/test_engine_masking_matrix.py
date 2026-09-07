@@ -725,26 +725,43 @@ def _launch_site_code():
     what a spoof payload actually is. So this reads the code and is immune to
     prose in both of its forms, and to a rename of a spoof's label.
 
-    ⛔ ONE STATED BOUND: only the TOP-LEVEL docstring is stripped. A docstring on
-    a function nested inside this one is retained and would read as code. None
-    mentions any vector token today; a future one that does is a false positive
-    to fix here, not a hole that hides a spoof — this oracle's errors run toward
-    red, never toward a silent green.
+    EVERY docstring is stripped, not just the top one. Round 3 first shipped
+    this stripping the TOP-LEVEL docstring only, and recorded the leftover as a
+    stated bound: "a docstring on a nested function is retained and would read
+    as code". That bound was then MUTATED rather than trusted — a docstring on
+    ``_install_spoof`` (nested here, and the single most natural place to write
+    the sentence "no enumerateDevices spoof is registered through here") turned
+    this guard RED. A known false positive one ``ast.walk`` away from fixed is
+    not a bound worth documenting, so the walk below strips the docstring of
+    this function AND of every function and class nested inside it. A body left
+    empty by that removal gets an explicit ``pass``, because a bodiless
+    ``FunctionDef`` cannot be unparsed.
+
+    ⛔ WHAT REMAINS VISIBLE, stated because an oracle must be honest about its
+    own reach: a non-docstring string literal is CODE to this helper and always
+    will be — ``x = "enumerateDevices"`` fires it, correctly, since that is
+    exactly the shape a spoof payload has. Prose therefore has to go in a
+    comment or a docstring, which is where prose belongs.
     """
     fn = next(
         n
         for n in ast.walk(ast.parse(inspect.getsource(il)))
         if isinstance(n, ast.FunctionDef) and n.name == "_launch_and_watch"
     )
-    body = fn.body
-    if (
-        body
-        and isinstance(body[0], ast.Expr)
-        and isinstance(body[0].value, ast.Constant)
-        and isinstance(body[0].value.value, str)
-    ):
-        body = body[1:]
-    return ast.unparse(ast.Module(body=body, type_ignores=[]))
+    for node in ast.walk(fn):
+        if not isinstance(
+            node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+        ):
+            continue
+        body = node.body
+        if (
+            body
+            and isinstance(body[0], ast.Expr)
+            and isinstance(body[0].value, ast.Constant)
+            and isinstance(body[0].value.value, str)
+        ):
+            node.body = body[1:] or [ast.Pass()]
+    return ast.unparse(ast.Module(body=fn.body, type_ignores=[]))
 
 
 # --- the census: the list cannot drift from the product ----------------------
@@ -1068,13 +1085,14 @@ def test_the_recorded_device_absence_is_still_an_absence():
     )
     assert "enumerateDevices" not in launch_code, (
         "'enumerateDevices' now appears in _launch_and_watch's own CODE. This "
-        "oracle is AST-unparsed with the top-level docstring stripped, so "
-        "neither a comment nor that docstring can trigger it — but a docstring "
-        "on a function NESTED inside it can, and that would be a false "
-        "positive to fix in _launch_site_code rather than a spoof. Otherwise: a "
-        "Firefox device spoof written inline at the launch site emits from no "
-        "builder and registers no new label, so neither oracle above can see "
-        "it. Either the engine's behaviour changed (RE-MEASURE with "
+        "oracle is AST-unparsed with every docstring stripped — this "
+        "function's and those of the functions nested inside it — so no "
+        "comment and no docstring can trigger it. What CAN, besides a real "
+        "spoof, is a non-docstring string literal naming the token, which is "
+        "code by any reading. Otherwise: a Firefox device spoof written "
+        "inline at the launch site emits from no builder and registers no new "
+        "label, so neither oracle above can see it. Either the engine's "
+        "behaviour changed (RE-MEASURE with "
         "scripts/ps330_ff_devices_reading.py, then restate the cell) or the "
         "spoof is the defect."
     )
@@ -1154,19 +1172,28 @@ def test_firefox_device_screen_half_is_pinned_at_the_engine_layer():
     # is an ordinary ``Expr(Constant(str))`` statement and round-trips
     # verbatim, this function carries a 13-line one, and a single sentence of
     # documentation mentioning the token turned the guard RED with a message
-    # insisting the token was in the CODE. ``_launch_site_code`` now strips the
-    # top-level docstring EXPLICITLY rather than assuming ``ast.unparse`` did
-    # it, and says which prose it can and cannot see.
+    # insisting the token was in the CODE. ``_launch_site_code`` now strips
+    # EVERY docstring EXPLICITLY — this function's and every nested one's —
+    # rather than assuming ``ast.unparse`` did it, and says which prose it can
+    # and cannot see.
     #
-    # THE STANDING RULE THIS LEAVES, learned twice at cost: *a claim about what
-    # an oracle can see is itself falsifiable, and must be mutated rather than
-    # reasoned about.* The battery for this guard is four rows, and the last
-    # one exists only because someone ran it:
+    # THE STANDING RULE THIS LEAVES, learned three times at cost: *a claim about
+    # what an oracle can see is itself falsifiable, and must be mutated rather
+    # than reasoned about.* Round 3 first shipped the strip as TOP-LEVEL only
+    # and wrote the leftover down as a stated bound instead of testing it;
+    # mutating it showed the false positive was real and one ``ast.walk`` away
+    # from gone, so every nested docstring is stripped too. The battery for this
+    # guard is six rows, and the two GREEN ones exist only because someone ran
+    # them:
     #
     #   inline override in an already-registered payload -> RED   (the oracle)
     #   `_install_spoof("device", ...)` registered       -> RED   (registry)
     #   `enumerateDevices` emitted by a shipped builder  -> RED   (emitted src)
-    #   one documentation sentence naming the token      -> GREEN (no false +)
+    #   recorded reason reworded                         -> RED   (reasons-in-tree)
+    #   `_launch_site_code` stubbed to ""                -> RED   (vacuous ctrl)
+    #   a documentation sentence naming the token, in
+    #     THIS function's docstring and in a NESTED
+    #     function's docstring                           -> GREEN (no false +)
     #
     # The screen-half reads above are on the text form deliberately: they are
     # POSITIVE assertions, where a prose match can only cost a false green on a
