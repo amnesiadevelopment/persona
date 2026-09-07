@@ -161,11 +161,22 @@ builds.
 
 **Why it moved, and why no migration could fix it.**
 `gpu_ext.engine_authors_identity_for_engine_platform("windows")` is `True`:
-on the windows/macos arms the **engine** authors this pair and persona's own GPU
+on the **windows** arm the **engine** authors this pair and persona's own GPU
 layer deliberately stands down. The observed `0x00009A49` is not in persona's
 `WIN_GPUS` pool at all (which carries Iris Xe as `0x0000A7A1`), which
 independently confirms the author. The value comes from a table compiled into
 the **engine binary**, so rewriting the profile directory cannot change it.
+
+⛔ **macos is the contrast, not a second instance.** `ENGINE_AUTHORED_IDENTITY_ARMS`
+is `frozenset({"windows"})` — `macos` is not in it, and
+`engine_authors_identity_for_engine_platform("macos")` is `False`. There persona
+authors the pair **itself**, from its own `MAC_GPUS` table (`gpu_ext.py:969`/`:992`),
+so this pair should be *stable* across a build change on macos for exactly the
+reason it is unstable on windows. ⚠️ **That is an argument from the mechanism, not
+a reading**: every seed in the table above is windows — `scripts/ps341_gpu_seeds.py:60`
+defaults to `platform="windows"` and both call sites take the default, and the
+`Direct3D11` strings are the tell. The macos arm is an **unmeasured cell** needing
+its own reading.
 
 It is **recorded, not fixed**: the fix — if one is wanted — is a decision about
 *who authors that pair on those arms*, which is `gpu_ext.py`'s question, not the

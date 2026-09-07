@@ -842,13 +842,27 @@ def spawn_browser(profile: Profile, *, in_process: bool = False) -> subprocess.P
     #
     # ⚠️ ONE THING DOES MOVE, AND IT IS NOT A MIGRATION PROBLEM — SEE THAT TEST
     # AND `gpu_ext.py`. The WebGL vendor/renderer pair a page reads CHANGES
-    # across a build change on the arms where the ENGINE authors it (windows /
-    # macos — `ENGINE_AUTHORED_IDENTITY_ARMS`, where persona's own GPU layer
+    # across a build change on the WINDOWS arm, which is the only arm where the
+    # ENGINE authors it (`ENGINE_AUTHORED_IDENTITY_ARMS` is
+    # `frozenset({"windows"})`, and that is where persona's own GPU layer
     # deliberately stands down). Measured across 8 seeds, headful under CDP:
     # 8/8 moved, and the two builds' card pools do not intersect AT ALL (148
     # answers Intel integrated parts, 152 answers NVIDIA RTX parts). It is
     # STABLE within a build — two launches of one build at one seed agree — so
     # the move is attributable to the build change and to nothing else.
+    #
+    # ⛔ MACOS IS THE CONTRAST, NOT A SECOND INSTANCE OF THIS, and the
+    # difference follows from the mechanism below rather than being an
+    # exception to it. `engine_authors_identity_for_engine_platform("macos")`
+    # is `False`, so `gpu_ext.py` renders `ENGINE_AUTHORS_IDENTITY` false into
+    # the content script there and persona writes the pair ITSELF from its own
+    # `MAC_GPUS` table (gpu_ext.py:969/:992). A table in persona's Python is
+    # not a table in the engine binary, so on macos this pair should be STABLE
+    # across a build change — for precisely the reason it is unstable on
+    # windows. ⚠️ THAT IS AN ARGUMENT, NOT A READING: the macos arm was NOT
+    # measured here (`scripts/ps341_gpu_seeds.py:60` defaults to
+    # `platform="windows"` and both call sites take the default, so all 8 seeds
+    # are windows). Do not restate it as measured without taking it.
     #
     # That is a LEVEL-2 (bit-stability across engine updates) continuity fact
     # about an ENGINE-AUTHORED vector, and NOT something a profile migration

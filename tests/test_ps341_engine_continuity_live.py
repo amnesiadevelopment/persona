@@ -30,9 +30,10 @@ grep that raised the question would find it); these tests are what keep it
 HONEST as the tree moves.
 
 ⚠️ ONE THING DOES MOVE, AND IT IS NOT A MIGRATION PROBLEM. The WebGL
-vendor/renderer pair a page reads CHANGES across a build change on the arms
-where the ENGINE authors it (``gpu_ext.ENGINE_AUTHORED_IDENTITY_ARMS`` — windows
-and macos, where persona's own GPU layer deliberately stands down). Measured
+vendor/renderer pair a page reads CHANGES across a build change on the WINDOWS
+arm — the only arm where the ENGINE authors it
+(``gpu_ext.ENGINE_AUTHORED_IDENTITY_ARMS`` is ``frozenset({"windows"})``, and
+that is where persona's own GPU layer deliberately stands down). Measured
 across 8 seeds: 8/8 moved, and the two builds' card pools DO NOT INTERSECT AT
 ALL (148 answers Intel integrated parts, 152 answers NVIDIA RTX parts) — while
 being STABLE within a build, which is what makes the move attributable to the
@@ -41,6 +42,16 @@ value comes from a table compiled into the engine BINARY, so rewriting the
 profile directory cannot change it. It is recorded, not fixed, because the fix
 is a decision about WHO AUTHORS that pair on those arms — ``gpu_ext.py``'s
 question, not this launch path's.
+
+⛔ MACOS IS THE CONTRAST, NOT A SECOND INSTANCE. ``macos`` is NOT in that
+constant: ``engine_authors_identity_for_engine_platform("macos")`` is ``False``,
+so persona writes the pair itself from its own ``MAC_GPUS`` table there. A table
+in persona's Python is not a table in the engine binary, so this pair should be
+STABLE across a build change on macos — for exactly the reason it is unstable on
+windows. ⚠️ NOT MEASURED: ``scripts/ps341_gpu_seeds.py:60`` defaults to
+``platform="windows"`` and both call sites take the default, so all 8 seeds here
+are windows. That is an argument from the mechanism, and the macos arm is an
+unmeasured cell needing its own reading.
 
 WHY THESE TESTS LAUNCH A REAL BROWSER
 -------------------------------------
@@ -398,8 +409,19 @@ def test_persona_stands_down_on_the_arm_where_the_pair_moved():
     """WHY it moved: on the windows arm the ENGINE authors the pair and
     persona's own GPU layer deliberately stands down, so what a page reads
     comes from a table inside the engine BINARY — which is a different binary
-    per build. This is the fact that makes the move un-migratable."""
+    per build. This is the fact that makes the move un-migratable.
+
+    ⭐ AND THE OTHER HALF: macos is asserted to be OUTSIDE that set. The
+    recorded position previously named ``windows / macos`` as the engine-authored
+    arms, which is false — and false in the direction that INVERTS the position's
+    own mechanism, since on macos the pair comes from persona's ``MAC_GPUS``
+    table in Python rather than from the engine binary. Pinning both members
+    means the prose and the constant cannot drift apart in either direction:
+    widening the constant to include macos reddens this, and so does narrowing
+    it away from windows.
+    """
     from src.services.browser.gpu_ext import (
+        ENGINE_AUTHORED_IDENTITY_ARMS,
         engine_authors_identity_for_engine_platform,
     )
 
@@ -407,6 +429,18 @@ def test_persona_stands_down_on_the_arm_where_the_pair_moved():
         "persona now authors the WebGL pair on the windows arm. If that is "
         "deliberate, PS-341's recorded finding needs re-reading: the pair would "
         "no longer be engine-authored and would no longer move with the build."
+    )
+    assert not engine_authors_identity_for_engine_platform("macos"), (
+        "the ENGINE now authors the WebGL pair on macos too. PS-341's recorded "
+        "position states the OPPOSITE as its contrast case (persona authors it "
+        "there from MAC_GPUS, so the pair should be stable across a build "
+        "change) — that paragraph is now wrong and must be re-measured."
+    )
+    assert set(ENGINE_AUTHORED_IDENTITY_ARMS) == {"windows"}, (
+        "the engine-authored arm set changed. PS-341's recorded position, its "
+        "test docstring and EVIDENCE.md all name windows as the ONLY such arm "
+        f"and macos as the contrast; got {set(ENGINE_AUTHORED_IDENTITY_ARMS)}. "
+        "Re-measure before restating the prose."
     )
 
 
@@ -515,6 +549,81 @@ def test_the_recorded_position_does_not_overclaim_a_live_theme_reading():
     assert "LIVE" in position
     # The exact sentence the audit rejected must not come back.
     assert "DERIVED STATE SURVIVES INTACT, read from the RUNNING browser" not in src
+
+
+def test_the_position_does_not_name_macos_as_an_engine_authored_arm():
+    """⭐ The SECOND overclaim in this position, and the same shape as the first.
+
+    The WebGL paragraph named ``windows / macos`` as "the arms where the ENGINE
+    authors it", citing ``ENGINE_AUTHORED_IDENTITY_ARMS`` by name — and that
+    constant is ``frozenset({"windows"})``. Two arms under one "measured,
+    engine-authored" banner when one qualifies, exactly as an earlier round had
+    five readings under one "read from the RUNNING browser" banner when three
+    did.
+
+    ⚠️ IT IS WORSE THAN A MIS-CITATION, WHICH IS WHY IT GETS ITS OWN GUARD: it
+    INVERTS the paragraph's own mechanism on that arm. The argument is "the value
+    comes from a table in the engine BINARY, so no profile migration could repair
+    it"; on macos the value comes from a table in persona's PYTHON
+    (``MAC_GPUS``), which a build change does not touch — so the pair should be
+    STABLE there for the very reason it moves on windows.
+
+    Two halves are pinned, and the second is the one that makes this more than a
+    string check: the rejected spelling must not return, AND the arm must still
+    be disclosed as UNMEASURED. Every seed in the reading is windows
+    (``ps341_gpu_seeds.py``'s ``platform`` defaults to ``"windows"`` and both
+    call sites take the default), so a future reader must not inherit the macos
+    contrast as a measurement.
+
+    ⚠️ SAME BOUND AS ITS SIBLING ABOVE, and for the same reason: a string check
+    catches the return of a spelling, never "this prose is honest". If the macos
+    arm is ever actually MEASURED, update this test with the reading rather than
+    deleting the assertion — deleting it is how the first overclaim survived.
+    """
+    src = (REPO / "src" / "services" / "browser" / "process.py").read_text(
+        encoding="utf-8"
+    )
+    head, _, tail = src.partition("PS-341")
+    assert tail, "the PS-341 position is gone from process.py"
+    position = tail[:8000]
+
+    # The rejected spellings: macos named as an arm the ENGINE authors.
+    for rejected in ("windows /\n    # macos", "windows / macos", "windows and macos"):
+        assert rejected not in position, (
+            f"the recorded position again names {rejected!r} as the "
+            "engine-authored arms. ENGINE_AUTHORED_IDENTITY_ARMS is "
+            "frozenset({'windows'}) — on macos persona authors the pair itself "
+            "from MAC_GPUS, so naming it here inverts the paragraph's own "
+            "un-migratable mechanism."
+        )
+
+    # And the arm must stay disclosed as UNMEASURED, not quietly upgraded.
+    assert "MACOS IS THE CONTRAST" in position, (
+        "the position no longer states macos as the CONTRAST case. That "
+        "paragraph is what stops the next reader re-deriving 'both arms are "
+        "engine-authored' from the WebGL finding alone."
+    )
+    # ⚠️ SCOPED TO THE MACOS PARAGRAPH, NOT TO THE WHOLE POSITION. A bare
+    # `"not measured" in position` PASSES FOR THE WRONG REASON: the theme /
+    # dark-mode paragraph 40 lines above already contains "which was not
+    # measured\n#  here", so the assertion was satisfied by an unrelated
+    # sentence and stayed GREEN when this disclosure was deleted. Measured, not
+    # reasoned — that mutation is recorded in this ticket's rework comment.
+    # Narrow the window to the macos paragraph itself so the assertion is about
+    # the claim it is named after.
+    _, _, macos_para = position.partition("MACOS IS THE CONTRAST")
+    macos_para = macos_para[:1600]
+    assert "ARGUMENT, NOT A READING" in macos_para, (
+        "the macos paragraph no longer marks itself as an ARGUMENT from the "
+        "mechanism rather than a reading. All 8 seeds in the reading are "
+        "windows, so an undisclosed macos claim is an un-measured arm asserted "
+        "inside a measured finding — the exact defect this guard exists for."
+    )
+    assert "was NOT\n    # measured" in macos_para or "NOT measured" in macos_para, (
+        "the macos paragraph no longer discloses that the arm was never "
+        "measured here. If it has since BEEN measured, put the reading in and "
+        "update this test — do not delete the disclosure."
+    )
 
 
 def test_the_unexplained_dark_reading_is_recorded_with_its_ruled_out_answer():
