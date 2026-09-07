@@ -1,0 +1,66 @@
+====================================================================================================
+PS-346 — signing state of every published asset
+====================================================================================================
+persona-windows-setup.exe                      UNSIGNED      PE installer
+                                                               IMAGE_DIRECTORY_ENTRY_SECURITY size=0 (no certificate table)
+persona-macos.dmg                              UNSIGNED      UDIF image signature
+                                                               no cSig resource (keys: blkx,plst), 0 bytes between plist end and koly trailer
+persona-macos.dmg                              ADHOC         bundle Mach-O binaries (113 files)
+                                                               arch slices: ADHOC=196, UNSIGNED=28, SIGNED_CMS=1; hardened-runtime slices: 1/225 (only: /persona.app/Contents/Frameworks/serious_python_darwin.framework/Versions/A/Resources/python.bundle/Contents/Resources/site-packages/playwright/driver/node)
+                                                               identity: /persona.app/Contents/Frameworks/serious_python_darwin.framework/Versions/A/Resources/python.bundle/Contents/Resources/site-packages/playwright/driver/node: Common Name: Developer ID Certification Authority, Organizational Unit: Apple Certification Authority, Organization: Apple Inc., Country: US; Common Name: Apple Root CA, Organizational Unit: Apple Certification Authority, Organization: Apple Inc., Country: US; User ID: HX7739G8FX, Common Name: Developer ID Application: Node.js Foundation (HX7739G8FX), Organizational Unit: HX7739G8FX, Organization: Node.js Foundation, Country: US
+persona-x86_64.AppImage                        UNSIGNED      AppImage .sha256_sig
+                                                               section present, 1024 bytes, ALL ZERO
+persona-x86_64.AppImage                        UNSIGNED      AppImage .sig_key
+                                                               section present, 8192 bytes, ALL ZERO
+personium-152.0.7977.75-windows-x86_64.zip     UNSIGNED      PE Chrome-bin/152.0.7977.75/chrome.dll
+                                                               IMAGE_DIRECTORY_ENTRY_SECURITY size=0 (no certificate table)
+personium-152.0.7977.75-windows-x86_64.zip     UNSIGNED      PE Chrome-bin/152.0.7977.75/chrome_elf.dll
+                                                               IMAGE_DIRECTORY_ENTRY_SECURITY size=0 (no certificate table)
+personium-152.0.7977.75-windows-x86_64.zip     UNSIGNED      PE Chrome-bin/152.0.7977.75/chrome_pwa_launcher.exe
+                                                               IMAGE_DIRECTORY_ENTRY_SECURITY size=0 (no certificate table)
+personium-152.0.7977.75-windows-x86_64.zip     UNSIGNED      PE Chrome-bin/152.0.7977.75/chrome_wer.dll
+                                                               IMAGE_DIRECTORY_ENTRY_SECURITY size=0 (no certificate table)
+personium-152.0.7977.75-windows-x86_64.zip     SIGNED_CMS    PE Chrome-bin/152.0.7977.75/d3dcompiler_47.dll
+                                                               certificate table present, 10688 bytes
+                                                               identity: CN=Microsoft Windows Code Signing PCA 2024, O=Microsoft Corporation, C=US; CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, ST=Washington, C=US
+personium-152.0.7977.75-windows-x86_64.zip     UNSIGNED      PE Chrome-bin/152.0.7977.75/dxcompiler.dll
+                                                               IMAGE_DIRECTORY_ENTRY_SECURITY size=0 (no certificate table)
+personium-152.0.7977.75-windows-x86_64.zip     SIGNED_CMS    PE Chrome-bin/152.0.7977.75/dxil.dll
+                                                               certificate table present, 10664 bytes
+                                                               identity: CN=Microsoft Windows Code Signing PCA 2024, O=Microsoft Corporation, C=US; CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, ST=Washington, C=US
+personium-152.0.7977.75-windows-x86_64.zip     UNSIGNED      PE Chrome-bin/152.0.7977.75/notification_helper.exe
+                                                               IMAGE_DIRECTORY_ENTRY_SECURITY size=0 (no certificate table)
+personium-152.0.7977.75-windows-x86_64.zip     UNSIGNED      PE Chrome-bin/152.0.7977.75/vk_swiftshader.dll
+                                                               IMAGE_DIRECTORY_ENTRY_SECURITY size=0 (no certificate table)
+personium-152.0.7977.75-windows-x86_64.zip     UNSIGNED      PE Chrome-bin/152.0.7977.75/vulkan-1.dll
+                                                               IMAGE_DIRECTORY_ENTRY_SECURITY size=0 (no certificate table)
+personium-152.0.7977.75-windows-x86_64.zip     UNSIGNED      PE Chrome-bin/chrome.exe
+                                                               IMAGE_DIRECTORY_ENTRY_SECURITY size=0 (no certificate table)
+personium-152.0.7977.75-windows-x86_64.zip     UNSIGNED      PE Chrome-bin/chrome_proxy.exe
+                                                               IMAGE_DIRECTORY_ENTRY_SECURITY size=0 (no certificate table)
+personium-152.0.7977.75-macos-arm64.dmg        UNSIGNED      UDIF image signature
+                                                               no cSig resource (keys: blkx,plst), 0 bytes between plist end and koly trailer
+personium-152.0.7977.75-macos-arm64.dmg        ADHOC         bundle Mach-O binaries (11 files)
+                                                               arch slices: ADHOC=11, UNSIGNED=0, SIGNED_CMS=0; hardened-runtime slices: 0/11
+personium-152.0.7977.75-linux-x86_64.AppImage  UNSIGNED      AppImage .sha256_sig
+                                                               section present, 1024 bytes, ALL ZERO
+personium-152.0.7977.75-linux-x86_64.AppImage  UNSIGNED      AppImage .sig_key
+                                                               section present, 8192 bytes, ALL ZERO
+----------------------------------------------------------------------------------------------------
+tally: ADHOC=2, SIGNED_CMS=2, UNSIGNED=17
+
+NOTE: ADHOC is NOT signed in any sense Gatekeeper acts on — it carries no
+certificate and no identity. UNREADABLE is never counted as unsigned.
+----------------------------------------------------------------------------------------------------
+POSITIVE CONTROL: FIRED — 3 genuinely-signed item(s) detected.
+The instrument can distinguish signed from unsigned. Named identities:
+  - persona-macos.dmg :: bundle Mach-O binaries (113 files)
+      /persona.app/Contents/Frameworks/serious_python_darwin.framework/Versions/A/Resources/python.bundle/Contents/Resources/site-packages/playwright/driver/node: Common Name: Developer ID Certification Authority, Organizational Unit: Apple Certification Authority, Organization: Apple Inc., Country: US; Common Name: Apple Root CA, Organizational Unit: Apple Certification Authority, Organization: Apple Inc., Country: US; User ID: HX7739G8FX, Common Name: Developer ID Application: Node.js Foundation (HX7739G8FX), Organizational Unit: HX7739G8FX, Organization: Node.js Foundation, Country: US
+  - personium-152.0.7977.75-windows-x86_64.zip :: PE Chrome-bin/152.0.7977.75/d3dcompiler_47.dll
+      CN=Microsoft Windows Code Signing PCA 2024, O=Microsoft Corporation, C=US; CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, ST=Washington, C=US
+  - personium-152.0.7977.75-windows-x86_64.zip :: PE Chrome-bin/152.0.7977.75/dxil.dll
+      CN=Microsoft Windows Code Signing PCA 2024, O=Microsoft Corporation, C=US; CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, ST=Washington, C=US
+
+⚠️  Read the identities: every one belongs to a THIRD PARTY whose binary we
+    redistribute. None of them is this project. Not one artifact we PRODUCE
+    carries an identity.
