@@ -1003,6 +1003,18 @@ def test_a_chromium_effective_profile_is_recorded_through_the_chromium_channel(
     # The channel was released.
     assert transport.closed, "the transport must be closed after recording"
 
+    # THE OMISSION CASE, end to end. Nothing launched on this arm, so there is
+    # no geometry to report and the key must be ABSENT rather than fabricated —
+    # which is exactly what the comment above the call site claims. Substituting
+    # the constant at that call site invents `[1280, 800]` here, for a recording
+    # that never opened a window; no test saw that.
+    assert "window_size" not in snap["provenance"], (
+        "the chromium arm never launched a window, so provenance must omit the "
+        "geometry rather than state one. An artifact that misreports its own "
+        "inputs is worse than one that omits them.\n"
+        f"  stated: {snap['provenance'].get('window_size')!r}"
+    )
+
 
 def test_the_firefox_arm_still_launches_in_process_and_reads_its_hook(
     monkeypatch, tmp_path
@@ -1722,12 +1734,30 @@ def test_a_warm_recording_leaves_the_profiles_own_window_state_alone(
         lambda name: {"eval": lambda expr: {"v": "FF"}},
     )
 
-    bl.record_snapshot(profile=profile, fresh=False, realms=("window",))
+    snap = bl.record_snapshot(profile=profile, fresh=False, realms=("window",))
 
     # NOT VACUOUS: the launch really did observe a file. Without this, an
     # absent xulstore.json would satisfy every assertion below by having no
     # state to destroy.
     assert seen.get("body"), "the launch saw no xulstore.json at all"
+
+    # THE WIRE BETWEEN THE TWO HALVES, and the one line no other test observes.
+    # `_effective_window_size` reading the file and `provenance` relaying its
+    # argument are each covered by their own direct test — but nothing checked
+    # that `record_snapshot` passes the MEASURED value rather than the constant.
+    # Restating the call site as `window_size=list(BASELINE_WINDOW_SIZE)` (the
+    # round-1 shape) left all 417 tests across 16 suites green; this is the
+    # assertion that reddens it. THIS ARM IS WHY IT MUST BE ASSERTED HERE: a
+    # warm recording is the only path where the measured geometry and the pin
+    # DIFFER, so it is the only place the substitution is observable at all.
+    # The committed-artifact test cannot cover it — that artifact is recorded
+    # `fresh`, where the two are equal by design.
+    assert snap["provenance"]["window_size"] == [1900, 1180], (
+        "the artifact claims a window geometry this recording did not use. "
+        "The profile's own persisted state is 1900x1180 and the launch "
+        "deferred to it, so provenance must state that and not the pin.\n"
+        f"  stated: {snap['provenance'].get('window_size')!r}"
+    )
 
     assert seen["body"] == raw, (
         "a warm recording rewrote the profile's own persisted window state. "
