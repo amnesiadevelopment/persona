@@ -82,7 +82,7 @@ This **confirms on the packaged engine** what a prior probe (2026-08-26) had
 only established on the *system* `/usr/bin/chromium`, which is precisely the
 re-probe that prior reading said it owed.
 
-### Q3 — is derived state lost? **No.** *(read from the RUNNING browser)*
+### Q3 — is derived state lost? **No.**
 
 `profile_seed.seed_profile_prefs` is **once-only** — it returns early the moment
 `Default/Preferences` exists — so had a downgrade reset that file, persona would
@@ -90,14 +90,55 @@ re-probe that prior reading said it owed.
 
 | | on disk before | on disk after | **live on the older build** |
 |---|---|---|---|
-| Classic theme | `{"id":"","system_theme":0}` | unchanged | — |
-| dark mode (`color_scheme2`) | `2` | unchanged | — |
+| Classic theme | `{"id":"","system_theme":0}` | unchanged | — *(not read live)* |
+| dark mode (`color_scheme2`) | `2` | unchanged | — *(not read live)* |
 | default search engine | `Brave` | unchanged | **`Brave (Default)`** on `chrome://settings/searchEngines` |
 | bookmarks | 1758 B | unchanged | present in `chrome://bookmarks` |
 | cookies | 20480 B | unchanged | sentinel cookie **served** |
 
-The live column is the point: *a file that survives but is ignored is the same
-outcome for the operator as one that was deleted.*
+⚠️ **The two columns are different strengths of evidence, and the `—` cells are
+real.** *A file that survives but is ignored is the same outcome for the
+operator as one that was deleted* — so only the live column settles the stronger
+question, and **it was taken for three of the five, not for all five.** Theme
+and dark mode rest on the disk reading alone.
+
+That is **enough for the question this ticket asks**, and the reason is
+specific rather than a concession: `seed_profile_prefs` keys purely on
+`Default/Preferences` **existing**, so a file that survives byte-identical — in
+a `Default/` that is neither renamed nor recreated, with no reset directory
+anywhere (Q2) — is exactly what stops the operator's choice being silently
+dropped on the next launch. It is **not** the stronger claim that the engine
+still *honours* those two values on the older build. Nothing in this change
+makes that claim, and it should not be inferred from this table.
+
+#### The one unexplained number: `page.dark` is `False` on both legs
+
+`matchMedia('(prefers-color-scheme: dark)').matches` read **`False` on BOTH
+builds**, though the profile is seeded `color_scheme2: 2` and launched with
+`--force-dark-mode` (`process.py`). It is recorded here rather than left bare in
+the JSON, because an unexplained reading in a committed reading is a trap.
+
+The obvious explanation — *"`--force-dark-mode` is a UI-level switch and does
+not drive `prefers-color-scheme`"* — **was checked and is FALSE**
+(`scripts/ps341_dark_control.py` → `control-dark-mode.json`), on stock chromium
+152 headless, four arms:
+
+| arm | `dark` |
+|---|---|
+| fresh profile, no flag *(negative control)* | **`false`** ✅ the probe can read False |
+| fresh profile, `--force-dark-mode` | `true` |
+| persona-seeded prefs, no flag | `true` |
+| persona-seeded prefs + flag *(persona's own combination)* | `true` |
+
+So on a stock engine each input drives it **on its own**. ⚠️ **Two variables
+separate that control from these legs** — a *stock* chromium vs the *packaged
+fingerprint* build, and *headless* vs *headful-under-Xvfb* — and one control
+cannot separate two variables, so **the cause is genuinely not known.**
+
+⛔ **Nothing in this ticket turns on it.** The value is identical on both
+builds, so it does not move across a build change and is not a continuity fact;
+no migration question depends on it. It is left as a bounded open question with
+its most plausible answer already ruled out, so the next reader inherits both.
 
 ### Q4 — does the fingerprint move? **Only one vector, and not a migratable one.**
 
@@ -143,6 +184,16 @@ probe that restarted too soon read an empty jar. The control **reproduced the
 same "loss" with no build change at all**, on both builds. The harness now
 settles 45s.
 
+> ⚠️ **The control settles for a different length than the arm it controls, and
+> that softens its own verdict.** `ps341_run.run_leg` waits **45s** after
+> teardown; `ps341_cookie_matrix.session` waits **5s**. So
+> `control-cookie-restart-152.json`'s `"row present but NOT served"` is
+> plausibly *its own short settle* rather than a fact about 152 — and it must
+> **not** be read as "152 loses cookies on restart". It is used here for the one
+> thing the asymmetry cannot damage: it reproduces the *apparent loss* **with no
+> build change**, which is enough to disqualify the build change as the cause.
+> The cross-build leg, settled the full 45s, **did** serve the cookie.
+
 **2. "The older build refuses to open the profile."** A later run had leg N−1
 die at startup. Leaked browser process trees from earlier control runs had
 exhausted the container's **2048-PID cgroup budget** (868 in use); the launch
@@ -173,6 +224,18 @@ and 2 here**), and re-read live by
 **No Chromium migration function was added**, deliberately — it would be a fix
 for a state this engine does not enter.
 
+**What this conclusion does and does not claim.** Q3's evidence is of two
+strengths and the position states both: the search engine, bookmarks and cookies
+were confirmed **live from a running browser on the older build**; the theme and
+dark mode were confirmed **on disk**, byte-identical, with nothing renaming,
+resetting or removing the file that holds them. The second is what the
+once-only `seed_profile_prefs` guard actually turns on and is sufficient for the
+migration question — it is **not** a claim that the engine still honours those
+two values, and it must not be cited as one. One captured number, `page.dark`,
+is unexplained and is left open with its most plausible answer already ruled out
+by control; it does not move across the build change, so nothing here rests
+on it.
+
 ## Reproducing
 
 ```bash
@@ -183,6 +246,9 @@ PS341_PREDECESSOR_APPIMAGE=/path/to/fp148.AppImage python3 scripts/ps341_run.py
 PS341_NEW_BINARY=… PS341_OLD_BINARY=… python3 scripts/ps341_gpu_seeds.py
 python3 scripts/ps341_controls.py        # PS341_CONTROL=gpu|cookie|forward
 python3 scripts/ps341_cookie_matrix.py
+
+# needs NO engine and NO display — stock chromium, headless:
+python3 scripts/ps341_dark_control.py --out readings/ps341-2026-09-07/control-dark-mode.json
 ```
 
 ## Files
@@ -192,5 +258,6 @@ python3 scripts/ps341_cookie_matrix.py
 | `reading.json` | the main two-leg measurement (the run these numbers come from) |
 | `gpu_seeds.json` | the 8-seed WebGL sweep across both builds |
 | `control-gpu-stable-within-build-148.json` | GPU pair stable across two launches of ONE build |
-| `control-cookie-restart-152.json` | the cookie false positive, reproduced with no build change |
+| `control-cookie-restart-152.json` | the cookie false positive, reproduced with no build change (⚠️ 5s settle, not the arm's 45s — see the note above) |
 | `control-forward-again.json` | 148 → 152 through the same gesture |
+| `control-dark-mode.json` | which input drives `prefers-color-scheme` on a **stock** engine — the ruled-out explanation for `page.dark: False` |

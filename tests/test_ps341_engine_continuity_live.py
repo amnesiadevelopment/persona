@@ -21,10 +21,13 @@ Chromium arm had no recorded position at all — which is what this ticket fixed
 and this file is the live half of that record.
 
 THE ANSWER: **no migration is owed on this engine.** A Chromium profile survives
-a build change in both directions with its derived state intact, and Chromium's
-own downgrade handling never fires. The position now sits beside the Chromium
-arm in ``process.py`` (where the zero-hit grep that raised the question would
-find it); these tests are what keep it HONEST as the tree moves.
+a build change in both directions with its derived state intact — live-confirmed
+for the search engine, bookmarks and cookies, and confirmed on disk (with
+nothing removing the file) for the theme and dark mode; see the split below,
+which is load-bearing. Chromium's own downgrade handling never fires. The
+position now sits beside the Chromium arm in ``process.py`` (where the zero-hit
+grep that raised the question would find it); these tests are what keep it
+HONEST as the tree moves.
 
 ⚠️ ONE THING DOES MOVE, AND IT IS NOT A MIGRATION PROBLEM. The WebGL
 vendor/renderer pair a page reads CHANGES across a build change on the arms
@@ -50,10 +53,37 @@ assert on what was written, not on what happens*), and the sibling live suites
 ``test_ps312_ff_geolocation_live`` and ``test_verify_chromium_timezone_live``
 open with the same paragraph for the same reason.
 
-The derived-state readings in particular are taken from a **RUNNING BROWSER**,
-never from the JSON on disk: a ``Default/Preferences`` that survives on disk but
-is IGNORED by the engine is the same outcome for the operator, and only a live
-read tells the two apart.
+The derived-state readings are of TWO DIFFERENT STRENGTHS, and this file keeps
+them apart deliberately rather than under one banner. A ``Default/Preferences``
+that survives on disk but is IGNORED by the engine is the same outcome for the
+operator, and only a live read tells those two apart — so:
+
+  * **LIVE, from a RUNNING BROWSER on the older build:** the chosen search
+    engine (``chrome://settings/searchEngines``), the seeded bookmarks
+    (``chrome://bookmarks``) and the cookie jar (served, not merely on disk).
+  * **ON DISK ONLY:** the Classic theme and dark mode (``color_scheme2``). Both
+    are byte-identical across the build change and nothing renames, resets or
+    removes the file that holds them — which is exactly what the question this
+    ticket asks needs, since ``seed_profile_prefs`` keys on that file EXISTING
+    and would never re-seed the operator's choice if it went away. It is NOT
+    the stronger claim that the engine still HONOURS those two values; that
+    reading was not taken, and ``test_seeded_preferences_survive_the_downgrade
+    _on_disk`` says so in its own name. Do not promote it without measuring it.
+
+⚠️ ONE CAPTURED NUMBER IS UNEXPLAINED AND IS LEFT OPEN ON PURPOSE.
+``page.dark`` — ``matchMedia('(prefers-color-scheme: dark)').matches`` — reads
+**False on BOTH legs**, though the profile is seeded ``color_scheme2: 2`` and
+launched with ``--force-dark-mode``. The obvious explanation ("the flag is
+UI-level and does not drive ``prefers-color-scheme``") was CHECKED AND IS
+FALSE: on stock chromium 152 headless, the flag alone, the seeded pref alone,
+and both together all give ``dark=true``, against a fresh-profile negative
+control that correctly gives ``false``
+(``scripts/ps341_dark_control.py`` → ``control-dark-mode.json``). Two variables
+separate that control from these legs — stock vs packaged fingerprint engine,
+headless vs headful-under-Xvfb — so the cause is NOT KNOWN. ⛔ Nothing here
+turns on it: the value is the same on both builds, so it does not move across a
+build change and is not a continuity fact. It is recorded so the next reader
+inherits the open question *and* the ruled-out answer.
 
 THE POSITIVE CONTROL IS NOT OPTIONAL
 ------------------------------------
@@ -104,6 +134,10 @@ REPO = pathlib.Path(__file__).resolve().parent.parent
 #: records the exact builds, digests and venue it came from.
 READING = REPO / "readings" / "ps341-2026-09-07" / "reading.json"
 GPU_SEEDS = REPO / "readings" / "ps341-2026-09-07" / "gpu_seeds.json"
+#: The follow-up control for the one unexplained number in the reading
+#: (``page.dark``). Unlike the two above it needs NO engine and NO display —
+#: stock chromium headless — so it is cheap to re-run.
+CONTROL_DARK = REPO / "readings" / "ps341-2026-09-07" / "control-dark-mode.json"
 
 
 def _load(path: pathlib.Path):
@@ -208,9 +242,14 @@ def test_last_version_is_a_record_and_not_a_gate(reading):
         "the older build did not rewrite Last Version, so this reading does not "
         "establish that the stamp is a record rather than a gate"
     )
-    assert after_old in reading["positive_control"]["record_after"], (
+    record_after = reading["positive_control"]["record_after"]
+    assert record_after.endswith(after_old) and after_old, (
         f"Last Version after the downgrade is {after_old!r}, which is not the "
-        "build that actually ran"
+        f"build that actually ran ({record_after!r}). Anchored at the END "
+        "rather than matched as a substring: the updater's record carries a "
+        "`personium-` prefix that Chromium's own stamp does not, so equality "
+        "is wrong here — but a bare `in` would also accept a version that "
+        "merely appears somewhere inside the tag."
     )
 
 
@@ -242,6 +281,16 @@ def test_seeded_preferences_survive_the_downgrade_on_disk(reading):
     exists, so if a downgrade removed or reset that file persona would NOT
     re-seed it and the operator's theme/search choice would be gone for good.
     Nothing removes it.
+
+    ⚠️ SCOPE, AND THE NAME MEANS IT: this is an **on-disk** assertion. It
+    establishes that the file and its three values are byte-identical across the
+    build change — which is precisely what the once-only guard turns on, since
+    that guard keys on the file EXISTING. It does NOT establish that the engine
+    still HONOURS those values. For the search engine that stronger reading was
+    taken separately and live
+    (``test_the_running_browser_still_reports_the_chosen_search_engine``); for
+    the theme and dark mode it was NOT taken, and no claim beyond this one is
+    supported anywhere in this change. Do not cite this test for a live one.
     """
     before = reading["leg_N_minus_1"]["tree_before_launch"]["prefs_on_disk"]
     after = reading["leg_N_minus_1"]["tree_after_shutdown"]["prefs_on_disk"]
@@ -423,3 +472,109 @@ def test_the_position_is_recorded_beside_the_chromium_arm():
             f"the recorded position no longer mentions {term!r} — the grep that "
             "raised PS-341 searched for exactly this vocabulary"
         )
+
+
+def test_the_recorded_position_does_not_overclaim_a_live_theme_reading():
+    """⭐ The position outlives every other artifact here, so it must say what
+    was measured and no more.
+
+    Theme and dark mode were read **on disk only**; the search engine, bookmarks
+    and cookies were read **live**. An earlier draft of the position put all
+    five under one "read from the RUNNING browser" banner, which is exactly the
+    failure PS-11 names — a claim that got STRONGER as it travelled from the
+    evidence file into the prose. This pins the split, on the artifact a future
+    reader will act on without re-opening the evidence.
+
+    It is deliberately a text assertion rather than a data one: the defect this
+    guards against was never in the reading, it was in the sentence about it.
+    """
+    src = (REPO / "src" / "services" / "browser" / "process.py").read_text(
+        encoding="utf-8"
+    )
+    head, _, tail = src.partition("PS-341")
+    assert tail, "the PS-341 position is gone from process.py"
+    position = tail[:6000]
+
+    assert "ON DISK ONLY" in position, (
+        "the recorded position no longer distinguishes the on-disk readings "
+        "(theme, dark mode) from the live ones. If a live theme reading has "
+        "since been TAKEN, update this test with it — do not simply delete the "
+        "distinction, which is how the overclaim got in the first time."
+    )
+    assert "LIVE" in position
+    # The exact sentence the audit rejected must not come back.
+    assert "DERIVED STATE SURVIVES INTACT, read from the RUNNING browser" not in src
+
+
+def test_the_unexplained_dark_reading_is_recorded_with_its_ruled_out_answer():
+    """``page.dark`` is False on both legs and nobody knows why.
+
+    That is a fine thing to ship — it does not move across the build change, so
+    it is not a continuity fact and the position does not rest on it. What is
+    NOT fine is leaving it bare in a committed reading, where the next person to
+    grep it re-derives the same plausible-and-wrong explanation. Both halves are
+    pinned: the number, and the control that already falsified the obvious
+    answer.
+    """
+    reading_path = READING
+    if not reading_path.exists():
+        pytest.skip(f"PS-341 evidence not present at {reading_path}")
+    with reading_path.open(encoding="utf-8") as f:
+        data = json.load(f)
+
+    dark = {leg: data[leg]["live"]["page"]["dark"]
+            for leg in ("leg_N", "leg_N_minus_1")}
+    assert dark["leg_N"] == dark["leg_N_minus_1"], (
+        f"page.dark now DIFFERS across the build change ({dark}) — that would "
+        "make it a genuine Level-2 continuity finding rather than the "
+        "unexplained-but-stable reading the position records, and the position "
+        "would need redoing"
+    )
+
+    src = (REPO / "src" / "services" / "browser" / "process.py").read_text(
+        encoding="utf-8"
+    )
+    assert "prefers-color-scheme" in src, (
+        "the position no longer reconciles the page.dark reading; an "
+        "unexplained number in a committed reading is a trap for the next "
+        "reader"
+    )
+
+
+def test_the_dark_control_actually_falsifies_the_obvious_explanation():
+    """The control is only worth citing if it CAN fail — and its own negative
+    control is what makes that true.
+
+    A fresh profile with no flag must read ``dark=false``. If it does not, every
+    other arm reading ``true`` means nothing (the probe would simply be unable
+    to observe False), and the "ruled out" claim in the position collapses.
+    """
+    control = CONTROL_DARK
+    if not control.exists():
+        pytest.skip(f"PS-341 dark-mode control not present at {control}")
+    with control.open(encoding="utf-8") as f:
+        data = json.load(f)
+
+    arms = data["arms"]
+    for label, arm in arms.items():
+        assert not arm["unreadable"], (
+            f"{label} produced no reading — an unobtained result must never be "
+            f"scored as an observation ({arm.get('stderr_tail')!r})"
+        )
+
+    assert arms["A_fresh_no_flag"]["dark"] is False, (
+        "THE NEGATIVE CONTROL FAILED: a fresh profile with no flag reports dark "
+        "mode, so this probe cannot distinguish 'dark is on' from 'the probe "
+        "always says dark'. Nothing else in this control means anything."
+    )
+    assert arms["B_fresh_force_dark"]["dark"] is True, (
+        "--force-dark-mode no longer drives prefers-color-scheme on a stock "
+        "engine. That was the explanation the position records as FALSIFIED — "
+        "if it has become true, the position's reconciliation is now wrong and "
+        "must be rewritten rather than left standing."
+    )
+    assert arms["C_seeded_no_flag"]["dark"] is True
+    assert arms["D_seeded_force_dark"]["dark"] is True, (
+        "persona's own combination (seeded color_scheme2 + --force-dark-mode) "
+        "no longer drives it on a stock engine"
+    )

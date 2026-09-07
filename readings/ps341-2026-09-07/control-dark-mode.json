@@ -1,0 +1,43 @@
+{
+  "arms": {
+    "A_fresh_no_flag": {
+      "dark": false,
+      "flags": [],
+      "light": true,
+      "unreadable": false
+    },
+    "B_fresh_force_dark": {
+      "dark": true,
+      "flags": [
+        "--force-dark-mode"
+      ],
+      "light": false,
+      "unreadable": false
+    },
+    "C_seeded_no_flag": {
+      "dark": true,
+      "flags": [],
+      "light": false,
+      "unreadable": false
+    },
+    "D_seeded_force_dark": {
+      "dark": true,
+      "flags": [
+        "--force-dark-mode"
+      ],
+      "light": false,
+      "unreadable": false
+    }
+  },
+  "flag_alone_drives_it": true,
+  "meta": {
+    "binary": "/usr/bin/chromium",
+    "binary_version": "Chromium 152.0.7977.82 built on Debian GNU/Linux 13 (trixie)",
+    "seeded_prefs_from": "profile_seed._default_prefs('brave')",
+    "venue": "--headless=new (NOT the headful/Xvfb venue the PS-341 legs used \u2014 see this script's docstring)",
+    "what": "which input drives prefers-color-scheme on a STOCK engine"
+  },
+  "negative_control_holds": true,
+  "persona_combination_drives_it": true,
+  "seeded_pref_alone_drives_it": true
+}

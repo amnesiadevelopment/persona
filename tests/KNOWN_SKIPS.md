@@ -87,7 +87,7 @@ Correct everywhere except the named platform. Not a provisioning gap on Linux.
 | Where | Reason given |
 |---|---|
 | `test_apply_restart.py:131`, `:136` | no real AppImage available |
-| `test_ps341_engine_continuity_live.py` (×21) | `PS-341 evidence not present at readings/ps341-2026-09-07/…` |
+| `test_ps341_engine_continuity_live.py` (×23) | `PS-341 evidence not present at readings/ps341-2026-09-07/…` |
 
 #### The PS-341 guard, and why it is shaped that way
 
@@ -113,6 +113,29 @@ itself:
 * `test_persona_stands_down_on_the_arm_where_the_pair_moved` — reads
   `gpu_ext.py`, and goes red if persona starts authoring the WebGL pair on the
   windows arm, which would invalidate the recorded finding's explanation.
+
+A **third** joined them: `test_the_recorded_position_does_not_overclaim_a_live
+_theme_reading`, which also reads only `process.py`. It pins the split between
+the readings taken **live** (search engine, bookmarks, cookies) and those taken
+**on disk only** (theme, dark mode). It sits outside the guard for the same
+reason as the other two — the failure it guards against was never in the
+reading, it was in the *sentence about* the reading, so hiding the evidence must
+not take the guard with it.
+
+⚠️ **A third skip guard was added, and it is a DIFFERENT file from the two
+above:** `control-dark-mode.json`, the follow-up control for the one unexplained
+number in the reading (`page.dark`). Two tests read the evidence guard and one
+reads this one, so a checkout missing only the control skips exactly one test:
+
+| test | skip reason |
+|---|---|
+| `test_the_dark_control_actually_falsifies_the_obvious_explanation` | `PS-341 dark-mode control not present at readings/ps341-2026-09-07/control-dark-mode.json` |
+
+Unlike the main reading, this control needs **no engine and no display** —
+stock `chromium`, headless, four fresh profiles — so it is cheap to regenerate:
+`python3 scripts/ps341_dark_control.py --out readings/ps341-2026-09-07/control-dark-mode.json`.
+It is committed anyway, for the same reason the reading is: a control that is
+only *describable* is not a control.
 
 That split is the point: hiding the reading must not silently take the
 position's own guards with it. Verified by removing the directory — **2 passed,

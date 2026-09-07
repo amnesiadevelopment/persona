@@ -782,10 +782,12 @@ def spawn_browser(profile: Profile, *, in_process: bool = False) -> subprocess.P
     #   Launch a profile on personium-152.0.7977.75, move the engine BACKWARDS
     #   to 148.0.7778.215 through the shipping operator gesture
     #   (`updater.revert_to_previous_build`, what ui/app.py's rollback button
-    #   calls — not a hand-swap), relaunch THE SAME profile dir, and read what
-    #   a RUNNING browser reports. Positive control on three independent axes:
-    #   the version record moved, the binary sha256 moved, and the page's own
-    #   `navigator.userAgent` major moved 152 -> 148.
+    #   calls — not a hand-swap), relaunch THE SAME profile dir, and read both
+    #   what a RUNNING browser reports and what is left on disk — the two are
+    #   different strengths of evidence and the readings below say which is
+    #   which. Positive control on three independent axes: the version record
+    #   moved, the binary sha256 moved, and the page's own `navigator.userAgent`
+    #   major moved 152 -> 148.
     #
     #   * IT OPENS. No refusal, no crash, no SIGSEGV — the Firefox analogue does
     #     not occur. Forward again (148 -> 152) opens too.
@@ -793,18 +795,50 @@ def spawn_browser(profile: Profile, *, in_process: bool = False) -> subprocess.P
     #     WRITTEN and silently OVERWRITTEN (152 -> 148 -> 152); the engine
     #     treats it as a record, not as a gate. `Default/` is neither renamed
     #     nor recreated and no backup/reset directory appears.
-    #   * DERIVED STATE SURVIVES INTACT, read from the RUNNING browser rather
-    #     than from the JSON — a file that survives but is IGNORED would be the
-    #     same outcome for the operator. `seed_profile_prefs`'s once-only guard
-    #     is never re-triggered because nothing removes `Default/Preferences`:
-    #     the Classic theme, dark mode and the profile's chosen search engine
-    #     (`Brave (Default)` on chrome://settings/searchEngines) all read back
-    #     unchanged, as do the seeded bookmarks and the cookie jar.
+    #   * DERIVED STATE SURVIVES. `seed_profile_prefs`'s once-only guard is
+    #     never re-triggered, because nothing removes `Default/Preferences`.
+    #     ⚠️ THE EVIDENCE IS OF TWO DIFFERENT STRENGTHS AND THEY ARE NOT
+    #     INTERCHANGEABLE — a file that survives but is IGNORED is the same
+    #     outcome for the operator as one that was deleted, so only a LIVE read
+    #     settles that, and only three of these five were read live:
+    #       - LIVE, from the running browser on the OLDER build: the profile's
+    #         chosen search engine (`Brave (Default)` on
+    #         chrome://settings/searchEngines), the seeded bookmarks (present in
+    #         chrome://bookmarks), and the cookie jar (the sentinel written on
+    #         build N is served on build N−1).
+    #       - ON DISK ONLY: the Classic theme and dark mode
+    #         (`color_scheme2: 2`). Both are byte-identical across the change
+    #         and nothing renames, resets or removes the file holding them.
+    #         ⭐ That is enough for the question THIS arm actually asks —
+    #         `seed_profile_prefs` keys purely on `Default/Preferences`
+    #         EXISTING, so a surviving file is exactly what stops the operator's
+    #         choice being silently dropped. It is NOT the stronger claim that
+    #         the engine still honours those two values, which was not measured
+    #         here. Do not upgrade it to one without taking the reading.
     #
     # So NO MIGRATION IS OWED HERE, and adding one would be a fix for a state
     # this engine does not enter. That is the whole position; the evidence is in
     # `readings/ps341-2026-09-07/` and is re-read live by
     # `tests/test_ps341_engine_continuity_live.py`.
+    #
+    # ⚠️ ONE CAPTURED NUMBER IS NOT EXPLAINED, AND IT IS LEFT OPEN ON PURPOSE.
+    # The legs read `matchMedia('(prefers-color-scheme: dark)').matches` as
+    # FALSE on BOTH builds, though the profile is seeded `color_scheme2: 2` and
+    # launched with `--force-dark-mode` (further down this same arg list). The
+    # obvious explanation — "`--force-dark-mode` is UI-level and does not drive
+    # `prefers-color-scheme`" — was CHECKED AND IS FALSE: on stock chromium
+    # 152, headless, each of the flag alone, the seeded pref alone, and both
+    # together give `dark=true`, against a fresh-profile negative control that
+    # correctly gives `false` (`scripts/ps341_dark_control.py`,
+    # `readings/ps341-2026-09-07/control-dark-mode.json`). Two variables move
+    # between that control and the legs — a STOCK engine vs the packaged
+    # fingerprint build, and headless vs headful-under-Xvfb — and one control
+    # cannot separate them, so the cause is genuinely NOT KNOWN.
+    # ⛔ NOTHING IN THIS POSITION TURNS ON IT: the value is identical on both
+    # builds, so it does not move across a build change and is not a continuity
+    # fact. It is written down rather than left bare in the reading so the next
+    # reader inherits the open question and the control that already ruled out
+    # its most plausible answer, instead of re-deriving both.
     #
     # ⚠️ ONE THING DOES MOVE, AND IT IS NOT A MIGRATION PROBLEM — SEE THAT TEST
     # AND `gpu_ext.py`. The WebGL vendor/renderer pair a page reads CHANGES
