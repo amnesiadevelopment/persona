@@ -66,13 +66,37 @@ EXPECTED = (
     "trash-restore-and-wipe",
 )
 
-#: The one launch-backed check deliberately NOT in the lane. It is not dark (11
-#: external callers, including a test file that drives its body directly), and
-#: it reports a FINDING on the firefox engine this project ships — a recorded,
-#: published fact since PS-135, handed to PS-2 as product work. Requiring it
-#: would make this gate permanently red, which proves as little as permanently
-#: green; including it in the SELECTION would do the same.
-DOCUMENTED_OMISSION = "two-profile-unlinkability"
+#: The launch-backed checks deliberately NOT in the lane — TWO of them, for TWO
+#: DIFFERENT reasons, which is why this is a mapping and not a set. A bare set
+#: would let a future omission be added with no reason at all, which is exactly
+#: how a carve-out becomes a habit; each entry here has to say WHY, and
+#: `test_every_omission_states_a_distinct_reason` refuses two entries that
+#: share one.
+#:
+#: * two-profile-unlinkability — not dark (11 external callers, including a
+#:   test file that drives its body directly), and it reports a FINDING on the
+#:   firefox engine this project ships: a recorded, published fact since PS-135,
+#:   handed to PS-2 as product work. Requiring it would make this gate
+#:   permanently RED, which proves as little as permanently green.
+#:
+#: * no-process-survives-a-closed-session — a CHROMIUM launch (os_type=linux,
+#:   deliberately: the leak it guards is a property of the wrapper launch, so
+#:   the same measurement on this lane's firefox fixtures would be vacuous) on
+#:   a lane that provisions FIREFOX only. Measured by removing the chromium
+#:   engine: CANNOT RUN, exit 2 — so requiring it would make this gate
+#:   permanently "nothing was measured", the failure the venue exists to
+#:   remove. ci.yml:427-455 already names `browser_chromium` as a capability
+#:   nothing declares and says closing it is a separate slice.
+DOCUMENTED_OMISSIONS = {
+    "two-profile-unlinkability": (
+        "reports a FINDING on the shipped firefox engine (PS-135 §8, handed "
+        "to PS-2); requiring it would make this gate permanently red"
+    ),
+    "no-process-survives-a-closed-session": (
+        "launches CHROMIUM, which this firefox-only lane does not provision; "
+        "measured CANNOT RUN exit 2 without it (ci.yml:427-455 names the gap)"
+    ),
+}
 
 
 @pytest.fixture(scope="module")
@@ -350,7 +374,7 @@ def test_the_floor_is_not_empty(runner) -> None:
     )
 
 
-def test_the_floor_is_the_registry_launch_lane_minus_the_one_documented_omission(
+def test_the_floor_is_the_registry_launch_lane_minus_the_documented_omissions(
     runner,
 ) -> None:
     """The floor must BE the launch lane, not a list that drifted from it.
@@ -359,37 +383,77 @@ def test_the_floor_is_the_registry_launch_lane_minus_the_one_documented_omission
     it agree with an EMPTY registry by construction, which is the failure being
     guarded against. This is what keeps the hand-written copy honest.
 
-    ⭐ THE OMISSION IS NAMED, NOT A GAP IN THE ASSERTION.
-    `two-profile-unlinkability` is excluded because it reports a FINDING on the
-    firefox engine this project ships (readings/ps135-2026-08-24/EVIDENCE.md §8
-    predicts it verbatim and §7 hands it to PS-2), so requiring it would make
-    this gate permanently red — which proves as little as permanently green and
-    would destroy the venue's ability to distinguish a newly-rotted body from
-    the known collision. It is also the one launch-backed body that was never
-    dark: 11 external callers, including a test that drives it directly.
+    ⭐ EVERY OMISSION IS NAMED AND REASONED, NOT A GAP IN THE ASSERTION, and
+    the two current ones are excluded for DIFFERENT reasons that must not be
+    collapsed:
 
-    ⚠️ WHEN PS-2 FIXES THE CANVAS COLLISION, add the name to SELECTED_CHECKS
-    and EXPECTED_CHECKS and delete it from DOCUMENTED_OMISSION here, in the
-    same change. This test is what will remind you.
+    * `two-profile-unlinkability` reports a FINDING on the firefox engine this
+      project ships (readings/ps135-2026-08-24/EVIDENCE.md §8 predicts it
+      verbatim and §7 hands it to PS-2), so requiring it would make this gate
+      permanently red — which proves as little as permanently green. It is also
+      the one launch-backed body that was never dark: 11 external callers.
+
+    * `no-process-survives-a-closed-session` launches CHROMIUM on a lane that
+      provisions FIREFOX only, so requiring it would make this gate permanently
+      exit 2 — "nothing was measured", the failure this venue exists to remove.
+      Measured by removing the chromium engine and running it under a display.
+
+    ⚠️ WHEN PS-2 FIXES THE CANVAS COLLISION, or when a chromium engine is
+    provisioned for CI, add the name to SELECTED_CHECKS and EXPECTED_CHECKS and
+    delete its entry from DOCUMENTED_OMISSIONS here, in the same change. This
+    test is what will remind you.
     """
     from src.services.verify.behaviour_checks import CHECKS
 
     lane = {c.name for c in CHECKS if c.needs_launch}
 
-    assert DOCUMENTED_OMISSION in lane, (
-        f"{DOCUMENTED_OMISSION!r} is no longer a launch-backed check, so the "
-        "exclusion below is stale — re-derive the floor rather than keeping a "
-        "carve-out for a check that no longer exists in this lane"
-    )
+    for omitted in DOCUMENTED_OMISSIONS:
+        assert omitted in lane, (
+            f"{omitted!r} is no longer a launch-backed check, so the exclusion "
+            "below is stale — re-derive the floor rather than keeping a "
+            "carve-out for a check that no longer exists in this lane"
+        )
 
-    assert set(runner.EXPECTED_CHECKS) == lane - {DOCUMENTED_OMISSION}, (
+    assert set(runner.EXPECTED_CHECKS) == lane - set(DOCUMENTED_OMISSIONS), (
         "the launch floor has drifted from the registry's launch lane.\n"
         f"  floor:    {sorted(runner.EXPECTED_CHECKS)}\n"
         f"  registry: {sorted(lane)}\n"
-        f"  permitted omission: {DOCUMENTED_OMISSION!r}\n"
+        f"  permitted omissions: {sorted(DOCUMENTED_OMISSIONS)}\n"
         "If a launch check was added, retired or renamed, update the constant "
         "deliberately — that edit is meant to be noticed, not absorbed. Do NOT "
         "widen the omission set to make this green."
+    )
+
+
+def test_every_omission_states_a_distinct_reason() -> None:
+    """⛔ AN OMISSION SET IS A SLIPPERY THING, so its entries must EARN a place.
+
+    The guard above is satisfied by ANY name in `DOCUMENTED_OMISSIONS`, which
+    means the cheapest way to make a red lane green is to add a name to it —
+    the very repair the runner's header forbids in capitals. This is the
+    counterweight: an omission must carry a REASON, and two omissions may not
+    share one.
+
+    That matters because the two current entries are excluded for opposite
+    failure modes — one would make the gate permanently RED, the other
+    permanently EXIT 2 — and a set that collapsed them into "known exclusions"
+    would let the third be added with no argument at all.
+    """
+    assert DOCUMENTED_OMISSIONS, "the mapping must not be emptied to pass"
+
+    for name, reason in DOCUMENTED_OMISSIONS.items():
+        assert reason and len(reason) > 40, (
+            f"the omission {name!r} carries no real reason. An excluded check "
+            "is invisible in the report, so the reason is the only record of "
+            "why it is not being measured — write it out."
+        )
+
+    reasons = list(DOCUMENTED_OMISSIONS.values())
+    assert len(set(reasons)) == len(reasons), (
+        "two omissions share a reason. They are excluded for DIFFERENT causes "
+        "(a permanent FINDING versus an unprovisioned engine); a shared reason "
+        "means one of them was absorbed into the other's carve-out rather than "
+        "argued on its own."
     )
 
 
