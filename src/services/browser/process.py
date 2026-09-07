@@ -763,6 +763,66 @@ def spawn_browser(profile: Profile, *, in_process: bool = False) -> subprocess.P
     # can sit this early while `_mobile_chromium_version` cannot.
     brand_version = _chromium_brand_version(profile)
 
+    # ⭐ WHY THERE IS NO PROFILE MIGRATION ON THIS ARM, THOUGH THE FIREFOX ARM
+    # RUNS A FOUR-PART ONE ON EVERY LAUNCH. A RECORDED POSITION, ESTABLISHED BY
+    # MEASUREMENT (PS-341) — not an oversight, and not an untested assumption.
+    #
+    # The asymmetry is real and it is deliberate. `invisible_launch.py` calls
+    # `_migrate_profile_for_engine_build` on every Firefox launch because that
+    # engine genuinely misbehaves: its own docstring records that a profile
+    # seeded on firefox-18 makes firefox-19 SIGSEGV before the window paints, so
+    # `prefs.js` is dropped, `compatibility.ini` (the downgrade guard) is
+    # removed, and the addon startup cache is invalidated on a revert.
+    #
+    # ⛔ THE PARITY QUESTION IS NOT "WHY IS CHROMIUM MISSING FIREFOX'S GUARD".
+    # It is "does Chromium EXHIBIT THE BEHAVIOUR that guard defends against?"
+    # Only the second is a defect, and it was asked of a REAL ENGINE rather than
+    # reasoned about:
+    #
+    #   Launch a profile on personium-152.0.7977.75, move the engine BACKWARDS
+    #   to 148.0.7778.215 through the shipping operator gesture
+    #   (`updater.revert_to_previous_build`, what ui/app.py's rollback button
+    #   calls — not a hand-swap), relaunch THE SAME profile dir, and read what
+    #   a RUNNING browser reports. Positive control on three independent axes:
+    #   the version record moved, the binary sha256 moved, and the page's own
+    #   `navigator.userAgent` major moved 152 -> 148.
+    #
+    #   * IT OPENS. No refusal, no crash, no SIGSEGV — the Firefox analogue does
+    #     not occur. Forward again (148 -> 152) opens too.
+    #   * CHROMIUM'S OWN DOWNGRADE HANDLING DOES NOT FIRE. `Last Version` is
+    #     WRITTEN and silently OVERWRITTEN (152 -> 148 -> 152); the engine
+    #     treats it as a record, not as a gate. `Default/` is neither renamed
+    #     nor recreated and no backup/reset directory appears.
+    #   * DERIVED STATE SURVIVES INTACT, read from the RUNNING browser rather
+    #     than from the JSON — a file that survives but is IGNORED would be the
+    #     same outcome for the operator. `seed_profile_prefs`'s once-only guard
+    #     is never re-triggered because nothing removes `Default/Preferences`:
+    #     the Classic theme, dark mode and the profile's chosen search engine
+    #     (`Brave (Default)` on chrome://settings/searchEngines) all read back
+    #     unchanged, as do the seeded bookmarks and the cookie jar.
+    #
+    # So NO MIGRATION IS OWED HERE, and adding one would be a fix for a state
+    # this engine does not enter. That is the whole position; the evidence is in
+    # `readings/ps341-2026-09-07/` and is re-read live by
+    # `tests/test_ps341_engine_continuity_live.py`.
+    #
+    # ⚠️ ONE THING DOES MOVE, AND IT IS NOT A MIGRATION PROBLEM — SEE THAT TEST
+    # AND `gpu_ext.py`. The WebGL vendor/renderer pair a page reads CHANGES
+    # across a build change on the arms where the ENGINE authors it (windows /
+    # macos — `ENGINE_AUTHORED_IDENTITY_ARMS`, where persona's own GPU layer
+    # deliberately stands down). Measured across 8 seeds, headful under CDP:
+    # 8/8 moved, and the two builds' card pools do not intersect AT ALL (148
+    # answers Intel integrated parts, 152 answers NVIDIA RTX parts). It is
+    # STABLE within a build — two launches of one build at one seed agree — so
+    # the move is attributable to the build change and to nothing else.
+    #
+    # That is a LEVEL-2 (bit-stability across engine updates) continuity fact
+    # about an ENGINE-AUTHORED vector, and NOT something a profile migration
+    # could repair: the value is produced by a table compiled into the engine
+    # binary, so no amount of rewriting the profile directory changes it. It is
+    # recorded rather than fixed here on purpose — the fix, if one is wanted, is
+    # a decision about WHO AUTHORS that pair on those arms, which is
+    # `gpu_ext.py`'s question and not this launch path's.
     seed_profile_prefs(profile_dir, profile.search_engine)
 
     chosen = BookmarkStore().resolve_selection(

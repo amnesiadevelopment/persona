@@ -87,6 +87,45 @@ Correct everywhere except the named platform. Not a provisioning gap on Linux.
 | Where | Reason given |
 |---|---|
 | `test_apply_restart.py:131`, `:136` | no real AppImage available |
+| `test_ps341_engine_continuity_live.py` (×21) | `PS-341 evidence not present at readings/ps341-2026-09-07/…` |
+
+#### The PS-341 guard, and why it is shaped that way
+
+`tests/test_ps341_engine_continuity_live.py` re-reads a **committed reading**
+(`readings/ps341-2026-09-07/`) rather than re-running its own two-build
+download on every suite run — a real revert costs two ~190 MB engine
+transfers, a display, and several minutes.
+
+So its skip guard is `_load()`, which skips when the evidence file is absent
+instead of failing. **That is the honest outcome for a checkout without the
+reading, and it is exactly the shape this file exists to keep legible**: the
+evidence ships in the repo, so on an ordinary checkout these do NOT skip —
+they run and are cheap. A skip here means the reading was *removed*, which is
+a change of state worth noticing, not a routine absence.
+
+Two tests deliberately sit OUTSIDE that guard and run everywhere, because
+neither needs the engine or the reading — they police the recorded position
+itself:
+
+* `test_the_position_is_recorded_beside_the_chromium_arm` — reads
+  `process.py`, and goes red if PS-341's recorded no-migration-needed position
+  is deleted (the premise-1 grep would then find nothing again);
+* `test_persona_stands_down_on_the_arm_where_the_pair_moved` — reads
+  `gpu_ext.py`, and goes red if persona starts authoring the WebGL pair on the
+  windows arm, which would invalidate the recorded finding's explanation.
+
+That split is the point: hiding the reading must not silently take the
+position's own guards with it. Verified by removing the directory — **2 passed,
+21 skipped**, never a green 23.
+
+**The measurement itself needs `browser_chromium`**, the capability nothing
+provisions today (see below). Re-running it needs a real fingerprint-chromium,
+a second published engine build to revert to, a display, and — measured on this
+container — a PID budget the harness does not exhaust: leaked browser trees
+took 868 of 2048 PIDs and made the *next* launch die with
+`pthread_create: Resource temporarily unavailable`, which reads exactly like
+the engine refusing a profile. `scripts/ps341_run.py` reaps process **groups**
+for that reason.
 
 ### Guards that did NOT fire here
 
