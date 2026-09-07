@@ -1,0 +1,115 @@
+{
+  "new_binary": "/tmp/ps341/fp152.AppImage",
+  "old_binary": "/tmp/ps341/fp148.AppImage",
+  "seeds_attempted": 8,
+  "seeds_scored": 8,
+  "seeds_unreadable": 0,
+  "moved": 8,
+  "same": 0,
+  "rows": [
+    {
+      "seed": 3805799318,
+      "new": [
+        "Google Inc. (NVIDIA)",
+        "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 (0x00002487) Direct3D11 vs_5_0 ps_5_0, D3D11)"
+      ],
+      "old": [
+        "Google Inc. (Intel)",
+        "ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x00009A49) Direct3D11 vs_5_0 ps_5_0, D3D11)"
+      ],
+      "readable": true,
+      "moved": true
+    },
+    {
+      "seed": 12345,
+      "new": [
+        "Google Inc. (NVIDIA)",
+        "ANGLE (NVIDIA, NVIDIA GeForce RTX 4060 Ti (0x00002805) Direct3D11 vs_5_0 ps_5_0, D3D11)"
+      ],
+      "old": [
+        "Google Inc. (Intel)",
+        "ANGLE (Intel, Intel(R) Arc(TM) Graphics (0x00007D55) Direct3D11 vs_5_0 ps_5_0, D3D11)"
+      ],
+      "readable": true,
+      "moved": true
+    },
+    {
+      "seed": 1,
+      "new": [
+        "Google Inc. (NVIDIA)",
+        "ANGLE (NVIDIA, NVIDIA GeForce RTX 3050 (0x00002582) Direct3D11 vs_5_0 ps_5_0, D3D11)"
+      ],
+      "old": [
+        "Google Inc. (Intel)",
+        "ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x000046A6) Direct3D11 vs_5_0 ps_5_0, D3D11)"
+      ],
+      "readable": true,
+      "moved": true
+    },
+    {
+      "seed": 999983,
+      "new": [
+        "Google Inc. (NVIDIA)",
+        "ANGLE (NVIDIA, NVIDIA GeForce RTX 4060 Ti (0x00002803) Direct3D11 vs_5_0 ps_5_0, D3D11)"
+      ],
+      "old": [
+        "Google Inc. (Intel)",
+        "ANGLE (Intel, Intel(R) UHD Graphics 620 (0x00003EA0) Direct3D11 vs_5_0 ps_5_0, D3D11)"
+      ],
+      "readable": true,
+      "moved": true
+    },
+    {
+      "seed": 42424242,
+      "new": [
+        "Google Inc. (NVIDIA)",
+        "ANGLE (NVIDIA, NVIDIA GeForce RTX 5090 (0x00002B85) Direct3D11 vs_5_0 ps_5_0, D3D11)"
+      ],
+      "old": [
+        "Google Inc. (Intel)",
+        "ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x0000A7A0) Direct3D11 vs_5_0 ps_5_0, D3D11)"
+      ],
+      "readable": true,
+      "moved": true
+    },
+    {
+      "seed": 777,
+      "new": [
+        "Google Inc. (NVIDIA)",
+        "ANGLE (NVIDIA, NVIDIA GeForce RTX 4070 Laptop GPU (0x00002860) Direct3D11 vs_5_0 ps_5_0, D3D11)"
+      ],
+      "old": [
+        "Google Inc. (Intel)",
+        "ANGLE (Intel, Intel(R) UHD Graphics 620 (0x00003EA0) Direct3D11 vs_5_0 ps_5_0, D3D11)"
+      ],
+      "readable": true,
+      "moved": true
+    },
+    {
+      "seed": 20260907,
+      "new": [
+        "Google Inc. (NVIDIA)",
+        "ANGLE (NVIDIA, NVIDIA GeForce RTX 4060 (0x00002882) Direct3D11 vs_5_0 ps_5_0, D3D11)"
+      ],
+      "old": [
+        "Google Inc. (Intel)",
+        "ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x0000A7A0) Direct3D11 vs_5_0 ps_5_0, D3D11)"
+      ],
+      "readable": true,
+      "moved": true
+    },
+    {
+      "seed": 88888888,
+      "new": [
+        "Google Inc. (NVIDIA)",
+        "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Ti (0x00002486) Direct3D11 vs_5_0 ps_5_0, D3D11)"
+      ],
+      "old": [
+        "Google Inc. (Intel)",
+        "ANGLE (Intel, Intel(R) UHD Graphics 620 (0x00003EA0) Direct3D11 vs_5_0 ps_5_0, D3D11)"
+      ],
+      "readable": true,
+      "moved": true
+    }
+  ]
+}

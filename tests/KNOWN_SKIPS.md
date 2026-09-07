@@ -87,6 +87,83 @@ Correct everywhere except the named platform. Not a provisioning gap on Linux.
 | Where | Reason given |
 |---|---|
 | `test_apply_restart.py:131`, `:136` | no real AppImage available |
+| `test_ps341_engine_continuity_live.py` (×22) | `PS-341 evidence not present at readings/ps341-2026-09-07/…` |
+
+#### The PS-341 guard, and why it is shaped that way
+
+`tests/test_ps341_engine_continuity_live.py` re-reads a **committed reading**
+(`readings/ps341-2026-09-07/`) rather than re-running its own two-build
+download on every suite run — a real revert costs two ~190 MB engine
+transfers, a display, and several minutes.
+
+So its skip guard is `_load()`, which skips when the evidence file is absent
+instead of failing. **That is the honest outcome for a checkout without the
+reading, and it is exactly the shape this file exists to keep legible**: the
+evidence ships in the repo, so on an ordinary checkout these do NOT skip —
+they run and are cheap. A skip here means the reading was *removed*, which is
+a change of state worth noticing, not a routine absence.
+
+Two tests deliberately sit OUTSIDE that guard and run everywhere, because
+neither needs the engine or the reading — they police the recorded position
+itself:
+
+* `test_the_position_is_recorded_beside_the_chromium_arm` — reads
+  `process.py`, and goes red if PS-341's recorded no-migration-needed position
+  is deleted (the premise-1 grep would then find nothing again);
+* `test_persona_stands_down_on_the_arm_where_the_pair_moved` — reads
+  `gpu_ext.py`, and goes red if persona starts authoring the WebGL pair on the
+  windows arm, which would invalidate the recorded finding's explanation.
+
+A **third** joined them: `test_the_recorded_position_does_not_overclaim_a_live
+_theme_reading`, which also reads only `process.py`. It pins the split between
+the readings taken **live** (search engine, bookmarks, cookies) and those taken
+**on disk only** (theme, dark mode). It sits outside the guard for the same
+reason as the other two — the failure it guards against was never in the
+reading, it was in the *sentence about* the reading, so hiding the evidence must
+not take the guard with it.
+
+⚠️ **A third skip guard was added, and it is a DIFFERENT file from the two
+above:** `control-dark-mode.json`, the follow-up control for the one unexplained
+number in the reading (`page.dark`). Two tests read the evidence guard and one
+reads this one, so a checkout missing only the control skips exactly one test:
+
+| test | skip reason |
+|---|---|
+| `test_the_dark_control_actually_falsifies_the_obvious_explanation` | `PS-341 dark-mode control not present at readings/ps341-2026-09-07/control-dark-mode.json` |
+
+Unlike the main reading, this control needs **no engine and no display** —
+stock `chromium`, headless, four fresh profiles — so it is cheap to regenerate:
+`python3 scripts/ps341_dark_control.py --out readings/ps341-2026-09-07/control-dark-mode.json`.
+It is committed anyway, for the same reason the reading is: a control that is
+only *describable* is not a control.
+
+That split is the point: hiding the reading must not silently take the
+position's own guards with it. Verified by removing the directory — **3 passed,
+23 skipped**, never a green 26.
+
+⚠️ **`23` there is the file's TOTAL skip count, and the `(×22)` on line 90 is
+the count for the ONE reason written beside it** — the two numbers differ by
+exactly the dark-mode control test, which skips for the *other* reason and is
+already accounted for in its own table above. They are not the same figure and
+neither is a typo for the other.
+
+Every number in the two paragraphs above is **measured, not asserted** — each
+was re-taken by actually removing the file and running the module, on the tree
+these words ship in (a docs-only change over `4ca4c97`, so nothing in this
+commit can have moved them; both figures were re-taken *after* the edit
+anyway). If you change the test count, re-take them the same way rather than
+adjusting them by arithmetic: the totals move for reasons the diff does not
+show (a `parametrize` list changing length moves the skip count by ten without
+adding a test).
+
+**The measurement itself needs `browser_chromium`**, the capability nothing
+provisions today (see below). Re-running it needs a real fingerprint-chromium,
+a second published engine build to revert to, a display, and — measured on this
+container — a PID budget the harness does not exhaust: leaked browser trees
+took 868 of 2048 PIDs and made the *next* launch die with
+`pthread_create: Resource temporarily unavailable`, which reads exactly like
+the engine refusing a profile. `scripts/ps341_run.py` reaps process **groups**
+for that reason.
 
 ### Guards that did NOT fire here
 
