@@ -56,6 +56,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 
 import pytest
@@ -75,6 +76,7 @@ from src.services.browser.process import _profile_locale, _profile_timezone
 from src.services.proxy.errors import LocaleUnderivableError
 from src.services.proxy.language_names import (
     DECLARABLE_LANGUAGE_SUBTAGS,
+    ENGINE_RENAMED_SUBTAGS,
     is_declarable_language,
 )
 from src.services.proxy.store import ProxyStore
@@ -610,7 +612,148 @@ def test_the_accepted_set_is_a_fixed_size_shipped_with_the_product():
     """Byte-identical on Windows, macOS and Linux BECAUSE it is source. The
     number is pinned so a regeneration that silently truncated the list (a
     partial download, a wrong resource) is caught rather than shipped."""
-    assert len(DECLARABLE_LANGUAGE_SUBTAGS) == 184
+    assert len(DECLARABLE_LANGUAGE_SUBTAGS) == 181
+
+
+def test_no_declarable_language_is_one_an_ENGINE_RENAMES():
+    """⭐ THE PROPERTY, not the two names that first exposed it.
+
+    THE DEFECT THIS EXISTS FOR. The generator's first filter was
+    ``"Deprecated" in record`` while the module's prose claimed the rule was
+    "an engine must not report the declared value back under another name".
+    Those are different rules, and the shipped module SAID ``sh`` was excluded
+    while accepting it: ``set_manual_locale("ng", "sh")`` returned ``(True,
+    "")`` and shipped ``--lang=sh-NG`` / ``cfg["locale"]="sh-NG"``, while the
+    engine canonicalizes that to ``sr-Latn`` — a declared-vs-observed
+    disagreement inside one realm, which is precisely the class of tell PS-2
+    exists to close, and the exact failure the exclusion was written to
+    prevent. ``tl`` -> ``fil`` was a second instance and ``tw`` -> ``ak`` a
+    third; a per-name test for ``sh`` would have been green for both.
+
+    WHY THIS IS PHRASED AS A SET RELATION. The old suite could not have caught
+    this and it is worth naming why, because the same blindness is easy to
+    rebuild: ``test_the_validator_rejects_everything_that_is_not_a_subtag``
+    probes SHAPES, and ``test_every_language_the_product_itself_uses_is_
+    declarable`` asserts ``table ⊆ set`` — the OTHER direction, which is silent
+    about anything the table does not happen to use. Neither asks the question
+    this one does.
+
+    NO ICU AND NO OS DATABASE AT RUNTIME (AC4). The rename facts are VENDORED
+    beside the list, in ``ENGINE_RENAMED_SUBTAGS``, for the same reason the
+    list itself is: the accepted set must be byte-identical on Windows, macOS
+    and Linux, and an ICU that ships with the host is not that. The expectation
+    was MEASURED once (node 24 / ICU 78.2, over the full 190 x 261 = 49,590
+    language/region cross-product) and committed.
+    """
+    assert not (DECLARABLE_LANGUAGE_SUBTAGS & set(ENGINE_RENAMED_SUBTAGS)), (
+        DECLARABLE_LANGUAGE_SUBTAGS & set(ENGINE_RENAMED_SUBTAGS)
+    )
+    # And the three the field test admitted are named here as REGRESSION
+    # anchors — the property above is the guard, these are the witnesses.
+    for renamed in ("sh", "tl", "tw"):
+        assert renamed in ENGINE_RENAMED_SUBTAGS, renamed
+        assert not is_declarable_language(renamed), renamed
+
+
+def test_a_language_an_engine_renames_cannot_be_DECLARED_at_all(tmp_path):
+    """The property above, driven through the shipped writer rather than
+    asserted about a set — because the set is only interesting if the door
+    actually consults it. This is the reproduction of the audited defect:
+    before the fix this call returned ``(True, "")``.
+    """
+    s, name = _residue_proxy(tmp_path)
+    for renamed, replacement in sorted(ENGINE_RENAMED_SUBTAGS.items()):
+        ok, err = s.set_manual_locale(name, renamed)
+        assert ok is False, f"{renamed!r} was accepted; engine renames it"
+        assert renamed in err
+        # THE SENTENCE NAMES WHAT THE ENGINE ANSWERS. These are REAL languages
+        # refused for a reason a non-language is not, so "'sh' is not a
+        # language code" would be both false and a dead end.
+        assert replacement in err, (renamed, err)
+    # Nothing was written by any of them.
+    assert _store(tmp_path).get(name).manual_locale_language == ""
+
+
+def test_the_refusal_never_names_a_remedy_that_would_be_refused_too(tmp_path):
+    """⛔ THE 'REMEDY THAT LOOPS', rebuilt one gate further along — the exact
+    shape this whole ticket exists to end, and the one a helpful error message
+    invites.
+
+    Six of the nine renames point at a two-letter subtag this door accepts
+    (``sh`` -> ``sr``, ``tw`` -> ``ak``, and the four deprecated ones), so the
+    refusal can name it. THREE DO NOT: ``bh`` -> ``bho`` and ``tl`` -> ``fil``
+    are THREE-letter subtags and the declarable set is two-letter only. A
+    message telling the operator to "declare 'fil' instead" would send them
+    back through the same door to be refused again — which is precisely the
+    ``UNSUPPORTED_COUNTRY_NOTE`` defect this ticket was filed to fix.
+
+    So the property is: WHATEVER a refusal tells the operator to type, typing
+    it must be accepted. Asserted over every rename rather than over the three
+    that happen to be affected today.
+    """
+    s, name = _residue_proxy(tmp_path)
+    for renamed in sorted(ENGINE_RENAMED_SUBTAGS):
+        ok, err = s.set_manual_locale(name, renamed)
+        assert ok is False, renamed
+        # WHATEVER the sentence tells the operator to type, typing it must be
+        # accepted — asserted by actually typing it into a fresh store.
+        for quoted in re.findall(r"Declare '([a-z-]+)'", err):
+            assert is_declarable_language(quoted), (renamed, quoted, err)
+            s2, n2 = _residue_proxy(tmp_path / renamed)
+            ok2, err2 = s2.set_manual_locale(n2, quoted)
+            assert ok2 is True, (renamed, quoted, err2)
+    # The three with no two-letter replacement say so and name no gesture,
+    # rather than naming one that loops.
+    for dead_end in ("bh", "tl"):
+        _, err = s.set_manual_locale(name, dead_end)
+        assert "Declare '" not in err, (dead_end, err)
+        assert ENGINE_RENAMED_SUBTAGS[dead_end] in err
+
+
+def test_the_two_CLDR_aliases_the_product_itself_needs_are_NOT_excluded():
+    """THE OTHER DIRECTION, and the reason the exclusion is measured data
+    rather than "every CLDR ``<languageAlias>`` entry".
+
+    CLDR's alias table also carries ``nb`` -> ``no`` and ``sr`` -> ``sh``.
+    ICU does not apply those directions — ``nb-NO`` and ``sr-RS`` canonicalize
+    to themselves, measured — and BOTH are live values in the shipped
+    ``_COUNTRY_LOCALE`` table. Excluding them by reading the alias table
+    naively would make a locale the product itself ships undeclarable, which is
+    the same class of defect one step in the other direction: an over-wide
+    exclusion is as wrong as an under-wide one, and only a measurement
+    distinguishes them.
+    """
+    for keep in ("nb", "sr"):
+        assert keep not in ENGINE_RENAMED_SUBTAGS, keep
+        assert is_declarable_language(keep), keep
+    # Stated as the set relation too, so a future regeneration that widened the
+    # exclusion into the shipped table fails here rather than in the field.
+    used = {locale.split("-")[0] for locale in _COUNTRY_LOCALE.values()}
+    assert not (used & set(ENGINE_RENAMED_SUBTAGS)), used & set(
+        ENGINE_RENAMED_SUBTAGS
+    )
+
+
+def test_the_rename_is_measured_on_the_COMPOSED_form_not_the_bare_subtag():
+    """WHY ``tw`` IS IN THE LIST, and the reading that a bare-subtag check gets
+    wrong.
+
+    This product never ships a bare language subtag: ``declared_locale``
+    composes ``<lang>-<COUNTRY>`` and hands THAT to the engine. ``tw`` alone
+    canonicalizes to ``tw`` — so a check written against the bare form passes
+    it — while ``tw-NG`` canonicalizes to ``ak-NG``. The exclusion set must
+    therefore be measured on the composed value, which is the unit the operator
+    is actually declaring.
+
+    Asserted here as the shape of the recorded fact rather than by re-running
+    ICU: every excluded subtag records what an engine answers INSTEAD, and that
+    replacement is a different language subtag — never the subtag itself, which
+    would be a no-op entry papering over a bad measurement.
+    """
+    for tag, replacement in ENGINE_RENAMED_SUBTAGS.items():
+        assert replacement and replacement != tag, (tag, replacement)
+        assert replacement.split("-")[0] != tag, (tag, replacement)
+    assert ENGINE_RENAMED_SUBTAGS["tw"] == "ak"
 
 
 def test_the_vendored_list_matches_its_recorded_checksum():
@@ -1147,6 +1290,37 @@ def test_the_dialog_refuses_a_bad_language_and_does_not_close(tmp_path):
         "the operator must be told which value was refused"
     )
     assert _store(tmp_path).get(name).manual_locale_language == ""
+
+
+def test_the_dialog_refuses_every_renamed_language_the_STORE_refuses(tmp_path):
+    """⭐ THE TWO GATES MUST AGREE, asserted as a SET relation over the whole
+    exclusion table rather than on one example.
+
+    The dialog validates BEFORE the store does, so a helper that answers where
+    its caller raises — or, here, a caller that raises where the helper is
+    silent — produces a sentence the store would never have written. Both arms
+    read the SAME vendored ``ENGINE_RENAMED_SUBTAGS``, and this pins that they
+    cannot drift apart: every renamed subtag is refused at the dialog, nothing
+    reaches disk, and the dialog stays open so the operator's input is not
+    thrown away.
+
+    ⛔ AND THE SENTENCE MUST NOT BE FALSE. ``sh`` IS Serbo-Croatian, so
+    "'sh' is not a language code" is a lie about the operator's own input. The
+    dialog says what an engine does to it instead.
+    """
+    for renamed, answer in sorted(ENGINE_RENAMED_SUBTAGS.items()):
+        s, name = _residue_proxy(tmp_path / f"dlg-{renamed}")
+        page, dlg = _open(s, name, language=renamed)
+        assert page.popped is False, renamed
+        shown = _all_text(dlg)
+        assert [t for t in shown if renamed in t], renamed
+        assert [t for t in shown if answer in t], (renamed, answer)
+        assert not [t for t in shown if "is not a language code" in t], (
+            f"{renamed!r} IS a language; the dialog must not say otherwise"
+        )
+        assert _store(tmp_path / f"dlg-{renamed}").get(
+            name
+        ).manual_locale_language == "", renamed
 
 
 def test_the_dialog_prefills_a_LIVE_declaration_so_it_can_be_read_back(tmp_path):
