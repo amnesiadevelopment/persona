@@ -996,11 +996,38 @@ class App:
         panel has none, and a stale row that swallows the click with no
         explanation is the dead-button defect this whole group of tests exists
         to prevent. "An update is pending" is also a state the operator can act
-        on."""
+        on.
+
+        ⚠️ ON WINDOWS THE SERVICE CALL DOES NOT RETURN (PS-328). Its revert
+        runs from a generated .bat after this process exits, because app.zip
+        cannot be replaced while flet holds it (errno-32, #195) — so
+        revert_to_previous_build spawns and calls os._exit(0), and everything
+        after the call is dead code on that platform. The status is therefore
+        set and the sidebar refreshed BEFORE the call there. That is the
+        dead-button rule applied to a caller that has no "after": the operator
+        sees why the app is about to vanish, and the refusal arms below still
+        run because every REFUSAL still returns normally — only a successful
+        handoff exits."""
         if self._update_in_progress or self._update_staged:
             self._app_rollback_status = "can't go back while an update is pending"
             self._refresh_sidebar()
             return
+        # WINDOWS DOES NOT COME BACK FROM THIS CALL, so its status is set
+        # BEFORE it (PS-328). The Windows revert has to run from a generated
+        # .bat after this process exits — app.zip cannot be replaced while flet
+        # holds it (errno-32, #195) — so revert_to_previous_build spawns and
+        # calls os._exit(0). Every line below it would be dead code there.
+        #
+        # Written this way round rather than as a Windows branch further down
+        # for one reason: the branch that never returns must not be the branch
+        # that leaves the operator with nothing on screen. The status is
+        # already set and the sidebar already refreshed when the handoff
+        # happens, so a spawn that fails still finds a rendered explanation,
+        # and the failure arms below still run — the call DOES return on every
+        # refusal, only a successful handoff exits.
+        if _platform.IS_WINDOWS:
+            self._app_rollback_status = "going back — persona will restart"
+            self._refresh_sidebar()
         try:
             went = app_update.revert_to_previous_build(log=self._log)
         except Exception as e:

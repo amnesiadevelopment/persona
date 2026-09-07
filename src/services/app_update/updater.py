@@ -1058,23 +1058,58 @@ def rollback_target() -> str:
     offered, because a revert with no retained bundle is a button that cannot
     work.
 
-    macOS (.app bundle) and Linux (AppImage). The Linux arm is what makes the
-    row render there at all: _app_rollback_row is NOT platform-gated — it asks
-    this function and renders nothing when the answer is "" — so while this
-    early-returned on every non-macOS host, the control silently did not exist
-    for any Linux operator, on the platform that installs updates unattended
-    by default. Windows is still "" here on purpose: its fast path keeps a
-    `.prev` under its own scheme (fast_update.py) and its full-installer path
-    upgrades in place under Inno's AppId semantics, neither of which this
-    resolves.
+    macOS (.app bundle), Linux (AppImage) and Windows (the code-only fast
+    path's retained `app.zip` + `app.zip.hash` pair). The Linux arm is what
+    makes the row render there at all: _app_rollback_row is NOT platform-gated
+    — it asks this function and renders nothing when the answer is "" — so
+    while this early-returned on every non-macOS host, the control silently did
+    not exist for any Linux operator, on the platform that installs updates
+    unattended by default. Windows was the last platform in that position, for
+    a narrower reason: its fast path DID retain the previous pair, and then
+    deleted it on the boot confirm ~3s later, so there was genuinely nothing
+    for this to resolve (PS-328). The pair now survives, and this arm reads it.
 
-    Note the two retained artifacts are different KINDS — a .app is a
-    directory, an AppImage is a single executable file — so each arm tests for
-    what it actually keeps rather than sharing one existence check.
+    The Windows answer is the retained `app.zip.prev` — NOT a `.bak`. Every
+    other arm here happens to end in `.bak`, and revert_to_previous_build used
+    to derive the install path by stripping exactly that many characters; a
+    `.prev` path through that line yields "/x/app.zip." silently. The Windows
+    revert therefore branches BEFORE that derivation rather than sharing it,
+    and test_windows_revert_does_not_corrupt_the_path_via_the_bak_strip pins
+    it. If a fourth arm is ever added, check that line first.
+
+    The full-installer lane on Windows keeps NO previous install — Inno
+    upgrades in place under a fixed AppId with [InstallDelete] {app}\\* — so a
+    Windows install whose last update went that way has no `.prev` pair, this
+    answers "", and the row correctly stays absent. Degrading honestly there is
+    the point: a revert button on an install with nothing retained is a button
+    that cannot work.
+
+    Note the retained artifacts are different KINDS — a .app is a directory, an
+    AppImage is a single executable file, the Windows retention is a PAIR of
+    files — so each arm tests for what it actually keeps rather than sharing
+    one existence check.
 
     Deliberately quiet: every failure to resolve an install location answers ""
     rather than raising, because this is called to decide whether to RENDER a
     control."""
+    if _platform.IS_WINDOWS:
+        try:
+            from . import fast_update
+
+            dst_zip, dst_hash = fast_update.install_app_zip_paths()
+            if not dst_zip or not dst_hash:
+                return ""
+            prev_zip, prev_hash = fast_update.retained_paths(dst_zip, dst_hash)
+            # BOTH halves or nothing. The hash going back WITH the zip is what
+            # makes flet re-extract (restore_steps' docstring states this), so
+            # a lone zip is not a revert this can honour — and offering the
+            # gesture for one would be the dead button the "" contract exists
+            # to prevent.
+            if os.path.isfile(prev_zip) and os.path.isfile(prev_hash):
+                return prev_zip
+            return ""
+        except Exception:
+            return ""
     if _platform.IS_LINUX:
         try:
             target = installed_appimage_path()
@@ -1171,6 +1206,106 @@ def _restore_install_location(app: str, *candidates: str) -> str:
     return ""
 
 
+def _revert_windows_fast_path(_say, log) -> str:
+    """The Windows half of revert_to_previous_build. Does not return on
+    success — see that function's docstring for why.
+
+    The ORDER here is the whole safety property. Everything that can fail is
+    done while the current build is still live and untouched: the retained pair
+    is resolved, the script is written, the hold is recorded, and only then is
+    the script spawned and this process exited. Nothing on disk has moved when
+    any of the refusals below return "" — the operator is left running exactly
+    what they were running, which is what makes a refusal safe to retry.
+
+    THE HOLD IS WRITTEN BEFORE THE HANDOFF, not after, and that is not an
+    optimisation: after the handoff there is no "after" — os._exit(0) is the
+    last statement this process runs. Without the hold the restart the script
+    performs is itself the undo (the 60s poll re-offers the release just
+    rejected and the revert lasts under a minute — the PS-208 defect, which
+    this arm must not re-acquire on a new platform). _set_hold is best-effort
+    by its own contract: an unwritable settings file logs and does not fail a
+    revert that is otherwise going to succeed.
+
+    ...AND THE ONE ARM THAT COMES BACK TAKES IT OFF AGAIN. Writing the hold
+    early is forced, but it is only CORRECT for the path that never returns.
+    The spawn-failure arm below does return, and it returns having changed
+    nothing on disk — so a hold left behind there is a standing "not that
+    release" instruction recorded for a revert that DID NOT HAPPEN. That is not
+    a cosmetic leftover: _app_rollback_row reads the held state FIRST and
+    returns early, so the operator who just failed to go back loses the very
+    "go back" row they would retry from, and the only control left on the panel
+    offers to RESUME the release they are trying to escape — strictly worse
+    than the no-button state this ticket started from. The two shipped
+    platforms cannot reach this because they write the hold only once the
+    rename has already succeeded; this arm restores that invariant (hold ⇔ a
+    revert that really happened) by undoing rather than by reordering.
+    """
+    from . import fast_update
+
+    try:
+        bat = fast_update.stage_retained_restore(log=log)
+    except Exception as e:
+        _say(f"Update: couldn't go back to the previous version ({e}).")
+        return ""
+    if not bat:
+        # SILENT HERE, DELIBERATELY. Every one of stage_retained_restore's four
+        # refusal arms now says its own reason exactly once — including the
+        # nothing-retained case, which is the one that used to be silent there
+        # and got a blanket message here. That blanket message was WRONG on the
+        # other three: it fired on top of a true, specific reason (a missing
+        # install layout, an unlocatable persona.exe, an unwritable %TEMP%) and
+        # told the operator no previous version was retained while the pair was
+        # on disk and _app_rollback_row was still rendering the go-back row off
+        # it. Two contradictory facts on one screen, with the phrase that means
+        # "stop trying" attached to conditions that are worth retrying.
+        #
+        # So this arm adds nothing. Anything said about WHY a stage failed is
+        # said by the branch that knows — which is what makes "exactly one
+        # reason reaches the operator" a structural property here rather than a
+        # claim this comment has to be trusted about.
+        return ""
+    # Held value is APP_VERSION — the release being rejected, which is exactly
+    # the one this process is running.
+    _set_hold(log=log)
+    _say("Update: going back to the previous version — persona will restart "
+         "into it. The version you went back from is held until you resume "
+         "updates.")
+    try:
+        fast_update._spawn_bat(bat)
+    except Exception as e:
+        # Nothing has moved — INCLUDING THE HOLD. The script was never started,
+        # so the live pair is untouched and the retained pair is still there to
+        # try again with; the hold had to be written before the handoff (there
+        # is no "after" on the success path), so this — the one arm that DOES
+        # come back — is where it comes off again. Leaving it would hide the
+        # go-back row behind a "resume updates" button for a revert that never
+        # happened.
+        #
+        # NOT resume_app_updates(log=log), deliberately, though it is the same
+        # single write: that helper narrates "automatic updates resumed", which
+        # is an OPERATOR GESTURE this operator did not make, and it would land
+        # between the two messages that describe what really happened. So the
+        # undo is silent when it works — restoring the state they were already
+        # in needs no announcement — and speaks only when it does NOT, because
+        # a hold that cannot be cleared is the one case where they are left
+        # holding something invisible. Best-effort in both directions: a
+        # refusal that is otherwise safe to retry must not become an exception.
+        try:
+            from ...core import settings
+
+            settings.set_app_update_hold("")
+        except Exception as clear_err:
+            _say(f"Update: couldn't clear the update hold ({clear_err}).")
+        _say(f"Update: couldn't go back to the previous version ({e}).")
+        return ""
+    fast_update.exit_for_restart()
+    # Unreachable in production (exit_for_restart does not return); a test that
+    # stubs that seam gets the install path back, exactly as the other
+    # platforms' success arm returns it.
+    dst_zip, _dst_hash = fast_update.install_app_zip_paths()
+    return dst_zip or ""
+
+
 def revert_to_previous_build(log=None) -> str:
     """Go BACK to the retained previous build. Returns the path now installed,
     or "" when the revert was refused or could not be completed.
@@ -1189,6 +1324,23 @@ def revert_to_previous_build(log=None) -> str:
     reverted FROM — exec'ing into the restored one from here would kill the
     running app mid-gesture, and on Linux _apply_linux's own relaunch comment
     records what that costs when the cwd disappears underneath it.
+
+    THE WINDOWS ARM DOES NOT RETURN AT ALL, and that divergence is real rather
+    than an implementation detail to paper over (PS-328). app.zip cannot be
+    replaced while flet holds it (errno-32, #195), so the restore has to run
+    from the same generated script the forward swap uses — which means spawn,
+    then exit. A function that never returns cannot be consumed by a caller
+    that branches on its return value, so the Windows branch says everything it
+    has to say to the operator BEFORE it hands off, and _on_app_rollback has
+    its own Windows arm that sets the status line before calling. Every way the
+    revert can be REFUSED still returns "" normally: the staging is done while
+    the operator is still running something, and only a successful stage exits.
+
+    Note also what the Windows arm does NOT share: the `.bak` strip below. Its
+    retained artifact ends in `.prev`, and `target[: -len(".bak")]` on a
+    `.prev` path yields "/x/app.zip." — a path that does not exist, silently,
+    with every rename after it written against that derivation. So it branches
+    HERE, above that line, rather than inside the machinery that follows.
 
     RENAME, NEVER COPY — and that is a correctness constraint, not a
     performance one. `ditto` is used for the forward swap precisely because it
@@ -1221,6 +1373,9 @@ def revert_to_previous_build(log=None) -> str:
     def _say(m):
         if log:
             log(m)
+
+    if _platform.IS_WINDOWS:
+        return _revert_windows_fast_path(_say, log)
 
     target = rollback_target()
     if not target:
