@@ -241,6 +241,12 @@ def test_the_selection_and_the_floor_agree(runner) -> None:
     They are two constants because they answer different questions, and a lane
     that runs a check without requiring its pass is a legitimate future shape —
     but while they are meant to be equal, they must not drift apart silently.
+
+    ⚠️ THIS TEST IS ONLY WORTH ANYTHING BECAUSE THE FLOOR IS WRITTEN OUT. Round
+    1 of PS-336 shipped `EXPECTED_CHECKS = SELECTED_CHECKS`, and against an
+    alias this assertion reads `x == x` — true for every possible value,
+    forever. It is guarded by the test below, which drives the attack rather
+    than trusting the constant to stay independent.
     """
     assert set(runner.SELECTED_CHECKS) == set(runner.EXPECTED_CHECKS), (
         "the lane selects one set of checks and requires another:\n"
@@ -249,6 +255,77 @@ def test_the_selection_and_the_floor_agree(runner) -> None:
         "A name in the floor but not the selection can never be certified, so "
         "the gate would be permanently red."
     )
+
+
+def test_a_selection_narrowed_by_hand_cannot_narrow_the_floor_with_it() -> None:
+    """The floor must be INDEPENDENT of the selection, not an alias of it.
+
+    This drives the attack the runner header calls mechanism 2, and it is the
+    one attack the two constants' EQUALITY cannot detect. Mechanism 1 (`--check`
+    validating its names) protects against the REGISTRY changing; nothing but
+    the floor's independence protects against THIS FILE being edited to select
+    fewer checks.
+
+    Measured on PS-336 round 1, which shipped `EXPECTED_CHECKS =
+    SELECTED_CHECKS` — the same tuple object, not a copy:
+
+        aliased,     selection narrowed to 1 of 3 -> adjudicate(0, ...) = 0
+        de-aliased,  selection narrowed to 1 of 3 -> adjudicate(0, ...) = 2
+
+    A gate that exits 0 saying "the behaviour held" over one third of its lane
+    is PS-315's own hole re-created inside the mechanism written to close it.
+    Asserted BEHAVIOURALLY — the source is edited the way a human narrowing the
+    lane would edit it, the module is re-imported, and the real adjudication is
+    run over a real report. An `is`-identity check would NOT do: CPython
+    de-duplicates equal literal tuples, so a correctly de-aliased floor is
+    still `is`-identical to the selection and that probe reports the defect
+    when there is none.
+    """
+    source = RUNNER_SCRIPT.read_text(encoding="utf-8")
+    selection = (
+        'SELECTED_CHECKS = (\n'
+        '    "restart-continuity",\n'
+        '    "benign-edit-stability",\n'
+        '    "trash-restore-and-wipe",\n'
+        ')'
+    )
+    assert source.count(selection) == 1, (
+        "the selection is no longer written in the shape this test narrows, so "
+        "the attack below is not being driven — re-derive it before trusting a "
+        "green here"
+    )
+
+    narrowed = source.replace(
+        selection, 'SELECTED_CHECKS = (\n    "restart-continuity",\n)', 1
+    )
+    namespace: dict = {"__file__": str(RUNNER_SCRIPT), "__name__": "_ps336_narrowed"}
+    exec(compile(narrowed, str(RUNNER_SCRIPT), "exec"), namespace)  # noqa: S102
+
+    assert namespace["SELECTED_CHECKS"] == ("restart-continuity",), (
+        "the narrowing edit did not take, so this test is not driving anything"
+    )
+
+    floor = namespace["EXPECTED_CHECKS"]
+    assert set(floor) == set(EXPECTED), (
+        "narrowing the SELECTION narrowed the FLOOR with it, so `EXPECTED_CHECKS` "
+        "is an alias of `SELECTED_CHECKS` rather than its own constant:\n"
+        f"  selected: {sorted(namespace['SELECTED_CHECKS'])}\n"
+        f"  floor:    {sorted(floor)}\n"
+        "The floor's independence IS the second mechanism — write it out."
+    )
+
+    code, note = namespace["adjudicate"](
+        0, _report(["restart-continuity"]), floor
+    )
+    assert code == 2, (
+        "a lane that certified 1 of 3 checks exited 0 — 'the behaviour held' "
+        "over two checks that never ran. This is PS-315's hole, one lane over"
+    )
+    for missing in ("benign-edit-stability", "trash-restore-and-wipe"):
+        assert missing in (note or ""), (
+            f"the downgrade does not name {missing!r}, so the log says a check "
+            "went missing without saying which"
+        )
 
 
 # --- the floor is real, and it is the registry's launch lane -----------------
@@ -260,6 +337,12 @@ def test_the_floor_is_not_empty(runner) -> None:
     This is PS-315's hole stated at its root: `exit_code([])` is `EXIT_OK`, and
     a floor of no names makes every `missing` list empty, so the adjudication
     would honour that 0.
+
+    ⚠️ This asserts the CONSTANT is non-empty, which under round 1's alias was
+    the same claim as "the selection is non-empty" — a floor that empties only
+    because the selection did. The floor's independence is driven by
+    `test_a_selection_narrowed_by_hand_cannot_narrow_the_floor_with_it`; the
+    refusal itself is driven by `test_an_empty_floor_cannot_certify_anything`.
     """
     assert runner.EXPECTED_CHECKS, (
         "the launch lane's floor is empty — a gate with nothing to certify "

@@ -254,11 +254,25 @@ COMMAND = [
 #: make this agree with an EMPTY registry by construction, which is the failure
 #: being guarded against, and a name says WHICH check went missing.
 #:
-#: EQUAL TO `SELECTED_CHECKS` today, and they are still two constants rather
-#: than one alias — because they answer different questions ("what did we ask
-#: for?" versus "what must have passed?") and a future lane that runs a check
-#: without requiring its pass is a legitimate shape. A test pins them equal so
-#: the pair cannot drift silently while that stays true.
+#: EQUAL TO `SELECTED_CHECKS` today, and WRITTEN OUT rather than aliased to it
+#: — because they answer different questions ("what did we ask for?" versus
+#: "what must have passed?") and a future lane that runs a check without
+#: requiring its pass is a legitimate shape. A test pins them equal so the pair
+#: cannot drift silently while that stays true.
+#:
+#: ⛔ DO NOT WRITE `EXPECTED_CHECKS = SELECTED_CHECKS`. That is what this file
+#: shipped at PS-336 round 1, and it is not a copy — it is the SAME tuple
+#: object, which silently disables mechanism 2 below. The floor's INDEPENDENCE
+#: from the selection *is* mechanism 2: an alias makes a selection narrowed by
+#: hand narrow the floor with it, so a lane certifying 1 of 3 finds nothing
+#: missing and exits 0 — "the behaviour held" — which is precisely PS-315's
+#: hole re-created inside the mechanism written to close it. It also makes
+#: `test_the_selection_and_the_floor_agree` read `x == x`, so the guard that
+#: was supposed to notice the drift cannot fail for any value.
+#: Measured on this branch, selection narrowed to `("restart-continuity",)`:
+#: aliased -> `adjudicate(0, "1 passed, ...")` = exit 0, and only 4 of 37 tests
+#: fire, neither of them that guard; de-aliased -> exit 2 naming
+#: `benign-edit-stability, trash-restore-and-wipe`, and that guard goes RED.
 #:
 #: ⛔ DO NOT relax the registry-agreement test that guards this constant, and
 #: do not merge this floor into PS-315's. They are two lanes with two floors,
@@ -266,7 +280,11 @@ COMMAND = [
 #: there turns that guard red (measured: `1 failed, 33 deselected`), and the
 #: cheapest-looking repair re-opens the empty-selection hole PS-315 was
 #: reworked to close.
-EXPECTED_CHECKS = SELECTED_CHECKS
+EXPECTED_CHECKS = (
+    "restart-continuity",
+    "benign-edit-stability",
+    "trash-restore-and-wipe",
+)
 
 #: Recorded so a reader of a red run knows what the lane costs and can tell a
 #: genuinely wedged launch from a slow one. Measured on this branch, one host,
