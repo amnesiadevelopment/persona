@@ -136,7 +136,7 @@ MODULE = "src.services.verify.behaviour_cli"
 MODULE_FILE = REPO_ROOT.joinpath(*MODULE.split(".")).with_suffix(".py")
 
 #: The lane this step runs. `--skip-launch` selects the three checks that need
-#: no browser, no display and no exit. The four launch-backed checks are
+#: no browser, no display and no exit. The five launch-backed checks are
 #: deliberately NOT run here — provisioning a display is separate work, argued
 #: on its own evidence.
 COMMAND = [sys.executable, "-m", MODULE, "run", "--skip-launch"]

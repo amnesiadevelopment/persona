@@ -1171,6 +1171,12 @@ def _launch_and_grow(
     group could be recorded or the tree never reached :data:`_MIN_LIVE_TREE` —
     both of which are "nothing was measured", never "nothing survived".
 
+    ⭐ EVERY FAILING PATH OUT OF HERE SWEEPS THE TREE IT LAUNCHED. That is a
+    contract the caller depends on and cannot supply itself: the caller's own
+    ``try``/``finally`` opens only once this function has RETURNED, so a raise
+    from inside here — most importantly the instrument raising, not the product
+    — happens in a window nothing else guards.
+
     ``spawn_browser`` is the entry point the UI and the REST lane both go
     through, for the reason ``_launch_outcome`` states about the geography
     check: asserting against an internal helper is the shape of a unit test and
@@ -1181,15 +1187,44 @@ def _launch_and_grow(
 
     ctx.launches += 1
     proc = spawn_browser(profile)
-    _drain(proc)
 
-    # THE GROUP IS READ FROM THE HANDLE, NOT GUESSED, and it is the only thing
-    # this check will ever signal or count. Anchoring on the group rather than
-    # on a command-line substring is what keeps the check from reaping
-    # unrelated processes on a shared runner — PS-185's worker lost two cycles
-    # to a `pkill -f chromium` that matched its own command line, and a group
-    # kill aimed at a non-leader kills the caller.
-    pgid = recorded_group(proc)
+    # ⭐ FROM HERE A REAL TREE IS RUNNING, so every way out of this function
+    # must sweep it — INCLUDING the ways that are the INSTRUMENT failing
+    # rather than the product. `_survivors_or_refuse` is *designed* to raise
+    # (psutil absent is "I could not look", never "nothing survived"), and an
+    # unguarded raise would propagate past the caller's own `try:` — which has
+    # not been entered yet — and leave the launched tree alive behind a report
+    # that reads CANNOT RUN. Measured before the guard, on a real chromium
+    # wrapper launch with the instrument broken mid-sampling: 10 live
+    # processes still running after the check gave up. A gate that leaks when
+    # its instrument breaks is the ticket's second ⛔ met on the happy path
+    # only.
+    try:
+        _drain(proc)
+
+        # THE GROUP IS READ FROM THE HANDLE, NOT GUESSED, and it is the only
+        # thing this check will ever signal or count. Anchoring on the group
+        # rather than on a command-line substring is what keeps the check from
+        # reaping unrelated processes on a shared runner — PS-185's worker lost
+        # two cycles to a `pkill -f chromium` that matched its own command
+        # line, and a group kill aimed at a non-leader kills the caller.
+        pgid = recorded_group(proc)
+    except BaseException:
+        # No group has been NAMED yet, so a sweep has nothing to anchor on.
+        # Ask once more — `recorded_group` only reads the handle — and fall
+        # back to the single pid we hold, which is the same rule the
+        # `pgid is None` branch below states: a group we cannot name is a
+        # group we must not guess at.
+        stray: "int | None" = None
+        with contextlib.suppress(Exception):
+            stray = recorded_group(proc)
+        if stray is None:
+            with contextlib.suppress(Exception):
+                proc.kill()
+        else:
+            _sweep_group(stray)
+        raise
+
     if pgid is None:
         # The most this may safely reach is the one pid it holds — which is
         # exactly the reason it refuses to measure from here. Nothing else is
@@ -1207,35 +1242,47 @@ def _launch_and_grow(
             "guess at a group id."
         )
 
-    peak = 0
-    stable = 0
-    last = -1
-    deadline = time.monotonic() + _TREE_GROW_TIMEOUT
-    while time.monotonic() < deadline:
-        size = len(_survivors_or_refuse(pgid))
-        peak = max(peak, size)
-        # SETTLED, not merely large. A tree sampled mid-startup is smaller than
-        # the one that leaks, and tearing that down does not orphan anything —
-        # see `_STABLE_SAMPLES`.
-        stable = stable + 1 if size == last and size >= _MIN_LIVE_TREE else 0
-        last = size
-        if stable >= _STABLE_SAMPLES:
-            break
-        time.sleep(_SAMPLE_INTERVAL)
+    # ⭐ EVERYTHING FROM HERE IS GUARDED, because the group now exists and a
+    # live tree is running under it. `except BaseException: … raise` rather
+    # than `finally:` deliberately — the SUCCESS path hands the live tree to
+    # the caller, which is the whole point of this function, so a `finally`
+    # would sweep the tree the caller is about to measure. This also covers a
+    # KeyboardInterrupt or a timeout landing inside the ~90s sampling window.
+    try:
+        peak = 0
+        stable = 0
+        last = -1
+        deadline = time.monotonic() + _TREE_GROW_TIMEOUT
+        while time.monotonic() < deadline:
+            size = len(_survivors_or_refuse(pgid))
+            peak = max(peak, size)
+            # SETTLED, not merely large. A tree sampled mid-startup is smaller
+            # than the one that leaks, and tearing that down does not orphan
+            # anything — see `_STABLE_SAMPLES`.
+            stable = (
+                stable + 1 if size == last and size >= _MIN_LIVE_TREE else 0
+            )
+            last = size
+            if stable >= _STABLE_SAMPLES:
+                break
+            time.sleep(_SAMPLE_INTERVAL)
 
-    if stable < _STABLE_SAMPLES:
-        # The precondition failed, so NOTHING is asserted about survivors. This
-        # is the branch that keeps the check from being unfailable.
+        if stable < _STABLE_SAMPLES:
+            # The precondition failed, so NOTHING is asserted about survivors.
+            # This is the branch that keeps the check from being unfailable.
+            # The sweep is the guard's job now, not this branch's.
+            raise BehaviourCheckError(
+                f"the launched group {pgid} never held a SETTLED tree of at "
+                f"least {_MIN_LIVE_TREE} live processes (peak {peak}, last "
+                f"{last}) within {_TREE_GROW_TIMEOUT:.0f}s, so no browser tree "
+                "was observed running. A survivor count of zero taken from "
+                "here would certify a teardown that had nothing to tear down "
+                "— which is precisely the defect this check exists to "
+                "prevent, reproduced inside it. Nothing was measured."
+            )
+    except BaseException:
         _sweep_group(pgid)
-        raise BehaviourCheckError(
-            f"the launched group {pgid} never held a SETTLED tree of at least "
-            f"{_MIN_LIVE_TREE} live processes (peak {peak}, last {last}) "
-            f"within {_TREE_GROW_TIMEOUT:.0f}s, so no browser tree was "
-            "observed running. A survivor count of zero taken from here would "
-            "certify a teardown that had nothing to tear down — which is "
-            "precisely the defect this check exists to prevent, reproduced "
-            "inside it. Nothing was measured."
-        )
+        raise
     return proc, pgid, peak
 
 
