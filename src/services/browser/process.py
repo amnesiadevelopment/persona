@@ -1093,6 +1093,30 @@ def spawn_browser(profile: Profile, *, in_process: bool = False) -> subprocess.P
             # "it's 8" is false for most of them.
             f"--fingerprint-hardware-concurrency="
             f"{hardware_concurrency_for(profile.fingerprint_seed, profile.hardware_generation)}",
+            # ⛔ THE SWITCH THAT MUST NEVER APPEAR IN THIS LIST: --disable-spoofing.
+            #
+            # A reader auditing the fingerprint switches will notice that patch
+            # 000 declares twelve and this launch passes six, and the natural
+            # next thought is "wire the rest". This one is the counter-example
+            # that makes that instinct wrong, and the reason is recorded HERE —
+            # beside the flags it sits among — rather than in a test, because
+            # this is where the question gets asked.
+            #
+            # --disable-spoofing is the MOST consumed switch in the whole patch
+            # set after --fingerprint itself: patches 003, 006, 011, 012, 013,
+            # 014, 015 and 016 each read it as an EARLY RETURN that stands the
+            # patch down. Passing it would switch OFF audio noise, font
+            # masking, GPU-info spoofing, canvas getImageData/toDataURL, client
+            # rects, measureText and WebGL readPixels — in one flag.
+            # It is upstream's kill switch for the whole masking layer, present
+            # so a developer can A/B the patched engine against stock.
+            #
+            # So its absence from this list is a DELIBERATE POSITION, not an
+            # oversight, and it is the one row of the switch census where
+            # "declared, consumed, and correctly never passed" is the finished
+            # state. Pinned by tests/test_engine_switch_matrix.py, which
+            # re-reads this paragraph so deleting it turns the suite red rather
+            # than silently converting a decision into an unexplained gap.
             f"--lang={lang}",
             f"--accept-lang={lang},{lang.split('-')[0]}",
             f"--load-extension={','.join(extensions)}",
