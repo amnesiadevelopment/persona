@@ -1,0 +1,34 @@
+product arm : FALSIFICATION ARM — the STOCK control run a second time and labelled as if it were the product. Its table is what 'patches absent' looks like through this instrument.
+  binary    : Google Chrome for Testing 152.0.7977.75
+  sha256    : 3c84cfdbadd0b5b9d1943568b67faea54cf818d20ca32a337fd8a68a0d61ac76
+control arm : STOCK Google Chrome for Testing 152.0.7977.75 (CONTROL — NOT the product), version-matched
+  binary    : Google Chrome for Testing 152.0.7977.75
+  sha256    : 3c84cfdbadd0b5b9d1943568b67faea54cf818d20ca32a337fd8a68a0d61ac76
+
+REQUIRED SIGNALS (layer OFF — engine-attributable):
+  !! switches.hardware_concurrency      differs=False all_realms=False seed_derived=False   patch 005 — the switch reaches the page, in every realm, per seed
+  !! switches.timezone                  differs=False all_realms=False seed_derived=False   patch 018 — --timezone is honoured (a constant per run by design)
+  !! switches.tz_offset_minutes         differs=False all_realms=False seed_derived=False   patch 018 — the Date offset moves with it, not just the Intl string
+  !! webgl.unmasked_vendor              differs=False all_realms=False seed_derived=False   patch 011 — the GPU vendor a detector reads is not the host's
+  !! webgl.unmasked_renderer            differs=False all_realms=False seed_derived=False   patch 011 — and the renderer is DERIVED from the seed, not a constant
+  !! webgl.readpixels_hash              differs=False all_realms=False seed_derived=False   patch 016 — WebGL readback is perturbed per seed, in every realm
+  !! canvas.getimagedata_hash           differs=False all_realms=False seed_derived=False   patch 012 — canvas readback is perturbed per seed, in every realm
+  !! canvas.todataurl_hash              differs=False all_realms=False seed_derived=False   patch 013 — DOM realms only (a worker canvas has no toDataURL)
+  !! client_rects.x                     differs=False all_realms=False seed_derived=False   patch 014 — an eligible element's rect is offset per seed (DOM only)
+  !! switches.webdriver                 differs=False all_realms=False seed_derived=False   patch 009 — webdriver is false under CDP, where stock reports true
+
+NEGATIVE CONTROLS (must read IDENTICAL to stock):
+  OK client_rects.width                 differs=False   patch 014 Offsets, never Scales — width must not move
+  OK client_rects_exempt.x              differs=False   patch 014 exempts absolute+fixed top/left elements
+
+VERDICT: PATCHES ABSENT — 10 of 10 required signals were not observed:
+  · switches.hardware_concurrency: reads IDENTICAL to stock; does not differ in every realm on every seed — page[seed#0] reads stock: 8; page[seed#1] reads stock: 8; iframe_same_origin[seed#0] reads stock: 8; iframe_same_origin[seed#1] reads stock: 8; does not move with the seed
+  · switches.timezone: reads IDENTICAL to stock; does not differ in every realm on every seed — page[seed#0] reads stock: "UTC"; page[seed#1] reads stock: "UTC"; iframe_same_origin[seed#0] reads stock: "UTC"; iframe_same_origin[seed#1] reads stock: "UTC"
+  · switches.tz_offset_minutes: reads IDENTICAL to stock; does not differ in every realm on every seed — page[seed#0] reads stock: 0; page[seed#1] reads stock: 0; iframe_same_origin[seed#0] reads stock: 0; iframe_same_origin[seed#1] reads stock: 0
+  · webgl.unmasked_vendor: reads IDENTICAL to stock; does not differ in every realm on every seed — page[seed#0] reads stock: "Google Inc. (Google)"; page[seed#1] reads stock: "Google Inc. (Google)"; iframe_same_origin[seed#0] reads stock: "Google Inc. (Google)"; iframe_same_origin[seed#1] reads stock: "Google Inc. (Google)"
+  · webgl.unmasked_renderer: reads IDENTICAL to stock; does not differ in every realm on every seed — page[seed#0] reads stock: "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)"; page[seed#1] reads stock: "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)"; iframe_same_origin[seed#0] reads stock: "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)"; iframe_same_origin[seed#1] reads stock: "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)"; does not move with the seed
+  · webgl.readpixels_hash: reads IDENTICAL to stock; does not differ in every realm on every seed — page[seed#0] reads stock: 1412431872; page[seed#1] reads stock: 1412431872; iframe_same_origin[seed#0] reads stock: 1412431872; iframe_same_origin[seed#1] reads stock: 1412431872; does not move with the seed
+  · canvas.getimagedata_hash: reads IDENTICAL to stock; does not differ in every realm on every seed — page[seed#0] reads stock: 507247862; page[seed#1] reads stock: 507247862; iframe_same_origin[seed#0] reads stock: 507247862; iframe_same_origin[seed#1] reads stock: 507247862; does not move with the seed
+  · canvas.todataurl_hash: reads IDENTICAL to stock; does not move with the seed
+  · client_rects.x: reads IDENTICAL to stock; does not move with the seed
+  · switches.webdriver: reads IDENTICAL to stock

@@ -189,3 +189,46 @@ automatically for Firefox-engine bumps.)
 publish them under a `personium-<version>` tag **with the prerelease box
 ticked**. Building and packaging the engine artifacts is not automated yet —
 see PS-299 for the patch rebase and compile.
+
+Then **write the release's provenance record** into `engine/releases/` and run
+the verifier against the published assets:
+
+```bash
+python3 scripts/ps343_verify_release_provenance.py --download   # exit 0 is the bar
+```
+
+---
+
+## Accounting for an engine we have published
+
+`engine/releases/personium-<version>.json` records which ungoogled base, which
+Chromium version and which patch set produced a **published** engine, so that
+question is answerable from the repository rather than from a CI artifact.
+`scripts/ps218_manifest.sh` is not a substitute for it: that manifest describes
+a *trial* CI run, and it lives in an artifact with 30-day retention. **A
+provenance record that expires is not a provenance record.** See
+[`engine/releases/README.md`](engine/releases/README.md) for the format.
+
+Two rules, both of which the verifier enforces as hard failures rather than
+warnings:
+
+* **A field that cannot be established is `unknown`, and an `unknown` field may
+  not carry a value.** Today no workflow in this repository builds an engine
+  asset, so every field under `build{}` on the first record is honestly empty.
+  Filling one in with a plausible-looking guess is the specific failure this
+  record exists to prevent — a manifest assembled from assumptions reads as
+  evidence and is not.
+* **A digest is not a content check.** `sha256` attests to *identity*: that
+  these are the bytes that were published. It says nothing about what is inside
+  them. So each asset also carries a version re-derived from the artifact's own
+  structure, and the list of our fingerprint switches found in the shipped
+  machine code — reported as separate rows, neither standing in for the other.
+  An asset from which **nothing** was derived is `UNMEASURED` (exit `2`), never
+  a pass: a green run on a digest alone is that same trap wearing a tick.
+
+⚠️ **The first record found that the macOS asset of `personium-152.0.7977.75`
+contains `152.0.7977.64`.** `7977.64` is the only `7977.x` string anywhere in
+its decompressed image. Because the engine updater compares *tags*, a macOS
+machine on that asset believes it is on `.75`. It is recorded under
+`discrepancies[]` rather than smoothed over, and the next macOS engine release
+should be cut knowing it.

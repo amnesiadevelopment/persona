@@ -1,0 +1,24 @@
+product arm : PUBLISHED personium-152.0.7977.75 linux-x86_64 AppImage, downloaded from the release (THE PRODUCT)
+  binary    : Chromium 152.0.7977.75
+  sha256    : 6ddb7bbea0a2063b7a3618e6b5d4ebc96301cd80f8b0d6eae486af46a30bb4c3
+control arm : STOCK Google Chrome for Testing 152.0.7977.75 (CONTROL — NOT the product), version-matched
+  binary    : Google Chrome for Testing 152.0.7977.75
+  sha256    : 3c84cfdbadd0b5b9d1943568b67faea54cf818d20ca32a337fd8a68a0d61ac76
+
+REQUIRED SIGNALS (layer OFF — engine-attributable):
+  OK switches.hardware_concurrency      differs=True  all_realms=True  seed_derived=True    patch 005 — the switch reaches the page, in every realm, per seed
+  OK switches.timezone                  differs=True  all_realms=True  seed_derived=False   patch 018 — --timezone is honoured (a constant per run by design)
+  OK switches.tz_offset_minutes         differs=True  all_realms=True  seed_derived=False   patch 018 — the Date offset moves with it, not just the Intl string
+  OK webgl.unmasked_vendor              differs=True  all_realms=True  seed_derived=False   patch 011 — the GPU vendor a detector reads is not the host's
+  OK webgl.unmasked_renderer            differs=True  all_realms=True  seed_derived=True    patch 011 — and the renderer is DERIVED from the seed, not a constant
+  OK webgl.readpixels_hash              differs=True  all_realms=True  seed_derived=True    patch 016 — WebGL readback is perturbed per seed, in every realm
+  OK canvas.getimagedata_hash           differs=True  all_realms=True  seed_derived=True    patch 012 — canvas readback is perturbed per seed, in every realm
+  OK canvas.todataurl_hash              differs=True  all_realms=False seed_derived=True    patch 013 — DOM realms only (a worker canvas has no toDataURL)
+  OK client_rects.x                     differs=True  all_realms=False seed_derived=True    patch 014 — an eligible element's rect is offset per seed (DOM only)
+  OK switches.webdriver                 differs=True  all_realms=False seed_derived=False   patch 009 — webdriver is false under CDP, where stock reports true
+
+NEGATIVE CONTROLS (must read IDENTICAL to stock):
+  OK client_rects.width                 differs=False   patch 014 Offsets, never Scales — width must not move
+  OK client_rects_exempt.x              differs=False   patch 014 exempts absolute+fixed top/left elements
+
+VERDICT: PATCHES LIVE — all 10 required signals observed and both negative controls held still.

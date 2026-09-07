@@ -39,16 +39,20 @@ therefore carries one of five positions, and the fifth is the deliverable:
                          so, and a test below asserts that constraint still holds.
 * ``NOT_ESTABLISHED``  — NOTHING IN THE TREE RECORDS A POSITION. An honest
                          unknown, and never a claim of coverage. These cells are
-                         the actual finding: ``stealth``, ``measuretext``, and
-                         half of ``device``. Two names left this list on the day
-                         both were established BY MEASUREMENT — ``geo`` (PS-312,
-                         now NOT_COVERED_RECORDED) and, running the OTHER
-                         direction, Chromium's position on Firefox's
-                         ``outer-size`` (#327, now COVERED_ELSEWHERE via a
-                         launch argument rather than a spoof). The list shrinks
-                         only against a reading; ``test_the_open_cells_are_the_
-                         deliverable_and_are_named`` pins what is left AS DATA
-                         so this sentence cannot quietly disagree with it.
+                         the actual finding: ``stealth`` and ``measuretext``.
+                         Three names left this list on the day each was
+                         established BY MEASUREMENT — ``geo`` (PS-312, now
+                         NOT_COVERED_RECORDED); the mediaDevices half of
+                         ``device`` (PS-330, now NOT_COVERED_RECORDED — a real
+                         headful launch found the engine already answering with
+                         a constant synthetic roster carrying empty ids); and,
+                         running the OTHER direction, Chromium's position on
+                         Firefox's ``outer-size`` (#327, now COVERED_ELSEWHERE
+                         via a launch argument rather than a spoof). The list
+                         shrinks only against a reading; ``test_the_open_cells_
+                         are_the_deliverable_and_are_named`` pins what is left
+                         AS DATA so this sentence cannot quietly disagree with
+                         it.
 
 This is a CHARACTERIZATION test, on exactly the terms its network sibling states:
 it pins the matrix AS IT IS TODAY, unknowns included, and is green on day one —
@@ -95,7 +99,7 @@ The matrix, for ONE profile per column:
 | measuretext | build_measuretext_extension (always)  | ⭐ POSITION NOT ESTABLISHED       |
 | audio       | build_audio_extension (always)        | COVERED: raw add_init_script      |
 | mobile      | build_mobile_extension (mobile only)  | NOT APPLICABLE (coherence)       |
-| device      | build_device_extension (desktop only) | SPLIT: screen ELSEWHERE / media ⭐ |
+| device      | build_device_extension (desktop only) | SPLIT: screen ELSEWHERE / media NOT COVERED, reason recorded |
 | webgl       | build_webgl_extension (always)        | COVERED: _install_spoof("webgl")  |
 | gpu         | build_gpu_extension (always; PER ARM) | engine-authored arm (per-arm)     |
 | canvas_ctx  | build_canvas_ctx_extension (always)   | NOT APPLICABLE (coherence)       |
@@ -273,16 +277,24 @@ MATRIX = {
             "navigator.mediaDevices.enumerateDevices()",
         ),
         "firefox": (
-            NOT_ESTABLISHED,
-            "SPLIT, and the split is why this reads as an unknown rather than "
-            "as coverage. The SCREEN half is covered elsewhere and "
-            "conditionally: when a resolution was chosen, the launch pins "
-            "kwargs['pin'] = {screen.width/height/avail_*/dpr} at the ENGINE "
-            "layer (zoom.stealth.screen.*), so screen.* is spoofed without any "
-            "persona init script. The mediaDevices half has NO position at all "
-            "— enumerateDevices appears zero times on this launch path and no "
-            "reason is recorded for its absence. A single 'covered' here would "
-            "claim the half nobody has looked at.",
+            NOT_COVERED_RECORDED,
+            "SPLIT, and each half is answered by a DIFFERENT route — which is "
+            "why one position for the pair would have claimed too much. The "
+            "SCREEN half is covered conditionally at the ENGINE layer: when a "
+            "resolution was chosen, the launch pins kwargs['pin'] = "
+            "{screen.width/height/avail_*/dpr} (zoom.stealth.screen.*), so "
+            "screen.* is spoofed without any persona init script. The "
+            "mediaDevices half ships NO spoof, and PS-330 established that BY "
+            "MEASUREMENT rather than leaving it an unknown: on a real headful "
+            "launch the engine already answers enumerateDevices() with a "
+            "constant synthetic 1 audioinput + 1 videoinput whose deviceId and "
+            "groupId are the EMPTY STRING on every profile — on a host with no "
+            "/dev/snd and no /dev/video* at all. No host fact escapes and no "
+            "per-profile identifier exists to link, so a JS override would "
+            "trade a native-rendering method for a visible one and buy "
+            "nothing. The reason lives in invisible_launch.py beside the "
+            "_install_spoof calls, where a reader asks why there is no device "
+            "one.",
         ),
     },
     "webgl": {
@@ -467,6 +479,23 @@ RECORDED_REASON_SOURCES = {
     "geo": (
         "src/services/browser/process.py",
         "getCurrentPosition is answered LOCALLY and yields no coordinates",
+    ),
+    # PS-330. Written into invisible_launch.py beside the `_install_spoof`
+    # calls — the place a reader asks why there is a webgl spoof, an audio
+    # spoof and a locale spoof but no device one. The quote is the MEASURED
+    # finding rather than the argument built on it: an argument can be
+    # rewritten without changing the tree's behaviour, but this sentence is a
+    # reading, and if it stops being true the cell is wrong.
+    #
+    # ⚠️ KEPT TO ONE SOURCE LINE, deliberately. The reason lives in a COMMENT
+    # block, so every line it wraps onto begins with a `#` — and `_collapse`
+    # only normalises whitespace, it does not strip comment markers. A quote
+    # spanning two comment lines therefore can NEVER match, however faithfully
+    # it is copied. A future reason quoted from a comment must be a single
+    # line for the same reason.
+    "device": (
+        "src/services/browser/invisible_launch.py",
+        "came back as the EMPTY STRING on every",
     ),
 }
 
@@ -653,6 +682,86 @@ def _firefox_installed_js():
             il._outer_size_override_script(),
         )
     )
+
+
+def _launch_site_code():
+    """``_launch_and_watch``'s own CODE, with comments and docstrings stripped.
+
+    The THIRD Firefox oracle, and it exists because the other two have a shared
+    blind spot that a mutation demonstrates rather than a reading of the code
+    suggests. ``_firefox_installed_js`` sees what the BUILDERS emit;
+    ``_firefox_spoof_census`` sees ``_install_spoof`` calls keyed on their LABEL
+    literal. Neither sees a spoof written INLINE at the launch site inside an
+    ALREADY-REGISTERED label's payload —
+
+        _install_spoof("audio", firefox_audio_init_script(seed)
+            + "\\nnavigator.mediaDevices.enumerateDevices=()=>...")
+
+    — because no builder emits that string and the label is legitimately
+    registered. The census's own docstring names the gap ("it cannot see a spoof
+    written INLINE at the launch site, since no builder emits it"), and PS-302
+    is the tree's record of what that class costs: "the PS-302 bypass it took
+    four vectors to notice."
+
+    ⚠️ AST-UNPARSED WITH THE DOCSTRING STRIPPED, not ``inspect.getsource``, and
+    the difference is the whole reason this helper exists as a helper. The plain
+    module-text read is the oracle the NOT_ESTABLISHED sweep refuses in its own
+    words — "a sweep over the module would also match a comment ABOUT a vector"
+    — and PS-330 wrote exactly such a comment INSIDE this function, so the text
+    form went red on the prose explaining an absence.
+
+    TWO KINDS OF PROSE LIVE IN A FUNCTION AND ``ast.unparse`` ONLY DROPS ONE OF
+    THEM. Comments are not AST nodes, so unparsing discards them for free. A
+    DOCSTRING IS NOT PROSE TO THE AST — it is an ordinary ``Expr(Constant(str))``
+    statement, and ``ast.unparse`` round-trips it verbatim like any other. Round
+    2 of PS-330 claimed this helper "drops comments and docstrings"; the second
+    half was false, ``_launch_and_watch`` carries a 13-line docstring, and one
+    documentation sentence mentioning the token turned this guard red with a
+    message insisting the token was in the CODE. That is the same false-positive
+    class the round-1 form died of, one layer down — so the docstring is
+    stripped HERE, explicitly, rather than assumed away.
+
+    What survives is executable code INCLUDING every string literal, which is
+    what a spoof payload actually is. So this reads the code and is immune to
+    prose in both of its forms, and to a rename of a spoof's label.
+
+    EVERY docstring is stripped, not just the top one. Round 3 first shipped
+    this stripping the TOP-LEVEL docstring only, and recorded the leftover as a
+    stated bound: "a docstring on a nested function is retained and would read
+    as code". That bound was then MUTATED rather than trusted — a docstring on
+    ``_install_spoof`` (nested here, and the single most natural place to write
+    the sentence "no enumerateDevices spoof is registered through here") turned
+    this guard RED. A known false positive one ``ast.walk`` away from fixed is
+    not a bound worth documenting, so the walk below strips the docstring of
+    this function AND of every function and class nested inside it. A body left
+    empty by that removal gets an explicit ``pass``, because a bodiless
+    ``FunctionDef`` cannot be unparsed.
+
+    ⛔ WHAT REMAINS VISIBLE, stated because an oracle must be honest about its
+    own reach: a non-docstring string literal is CODE to this helper and always
+    will be — ``x = "enumerateDevices"`` fires it, correctly, since that is
+    exactly the shape a spoof payload has. Prose therefore has to go in a
+    comment or a docstring, which is where prose belongs.
+    """
+    fn = next(
+        n
+        for n in ast.walk(ast.parse(inspect.getsource(il)))
+        if isinstance(n, ast.FunctionDef) and n.name == "_launch_and_watch"
+    )
+    for node in ast.walk(fn):
+        if not isinstance(
+            node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+        ):
+            continue
+        body = node.body
+        if (
+            body
+            and isinstance(body[0], ast.Expr)
+            and isinstance(body[0].value, ast.Constant)
+            and isinstance(body[0].value.value, str)
+        ):
+            node.body = body[1:] or [ast.Pass()]
+    return ast.unparse(ast.Module(body=fn.body, type_ignores=[]))
 
 
 # --- the census: the list cannot drift from the product ----------------------
@@ -883,7 +992,13 @@ def test_firefox_not_established_cells_are_not_quietly_covered():
         # they now guard a NOT_COVERED_RECORDED cell instead of an unestablished
         # one. Deleting the guard along with the entry would have traded a
         # stated unknown for an unwatched decision.
-        "device": ("enumerateDevices",),
+        #
+        # "device" left it in PS-330 by exactly the same route and under
+        # exactly the same rule: ``enumerateDevices`` is still swept, in
+        # ``test_the_recorded_device_absence_is_still_an_absence``, against
+        # THREE oracles — the two this sweep uses, plus the launch site's own
+        # AST-unparsed code, which is the only one that can see an override
+        # concatenated inline into an already-registered label's payload.
     }
     for vector, names in tokens.items():
         assert MATRIX[vector]["firefox"][0] == NOT_ESTABLISHED
@@ -924,6 +1039,65 @@ def test_the_recorded_geo_absence_is_still_an_absence():
         )
 
 
+def test_the_recorded_device_absence_is_still_an_absence():
+    # PS-330's cell, guarded exactly as PS-312's is, and for the same reason:
+    # moving a cell out of the unknown set must not cost it its guard. The
+    # decision recorded in ``invisible_launch.py`` beside the ``_install_spoof``
+    # calls is "persona ships NO Firefox mediaDevices spoof, because the engine
+    # already answers with a constant synthetic roster carrying empty ids". A
+    # spoof that quietly appeared would make that recorded reason describe a
+    # tree that no longer matches it.
+    #
+    # THREE oracles, because each of the first two has a blind spot the other
+    # cannot cover and BOTH share a third. The emitted source catches a BUILDER
+    # that grew the vector; the registry census catches a NEW LABEL registered
+    # for it; and ``_launch_site_code`` catches the case neither can see — an
+    # override concatenated INLINE at the launch site into an already-registered
+    # label's payload, which emits from no builder and adds no label. That third
+    # case is not hypothetical: it is demonstrable by mutation, and before
+    # PS-330's second round it was the one hole in this guard.
+    js = _firefox_installed_js()
+    spoofs, _ = _firefox_spoof_census()
+    launch_code = _launch_site_code()
+    assert MATRIX["device"]["firefox"][0] == NOT_COVERED_RECORDED
+    assert "device" not in spoofs, (
+        "a Firefox device spoof is now registered, contradicting the recorded "
+        "decision in invisible_launch.py that persona ships none. Either the "
+        "engine's behaviour changed (RE-MEASURE with "
+        "scripts/ps330_ff_devices_reading.py, then restate the cell as COVERED "
+        "and give it a FIREFOX_SPOOF_CONDITIONS entry) or the spoof is the "
+        "defect."
+    )
+    assert "enumerateDevices" not in js, (
+        "Firefox now emits 'enumerateDevices', so the recorded 'no spoof "
+        "ships' decision no longer describes this tree. Restate the cell."
+    )
+    # The inline oracle. A positive control rides with it: this helper strips
+    # comments, and an empty or comment-only return would satisfy the negative
+    # above no matter what the launch site did — the vacuous-pass shape this
+    # file's header calls out by name. ``_res_overrides`` is executable code in
+    # this function and is asserted below as the screen half's own sentinel, so
+    # its presence here proves the channel carries the launch site's CODE.
+    assert "_res_overrides = _context_overrides_for(w, h)" in launch_code, (
+        "the AST-unparsed launch site does not contain a statement known to be "
+        "in it, so the negative below would pass vacuously. Fix this helper "
+        "before trusting the absence."
+    )
+    assert "enumerateDevices" not in launch_code, (
+        "'enumerateDevices' now appears in _launch_and_watch's own CODE. This "
+        "oracle is AST-unparsed with every docstring stripped — this "
+        "function's and those of the functions nested inside it — so no "
+        "comment and no docstring can trigger it. What CAN, besides a real "
+        "spoof, is a non-docstring string literal naming the token, which is "
+        "code by any reading. Otherwise: a Firefox device spoof written "
+        "inline at the launch site emits from no builder and registers no new "
+        "label, so neither oracle above can see it. Either the engine's "
+        "behaviour changed (RE-MEASURE with "
+        "scripts/ps330_ff_devices_reading.py, then restate the cell) or the "
+        "spoof is the defect."
+    )
+
+
 def test_firefox_voice_and_canvas_ctx_absences_are_not_accidental():
     # The two vectors whose Firefox position is a RECORDED decision and a
     # CONSTRUCTION constraint respectively — asserted here as absences so the
@@ -953,10 +1127,12 @@ def test_firefox_native_cloak_is_the_native_vectors_actual_route():
 
 
 def test_firefox_device_screen_half_is_pinned_at_the_engine_layer():
-    # Why the device cell is NOT_ESTABLISHED rather than COVERED_ELSEWHERE: the
+    # Why the device cell reads NOT_COVERED_RECORDED rather than COVERED: the
     # screen half genuinely IS covered, by an engine-layer pin rather than a
-    # script, and the mediaDevices half has no position at all. One position for
-    # a split vector would claim the half nobody has looked at.
+    # script, while the mediaDevices half ships nothing and PS-330 recorded why.
+    # One flat "covered" would still claim too much — the two halves are
+    # answered by different routes, and only one of them is a route persona
+    # takes.
     src = inspect.getsource(il._launch_and_watch)
     assert 'kwargs["pin"] = {' in src
     for key in ("screen.width", "screen.height", "screen.avail_width"):
@@ -964,8 +1140,67 @@ def test_firefox_device_screen_half_is_pinned_at_the_engine_layer():
     # ...and it is CONDITIONAL, which is the other half of why this is not a
     # flat "covered": a profile on Auto chooses no resolution and gets no pin.
     assert "_res_overrides = _context_overrides_for(w, h)" in src
-    assert "enumerateDevices" not in src
-    assert MATRIX["device"]["firefox"][0] == NOT_ESTABLISHED
+    # ⚠️ THE mediaDevices HALF IS ASSERTED IN
+    # ``test_the_recorded_device_absence_is_still_an_absence``, NOT HERE — a
+    # MOVE, and one that had to be paid for rather than merely declared. This
+    # used to read ``assert "enumerateDevices" not in src`` — a sweep over the
+    # function's MODULE TEXT, which is precisely the oracle the NOT_ESTABLISHED
+    # sweep above refuses in its own words: *"Read off emitted source rather
+    # than off module text on purpose: a sweep over the module would also match
+    # a comment ABOUT a vector."* PS-330 wrote exactly such a comment — the
+    # recorded reason for shipping no device spoof lives beside the
+    # ``_install_spoof`` calls inside this very function — so the old form went
+    # red on the prose explaining why the thing it looked for is absent.
+    #
+    # ROUND 1 OF PS-330 DROPPED THE LINE AND CALLED THE TWO REMAINING ORACLES
+    # "STRICTLY STRONGER". THEY WERE NOT, and the reviewer demonstrated it by
+    # mutation rather than by argument: an override concatenated inline into the
+    # ``audio`` spoof's payload — no new label, no builder touched — was RED at
+    # the merge-base on this very line and fully GREEN with it deleted. The
+    # emitted-source oracle cannot see it (no builder emits the string) and the
+    # census cannot see it (the label is legitimately registered). That is the
+    # PS-302 class, and the deleted line was the only thing watching for it.
+    #
+    # The coverage is restored on an oracle that survives BOTH problems:
+    # ``_launch_site_code`` AST-unparses this function, which drops comments (so
+    # the recorded reason is invisible to it) and keeps executable code (so the
+    # inline mutation is not).
+    #
+    # ROUND 2 THEN GOT THE SAME CLASS OF ERROR ONE LAYER DOWN, and the next
+    # reviewer caught it the same way. That helper's docstring claimed
+    # ``ast.unparse`` "drops comments AND DOCSTRINGS". It does not: a docstring
+    # is an ordinary ``Expr(Constant(str))`` statement and round-trips
+    # verbatim, this function carries a 13-line one, and a single sentence of
+    # documentation mentioning the token turned the guard RED with a message
+    # insisting the token was in the CODE. ``_launch_site_code`` now strips
+    # EVERY docstring EXPLICITLY — this function's and every nested one's —
+    # rather than assuming ``ast.unparse`` did it, and says which prose it can
+    # and cannot see.
+    #
+    # THE STANDING RULE THIS LEAVES, learned three times at cost: *a claim about
+    # what an oracle can see is itself falsifiable, and must be mutated rather
+    # than reasoned about.* Round 3 first shipped the strip as TOP-LEVEL only
+    # and wrote the leftover down as a stated bound instead of testing it;
+    # mutating it showed the false positive was real and one ``ast.walk`` away
+    # from gone, so every nested docstring is stripped too. The battery for this
+    # guard is six rows, and the two GREEN ones exist only because someone ran
+    # them:
+    #
+    #   inline override in an already-registered payload -> RED   (the oracle)
+    #   `_install_spoof("device", ...)` registered       -> RED   (registry)
+    #   `enumerateDevices` emitted by a shipped builder  -> RED   (emitted src)
+    #   recorded reason reworded                         -> RED   (reasons-in-tree)
+    #   `_launch_site_code` stubbed to ""                -> RED   (vacuous ctrl)
+    #   a documentation sentence naming the token, in
+    #     THIS function's docstring and in a NESTED
+    #     function's docstring                           -> GREEN (no false +)
+    #
+    # The screen-half reads above are on the text form deliberately: they are
+    # POSITIVE assertions, where a prose match can only cost a false green on a
+    # line that is separately proven by the pin's own keys — whereas the device
+    # read is a NEGATIVE, where an oracle that sees too much is the whole
+    # failure.
+    assert MATRIX["device"]["firefox"][0] == NOT_COVERED_RECORDED
 
 
 # --- the reverse cell --------------------------------------------------------
@@ -1222,7 +1457,16 @@ def test_the_open_cells_are_the_deliverable_and_are_named():
     assert unknown == {
         "firefox:stealth",
         "firefox:measuretext",
-        "firefox:device",
+        # "firefox:device" was here until PS-330 established it BY MEASUREMENT
+        # — a real headful launch reading what a page receives from
+        # enumerateDevices(), on three profiles with three distinct seeds.
+        # Its deletion IS that commit's record; the cell now reads
+        # NOT_COVERED_RECORDED and its reason is re-read out of the tree by
+        # ``test_recorded_reasons_still_in_tree``, with the absence itself
+        # still guarded from THREE sides — emitted source, spoof registry, and
+        # the launch site's own AST-unparsed code — by
+        # ``test_the_recorded_device_absence_is_still_an_absence``.
+        #
         # "firefox:geo" was here until PS-312 established it BY MEASUREMENT.
         # Its deletion IS that commit's record; the cell now reads
         # NOT_COVERED_RECORDED and its reason is re-read out of the tree by
