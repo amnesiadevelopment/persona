@@ -10,8 +10,17 @@ SOMETHING rewrote the number after Blink produced it.
 
   INVARIANT 1  every client-rect coordinate is an exact multiple of 1/64.
                Blink stores layout in LayoutUnit, a 1/64-px fixed-point type.
+               ⚠️ CONDITIONAL ON DEVICE SCALE. This probe does not set
+               --force-device-scale-factor, so it measures dpr 1 (or whatever
+               the host imposes). Stock Chromium VIOLATES this in the thousands
+               at a non-power-of-two dpr, because the lattice is in DEVICE px
+               and Blink stores the divided CSS result through a float32.
+               ps365_dpr_lattice_probe.html + ps365_dpr_sweep.sh are the
+               boundary control; ps365_dpr_boundary.py scores it. Read those
+               before quoting this probe's rect number as a general fact.
   INVARIANT 2  every canvas TextMetrics field is a float32-exact double.
                Blink computes text metrics in float and widens on the way out.
+               Scale-independent: 0/1008 at every scale (inv2-scale-sweep.txt).
 
 Run:
   chromium --headless --disable-gpu --no-sandbox --enable-logging=stderr \

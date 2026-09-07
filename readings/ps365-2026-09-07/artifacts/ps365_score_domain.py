@@ -16,8 +16,23 @@ DOMAIN Blink's own pipeline is confined to.
 
 Both are properties of STOCK Chromium, measured this session with
 ``ps365_domain_probe.html`` (6008 rect values / 1008 metric values, 0
-violations each). They are NOT persona values, which is the point: a detector
-can check them with no knowledge of persona at all.
+violations each).
+
+⚠️ INVARIANT 1 IS CONDITIONAL ON DEVICE SCALE — see ps365_dpr_boundary.py.
+   That control was run at devicePixelRatio 1. Stock Chromium violates the
+   CSS-space 1/64 lattice in the THOUSANDS at a non-power-of-two dpr, and
+   persona itself passes --force-device-scale-factor from the host's Windows
+   DPI (process.py ~1253). The scoring below is nonetheless VALID: both PS-344
+   arms were measured with NO --force-device-scale-factor on either side, i.e.
+   at dpr 1, which is exactly where the invariant holds. What is forbidden is
+   GENERALISING the result to scaled displays, not the comparison itself.
+
+   Invariant 2 carries no such precondition (0/1008 at every scale from 0.5
+   to 4 — see inv2-scale-sweep.txt).
+
+Neither is a persona value, which is the point: a detector can check them
+without knowing anything about persona — invariant 2 anywhere, invariant 1
+only once it has read devicePixelRatio and confirmed the division is exact.
 
 Inputs are the committed PS-344 artifacts — the published 152 engine and its
 version-matched stock control, both already measured on a host.
