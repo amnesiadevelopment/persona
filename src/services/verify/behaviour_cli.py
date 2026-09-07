@@ -135,7 +135,8 @@ def _cmd_run(args: argparse.Namespace) -> int:
         print(
             "NOTE: --skip-launch was used, so every launch-backed surface "
             "(restart continuity, two-profile unlinkability, edit stability, "
-            "the trash bin's 'came back whole') was NOT observed on this run."
+            "the trash bin's 'came back whole', and whether a closed session "
+            "leaves a process running) was NOT observed on this run."
         )
     return exit_code(outcomes)
 

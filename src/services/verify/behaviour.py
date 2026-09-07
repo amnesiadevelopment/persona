@@ -107,14 +107,21 @@ UNCOVERED_SURFACES: tuple[tuple[str, str], ...] = (
         "on one runner. Not duplicated here.",
     ),
     (
-        "every check on this list runs on FIREFOX only",
-        "all 18 scratch profiles here take Context.make_profile's defaults "
-        "(os_type=windows, device_type=desktop), and windows+desktop is the "
-        "ONE combination that resolves to firefox — every other OS launches "
-        "on chromium whatever the stored engine says. The recorder can now "
-        "read either engine, so this is a property of the CHECKS' fixtures, "
-        "not of the instrument: nothing below has been observed on chromium, "
-        "and a pass here says nothing about how a macos, linux or mobile "
+        "every check on this list runs on FIREFOX only — WITH ONE EXCEPTION",
+        "all but one of the scratch profiles here take Context.make_profile's "
+        "defaults (os_type=windows, device_type=desktop), and windows+desktop "
+        "is the ONE combination that resolves to firefox — every other OS "
+        "launches on chromium whatever the stored engine says. The recorder "
+        "can now read either engine, so this is a property of the CHECKS' "
+        "fixtures, not of the instrument. THE EXCEPTION is "
+        "no-process-survives-a-closed-session (PS-347), which launches "
+        "os_type=linux and therefore CHROMIUM on purpose: it counts surviving "
+        "processes, and the leak it guards is a property of the WRAPPER, "
+        "multi-process launch — a direct single-process launch does not leak "
+        "on terminate() at all, so the same measurement taken on the firefox "
+        "fixtures would be vacuous. It observes ONE engine on ONE platform "
+        "(chromium/Linux) and says nothing about the other arm; every other "
+        "check below still says nothing about how a macos, linux or mobile "
         "profile behaves. Widening the fixtures is separate work.",
     ),
     (
@@ -135,18 +142,21 @@ UNCOVERED_SURFACES: tuple[tuple[str, str], ...] = (
         "THIS lane still needs a display even for a chromium profile, though "
         "the recorder underneath it does not",
         "run_checks calls require_display() as a PREFLIGHT whenever any "
-        "SELECTED check has needs_launch=True (4 of the 7: restart-continuity, "
+        "SELECTED check has needs_launch=True (5 of the 8: restart-continuity, "
         "two-profile-unlinkability, benign-edit-stability, "
-        "trash-restore-and-wipe), and that is decided before any profile's "
+        "trash-restore-and-wipe, no-process-survives-a-closed-session), and "
+        "that is decided before any profile's "
         "engine is resolved — the preflight is engine-BLIND by construction. "
         "The recorder's own gate now sits on the firefox arm, immediately "
         "before the launch, so baseline.record_snapshot reads an "
         "already-running chromium session on a headless host with no DISPLAY "
-        "at all. This lane is deliberately NOT narrowed to match: every one of "
-        "those 4 launching checks uses firefox fixtures (above), which really "
-        "do launch, so the preflight refuses nothing today that could have "
-        "run, and refusing once up front gives an operator one actionable "
-        "message instead of four identical ones. The consequence is stated "
+        "at all. This lane is deliberately NOT narrowed to match: four of "
+        "those 5 launching checks use firefox fixtures (above), which really "
+        "do launch, and the fifth is a CHROMIUM launch that needs a display "
+        "just as much — it starts a real headful browser rather than "
+        "attaching to one — so the preflight refuses nothing today that could "
+        "have run, and refusing once up front gives an operator one actionable "
+        "message instead of five identical ones. The consequence is stated "
         "rather than left to be discovered: chromium reachability is WIDER in "
         "baseline than in this module, and widening any launching check's "
         "fixtures to chromium means revisiting this preflight in the same "
