@@ -101,10 +101,6 @@ def _app_with(profile: Profile, profile_dir: str = "/nonexistent"):
     return app
 
 
-FIREFOX = Profile(name="ff", engine="firefox", os_type="windows")
-CHROMIUM = Profile(name="cr", engine="chromium", os_type="windows")
-
-
 # --- AC2: import refuses, reports no count, and persists nothing ------------
 
 
