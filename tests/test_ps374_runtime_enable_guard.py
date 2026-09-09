@@ -655,7 +655,28 @@ exec {REAL_SED} $args
 
 
 def _bsd_sed_dir(tmp_path):
-    """A directory holding a `sed` that refuses GNU-only `-i` the way BSD does."""
+    """A directory holding a `sed` that refuses GNU-only `-i` the way BSD does.
+
+    ⚠️ POSIX-ONLY BY CONSTRUCTION, and skipped rather than adapted on Windows.
+    The shim is a `#!/bin/sh` file with no extension: on a POSIX host the kernel
+    honours the shebang, but Windows has no shebang and resolves `sed` by
+    PATHEXT, so an extensionless file is not a candidate at all — the lookup
+    falls straight through to Git Bash's real GNU sed and the shim is silently
+    NOT IN EFFECT.
+
+    That is not a hypothetical either: it is exactly what
+    `test_the_bsd_sed_shim_actually_rejects_the_gnu_only_form` caught on
+    `windows-latest` (`assert 0 != 0` — the GNU-only form succeeded). The
+    control did its job, which is the reason to keep it: without it the macOS
+    guard would have gone GREEN on Windows over a sed it never replaced.
+
+    ⛔ Skipping here is honest and adapting would not be. The dialect this
+    models is BSD, which macOS runners have and Windows runners never will;
+    a `sed.bat` wrapper would test the wrapper. The POSIX legs (ubuntu and
+    macos) are where the guard has to run, and it runs on both.
+    """
+    if os.name == "nt":  # pragma: no cover — see docstring; PATHEXT, not laziness
+        pytest.skip("the BSD-sed shim is a POSIX shebang script; PATHEXT ignores it")
     real = shutil.which("sed")
     if real is None:  # pragma: no cover — no sed at all
         pytest.skip("no sed on PATH")
@@ -684,7 +705,10 @@ def test_the_bsd_sed_shim_actually_rejects_the_gnu_only_form(tmp_path):
         ["sed", "-i", "-e", "s/alpha/beta/", str(target)],
         capture_output=True, text=True, encoding="utf-8", env=env, check=False,
     )
-    assert gnu_only.returncode != 0, "the shim accepted `sed -i -e`; BSD sed does not"
+    assert gnu_only.returncode != 0, (
+        "the shim accepted `sed -i -e`, so it is NOT in effect and every "
+        "conclusion drawn from it below would be vacuous"
+    )
     assert "No such file or directory" in gnu_only.stderr, gnu_only.stderr
     assert target.read_text(encoding="utf-8") == "alpha\n", "the file was edited anyway"
 
@@ -710,13 +734,39 @@ def test_the_falsification_script_runs_on_the_macos_sed_dialect(tmp_path):
     if os.name == "nt":  # pragma: no cover — the script is POSIX shell
         pytest.skip("POSIX shell script")
     shim_dir, _ = _bsd_sed_dir(tmp_path)
+    env = {**os.environ, "PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}"}
+
+    # ⛔ Prove the shim is IN EFFECT before concluding anything from a green run.
+    # If PATH ordering did not take, `sed` is the host's real one and this test
+    # would assert the script works under a dialect it never met — passing for
+    # the wrong reason, which is the defect class this whole ticket is about.
+    #
+    # ⚠️ THE PROBE MUST USE A REAL FILE. An earlier draft probed a NONEXISTENT
+    # path, which fails on BOTH dialects (GNU sed for the missing file, BSD sed
+    # for the swallowed `-e`) — so it passed whether or not the shim was there
+    # and proved nothing. Against a file that EXISTS the two genuinely diverge:
+    # GNU sed edits it and exits 0, BSD sed dies. That divergence IS the check.
+    canary = tmp_path / "canary.txt"
+    canary.write_text("alpha\n", encoding="utf-8")
+    engaged = subprocess.run(  # noqa: S603
+        ["sed", "-i", "-e", "s/alpha/beta/", str(canary)],
+        capture_output=True, text=True, encoding="utf-8", env=env, check=False,
+    )
+    assert engaged.returncode != 0, (
+        "the BSD-sed shim is not in effect — `sed -i -e` succeeded, which is "
+        f"GNU behaviour. This run would prove nothing: {engaged!r}"
+    )
+    assert canary.read_text(encoding="utf-8") == "alpha\n", (
+        "the shim edited the file anyway; it is not emulating BSD sed"
+    )
+
     result = subprocess.run(  # noqa: S603
         ["bash", str(FALSIFY_SH)],
         cwd=str(REPO),
         capture_output=True,
         text=True,
         encoding="utf-8",
-        env={**os.environ, "PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}"},
+        env=env,
         check=False,
     )
     assert result.returncode == 0, (
