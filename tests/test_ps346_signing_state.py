@@ -461,3 +461,193 @@ def test_engine_macos_asset_matches_the_updater_rule():
     )
     assert '"-macos-arm64.dmg"' in updater
     assert any(a.endswith("-macos-arm64.dmg") for a in mod.ENGINE_ASSETS)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# THE VERDICT SITE ITSELF
+#
+# ⭐ These drive `classify_tally` DIRECTLY, and that is the whole point of them.
+# The pre-existing `test_unreadable_asset_is_not_counted_as_unsigned` above
+# exercises `read_dmg_bundle` on an image with no readable partition — which
+# takes an EARLY RETURN before the tally is ever built. It guards the
+# early-return legs and reaches the classifier not at all, so the aggregate
+# verdict could (and did) collapse UNREADABLE into UNSIGNED with that test
+# green. A guarded-looking invariant with an unguarded verdict site is exactly
+# the shape that survives review.
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_all_unreadable_slices_do_not_aggregate_to_unsigned():
+    """The contract in the module docstring, pinned at the place it can break.
+
+    A bundle whose every slice failed to parse was NOT read. Reporting it as
+    UNSIGNED would manufacture a finding out of the instrument's own failure —
+    and in the direction that makes the report look more thorough.
+    """
+    assert mod.classify_tally({"UNREADABLE": 3}) == "UNREADABLE"
+    assert mod.classify_tally({"UNREADABLE": 3}) != "UNSIGNED"
+
+
+def test_empty_tally_is_unreadable_not_unsigned():
+    """Nothing was read at all — 'we found no signature' is a claim about bytes
+    nobody looked at. This is the FAT-64 compounding path's landing site."""
+    assert mod.classify_tally({}) == "UNREADABLE"
+    assert mod.classify_tally({}) != "UNSIGNED"
+
+
+def test_mixed_tally_still_reports_the_state_that_was_measured():
+    """UNREADABLE must not be so sticky that it erases real evidence.
+
+    Slices that WERE read are evidence. A bundle with two unparseable slices and
+    one genuine ad-hoc signature is ad-hoc — the unreadable remainder is carried
+    in `detail`, not promoted over a measurement.
+    """
+    assert mod.classify_tally({"UNREADABLE": 2, "ADHOC": 1}) == "ADHOC"
+    assert mod.classify_tally({"UNREADABLE": 9, "SIGNED_CMS": 1}) == "SIGNED_CMS"
+    assert mod.classify_tally({"UNREADABLE": 1, "UNSIGNED": 4}) == "UNSIGNED"
+
+
+def test_classifier_keeps_the_adhoc_distinction_it_exists_for():
+    """The original invariant, re-pinned at the extracted function.
+
+    One real CMS signature among ad-hoc ones does NOT make a bundle signed —
+    this is the shipped macOS reading (196 ADHOC / 28 UNSIGNED / 1 SIGNED_CMS,
+    that 1 being the vendored Node.js) and it must keep reading ADHOC.
+    """
+    assert mod.classify_tally({"ADHOC": 196, "UNSIGNED": 28, "SIGNED_CMS": 1}) == "ADHOC"
+    assert mod.classify_tally({"SIGNED_CMS": 4}) == "SIGNED_CMS"
+    assert mod.classify_tally({"UNSIGNED": 9}) == "UNSIGNED"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# FAT (universal) binaries — the two layouts are DIFFERENT STRUCTS
+#
+# ⚠️ Reading a FAT-64 header with the 32-bit stride does not fail loudly. It
+# returns offset 0, i.e. it re-reads the fat header as if it were a Mach-O,
+# which then reports UNREADABLE — and, before the classifier fix above, that
+# became a confident UNSIGNED about a binary that was never read. Silent,
+# plausible and wrong. Every real fixture in this file is THIN, which is why
+# these paths were previously untested.
+# ═══════════════════════════════════════════════════════════════════════════
+
+FAT_MAGIC = 0xCAFEBABE
+FAT_MAGIC_64 = 0xCAFEBABF
+
+
+def _make_fat(*, sixty_four: bool, slice_offset: int, inner: bytes = b"") -> bytes:
+    """A universal binary header with ONE slice at `slice_offset`."""
+    if sixty_four:
+        # fat_arch_64: cputype, cpusubtype, offset(Q), size(Q), align, reserved
+        head = struct.pack(">II", FAT_MAGIC_64, 1) + struct.pack(
+            ">iiQQII", 0x0100000C, 0, slice_offset, len(inner) or 0x1000, 14, 0
+        )
+    else:
+        # fat_arch: cputype, cpusubtype, offset(I), size(I), align
+        head = struct.pack(">II", FAT_MAGIC, 1) + struct.pack(
+            ">iiIII", 0x0100000C, 0, slice_offset, len(inner) or 0x1000, 12
+        )
+    return head.ljust(slice_offset, b"\0") + inner
+
+
+def test_fat64_slice_offset_is_read_with_the_64_bit_layout():
+    """`fat_arch_64` is ">iiQQII" at stride 32, not ">iiIII" at stride 20.
+
+    The failure this pins is NOT a wild number — it is 0, which is why it was
+    invisible: offset 0 re-reads the fat header itself.
+    """
+    data = _make_fat(sixty_four=True, slice_offset=0x4000)
+    assert mod.macho_slices(data) == [0x4000]
+    assert mod.macho_slices(data) != [0], "the 32-bit stride misparse is back"
+
+
+def test_fat32_slice_offset_still_reads_correctly():
+    """Regression guard: the 32-bit layout must be untouched by the FAT-64 fix."""
+    data = _make_fat(sixty_four=False, slice_offset=0x1000)
+    assert mod.macho_slices(data) == [0x1000]
+
+
+def test_fat64_slice_is_actually_parseable_end_to_end():
+    """The offset being right is only worth something if the slice then reads.
+
+    Drives the full path: fat header -> correct offset -> a real Mach-O with an
+    ad-hoc SuperBlob -> ADHOC, not UNREADABLE.
+    """
+    inner = _make_macho(adhoc=True)
+    data = _make_fat(sixty_four=True, slice_offset=0x4000, inner=inner)
+    (base,) = mod.macho_slices(data)
+    assert base == 0x4000
+    info = mod.read_macho_slice(data, base)
+    assert info["state"] == "ADHOC"
+
+
+def test_truncated_fat_header_reports_what_was_readable_and_invents_nothing():
+    """A header claiming 99 slices but carrying none must not read past its end.
+
+    Returning [] here (rather than raising, or fabricating offsets from
+    out-of-bounds memory) is what lets the classifier report UNREADABLE.
+    """
+    data = struct.pack(">II", FAT_MAGIC_64, 99)
+    assert mod.macho_slices(data) == []
+    assert mod.classify_tally({}) == "UNREADABLE"
+
+
+def test_fat64_misparse_would_compound_into_a_false_unsigned():
+    """⭐ The two blockers compound, and this pins the compounded failure.
+
+    FAT-64 misparse -> offset 0 -> the fat header read as a Mach-O -> UNREADABLE
+    -> (with the old classifier) a confident UNSIGNED about a binary that was
+    never read. Both halves are now closed; this test asserts the SEAM.
+    """
+    data = _make_fat(sixty_four=True, slice_offset=0x4000, inner=_make_macho(adhoc=True))
+    # If the offset were misparsed to 0, this is what the slice read would say:
+    assert mod.read_macho_slice(data, 0)["state"] == "UNREADABLE"
+    # ...and that must NOT become UNSIGNED at the verdict site.
+    assert mod.classify_tally({"UNREADABLE": 1}) != "UNSIGNED"
+    # With the fix, the real offset is used and the true state is reported.
+    assert mod.classify_tally({mod.read_macho_slice(data, 0x4000)["state"]: 1}) == "ADHOC"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# §3 — what a Developer ID certificate alone does NOT deliver
+#
+# These are NOTARIZATION prerequisites, not signature facts. They are read by
+# the script so that report §1–§3 is genuinely reproducible with the committed
+# tool rather than resting on a one-off reading nobody can re-run.
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_get_task_allow_true_is_detected():
+    """The shipped debug entitlement — an explicit notary-rejection condition."""
+    blob = (
+        b'<?xml version="1.0" encoding="UTF-8"?>'
+        b'<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "">'
+        b'<plist version="1.0"><dict>'
+        b"<key>com.apple.security.get-task-allow</key><true/>"
+        b"</dict></plist>"
+    )
+    assert mod.entitlement_get_task_allow(blob) is True
+
+
+def test_get_task_allow_false_is_distinct_from_absent():
+    """⚠️ THREE-VALUED ON PURPOSE — the same discipline as UNREADABLE.
+
+    "we read the entitlements and the key is not set" and "there were no
+    entitlements to read" are different facts. Collapsing them would report a
+    clean bill of health for a binary nobody parsed.
+    """
+    blob = (
+        b'<?xml version="1.0" encoding="UTF-8"?>'
+        b'<plist version="1.0"><dict>'
+        b"<key>com.apple.security.cs.allow-jit</key><true/>"
+        b"</dict></plist>"
+    )
+    assert mod.entitlement_get_task_allow(blob) is False  # read, key absent
+    assert mod.entitlement_get_task_allow(None) is None  # nothing to read
+    assert mod.entitlement_get_task_allow(b"") is None  # nothing to read
+    assert mod.entitlement_get_task_allow(b"\xde\xad\xbe\xef") is None  # unparseable
+
+
+def test_get_task_allow_unparseable_is_not_reported_as_absent():
+    """A DER-encoded (non-XML) entitlements blob is NOT parsed here, and must
+    say so by returning None rather than claiming the entitlement is absent."""
+    assert mod.entitlement_get_task_allow(b"0\x82\x01\x00\x30\x82") is None

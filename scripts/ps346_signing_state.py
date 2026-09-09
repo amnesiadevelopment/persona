@@ -113,7 +113,12 @@ class Finding:
     asset: str
     platform: str
     kind: str  # what was inspected
-    state: str  # UNSIGNED / ADHOC / SIGNED_CMS / UNREADABLE
+    # Signature states:   UNSIGNED / ADHOC / SIGNED_CMS / UNREADABLE
+    # §3 prerequisite states (notarization facts, NOT signatures, so they are
+    # deliberately a different vocabulary and are excluded from the positive
+    # control below — a present CodeResources seal is not a signature):
+    #                     PRESENT / ABSENT
+    state: str
     detail: str = ""
     identity: str | None = None
 
@@ -200,15 +205,28 @@ SLOT_ENTITLEMENTS = 5
 
 
 def macho_slices(data: bytes) -> list[int]:
-    """Byte offsets of each architecture slice."""
+    """Byte offsets of each architecture slice.
+
+    ⚠️ THE TWO FAT LAYOUTS ARE DIFFERENT STRUCTS, NOT A WIDER FIELD IN THE SAME
+    ONE. `FAT_MAGIC` (0xCAFEBABE) carries `fat_arch`  = ">iiIII", stride 20;
+    `FAT_MAGIC_64` (0xCAFEBABF) carries `fat_arch_64` = ">iiQQII", stride 32
+    (64-bit offset and size, plus a trailing reserved word). Reading a FAT-64
+    header with the 32-bit stride does NOT yield an obviously wild number — it
+    yields 0, i.e. it re-reads the fat header itself as if it were a Mach-O,
+    which then reports UNREADABLE. Silent, plausible and wrong; hence the split.
+    """
     if len(data) < 8:
         return []
     magic = struct.unpack_from(">I", data, 0)[0]
     if magic in (0xCAFEBABE, 0xCAFEBABF):
+        fmt, stride = (">iiIII", 20) if magic == 0xCAFEBABE else (">iiQQII", 32)
         n = struct.unpack_from(">I", data, 4)[0]
         out = []
         for i in range(n):
-            _ct, _cs, off, _sz, _al = struct.unpack_from(">iiIII", data, 8 + i * 20)
+            at = 8 + i * stride
+            if at + stride > len(data):
+                break  # truncated fat header — report what was readable, invent nothing
+            _ct, _cs, off, _sz, _al = struct.unpack_from(fmt, data, at)[:5]
             out.append(off)
         return out
     if magic in (0xCFFAEDFE, 0xCEFAEDFE) or struct.unpack_from("<I", data, 0)[0] in (
@@ -217,6 +235,69 @@ def macho_slices(data: bytes) -> list[int]:
     ):
         return [0]
     return []
+
+
+def entitlement_get_task_allow(blob: bytes | None) -> bool | None:
+    """Is `com.apple.security.get-task-allow` TRUE in this entitlements blob?
+
+    ⭐ THIS IS A §3 CHECK, and it answers a NOTARIZATION question rather than a
+    signing one: the entitlement lets any process attach a debugger to ours, it
+    is a *development* entitlement, and it is an explicit notary-rejection
+    condition. A Developer ID certificate does not remove it — re-signing does.
+
+    ⚠️ THREE-VALUED ON PURPOSE, because two of the readings are different facts
+    and collapsing them is the same error the classifier above exists to avoid:
+      * True  — present and true (a measured rejection condition)
+      * False — the blob was READ and the key is absent or false
+      * None  — there was no entitlements blob, or it could not be parsed; this
+                is NOT the claim "the entitlement is absent".
+    """
+    if not blob:
+        return None
+    try:
+        # The entitlements slot payload is a plist. Older builds embed it as
+        # XML, newer ones as a DER blob; only the XML form is parsed here and
+        # an unparseable one honestly returns None rather than False.
+        start = blob.find(b"<?xml")
+        if start < 0:
+            return None
+        parsed = plistlib.loads(blob[start:])
+    except Exception:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    return bool(parsed.get("com.apple.security.get-task-allow", False))
+
+
+def classify_tally(tally: dict[str, int]) -> str:
+    """Aggregate per-slice states into ONE verdict for a bundle.
+
+    ⭐ THIS IS THE VERDICT SITE, and it is a named function precisely so a test
+    can drive it directly. The script's contract (module docstring) is that an
+    asset it could not read is reported as UNREADABLE and is NEVER silently
+    counted as unsigned — and this is the single place that contract can be
+    broken. Two readings must not fall through to UNSIGNED:
+
+      * nothing was read at all (EMPTY tally) — "we found no signature" is a
+        claim about bytes nobody looked at;
+      * every slice was UNREADABLE — the same claim, the same absence of
+        evidence.
+
+    A MIXED bundle still reports its real signing state, because the slices that
+    WERE read are evidence. The unreadable remainder is carried in the caller's
+    `detail` string so the reading is never quietly narrower than it looks.
+    """
+    total = sum(tally.values())
+    if total == 0 or tally.get("UNREADABLE", 0) == total:
+        return "UNREADABLE"
+    real = tally.get("SIGNED_CMS", 0)
+    adhoc = tally.get("ADHOC", 0)
+    unsigned = tally.get("UNSIGNED", 0)
+    if real and not (adhoc or unsigned):
+        return "SIGNED_CMS"
+    if adhoc:
+        return "ADHOC"
+    return "UNSIGNED"
 
 
 def read_macho_slice(data: bytes, base: int) -> dict:
@@ -469,13 +550,33 @@ def udif_extract(path: str, out: str) -> bool:
     return True
 
 
-def _apfs_machos(entry, path, acc) -> None:
+def _apfs_machos(entry, path, acc, notes=None) -> None:
+    """Walk the APFS tree collecting Mach-O files — and, when `notes` is given,
+    the NOTARIZATION-RELEVANT paths as well.
+
+    The three §3 facts a Developer ID certificate alone does not deliver are all
+    file-system facts, not signature-blob facts, so they are read HERE on the
+    same single walk rather than in a second pass:
+      * `_CodeSignature/CodeResources` — the bundle seal's shape;
+      * `CodeResources` in a Contents dir — same;
+      * a stapled notarization ticket (`CodeResources`' sibling `*.ticket`, or
+        `Contents/CodeResources`'s neighbour) — `stapler staple` writes one.
+    """
     for i in range(entry.get_number_of_sub_file_entries()):
         sub = entry.get_sub_file_entry(i)
-        p = f"{path}/{sub.get_name()}"
+        name = sub.get_name()
+        p = f"{path}/{name}"
         if sub.get_number_of_sub_file_entries() > 0:
-            _apfs_machos(sub, p, acc)
+            _apfs_machos(sub, p, acc, notes)
             continue
+        if notes is not None:
+            if name == "CodeResources":
+                notes["code_resources"].append(p)
+            # `stapler staple` writes the notarization ticket into the bundle as
+            # CodeResources' sibling. Its absence is the measured half of "no
+            # stapled ticket exists anywhere in either image".
+            if name.endswith(".ticket") or name == "CodeDirectory":
+                notes["staple"].append(p)
         try:
             size = sub.get_size()
             if size < 4:
@@ -511,7 +612,8 @@ def read_dmg_bundle(report: Report, asset: str, path: str, workdir: str) -> None
         container.open(payload)
         volume = container.get_volume(0)
         acc: list = []
-        _apfs_machos(volume.get_root_directory(), "", acc)
+        notes: dict[str, list[str]] = {"code_resources": [], "staple": []}
+        _apfs_machos(volume.get_root_directory(), "", acc, notes)
     except Exception as exc:
         report.add(
             asset,
@@ -527,6 +629,8 @@ def read_dmg_bundle(report: Report, asset: str, path: str, workdir: str) -> None
     hardened_count = 0
     hardened_which: str | None = None
     examples: dict[str, str] = {}
+    task_allow: list[str] = []
+    ents_seen = 0
     for p, size, entry in acc:
         entry.seek_offset(0, 0)
         data = entry.read_buffer(size)
@@ -540,11 +644,17 @@ def read_dmg_bundle(report: Report, asset: str, path: str, workdir: str) -> None
                 hardened_which = p
             if info.get("identity"):
                 identities.add(f"{p}: {info['identity']}")
+            ents = info.get("entitlements")
+            if ents:
+                ents_seen += 1
+                if entitlement_get_task_allow(ents):
+                    task_allow.append(p)
 
     real = tally.get("SIGNED_CMS", 0)
     adhoc = tally.get("ADHOC", 0)
     unsigned = tally.get("UNSIGNED", 0)
-    state = "SIGNED_CMS" if real and not (adhoc or unsigned) else ("ADHOC" if adhoc else "UNSIGNED")
+    unreadable = tally.get("UNREADABLE", 0)
+    state = classify_tally(tally)
     # Report hardened-runtime as a COUNT, never as a boolean. "any slice is
     # hardened" is a dangerously weak reading: in this bundle exactly ONE slice
     # is hardened and it is the vendored third-party `node`, so a True there
@@ -558,8 +668,68 @@ def read_dmg_bundle(report: Report, asset: str, path: str, workdir: str) -> None
         "macos",
         f"bundle Mach-O binaries ({len(acc)} files)",
         state,
-        f"arch slices: ADHOC={adhoc}, UNSIGNED={unsigned}, SIGNED_CMS={real}; " + hardened_note,
+        f"arch slices: ADHOC={adhoc}, UNSIGNED={unsigned}, SIGNED_CMS={real}, "
+        f"UNREADABLE={unreadable}; " + hardened_note,
         "; ".join(sorted(identities)) or None,
+    )
+
+    # ── §3: what a certificate alone does NOT deliver ────────────────────────
+    # These are notarization prerequisites, not signing facts, and they are the
+    # reason "buy a cert and add a codesign step" is the wrong cost model. They
+    # are reported here so §1–§3 of the report is reproducible with THIS script,
+    # rather than resting on a one-off reading nobody can re-run.
+
+    # get-task-allow: a shipped debug entitlement is a hard notary rejection.
+    if ents_seen == 0:
+        report.add(
+            asset,
+            "macos",
+            "entitlement com.apple.security.get-task-allow",
+            "UNREADABLE",
+            "no entitlements blob found on any slice — NOT the claim that the "
+            "entitlement is absent.",
+        )
+    else:
+        report.add(
+            asset,
+            "macos",
+            "entitlement com.apple.security.get-task-allow",
+            "PRESENT" if task_allow else "ABSENT",
+            (
+                f"PRESENT AND TRUE on {len(task_allow)}/{ents_seen} slice(s) carrying "
+                f"entitlements (e.g. {task_allow[0]}) — an explicit notarization-"
+                "rejection condition, shipped."
+                if task_allow
+                else f"absent or false on all {ents_seen} slice(s) carrying entitlements."
+            ),
+        )
+
+    # Bundle seal + stapled ticket, both read on the same walk.
+    report.add(
+        asset,
+        "macos",
+        "bundle _CodeSignature/CodeResources",
+        "PRESENT" if notes["code_resources"] else "ABSENT",
+        (
+            f"{len(notes['code_resources'])} CodeResources seal(s) present "
+            f"(e.g. {notes['code_resources'][0]}) — ⚠️ presence is NOT identity: "
+            "an ad-hoc seal's requirement strings are bare cdhashes with no "
+            "`anchor apple generic` clause."
+            if notes["code_resources"]
+            else "no CodeResources anywhere in the image — the bundle does not even "
+            "have the SHAPE of a signature."
+        ),
+    )
+    report.add(
+        asset,
+        "macos",
+        "stapled notarization ticket",
+        "PRESENT" if notes["staple"] else "ABSENT",
+        (
+            f"{len(notes['staple'])} stapled ticket(s): {notes['staple'][0]}"
+            if notes["staple"]
+            else "no stapled ticket found anywhere in the image."
+        ),
     )
 
 

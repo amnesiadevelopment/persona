@@ -6,8 +6,14 @@ persona-windows-setup.exe                      UNSIGNED      PE installer
 persona-macos.dmg                              UNSIGNED      UDIF image signature
                                                                no cSig resource (keys: blkx,plst), 0 bytes between plist end and koly trailer
 persona-macos.dmg                              ADHOC         bundle Mach-O binaries (113 files)
-                                                               arch slices: ADHOC=196, UNSIGNED=28, SIGNED_CMS=1; hardened-runtime slices: 1/225 (only: /persona.app/Contents/Frameworks/serious_python_darwin.framework/Versions/A/Resources/python.bundle/Contents/Resources/site-packages/playwright/driver/node)
+                                                               arch slices: ADHOC=196, UNSIGNED=28, SIGNED_CMS=1, UNREADABLE=0; hardened-runtime slices: 1/225 (only: /persona.app/Contents/Frameworks/serious_python_darwin.framework/Versions/A/Resources/python.bundle/Contents/Resources/site-packages/playwright/driver/node)
                                                                identity: /persona.app/Contents/Frameworks/serious_python_darwin.framework/Versions/A/Resources/python.bundle/Contents/Resources/site-packages/playwright/driver/node: Common Name: Developer ID Certification Authority, Organizational Unit: Apple Certification Authority, Organization: Apple Inc., Country: US; Common Name: Apple Root CA, Organizational Unit: Apple Certification Authority, Organization: Apple Inc., Country: US; User ID: HX7739G8FX, Common Name: Developer ID Application: Node.js Foundation (HX7739G8FX), Organizational Unit: HX7739G8FX, Organization: Node.js Foundation, Country: US
+persona-macos.dmg                              PRESENT       entitlement com.apple.security.get-task-allow
+                                                               PRESENT AND TRUE on 3/3 slice(s) carrying entitlements (e.g. /persona.app/Contents/MacOS/persona) — an explicit notarization-rejection condition, shipped.
+persona-macos.dmg                              PRESENT       bundle _CodeSignature/CodeResources
+                                                               20 CodeResources seal(s) present (e.g. /persona.app/Contents/_CodeSignature/CodeResources) — ⚠️ presence is NOT identity: an ad-hoc seal's requirement strings are bare cdhashes with no `anchor apple generic` clause.
+persona-macos.dmg                              ABSENT        stapled notarization ticket
+                                                               no stapled ticket found anywhere in the image.
 persona-x86_64.AppImage                        UNSIGNED      AppImage .sha256_sig
                                                                section present, 1024 bytes, ALL ZERO
 persona-x86_64.AppImage                        UNSIGNED      AppImage .sig_key
@@ -41,13 +47,19 @@ personium-152.0.7977.75-windows-x86_64.zip     UNSIGNED      PE Chrome-bin/chrom
 personium-152.0.7977.75-macos-arm64.dmg        UNSIGNED      UDIF image signature
                                                                no cSig resource (keys: blkx,plst), 0 bytes between plist end and koly trailer
 personium-152.0.7977.75-macos-arm64.dmg        ADHOC         bundle Mach-O binaries (11 files)
-                                                               arch slices: ADHOC=11, UNSIGNED=0, SIGNED_CMS=0; hardened-runtime slices: 0/11
+                                                               arch slices: ADHOC=11, UNSIGNED=0, SIGNED_CMS=0, UNREADABLE=0; hardened-runtime slices: 0/11
+personium-152.0.7977.75-macos-arm64.dmg        UNREADABLE    entitlement com.apple.security.get-task-allow
+                                                               no entitlements blob found on any slice — NOT the claim that the entitlement is absent.
+personium-152.0.7977.75-macos-arm64.dmg        ABSENT        bundle _CodeSignature/CodeResources
+                                                               no CodeResources anywhere in the image — the bundle does not even have the SHAPE of a signature.
+personium-152.0.7977.75-macos-arm64.dmg        ABSENT        stapled notarization ticket
+                                                               no stapled ticket found anywhere in the image.
 personium-152.0.7977.75-linux-x86_64.AppImage  UNSIGNED      AppImage .sha256_sig
                                                                section present, 1024 bytes, ALL ZERO
 personium-152.0.7977.75-linux-x86_64.AppImage  UNSIGNED      AppImage .sig_key
                                                                section present, 8192 bytes, ALL ZERO
 ----------------------------------------------------------------------------------------------------
-tally: ADHOC=2, SIGNED_CMS=2, UNSIGNED=17
+tally: ABSENT=3, ADHOC=2, PRESENT=2, SIGNED_CMS=2, UNREADABLE=1, UNSIGNED=17
 
 NOTE: ADHOC is NOT signed in any sense Gatekeeper acts on — it carries no
 certificate and no identity. UNREADABLE is never counted as unsigned.
