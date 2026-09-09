@@ -90,6 +90,7 @@ def _extract(tmp_path: pathlib.Path) -> pathlib.Path:
         check=True,
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
     for name in (
         "extracted_shuffle_body.inc",
@@ -109,10 +110,13 @@ def _build_and_run(
         ["g++", "-std=c++17", "-O1", "-o", str(exe), str(workdir / source)],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         cwd=workdir,
     )
     assert build.returncode == 0, f"harness failed to compile:\n{build.stderr}"
-    return subprocess.run([str(exe)], capture_output=True, text=True, cwd=workdir)
+    return subprocess.run(
+        [str(exe)], capture_output=True, text=True, encoding="utf-8", cwd=workdir
+    )
 
 
 # ---------------------------------------------------------------------------
