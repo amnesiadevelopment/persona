@@ -925,3 +925,36 @@ def test_the_fork_and_popen_arm_is_untouched(tmp_path, monkeypatch):
     assert bl._pending_record == {}, (
         "a handle with a probeable pid has nothing to defer"
     )
+
+
+def test_the_engine_pid_parser_reads_only_the_line_that_carries_pids():
+    """THE MATCHER, PINNED — because it reads strings another module emits.
+
+    `engine_pid_from` matches `LIFECYCLE watch-pids` and NOTHING ELSE, and each
+    negative here is a line invisible_launch.py really emits:
+
+    * `watch-pid pid=N` is the FORK path's singular form. That arm records a
+      real pid at spawn and has nothing pending, so matching it would be a
+      branch that can never usefully fire — and, if it ever did, would rewrite
+      a good record from a line meant for a different arm.
+    * `close=` and `teardown-kill` lines ALSO carry a `pids=[...]` list. They
+      describe a session that is ENDING, and completing a durable record from
+      one would assert a running browser at the moment it stopped running.
+
+    A loose matcher here is not a cosmetic problem: it is the stale-record
+    shape the whole module is built to avoid.
+    """
+    from src.services.browser.launcher import engine_pid_from
+
+    assert engine_pid_from("LIFECYCLE watch-pids pids=[1234, 5678]") == 1234, (
+        "the lowest pid is the deterministic choice and the likeliest parent"
+    )
+    assert engine_pid_from("LIFECYCLE watch-pids pids=[42]") == 42
+
+    # An empty set carries no pid: "not a usable line", never a pid of 0.
+    assert engine_pid_from("LIFECYCLE watch-pids pids=[]") is None
+
+    assert engine_pid_from("LIFECYCLE watch-pid pid=99") is None
+    assert engine_pid_from("LIFECYCLE close=window-gone pids=[1, 2]") is None
+    assert engine_pid_from("LIFECYCLE teardown-kill pids=[7] rescan=False") is None
+    assert engine_pid_from("BROWSER_STARTED") is None
