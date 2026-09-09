@@ -132,6 +132,7 @@ def test_configured_policy_keeps_fetch_latest_full_off_urlopen(monkeypatch):
 def test_configured_policy_keeps_firefox_fetch_latest_off_urlopen(monkeypatch):
     """AC1, the other unattended fetch. Both call sites, or the policy is a
     setting one of them ignores."""
+    _require_engine_driver()
     settings.set_app_egress_proxy("socks5://127.0.0.1:9")
 
     def forbidden(*a, **k):
@@ -213,6 +214,7 @@ def test_default_is_direct_and_unchanged_for_chromium(monkeypatch):
 
 def test_default_is_direct_and_unchanged_for_firefox(monkeypatch):
     """AC3, the other call site."""
+    _require_engine_driver()
     assert settings.app_egress_proxy() == ""
 
     seen = {}
@@ -697,6 +699,7 @@ def test_both_call_sites_consult_the_same_authority(monkeypatch):
     """AC7. Not a grep but the behavioural version of it: one patch of the
     single resolver must divert BOTH fetches. A second copy of the decision in
     either call site would leave that site sending directly."""
+    _require_engine_driver()
     calls = []
 
     def only_authority(proxy=None):
@@ -1422,14 +1425,27 @@ with contextlib.suppress(ImportError):
 def _require_engine_driver():
     """Skip unless the pinned engine driver is importable.
 
-    Named rather than inlined because three tests share it and a skip reason is
+    Named rather than inlined because SIX tests share it and a skip reason is
     the only thing standing between "this environment has no driver" and a
     reader concluding the routing under test is broken.
+
+    THE SIX SPLIT INTO TWO KINDS, and both genuinely need the driver:
+
+    * three reach ``_download_invisible`` — the driver's own download path;
+    * three drive ``firefox.fetch_latest``/``fetch_latest_full``, which import
+      ``invisible_playwright.constants`` for ``BINARY_VERSION`` /
+      ``BROKEN_VERSIONS`` and RETURN EARLY (``"", False, ""``) when that import
+      fails. That early return is the trap this guard exists for: without it
+      those tests fail on ``tag == ""`` and read as "the egress policy did not
+      route the fetch", when in truth the fetch never happened at all. A
+      misleading failure about a security-relevant routing property is worse
+      than an honest skip.
 
     ⛔ NOT a module-level skipif. Most of this file tests persona's OWN egress
     authority (`egress.download_opener`, `httpdl`, the chromium arm through
     `updater._download_to`) and needs no driver whatsoever — skipping the file
-    would silently retire real coverage over an unrelated missing package.
+    would silently retire real coverage over an unrelated missing package. The
+    chromium half of every "both call sites" pair still runs here.
     """
     pytest.importorskip(
         "invisible_playwright",
