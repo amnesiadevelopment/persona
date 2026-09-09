@@ -728,7 +728,7 @@ class _FakeEntry:
 def _walk(tree: dict):
     """Run the real `_apfs_machos` over a fake volume; return (machos, notes)."""
     acc: list = []
-    notes: dict[str, list[str]] = {"code_resources": [], "staple": []}
+    notes: dict[str, list[str]] = {"code_resources": [], "staple": [], "unclassified": []}
     mod._apfs_machos(_FakeEntry("", tree), "", acc, notes)
     return acc, notes
 
@@ -765,18 +765,121 @@ def test_signed_but_not_notarized_bundle_reports_no_stapled_ticket():
 
 
 def test_a_real_stapled_ticket_is_still_detected():
-    """The other pole: narrowing the match must not blind the check entirely."""
+    """⛔ THE POSITIVE CONTROL — a genuinely NOTARIZED AND STAPLED `.app`.
+
+    This is the single case a staple check exists to answer PRESENT for, and it
+    is the one the previous fixture did not actually contain. `stapler staple`
+    does NOT write a `*.ticket` file into an app bundle: it writes the raw
+    ticket blob to the bundle subpath `Contents/CodeResources`. Verified in
+    `apple-platform-rs`'s `staple_ticket_to_bundle`, which resolves the bundle
+    path `"CodeResources"` and writes `ticket_data` into it verbatim.
+
+    ⚠️ SO ONE FILENAME CARRIES TWO DIFFERENT FACTS, and this fixture holds both
+    at once — which is the real shape of a stapled bundle:
+        Contents/CodeResources                 -> the TICKET (DER blob)
+        Contents/_CodeSignature/CodeResources  -> the SEAL   (a plist)
+
+    Both assertions matter and they fail independently:
+      * a name-only match reports this bundle's ticket as ABSENT (a false
+        negative that reads to an operator as "the stapling did not take");
+      * and the SAME line files that ticket as a second seal, moving the seal
+        count from 1 to 2 with nothing to say why.
+    """
     _, notes = _walk(
-        {"A.app": {"Contents": {"CodeResources": b"x", "A.ticket": b"\x00ticket"}}}
+        {
+            "A.app": {
+                "Contents": {
+                    # DER-encoded ASN.1 — what a notarization ticket actually is
+                    "CodeResources": b"\x30\x82\x0a\x1f\x02\x01\x01",
+                    "_CodeSignature": {
+                        "CodeResources": b'<?xml version="1.0"?><plist/>',
+                        "CodeDirectory": b"\xfa\xde\x0c\x02",
+                    },
+                }
+            }
+        }
     )
-    assert notes["staple"] == ["/A.app/Contents/A.ticket"]
+    assert notes["staple"] == ["/A.app/Contents/CodeResources"], (
+        f"a genuinely stapled bundle was not detected: {notes['staple']}"
+    )
+    # ...and the ticket was NOT absorbed into the seal count.
+    assert notes["code_resources"] == ["/A.app/Contents/_CodeSignature/CodeResources"], (
+        f"the ticket was counted as a seal: {notes['code_resources']}"
+    )
+
+
+def test_binary_plist_seal_is_a_seal_not_a_ticket():
+    """A seal may be a BINARY plist, and `bplist00` is not XML.
+
+    The discriminator is "is this a plist", not "is this text" — reading it as
+    the latter would report every binary-plist seal as a stapled ticket, which
+    is the CLEAN-direction failure this whole check exists to avoid.
+    """
+    _, notes = _walk({"A.app": {"Contents": {"CodeResources": b"bplist00\xd1\x01\x02"}}})
+    assert notes["staple"] == []
+    assert notes["code_resources"] == ["/A.app/Contents/CodeResources"]
+
+
+def test_unreadable_code_resources_falls_back_to_seal_not_ticket():
+    """⚠️ AN UNREAD FILE MUST NOT BECOME A NOTARIZATION CLAIM.
+
+    When the bytes cannot be read at all, the fallback is SEAL — the reading
+    that asserts nothing new — never TICKET, which would claim notarization
+    about a file nobody looked at.
+    """
+
+    class _Unreadable(_FakeEntry):
+        def read_buffer(self, n):
+            raise OSError("simulated read failure")
+
+    root = _FakeEntry("", {"A.app": {"Contents": {"CodeResources": b"\x30\x82"}}})
+    contents = root._children[0]._children[0]
+    contents._children = [_Unreadable("CodeResources", b"\x30\x82")]
+
+    acc: list = []
+    notes: dict[str, list[str]] = {"code_resources": [], "staple": [], "unclassified": []}
+    mod._apfs_machos(root, "", acc, notes)
+
+    assert notes["staple"] == [], "an unreadable file was claimed as a notarization ticket"
+    assert notes["code_resources"] == ["/A.app/Contents/CodeResources"]
+
+
+def test_a_codeResources_that_is_neither_plist_nor_der_is_claimed_as_neither():
+    """⚠️ THE THIRD OUTCOME, and the reason both sides are tested POSITIVELY.
+
+    "Not a plist" is not the same claim as "is a ticket". A file called
+    `CodeResources` whose bytes match neither format — a stray, a symlink
+    target, a truncation — is reported as NEITHER: counting it as a ticket
+    would fabricate a notarization claim, and counting it as a seal would
+    inflate a figure the report quotes.
+    """
+    _, notes = _walk({"A.app": {"Contents": {"CodeResources": b"not a plist or der"}}})
+    assert notes["staple"] == []
+    assert notes["code_resources"] == []
+    assert notes["unclassified"] == ["/A.app/Contents/CodeResources"]
+
+
+def test_dot_ticket_match_is_kept_for_non_bundle_entities():
+    """The narrower `*.ticket` match still fires — it costs nothing, and it is
+    the shape `stapler` uses for entities that are not app bundles. It simply
+    cannot be the ONLY match, because a `.app` never gets one."""
+    _, notes = _walk({"thing": {"A.ticket": b"\x30\x82\x00"}})
+    assert notes["staple"] == ["/thing/A.ticket"]
 
 
 def test_walk_finds_machos_at_any_depth():
     """The walk's other job — the Mach-O accumulator — still works, and the
-    notes are collected on the SAME single pass rather than a second one."""
+    notes are collected on the SAME single pass rather than a second one.
+
+    ⚠️ The seal content here is a REAL plist, not a placeholder byte. Since the
+    seal/ticket discriminator reads bytes rather than the filename, a stand-in
+    like `b"x"` is no longer a seal — it is an unidentified binary blob at the
+    bundle-root ticket path, which is exactly what a ticket looks like.
+    """
     macho = _make_macho(adhoc=True)
-    acc, notes = _walk({"A.app": {"Contents": {"MacOS": {"A": macho}, "CodeResources": b"x"}}})
+    acc, notes = _walk(
+        {"A.app": {"Contents": {"MacOS": {"A": macho}, "CodeResources": b"<?xml ?><plist/>"}}}
+    )
     assert [p for p, _s, _e in acc] == ["/A.app/Contents/MacOS/A"]
     assert notes["code_resources"] == ["/A.app/Contents/CodeResources"]
 
@@ -879,3 +982,82 @@ def test_readable_entitlements_still_report_the_shipped_debug_entitlement(
     f = _ents_finding(report)
     assert f.state == "PRESENT"
     assert "1/1 readable slice(s)" in f.detail
+
+
+# ── the REPORTED rows for seal / ticket, driven end to end ───────────────────
+#
+# ⚠️ Round 3's lesson, applied again: the walk's `notes` dict is not the thing a
+# human reads — the two `report.add` rows below it are. Those rows have their
+# own logic (the count, the example path, the bound statement), and asserting on
+# `notes` alone leaves all of it undriven. These tests reach it.
+
+
+def _row(report, kind_fragment: str):
+    (f,) = [x for x in report.findings if kind_fragment in x.kind]
+    return f
+
+
+def test_reported_rows_split_a_stapled_bundle_correctly(tmp_path: Path, monkeypatch):
+    """⛔ THE POSITIVE CONTROL AT THE REPORTING LAYER.
+
+    A notarized+stapled bundle must produce `PRESENT` on the ticket row AND a
+    seal count of exactly 1 — not `ABSENT` plus a count of 2.
+    """
+    report = _bundle_report(
+        {
+            "A.app": {
+                "Contents": {
+                    "CodeResources": b"\x30\x82\x0a\x1f\x02\x01\x01",  # the ticket
+                    "_CodeSignature": {"CodeResources": b"<?xml ?><plist/>"},  # the seal
+                }
+            }
+        },
+        monkeypatch,
+        tmp_path,
+    )
+    ticket = _row(report, "stapled notarization ticket")
+    assert ticket.state == "PRESENT", f"a stapled bundle reported {ticket.state}"
+    assert "/A.app/Contents/CodeResources" in ticket.detail
+
+    seal = _row(report, "CodeResources")
+    assert seal.state == "PRESENT"
+    assert "1 CodeResources seal(s)" in seal.detail, f"seal count absorbed the ticket: {seal.detail}"
+
+
+def test_the_dmg_bound_is_stated_on_every_ticket_row(tmp_path: Path, monkeypatch):
+    """⚠️ A BOUND THAT IS ONLY TRUE AND NOT SAID IS NOT A BOUND.
+
+    This is a BUNDLE-level check. An image-level `.dmg` staple lives in the UDIF
+    code-signature superblob, not in the filesystem, so no walk can reach it —
+    and a future re-runner reading `ABSENT` must be told that, on the row
+    itself, in both the PRESENT and the ABSENT branch.
+    """
+    for tree in (
+        {"A.app": {"Contents": {"CodeResources": b"\x30\x82\x0a\x1f"}}},  # PRESENT
+        {"A.app": {"Contents": {"_CodeSignature": {"CodeResources": b"<?xml ?><plist/>"}}}},  # ABSENT
+    ):
+        report = _bundle_report(tree, monkeypatch, tmp_path)
+        detail = _row(report, "stapled notarization ticket").detail
+        assert "BUND" in detail.upper(), f"no bound stated: {detail}"
+        assert "UDIF" in detail, f"the image-level staple is not named: {detail}"
+
+
+def test_an_unclassified_codeResources_is_disclosed_on_the_seal_row(tmp_path: Path, monkeypatch):
+    """A file matching NEITHER format is counted as neither — and SAID so,
+    rather than vanishing between the two buckets."""
+    report = _bundle_report(
+        {
+            "A.app": {
+                "Contents": {
+                    "CodeResources": b"neither plist nor der",
+                    "_CodeSignature": {"CodeResources": b"<?xml ?><plist/>"},
+                }
+            }
+        },
+        monkeypatch,
+        tmp_path,
+    )
+    seal = _row(report, "CodeResources")
+    assert "1 CodeResources seal(s)" in seal.detail
+    assert "NEITHER a plist nor DER" in seal.detail, f"the unclassified file vanished: {seal.detail}"
+    assert _row(report, "stapled notarization ticket").state == "ABSENT"

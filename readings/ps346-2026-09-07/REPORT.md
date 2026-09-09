@@ -133,7 +133,13 @@ trailer sits **0 bytes** after the end of the XML plist (a signed image carries 
 CMS blob in that gap) and the resource fork holds only `blkx` and `plst` — **no
 `cSig` resource**.
 
-**No stapled notarization ticket exists anywhere in either image.**
+**No stapled notarization ticket exists anywhere in either image.** ⚠️ That is
+a *bundle-level* reading — it covers the `.app` bundles inside each image, where
+`stapler` would write a ticket as a file. An image-level `.dmg` staple lives in
+the UDIF code-signature superblob and is unreachable by a filesystem walk; it is
+also impossible here, since neither image carries an image-level signature for a
+ticket to attach to (the paragraph directly above measures exactly that). See
+the bound stated in §3.
 
 ### Linux — `UNSIGNED`, sections reserved and empty
 
@@ -199,26 +205,70 @@ directly (`signing_state.json`, `signing_state_run.txt`):
 different facts and the instrument keeps them apart deliberately — the same
 discipline that keeps an unread bundle from being reported as unsigned.
 
-⭐ **PROVENANCE NOTE — the instrument was corrected after these readings were
-captured, and the readings are unchanged.** A later audit found two defects in
-the §3 code: the staple detector also matched `_CodeSignature/CodeDirectory`
-(a `codesign` signature slot, not a `stapler` ticket), and the caller of the
-three-valued entitlements reader folded *unparseable* in with *absent*. Both
-are fixed, and the fix does **not** move a single figure in this table: the
-`ABSENT` staple rows were `ABSENT` for a measured reason (`persona.app`'s
-signatures are embedded via `LC_CODE_SIGNATURE`, so no detached `CodeDirectory`
-file exists in it; the engine image has no `_CodeSignature` at all), and the
-`3/3` entitlement reading came from XML blobs that parsed. The defects were
-**latent on today's assets** and would have fired on the first *signed*
-artifact — which is to say, on the first re-run after someone buys a
-certificate. That is exactly when this table gets re-measured, so the
-correction is recorded here rather than left in the commit log. One consequence
-worth naming so a re-runner is not surprised: the *wording* of the
-`get-task-allow` detail line changed (it now says "readable slice(s)" and sizes
-any unparseable remainder), so a fresh run will not be byte-identical to
-`signing_state_run.txt` / `signing_state.json` even though every **state** in
-it is. Those two files are kept as captured on 2026-09-07 rather than
-regenerated, because they are the record of what was measured that day.
+⭐ **PROVENANCE NOTE — the instrument was corrected three times after these
+readings were captured, and the readings are unchanged.** Successive audits
+found three defects in the §3 code, and it is worth recording all three
+together because they share one shape:
+
+1. the staple detector matched `_CodeSignature/CodeDirectory` — a `codesign`
+   *signature* slot, not a `stapler` ticket — reporting notarization on a
+   merely **signed** bundle;
+2. the caller of the three-valued entitlements reader folded *unparseable* in
+   with *absent*;
+3. the fix for (1) narrowed the staple match to `*.ticket` **only** — and
+   `stapler staple` does not write a `*.ticket` file into an app bundle at all.
+   It writes the raw ticket blob to the bundle subpath `Contents/CodeResources`.
+   So the narrowed check failed in the *opposite* direction: it reported a
+   genuinely notarized, genuinely stapled bundle as `ABSENT`, **and** silently
+   counted that ticket as a second `CodeResources` seal, moving the seal count
+   by one with nothing to say why.
+
+All three are fixed. ⚠️ **Defect (3) is the one worth carrying forward, because
+it was introduced by a review instruction rather than by the code**: the
+instruction that produced it contained a factual claim about what `stapler`
+writes, and nobody had checked that claim against the world. The current fix
+does not rest on recollection either — it is verified against
+[`apple-platform-rs`](https://github.com/indygreg/apple-platform-rs), whose
+`stapling::staple_ticket_to_bundle` resolves the bundle path `"CodeResources"`
+and writes the ticket into it verbatim, and whose `bundle_signing` adds an
+exclusion rule for `^CodeResources$` so `codesign` never puts a seal at the
+bundle root. The two facts genuinely never contend for the same path.
+
+The instrument now discriminates the two by **content, not filename** — a
+notarization ticket is DER-encoded ASN.1, a seal is a plist — and tests **both**
+sides positively, so a `CodeResources` matching neither format is reported as
+neither rather than being guessed into one bucket.
+
+**None of this moves a single figure in this table.** All three defects were
+**latent on today's assets**: `persona.app`'s signatures are embedded via
+`LC_CODE_SIGNATURE` so no detached `CodeDirectory` file exists in it; the engine
+image has no `_CodeSignature` at all; `persona.app` has **no bundle-root
+`Contents/CodeResources`**, so its 20 seals are all `_CodeSignature/CodeResources`
+and none was ever mismatched or miscounted; and the `3/3` entitlement reading
+came from XML blobs that parsed. Every defect would have fired on the first
+*signed and notarized* artifact — which is to say, on the first re-run after
+someone buys a certificate. That is exactly when this table gets re-measured, so
+the corrections are recorded here rather than left in the commit log.
+
+One consequence worth naming so a re-runner is not surprised: the *wording* of
+the `get-task-allow`, seal and staple detail lines changed, so a fresh run will
+not be byte-identical to `signing_state_run.txt` / `signing_state.json` even
+though every **state** in it is. Those two files are kept as captured on
+2026-09-07 rather than regenerated, because they are the record of what was
+measured that day.
+
+⛔ **BOUND ON THE STAPLE ROW — it is a BUNDLE-level check, and cannot be an
+image-level one.** The instrument reads the filesystem inside each `.dmg` and
+finds a ticket only where `stapler` writes one as a **file** (`.app` →
+`Contents/CodeResources`). An image-level staple on the `.dmg` *itself* is not
+reachable by any filesystem walk: `stapler` puts that ticket into the UDIF
+code-signature superblob (slot `0x10002`) and rewrites the `koly` trailer, so it
+is not a file at all. A stapled `.dmg` whose inner bundles were unstapled would
+therefore read `ABSENT` here. **That is correct for today's assets** — neither
+image carries an image-level signature for a ticket to attach to, which the
+"UDIF image signature" row measures directly — and it would be wrong the moment
+we staple one. Implementing UDIF superblob ticket parsing was judged out of
+proportion to this ticket; naming the bound is not.
 
 **Why this matters for costing the work.** The naive plan is "buy a
 certificate, add a `codesign` step, done." That plan is wrong. Buying the
@@ -339,8 +389,9 @@ re-reads every fact in §1–§3: the PE certificate tables, the UDIF `cSig`/gap
 the AppImage sections, the per-slice Mach-O states and hardened-runtime count,
 **and** the three §3 notarization prerequisites — `get-task-allow`, the
 `_CodeSignature/CodeResources` seals, and the absence of a stapled ticket
-(matched as a `stapler`-written `*.ticket`, never as a `codesign`-written
-`CodeDirectory` — see the provenance note in §3). It
+(discriminated by CONTENT — a ticket is DER, a seal is a plist — never by
+filename alone, and never as a `codesign`-written `CodeDirectory`; see the
+provenance note in §3, including the **bundle-level bound** on that row). It
 needs three libraries the repo does not otherwise require
 (`libfsapfs-python`, `signify`, `asn1crypto`); without them the macOS bundle
 and PE-identity legs report **`UNREADABLE`** and say why, which is the honest

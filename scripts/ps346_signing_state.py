@@ -550,6 +550,50 @@ def udif_extract(path: str, out: str) -> bool:
     return True
 
 
+_PLIST_XML_MAGIC = (b"<?xml", b"<!DOCTYPE", b"<plist")
+
+
+def looks_like_plist(head: bytes) -> bool:
+    """True when these leading bytes are a property list — binary or XML.
+
+    A `CodeResources` SEAL is a plist, written by `codesign`.
+    """
+    if head.startswith(b"bplist"):
+        return True
+    stripped = head.lstrip(b"\xef\xbb\xbf").lstrip(b" \t\r\n")
+    return stripped.startswith(_PLIST_XML_MAGIC)
+
+
+def looks_like_der(head: bytes) -> bool:
+    """True when these leading bytes are DER-encoded ASN.1.
+
+    A notarization TICKET is "DER-encoded ASN.1 with data structures that
+    commonly appear in X.509 certificates" (apple-platform-rs' own concepts
+    doc). DER's outermost element here is a SEQUENCE — tag 0x30 — followed by a
+    definite-length header: either a short form (< 0x80) or a long form whose
+    first byte is 0x81..0x84 for the sizes a real ticket reaches.
+    """
+    if len(head) < 2 or head[0] != 0x30:
+        return False
+    return head[1] < 0x80 or 0x81 <= head[1] <= 0x84
+
+
+def _peek(sub, n: int) -> bytes | None:
+    """First `n` bytes of a leaf entry, or None when they could not be read.
+
+    ⚠️ None is NOT the claim "empty" and NOT the claim "binary". Every caller
+    must treat it as *unmeasured* and fall back to the reading that makes no
+    new assertion.
+    """
+    try:
+        if sub.get_size() == 0:
+            return b""
+        sub.seek_offset(0, 0)
+        return sub.read_buffer(n)
+    except Exception:
+        return None
+
+
 def _apfs_machos(entry, path, acc, notes=None) -> None:
     """Walk the APFS tree collecting Mach-O files — and, when `notes` is given,
     the NOTARIZATION-RELEVANT paths as well.
@@ -558,11 +602,11 @@ def _apfs_machos(entry, path, acc, notes=None) -> None:
     file-system facts, not signature-blob facts, so they are read HERE on the
     same single walk rather than in a second pass:
       * `_CodeSignature/CodeResources` — the bundle seal's shape;
-      * `CodeResources` in a Contents dir — same;
-      * a stapled notarization ticket (`*.ticket`) — `stapler staple` writes
-        one, and NOTHING else in a bundle is one. In particular a
-        `_CodeSignature/CodeDirectory` is a *signature* slot written by
-        `codesign`, not a ticket, and must never be matched here.
+      * a stapled notarization ticket — see the CONTENT discriminator below;
+      * the per-slice Mach-O states, via `acc`.
+
+    ⚠️ ONE FILENAME, TWO COMPLETELY DIFFERENT FACTS — this is the whole
+    subtlety of this function and it is why the check reads BYTES, not names.
     """
     for i in range(entry.get_number_of_sub_file_entries()):
         sub = entry.get_sub_file_entry(i)
@@ -572,23 +616,56 @@ def _apfs_machos(entry, path, acc, notes=None) -> None:
             _apfs_machos(sub, p, acc, notes)
             continue
         if notes is not None:
-            if name == "CodeResources":
-                notes["code_resources"].append(p)
-            # ⚠️ MATCH THE TICKET, AND ONLY THE TICKET.
-            # `stapler staple` writes a notarization ticket into the bundle
-            # (`Contents/CodeResources`' neighbour, named `CodeResources` in a
-            # stapled .app and `*.ticket` elsewhere). `codesign` writes an
-            # entirely different file into `_CodeSignature/`: `CodeDirectory`,
-            # a SIGNATURE slot — see SLOT_CODEDIRECTORY below and the ad-hoc
-            # `CodeDirectory flags bit 0x2` discussion in the module docstring.
+            # ⚠️ `CodeResources` IS TWO DIFFERENT FILES DEPENDING ON WHERE IT
+            # SITS AND WHAT IS IN IT. Discriminating by NAME alone gets one of
+            # them wrong whichever way you choose, so this reads the content.
             #
-            # Matching `CodeDirectory` here would report a stapled ticket for
-            # every bundle carrying a DETACHED signature — i.e. exactly the
-            # signed-but-not-yet-notarized artifact this check exists to
-            # distinguish — and it would fail in the CLEAN direction, claiming
-            # notarization that is not there. Signing is not notarizing.
-            if name.endswith(".ticket"):
-                notes["staple"].append(p)
+            #   `Contents/_CodeSignature/CodeResources`  — the SEAL. A plist of
+            #       per-file digests, written by `codesign`.
+            #   `Contents/CodeResources`                 — the stapled TICKET,
+            #       when one is present. `stapler staple` writes the raw ticket
+            #       blob to exactly this bundle subpath.
+            #
+            # Both halves are verified against apple-platform-rs rather than
+            # recalled: `stapling::staple_ticket_to_bundle` resolves the bundle
+            # path "CodeResources" and writes `ticket_data` into it verbatim,
+            # and `bundle_signing` adds an EXCLUSION rule for `^CodeResources$`
+            # — so `codesign` never puts a seal at the bundle root, and the two
+            # facts genuinely never contend for the same path.
+            #
+            # A ticket is DER-encoded ASN.1; a seal is a plist. BOTH sides are
+            # tested POSITIVELY, and a file matching NEITHER is reported as
+            # neither: "some other file called CodeResources" must not become a
+            # notarization claim, and must not silently inflate the seal count.
+            #
+            # Getting this wrong costs TWO wrong answers from one line, in
+            # opposite directions — and both arrive on the first genuinely
+            # notarized artifact, i.e. exactly when this tool starts to matter:
+            #   * matching only `*.ticket` reports a properly stapled bundle as
+            #     ABSENT (a false negative that reads as "notarization failed"),
+            #     AND silently files the ticket as a second seal, moving the
+            #     seal count by one with nothing to say why;
+            #   * matching `_CodeSignature/CodeDirectory` — a `codesign`
+            #     SIGNATURE slot — reports notarization on a merely SIGNED
+            #     bundle, the CLEAN-direction failure. Signing is not
+            #     notarizing, and that name must never be matched here.
+            if name == "CodeResources":
+                head = _peek(sub, 16)
+                if head and looks_like_der(head):
+                    notes.setdefault("staple", []).append(p)
+                elif head is None or not head or looks_like_plist(head):
+                    # ⚠️ UNREADABLE / EMPTY FALLS BACK TO **SEAL**, NOT TICKET.
+                    # Seal is the reading that asserts nothing new about
+                    # notarization; guessing "ticket" from a file nobody read
+                    # would be the CLEAN-direction failure one level down.
+                    notes.setdefault("code_resources", []).append(p)
+                else:
+                    notes.setdefault("unclassified", []).append(p)
+            elif name.endswith(".ticket"):
+                # Kept as a second, narrower match: `stapler` uses this shape
+                # for non-bundle entities. It costs nothing and it cannot be
+                # the only match — a `.app` never gets one.
+                notes.setdefault("staple", []).append(p)
         try:
             size = sub.get_size()
             if size < 4:
@@ -624,7 +701,7 @@ def read_dmg_bundle(report: Report, asset: str, path: str, workdir: str) -> None
         container.open(payload)
         volume = container.get_volume(0)
         acc: list = []
-        notes: dict[str, list[str]] = {"code_resources": [], "staple": []}
+        notes: dict[str, list[str]] = {"code_resources": [], "staple": [], "unclassified": []}
         _apfs_machos(volume.get_root_directory(), "", acc, notes)
     except Exception as exc:
         report.add(
@@ -763,10 +840,20 @@ def read_dmg_bundle(report: Report, asset: str, path: str, workdir: str) -> None
             f"{len(notes['code_resources'])} CodeResources seal(s) present "
             f"(e.g. {notes['code_resources'][0]}) — ⚠️ presence is NOT identity: "
             "an ad-hoc seal's requirement strings are bare cdhashes with no "
-            "`anchor apple generic` clause."
+            "`anchor apple generic` clause. Count is SEALS only: a stapled "
+            "notarization ticket shares the filename `CodeResources` and is "
+            "reported on the ticket row instead, never counted here."
             if notes["code_resources"]
             else "no CodeResources anywhere in the image — the bundle does not even "
             "have the SHAPE of a signature."
+        )
+        + (
+            f" ⚠️ {len(notes['unclassified'])} further file(s) named "
+            f"`CodeResources` were NEITHER a plist nor DER "
+            f"(e.g. {notes['unclassified'][0]}) — NOT counted as a seal and NOT "
+            "counted as a ticket, because neither claim was measured."
+            if notes["unclassified"]
+            else ""
         ),
     )
     report.add(
@@ -778,7 +865,17 @@ def read_dmg_bundle(report: Report, asset: str, path: str, workdir: str) -> None
             f"{len(notes['staple'])} stapled ticket(s): {notes['staple'][0]}"
             if notes["staple"]
             else "no stapled ticket found anywhere in the image."
-        ),
+        )
+        + " ⚠️ BOUND: this is a BUNDLE-level check — it reads the filesystem "
+        "inside the image and finds a ticket only where `stapler` writes one as "
+        "a FILE (`.app` → `Contents/CodeResources`). An IMAGE-level staple on "
+        "the `.dmg` itself is NOT covered and cannot be: `stapler` puts that "
+        "ticket in the UDIF code-signature superblob (slot 0x10002), rewriting "
+        "the koly trailer — it is not a file, so no filesystem walk can reach "
+        "it. A stapled `.dmg` whose inner bundles are unstapled would therefore "
+        "read ABSENT here. That is correct for today's assets, which carry no "
+        "image-level signature at all for a ticket to attach to (see the UDIF "
+        "image signature row), and it would be wrong the moment we staple one.",
     )
 
 
