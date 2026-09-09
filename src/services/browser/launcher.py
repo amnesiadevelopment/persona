@@ -79,6 +79,7 @@ def cert_trust_status_from(msg: str) -> str | None:
         return f"NOT TRUSTED: {detail}" if detail else "NOT TRUSTED"
     return None
 
+
 def engine_pid_from(msg: str) -> "int | None":
     """The engine pid a ``LIFECYCLE watch-pids`` line announces, else None.
 
