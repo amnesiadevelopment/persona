@@ -122,6 +122,7 @@ def test_our_repository_does_not_own_a_list_of_upstreams_runtime_files():
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         check=True,
     ).stdout.split()
 
@@ -369,10 +370,12 @@ def _fixture_tree(tmp_path: Path, stub: str) -> Path:
     (ws / "ucpl" / "build").mkdir(parents=True)
     # Populated, matching the workflow's `submodules: recursive` checkout.
     (ws / "ucpl" / "ungoogled-chromium").mkdir(parents=True)
-    (ws / "ucpl" / "ungoogled-chromium" / "chromium_version.txt").write_text("152\n")
+    (ws / "ucpl" / "ungoogled-chromium" / "chromium_version.txt").write_text(
+        "152\n", encoding="utf-8"
+    )
 
     driver = ws / "ucpl" / "package" / "docker-package.sh"
-    driver.write_text(stub)
+    driver.write_text(stub, encoding="utf-8")
     driver.chmod(0o755)
     return ws
 
@@ -384,6 +387,7 @@ def _run_package(ws: Path, tree: str = "patched") -> subprocess.CompletedProcess
         cwd=ws,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         env={
             **shell_env(),
             "UCPL_DIR": "ucpl",
@@ -439,7 +443,7 @@ def test_a_stale_release_directory_cannot_be_mistaken_for_this_runs_output(tmp_p
     stale_dir = ws / "ucpl" / "build" / "release"
     stale_dir.mkdir(parents=True)
     stale = stale_dir / "ungoogled-chromium-999.9.9-1-x86_64.AppImage"
-    stale.write_text("BYTES FROM A PREVIOUS DISPATCH\n")
+    stale.write_text("BYTES FROM A PREVIOUS DISPATCH\n", encoding="utf-8")
 
     result = _run_package(ws)
     assert result.returncode == 0, result.stdout + result.stderr
