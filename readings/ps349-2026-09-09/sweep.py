@@ -4,12 +4,15 @@
 question a watchdog would actually face: **pick one threshold, apply it to every
 arm, and count what it gets right and wrong.**
 
-GROUND TRUTH, and note that one arm is deliberately NEGATIVE:
+GROUND TRUTH, and note that SIX of the nine arms are deliberately NEGATIVE:
 
   healthy      NEGATIVE — idle, answered 12/12 pings in 0.01 s.
   unreachable  NEGATIVE — the BROWSER IS FINE; only the observer's eval hook
                was torn out. This is the false-positive trap: a health check
                that reads through the automation channel calls this dead.
+               ⚠️ Its health is STRUCTURAL, not measured: with the hook gone
+               there is no channel to ping, so its committed result carries
+               "pings": [] and it is the one negative arm nothing could see.
   busy         NEGATIVE — healthy and DOING REAL WORK: 69-91% CPU sustained
                while answering 12/12 pings in 0.01-0.02 s. The
                false-positive trap for any PINNED-CPU rule.
@@ -17,9 +20,14 @@ GROUND TRUTH, and note that one arm is deliberately NEGATIVE:
                102-114% CPU AND ctxt_v down to 20/s, while still answering
                12/12 pings in 0.02 s. It lands inside BOTH degraded bands
                at once, and it is the arm that decides the whole question.
+  busyheavy2   NEGATIVE — a repeat of busyheavy, for reproducibility.
+  busymax      NEGATIVE — SIXTEEN loops. Its ctxt_v floor of 9/s is BELOW the
+               wedged arm's floor of 18, which is why the margin here is a
+               duration artifact rather than a magnitude one.
   sigstop      POSITIVE — every process alive, none can answer (SIGSTOP).
   spin         POSITIVE — alive, main thread pinned, answers nothing.
   jugwedge     POSITIVE — PS-171's tab-3 stall; tab-1 ping blocked, no recovery.
+               ⚠️ Only t <= 121.5 is this arm; see END_BOUND below.
 
 The rule under test is deliberately the simplest one that could work:
 
@@ -40,14 +48,30 @@ TAIL_DROP = 10.0
 
 # ⚠️ EXPLICIT END BOUND, and it is not a convenience. The jugwedge arm's
 # teardown NEVER COMPLETED: after the recovery ping at t=121.5 the subject
-# printed nothing more and the observer kept sampling to t=1605 — "wedged AND
-# being torn down", which is not the state under test, and which carried 249
-# samples above 60% CPU that are teardown work rather than the wedge. (The
-# teardown was not blocked but SPINNING — 100% CPU with the engine tree already
-# gone, still going 26 min later; see PROBE.md finding (b).) The
-# window therefore ends at the LAST GROUND-TRUTH OBSERVATION: the moment the
-# subject last confirmed the session's state. Left unbounded it inflates the
-# wedged arm's CPU and would have made a CPU rule look better than it is.
+# printed nothing more, its observer's `while child.poll() is None` loop never
+# ended, and it went on sampling to t=1605.2.
+#
+# ⛔ THE EXCLUDED SPAN IS NOT THIS ARM'S TEARDOWN. An earlier version of this
+# comment said it was "wedged AND being torn down", and that its high-CPU
+# samples were "teardown work". Both are wrong, and the truth is a STRONGER
+# reason to exclude them. The wedged session's own orphaned tree runs to
+# t=216.9 and is reaped at t=218.9; everything after that is the NEXT FIVE ARMS
+# (unreachable, busy, busyheavy, busyheavy2, busymax), whose engine trees the
+# still-running stale observer matched with the same engine-path matcher and
+# folded into this file. Their episode CPU medians (5.4 / 72.9 / 103.9 / 104.0
+# / 104.0) reproduce those arms' own medians (5.9 / 72.8 / 103.9 / 104.0 /
+# 103.9). So the exclusion is not a judgement about teardown; it is a
+# correctness requirement -- those samples are OTHER SESSIONS.
+#
+# The tail carries 254 samples above 60% CPU (249 above 70%; the earlier "249
+# above 60%" conflated the two thresholds). The window therefore ends at the
+# LAST GROUND-TRUTH OBSERVATION: the moment the subject last confirmed the
+# session's state. Left unbounded it inflates the wedged arm's CPU and would
+# have made a CPU rule look better than it is. The teardown itself was not
+# blocked but SPINNING -- 100% CPU with the engine tree already gone, still
+# going ~26 min later; see PROBE.md finding (b).
+#
+# THE BOUND IS UNCHANGED AT 121.5. Only its justification was wrong.
 END_BOUND = {"jugwedge": 121.5}
 
 TRUTH = {"healthy": False, "unreachable": False, "busy": False,
