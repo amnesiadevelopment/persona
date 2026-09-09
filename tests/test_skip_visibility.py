@@ -768,3 +768,176 @@ class TestCapabilityClassification:
                     f"{name} names {member!r}, which is not a capability — a "
                     "declaration would expand to nothing and enforce nothing"
                 )
+
+
+# ---------------------------------------------------------------------------
+# PS-371: an importorskip that supplies its OWN reason must still classify
+# ---------------------------------------------------------------------------
+
+#: The engine fence's guard, verbatim in SHAPE: `importorskip` with a custom
+#: `reason=`. That keyword REPLACES the wording this table matches on, which is
+#: why this is a distinct failure mode from the bare form below and not a
+#: paraphrase of it.
+#:
+#: ⚠️ THE MODULE NAME IS DELIBERATELY UNIMPORTABLE, AND IT MUST STAY THAT WAY.
+#: An earlier draft of this file named the REAL package, `invisible_core` —
+#: which made these tests pass in a bare container and FAIL in CI, where
+#: `pip install .` supplies it: the importorskip would succeed, no skip would
+#: occur, and the `assert False` below would fire. The claim under test is
+#: about the SHAPE of the guard (a custom `reason=`) and about how conftest
+#: CLASSIFIES the resulting skip — it is not about any particular package, and
+#: it must not silently become a test of what happens to be installed. The
+#: reason string is what carries the engine meaning, and that is the input the
+#: classifier actually reads.
+_UNSEEN_ENGINE_TEST_WITH_CUSTOM_REASON = '''
+import pytest
+
+def test_a_brand_new_engine_probe():
+    pytest.importorskip(
+        "persona_no_such_engine_module",
+        reason="the engine driver is not installed in this environment",
+    )
+    assert False, "must never execute: the importorskip skips first"
+'''
+
+#: The SAME absence, guarded the bare way, so importorskip writes the reason
+#: itself. Here the reason is generated FROM the module name, so this one names
+#: `invisible_core` of necessity — the pattern it must match is
+#: "could not import 'invisible_core". It is wrapped so the module is
+#: unimportable in EVERY environment (including CI, where the real package is
+#: installed) while importorskip still writes that exact wording.
+_UNSEEN_ENGINE_TEST_BARE = '''
+import pytest
+
+def test_a_bare_engine_probe():
+    # A submodule that cannot exist, under the real top-level name: the skip
+    # reason importorskip writes still begins "could not import
+    # 'invisible_core", which is the string the capability table matches on,
+    # and it reads that way whether or not the real package is installed.
+    pytest.importorskip("invisible_core.no_such_submodule_ps371")
+    assert False, "must never execute: the importorskip skips first"
+'''
+
+
+class TestACustomImportorskipReasonIsStillPoliced:
+    """A guard written more HELPFULLY must not thereby become invisible.
+
+    ``pytest.importorskip(mod, reason=...)`` replaces importorskip's own
+    wording, and this file classifies skips BY that wording. So the two
+    spellings of one absence took different paths: the bare form matched
+    ``"could not import 'invisible_core"`` and was policed, while a custom
+    reason matched nothing and was silently tolerated even where the engine
+    was declared.
+
+    PS-371 MEASURED THAT ASYMMETRY INSIDE A SINGLE FILE, which is what makes
+    it worth pinning rather than merely noting.
+    ``tests/test_engine_driver_platform_support.py`` is the ONLY assertion in
+    this repo that the pinned ``invisible_core`` still supports every OS
+    ``release.yml`` builds for — the guard holding macOS. Its fence uses the
+    custom-reason form; the self-test beside it (``test_the_probe_can_actually_fail``)
+    uses the bare form. Same module, same missing package, and before this the
+    IMPORTANT one was the unclassified one.
+
+    Both spellings are driven here through a real pytest process, because the
+    claim is about the hook wiring and not about a helper's return value.
+    """
+
+    def test_the_custom_reason_form_fails_where_the_engine_is_declared(
+        self, sandbox: Path
+    ):
+        """THE REGRESSION THIS CLASS EXISTS FOR — observed red, not assumed."""
+        (sandbox / "test_probe.py").write_text(
+            _UNSEEN_ENGINE_TEST_WITH_CUSTOM_REASON, encoding="utf-8"
+        )
+
+        result = _run_pytest(
+            sandbox, "-q", env_extra={persona_conftest.REQUIRE_ENV_VAR: "engine"}
+        )
+
+        assert result.returncode != 0, (
+            "a custom importorskip reason classified as nothing, so the engine "
+            "declaration policed it not at all and the run reported green: "
+            + result.stdout
+            + result.stderr
+        )
+        assert "test_a_brand_new_engine_probe" in result.stdout
+        # The message names the capability and how to supply it, rather than
+        # merely reporting a red.
+        assert "engine" in result.stdout
+        assert "pip install ." in result.stdout
+
+    def test_the_bare_form_is_policed_identically(self, sandbox: Path):
+        """The other spelling of the same absence, so the two cannot drift
+        apart again: whichever way a guard is written, the same declaration
+        catches it."""
+        (sandbox / "test_probe.py").write_text(
+            _UNSEEN_ENGINE_TEST_BARE, encoding="utf-8"
+        )
+
+        result = _run_pytest(
+            sandbox, "-q", env_extra={persona_conftest.REQUIRE_ENV_VAR: "engine"}
+        )
+
+        assert result.returncode != 0, result.stdout + result.stderr
+        assert "test_a_bare_engine_probe" in result.stdout
+
+    def test_an_undeclared_run_still_skips_and_still_passes(self, sandbox: Path):
+        """The quiet path, for the capability this ticket widened.
+
+        A contributor who has not installed the project must keep getting a
+        green run. Widening a pattern is only safe if it changes nothing where
+        nothing was declared — otherwise the loud path was bought by making an
+        ordinary checkout red.
+        """
+        (sandbox / "test_probe.py").write_text(
+            _UNSEEN_ENGINE_TEST_WITH_CUSTOM_REASON, encoding="utf-8"
+        )
+
+        result = _run_pytest(sandbox, "-q", "-rs")
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "1 skipped" in result.stdout
+        assert "the engine driver is not installed" in result.stdout
+
+    def test_declaring_browser_does_not_police_the_engine(self, sandbox: Path):
+        """`browser` does NOT cover `engine`, and this is why the workflow had
+        to name it.
+
+        ``expand_capabilities(["browser"])`` is ``["browser", "browser_firefox"]``
+        — the engine packages are not in that umbrella. So the pattern widened
+        above buys nothing on its own: without ``engine`` in the declaration
+        the fence could still go dark silently. Pinned as a real run so the
+        two halves of this change are known to BOTH be load-bearing.
+        """
+        (sandbox / "test_probe.py").write_text(
+            _UNSEEN_ENGINE_TEST_WITH_CUSTOM_REASON, encoding="utf-8"
+        )
+
+        result = _run_pytest(
+            sandbox, "-q", env_extra={persona_conftest.REQUIRE_ENV_VAR: "browser"}
+        )
+
+        assert result.returncode == 0, (
+            "declaring 'browser' policed an engine skip — the umbrella has "
+            "silently grown to cover the engine packages, and the workflow's "
+            "separate 'engine' declaration is no longer the thing enforcing "
+            "this: " + result.stdout
+        )
+
+    def test_the_pattern_is_the_stem_not_one_guards_exact_sentence(self):
+        """A guard that appends its own detail must still classify.
+
+        Matching the fence's full sentence would make this pattern a private
+        arrangement with ONE call site — the next guard, worded slightly
+        differently, would be unclassified again and nobody would know. The
+        stem is the environment-independent part.
+        """
+        for reason in (
+            "the engine driver is not installed in this environment",
+            "the engine driver is not installed (bare checkout, no pip install)",
+            "the engine driver is not installed",
+        ):
+            cap = persona_conftest.capability_for_skip(reason)
+            assert cap is not None and cap.name == "engine", (
+                f"{reason!r} did not classify as the engine capability"
+            )
