@@ -282,3 +282,102 @@ def test_records_round_trip_through_json(tmp_path):
     assert back.pgid == 1234
     assert back.engine == "firefox"
     assert back.create_time == pytest.approx(rec.create_time)
+
+
+# --------------------------------------------------------------------------
+# PS-353 — a handle the persistence format CANNOT represent.
+#
+# `InvisibleProcess` runs the Firefox session on a THREAD of persona wherever
+# `needs_fork_launch()` is false (a WINDOWS or macOS host), so the handle
+# honestly reports `pid = 0`. `make_record` used to store that verbatim and
+# `from_json`'s `pid <= 0` guard dropped it on the way back in — a write that
+# was a no-op, with no path on which the writer could report it.
+# --------------------------------------------------------------------------
+
+
+class _ThreadArmHandle:
+    """The shape `InvisibleProcess` presents on its non-fork arm: no pid."""
+
+    pid = 0
+
+
+def test_make_record_refuses_a_handle_with_no_probeable_pid():
+    """The seam, closed at the writer.
+
+    `None` is the honest answer for a handle whose identity cannot be written
+    down. Returning a record would produce a row the reader discards — and, at
+    the next `record()` of any profile, ERASES — so the caller could never learn
+    its write had not happened.
+    """
+    from src.services.browser.session_registry import make_record
+
+    assert make_record("ff-thread", _ThreadArmHandle(), "firefox") is None
+
+
+def test_make_record_still_builds_a_record_for_a_real_handle():
+    """THE CONTROL. Without it the test above reads as "make_record returns
+    None", rather than locating the refusal at the one shape that has no pid."""
+    from src.services.browser.session_registry import make_record
+
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        rec = make_record("cr-fork", proc, "chromium")
+        assert rec is not None and rec.pid == proc.pid
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+def test_recording_an_unprobeable_row_is_refused_rather_than_lost(tmp_path):
+    """A SILENT NO-OP IS WORSE THAN A REFUSAL, and this is why.
+
+    Such a row does not merely fail to load: `record()` rebuilds the file from
+    `_load_locked()`, which applies the `pid <= 0` guard on the way in, so the
+    NEXT record() of ANY profile physically rewrites the file without it. A
+    post-mortem reader of the registry would not even find the entry that
+    explains the missing guard.
+
+    So the write is refused and says so — and the control proves the file, the
+    writer and the reader all work.
+    """
+    reg = SessionRegistry(str(tmp_path / "s.json"))
+    subject = _record(profile="ff-thread", pid=0, create_time=None,
+                      engine="firefox")
+    control = _record(profile="cr-fork", engine="chromium")
+
+    assert reg.record(subject) is False, "an unwritable row must be reported"
+    assert reg.record(control) is True
+
+    assert [r.profile for r in reg.load()] == ["cr-fork"], (
+        "the control must survive in the same file, or this test says nothing "
+        "about WHERE the loss happens"
+    )
+    assert "ff-thread" not in (tmp_path / "s.json").read_text(encoding="utf-8"), (
+        "the refused row must never reach the file at all"
+    )
+
+
+def test_make_record_for_pid_records_a_pid_the_handle_never_carried(tmp_path):
+    """THE REPAIR PATH's own unit.
+
+    A thread-arm session has no pid on its handle but its browser IS a real set
+    of OS processes, which the engine's close-watch resolves and announces. This
+    is what turns one of those pids into a record a probe can ask about.
+
+    `pgid` is None by construction here and that is correct, not an omission:
+    `_child` calls `start_own_session()` only on the FORK arm, so the thread
+    arm's engine sits in PERSONA'S OWN group — recording that number would aim a
+    later group teardown at persona itself.
+    """
+    from src.services.browser.session_registry import make_record_for_pid
+
+    rec = make_record_for_pid("ff-thread", os.getpid(), "firefox")
+
+    assert rec is not None
+    assert rec.pid == os.getpid()
+    assert rec.pgid is None
+    assert rec.engine == "firefox"
+    assert liveness_of(rec) is Liveness.ALIVE, (
+        "a record built this way must be probeable — that is its whole point"
+    )
+    assert make_record_for_pid("ff-thread", 0, "firefox") is None
