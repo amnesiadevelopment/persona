@@ -416,3 +416,60 @@ def test_no_rotate_control_without_a_handler():
                 walk(v)
     walk(card)
     assert "Rotate this profile's exit IP" not in tips
+
+
+# --- exit-IP flash (green on check, blue on rotate, then a fade to grey) ------
+
+
+def _ip_text(card, ip):
+    found = []
+    def walk(c):
+        if isinstance(c, ft.Text) and getattr(c, "value", None) == ip:
+            found.append(c)
+        for attr in ("controls", "content"):
+            v = getattr(c, attr, None)
+            if isinstance(v, list):
+                for x in v: walk(x)
+            elif v is not None and not isinstance(v, str):
+                walk(v)
+    walk(card)
+    return found[0] if found else None
+
+
+def _ip_card(ip_color):
+    p = Profile(name="a", proxy="P", os_type="windows")
+    px = Proxy(
+        name="P", url="socks5://1.2.3.4:1", country_code="ie",
+        last_check_ok=True, checked_at=time.time() - 30, last_ip="203.0.113.7",
+    )
+    sunk = []
+    card = build_profile_card(
+        p, False, False, _noop, _noop, _noop,
+        proxy=px, on_check_proxy=lambda n: None,
+        ip_color=ip_color,
+        ip_sink=lambda name, ctrl: sunk.append((name, ctrl)),
+    )
+    return card, sunk
+
+
+def test_ip_uses_the_caller_supplied_flash_colour():
+    # The caller (app.py) drives the flash colour so an in-progress fade survives
+    # a card rebuild; the card just paints whatever ip_color it is handed.
+    card, _sunk = _ip_card("#5BC8FF")
+    ip = _ip_text(card, "203.0.113.7")
+    assert ip is not None and ip.color == "#5BC8FF"
+
+
+def test_ip_registers_its_live_control_via_the_sink():
+    # Every IP control is handed up (keyed by PROXY name) so the fade thread can
+    # drive whichever instance is currently on screen.
+    card, sunk = _ip_card(None)
+    ip = _ip_text(card, "203.0.113.7")
+    assert sunk and sunk[0][0] == "P" and sunk[0][1] is ip
+
+
+def test_ip_rests_grey_without_a_flash_colour():
+    from src.ui.theme.colors import COLORS
+    card, _sunk = _ip_card(None)
+    ip = _ip_text(card, "203.0.113.7")
+    assert ip is not None and ip.color == COLORS["text_sub"]

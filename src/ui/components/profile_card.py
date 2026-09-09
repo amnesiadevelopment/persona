@@ -216,6 +216,8 @@ def build_profile_card(
     proxy: Proxy | None = None,
     on_check_proxy: Callable[[str], None] | None = None,
     on_rotate: Callable[[str], None] | None = None,
+    ip_color: str | None = None,
+    ip_sink: Callable[[str, "ft.Text"], None] | None = None,
     proxy_checking: bool = False,
     on_notes_change: Callable[[str, str], None] | None = None,
     cdp_channel_open: bool = False,
@@ -262,14 +264,33 @@ def build_profile_card(
     # A running profile is already shown by the accent border and the stop
     # button; a "· running" suffix here would be redundant.
     meta = f"{os_label} · {proxy_label}"
+    meta_color = COLORS["accent"] if is_running else COLORS["text_sub"]
+    # The exit IP is drawn as its OWN Text so a check/rotate can light just the
+    # digits — green on check, blue on rotate — which app.py then fades back to
+    # the resting grey. It replaces "checked Nd ago" (that provenance lives on
+    # the network page) and is never written to the disk-backed log, so no
+    # timestamped IP history is created. The colour is decided by the caller
+    # (ip_color) so an in-progress fade survives a card rebuild; the control is
+    # handed up (ip_sink) so the fade can drive whichever instance is live.
     if proxy is not None and proxy.last_ip:
-        # The live exit IP the profile is using — not "when it was last
-        # checked" (that provenance lives on the network page). Shown here so a
-        # check or a rotate is visible inline: the IP changing is how the
-        # operator confirms a rotation actually took effect without leaving the
-        # list. Never written to the disk-backed log — this is the in-memory
-        # render only, so no timestamped IP history is created.
-        meta += f" · {proxy.last_ip}"
+        ip_text = ft.Text(
+            proxy.last_ip,
+            size=11,
+            color=ip_color or meta_color,
+            font_family=MONO,
+        )
+        if ip_sink is not None:
+            ip_sink(proxy.name, ip_text)
+        meta_cell: ft.Control = ft.Row(
+            spacing=0,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            controls=[
+                ft.Text(f"{meta} · ", size=11, color=meta_color, font_family=MONO),
+                ip_text,
+            ],
+        )
+    else:
+        meta_cell = ft.Text(meta, size=11, color=meta_color, font_family=MONO)
 
     left_block = ft.Row(
         spacing=14,
@@ -293,15 +314,7 @@ def build_profile_card(
                         spacing=8,
                         vertical_alignment=ft.CrossAxisAlignment.CENTER,
                         controls=[
-                            ft.Text(
-                                meta,
-                                size=11,
-                                color=(
-                                    COLORS["accent"] if is_running
-                                    else COLORS["text_sub"]
-                                ),
-                                font_family=MONO,
-                            ),
+                            meta_cell,
                             # Gated on is_running as well as on the captured
                             # fact: a stopped profile renders exactly as it did
                             # before this indicator existed. The two conditions

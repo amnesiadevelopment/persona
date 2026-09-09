@@ -429,6 +429,13 @@ class App:
         # for. Compared, never trusted — see _app_status_expanded.
         self._app_status_revealed: str = ""
         self._checking_proxies: set[str] = set()
+        # Exit-IP flash animation state, keyed by PROXY name. _ip_fade holds the
+        # current animated colour (absent = resting grey) so any card rebuild
+        # draws the right colour instead of snapping; _ip_ctrl points at the live
+        # IP Text control so the fade thread drives whichever instance is on
+        # screen (surviving the reconcile loop's rebuilds).
+        self._ip_fade: dict[str, str] = {}
+        self._ip_ctrl: dict[str, object] = {}
         self._engine_latest: str = ""
         # _engine_busy = a real download is in flight (show the progress bar).
         # _engine_checking = a version check over the network is in flight (show
@@ -2520,6 +2527,72 @@ class App:
 
         self._ui(apply)
 
+    def _register_ip_ctrl(self, name: str, ctrl) -> None:
+        """Record the live exit-IP control for a proxy so the flash thread drives
+        whichever instance is currently on screen — the reconcile loop rebuilds
+        the card every ~0.12s, which would otherwise strand a held reference."""
+        self._ip_ctrl[name] = ctrl
+
+    @staticmethod
+    def _blend_hex(a: str, b: str, t: float) -> str:
+        """Linear blend between two #rrggbb colours; t=0 -> a, t=1 -> b."""
+        a = a.lstrip("#")
+        b = b.lstrip("#")
+        ar, ag, ab = int(a[0:2], 16), int(a[2:4], 16), int(a[4:6], 16)
+        br, bg, bb = int(b[0:2], 16), int(b[2:4], 16), int(b[4:6], 16)
+        r = round(ar + (br - ar) * t)
+        g = round(ag + (bg - ag) * t)
+        bl = round(ab + (bb - ab) * t)
+        return f"#{r:02x}{g:02x}{bl:02x}"
+
+    def _start_ip_flash(self, name: str, kind: str) -> None:
+        """Light the proxy's exit IP — green on check, blue on rotate, matching
+        the check/rotate buttons — and fade it smoothly back to the resting grey
+        over ~2s.
+
+        The current colour lives in self._ip_fade[name] so a card rebuild during
+        the fade draws that colour instead of snapping to grey, and each frame is
+        applied to the live control looked up FRESH from self._ip_ctrl (so a
+        rebuilt card keeps animating). Flet 0.85 has no implicit colour
+        animation, so the tween is stepped on a daemon thread and pushed on the
+        UI thread; a smoothstep ease keeps the ends from feeling abrupt."""
+        peak = {"check": COLORS["accent"], "rotate": COLORS["rotate"]}.get(kind)
+        rest = COLORS["text_sub"]
+        if not peak:
+            return
+        # Cosmetic only — it must NEVER break the check/rotate flow that calls it.
+        # Skip entirely when there is no live page (headless / tests) or the UI
+        # animation state was never initialised.
+        if getattr(self, "page", None) is None:
+            return
+        if not hasattr(self, "_ip_fade") or not hasattr(self, "_ip_ctrl"):
+            return
+        self._ip_fade[name] = peak
+
+        def run() -> None:
+            steps, dt = 40, 0.05  # ~2s
+            for i in range(1, steps + 1):
+                time.sleep(dt)
+                t = i / steps
+                t = t * t * (3 - 2 * t)  # smoothstep ease-in-out
+                col = self._blend_hex(peak, rest, t)
+                self._ip_fade[name] = col
+
+                def apply(c=col) -> None:
+                    ctrl = self._ip_ctrl.get(name)
+                    try:
+                        if ctrl is not None:
+                            ctrl.color = c
+                        if self.page:
+                            self.page.update()
+                    except Exception:
+                        pass
+
+                self._ui(apply)
+            self._ip_fade.pop(name, None)
+
+        threading.Thread(target=run, daemon=True).start()
+
     def _check_proxy(self, name: str) -> None:
         proxy = self.pstore.get(name)
         if proxy is None or name in self._checking_proxies:
@@ -2537,6 +2610,8 @@ class App:
                     self.pstore.mark_checked(
                         name, code, country, ip, tz, lat, lon
                     )
+                    # Green flash on the exit IP, fading to grey.
+                    self._start_ip_flash(name, "check")
                 else:
                     self.pstore.mark_check_failed(name)
             finally:
@@ -2588,6 +2663,8 @@ class App:
                 )
                 if ok:
                     self.pstore.mark_checked(name, code, country, ip, tz, lat, lon)
+                    # Blue flash on the exit IP, fading to grey.
+                    self._start_ip_flash(name, "rotate")
                     # Never print the exit IP to the disk-backed activity log —
                     # a timestamped IP history de-anonymizes the operator. Report
                     # only whether the exit changed.
@@ -5432,6 +5509,10 @@ class App:
                     proxy=self.pstore.get(p.proxy) if p.proxy else None,
                     on_check_proxy=self._check_proxy,
                     on_rotate=self._rotate_proxy,
+                    ip_color=(
+                        self._ip_fade.get(p.proxy) if p.proxy else None
+                    ),
+                    ip_sink=self._register_ip_ctrl,
                     on_notes_change=self._save_notes_inline,
                     # The LIVE session's fact, from the launcher — deliberately
                     # not p.ai_control, which set_ai_control can flip while the
