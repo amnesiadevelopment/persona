@@ -391,7 +391,7 @@ jobs:
         # greener. `tests/test_ps315_behaviour_gate.py` pins both rules.
         #
         # NOT the launch lane: `--skip-launch` runs the three checks needing no
-        # browser, no display and no exit. The four launch-backed checks and
+        # browser, no display and no exit. The five launch-backed checks and
         # any display provisioning are separate work.
         shell: bash
         run: python .github/scripts/run_behaviour_checks.py

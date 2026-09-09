@@ -107,14 +107,21 @@ UNCOVERED_SURFACES: tuple[tuple[str, str], ...] = (
         "on one runner. Not duplicated here.",
     ),
     (
-        "every check on this list runs on FIREFOX only",
-        "all 18 scratch profiles here take Context.make_profile's defaults "
-        "(os_type=windows, device_type=desktop), and windows+desktop is the "
-        "ONE combination that resolves to firefox — every other OS launches "
-        "on chromium whatever the stored engine says. The recorder can now "
-        "read either engine, so this is a property of the CHECKS' fixtures, "
-        "not of the instrument: nothing below has been observed on chromium, "
-        "and a pass here says nothing about how a macos, linux or mobile "
+        "every check on this list runs on FIREFOX only — WITH ONE EXCEPTION",
+        "all but one of the scratch profiles here take Context.make_profile's "
+        "defaults (os_type=windows, device_type=desktop), and windows+desktop "
+        "is the ONE combination that resolves to firefox — every other OS "
+        "launches on chromium whatever the stored engine says. The recorder "
+        "can now read either engine, so this is a property of the CHECKS' "
+        "fixtures, not of the instrument. THE EXCEPTION is "
+        "no-process-survives-a-closed-session (PS-347), which launches "
+        "os_type=linux and therefore CHROMIUM on purpose: it counts surviving "
+        "processes, and the leak it guards is a property of the WRAPPER, "
+        "multi-process launch — a direct single-process launch does not leak "
+        "on terminate() at all, so the same measurement taken on the firefox "
+        "fixtures would be vacuous. It observes ONE engine on ONE platform "
+        "(chromium/Linux) and says nothing about the other arm; every other "
+        "check below still says nothing about how a macos, linux or mobile "
         "profile behaves. Widening the fixtures is separate work.",
     ),
     (
@@ -135,18 +142,21 @@ UNCOVERED_SURFACES: tuple[tuple[str, str], ...] = (
         "THIS lane still needs a display even for a chromium profile, though "
         "the recorder underneath it does not",
         "run_checks calls require_display() as a PREFLIGHT whenever any "
-        "SELECTED check has needs_launch=True (4 of the 7: restart-continuity, "
+        "SELECTED check has needs_launch=True (5 of the 8: restart-continuity, "
         "two-profile-unlinkability, benign-edit-stability, "
-        "trash-restore-and-wipe), and that is decided before any profile's "
+        "trash-restore-and-wipe, no-process-survives-a-closed-session), and "
+        "that is decided before any profile's "
         "engine is resolved — the preflight is engine-BLIND by construction. "
         "The recorder's own gate now sits on the firefox arm, immediately "
         "before the launch, so baseline.record_snapshot reads an "
         "already-running chromium session on a headless host with no DISPLAY "
-        "at all. This lane is deliberately NOT narrowed to match: every one of "
-        "those 4 launching checks uses firefox fixtures (above), which really "
-        "do launch, so the preflight refuses nothing today that could have "
-        "run, and refusing once up front gives an operator one actionable "
-        "message instead of four identical ones. The consequence is stated "
+        "at all. This lane is deliberately NOT narrowed to match: four of "
+        "those 5 launching checks use firefox fixtures (above), which really "
+        "do launch, and the fifth is a CHROMIUM launch that needs a display "
+        "just as much — it starts a real headful browser rather than "
+        "attaching to one — so the preflight refuses nothing today that could "
+        "have run, and refusing once up front gives an operator one actionable "
+        "message instead of five identical ones. The consequence is stated "
         "rather than left to be discovered: chromium reachability is WIDER in "
         "baseline than in this module, and widening any launching check's "
         "fixtures to chromium means revisiting this preflight in the same "
@@ -260,6 +270,182 @@ def require_scratch_home() -> str:
             "the trash. Point it at a throwaway directory."
         )
     return real_home
+
+
+# --- the chromium singleton socket budget -----------------------------------
+#
+# ⭐ MEASURED TO THE BYTE ON A REAL ENGINE, AND IT IS A HARD WALL RATHER THAN
+# A STYLE RULE. Chromium's process singleton binds a UNIX socket, and a UNIX
+# socket address is `sun_path[108]` — 107 usable bytes plus the NUL. Over that,
+# the engine does not warn or degrade: it exits FATAL
+# "chrome/browser/process_singleton_posix.cc:313] Socket path too long" a few
+# seconds into the launch. From outside that reads as a tree that started (peak
+# 5) and then vanished — a launch that never happened, which is exactly the
+# reading a survivor-counting check must never take a zero from.
+#
+# persona pins the browser child's scratch directory INSIDE the profile
+# (`env_policy.browser_child_tmpdir`, PS-129), so the socket lands at:
+#
+#     <PERSONA_HOME>/persona_data/<profile>/.persona-tmp/
+#         org.chromium.Chromium.XXXXXX/SingletonSocket
+#
+# Everything except the home and the profile name is fixed, and that fixed
+# part is what `_SINGLETON_SOCKET_FIXED_COST` counts.
+#
+# THE BOUNDARY, ISOLATED ON THIS ENGINE (personium-152.0.7977.75, one variable
+# — the home path's length — moved by ONE byte between the two arms):
+#
+#     home len 25 -> socket 107 bytes -> launched, tree settled at 11
+#     home len 26 -> socket 108 bytes -> FATAL, peak 5 then 0
+#
+# ⛔ THIS IS NOT AN OBSERVATION TO BE RE-DERIVED AT EACH CALL SITE. It lives
+# here, once, because three consumers need the SAME number: the check that
+# names a profile, the CLI that provisions a default home, and the test that
+# refuses to let either drift. A budget restated in three places is a budget
+# that is wrong in two of them.
+
+#: Usable bytes in a UNIX socket address — ``sizeof(sun_path)`` is 108 and the
+#: last byte is the terminator.
+SUN_PATH_LIMIT = 107
+
+#: Everything in the singleton socket path that is NOT the home or the profile
+#: name: ``/persona_data/`` + ``/.persona-tmp`` + the engine's own
+#: ``/org.chromium.Chromium.XXXXXX/SingletonSocket`` (45 bytes, its mkdtemp
+#: suffix being a fixed six characters).
+_SINGLETON_SOCKET_FIXED_COST = (
+    len("/persona_data/")
+    + len("/.persona-tmp")
+    + len("/org.chromium.Chromium.XXXXXX/SingletonSocket")
+)
+
+
+def singleton_socket_length(home: str, profile_name: str) -> int:
+    """How many bytes chromium's singleton socket path takes for this pair.
+
+    The number the engine measures against ``sun_path``, computed rather than
+    guessed — see this section's comment for the isolated boundary run.
+    """
+    return len(home) + len(profile_name) + _SINGLETON_SOCKET_FIXED_COST
+
+
+def singleton_socket_is_bound() -> bool:
+    """Whether this platform's engine binds a UNIX socket for its singleton.
+
+    ⛔ THE LIMIT IS A POSIX FACT, NOT A UNIVERSAL ONE, and the caught mistake
+    was applying it everywhere. The engine's own FATAL names the file that
+    enforces it — ``chrome/browser/process_singleton_posix.cc:313`` — because
+    ``sun_path`` is a property of the UNIX-domain socket that arm binds.
+    Windows' process singleton is a NAMED MUTEX plus a hidden message window;
+    it binds no socket, so there is no 107-byte wall to measure and MAX_PATH
+    (260, or effectively unbounded with long paths enabled) is a different
+    constraint entirely.
+
+    Measured, not reasoned: refusing on the Windows CI runner rejected a
+    perfectly launchable ``C:\\Users\\RUNNER~1\\AppData\\Local\\Temp`` — a
+    guard inventing a failure on a platform whose engine cannot have it, which
+    is worse than the defect it was written for.
+    """
+    from ...core import platform as _platform
+
+    return not _platform.IS_WINDOWS
+
+
+def profile_name_budget(home: str) -> int:
+    """The longest profile name that still fits under ``home``.
+
+    Negative when the home ALONE has already spent the budget, which is a real
+    answer rather than an error: no profile name, however short, launches under
+    such a home, and a caller that clamps this at zero would hide exactly that.
+
+    ⚠️ THIS IS THE POSIX ARITHMETIC AND IT IS ANSWERED ON EVERY PLATFORM, on
+    purpose — it is the pure calculation, and the tests pin it as one. Whether
+    the answer BINDS is :func:`singleton_socket_is_bound`'s question, asked by
+    the callers that refuse.
+    """
+    return SUN_PATH_LIMIT - len(home) - _SINGLETON_SOCKET_FIXED_COST
+
+
+#: The prefix a provisioned scratch home carries. DELIBERATELY TERSE, and the
+#: terseness is load-bearing rather than a style preference: every byte here is
+#: a byte taken off the profile-name budget above. The previous
+#: ``persona-behaviour-`` spent 18 of the 35 bytes ``/tmp`` leaves, which put
+#: the default invocation 6 bytes OVER the wall and made the launch-backed
+#: checks structurally incapable of reaching green under it. Recognisable
+#: enough for an operator to spot a stray directory; short enough to launch.
+_SCRATCH_PREFIX = "pb-"
+
+
+def default_scratch_home(min_name_budget: int = 0) -> str:
+    """Provision a throwaway ``PERSONA_HOME`` that a browser can actually
+    launch under.
+
+    ⭐ THE LENGTH IS A CORRECTNESS PROPERTY OF THIS DIRECTORY, NOT A DETAIL OF
+    WHERE IT LANDS. ``tempfile.mkdtemp()`` alone honours ``TMPDIR``, and the
+    bases real runners hand it are long: a GitHub runner's
+    ``/home/runner/work/_temp`` is 23 bytes and macOS's ``/var/folders/…`` is
+    53, either of which spends the whole budget before a profile is named. So
+    the base is CHOSEN — shortest writable candidate first — rather than
+    accepted, and the result is then VERIFIED against the budget instead of
+    assumed to fit.
+
+    ``min_name_budget`` is what the caller needs left over: the longest profile
+    name any check will create under this home. A home that cannot supply it is
+    a REFUSAL naming ``--home``, never a silent return — the failure it
+    replaces was chromium exiting FATAL several seconds into a launch, which
+    every watcher reads as a browser that started and vanished.
+    """
+    import tempfile
+
+    candidates = [tempfile.gettempdir()]
+    if os.name == "posix":
+        # Almost always the shortest thing available, and almost always
+        # writable — but ASKED FOR rather than assumed, because a hardened
+        # runner can have neither.
+        candidates.append("/tmp")
+
+    bases = sorted(
+        {c for c in candidates if os.path.isdir(c) and os.access(c, os.W_OK)},
+        key=len,
+    )
+    if not bases:
+        raise UnsafeEnvironment(
+            "refusing to run: no writable temporary directory was found, so "
+            "no scratch PERSONA_HOME could be provisioned. Pass --home with a "
+            "directory this user may create and destroy."
+        )
+
+    home = tempfile.mkdtemp(prefix=_SCRATCH_PREFIX, dir=bases[0])
+    budget = profile_name_budget(home)
+    # ⛔ ONLY WHERE THE ENGINE ACTUALLY BINDS A SOCKET. On Windows the
+    # singleton is a named mutex and this arithmetic describes nothing, so
+    # refusing there invents a failure on a platform that cannot have it — as
+    # the Windows CI runner demonstrated, rejecting a launchable
+    # C:\Users\RUNNER~1\AppData\Local\Temp at -13 bytes.
+    if singleton_socket_is_bound() and budget < min_name_budget:
+        # ⭐ THE REFUSAL TAKES ITS OWN DIRECTORY WITH IT. The home has to be
+        # CREATED before it can be measured — mkdtemp's suffix is part of the
+        # length, and re-deriving it here would duplicate a stdlib internal
+        # that is free to change. So the measurement happens on the real path
+        # and the refusal cleans up after itself, because this module's rule is
+        # that a check must not leave the machine dirtier than it found it
+        # (`_sweep_group`'s docstring is the argument). Unswept, every refusal
+        # left an empty scratch directory behind — small in bytes, unbounded on
+        # a self-hosted or cached runner, and precisely the shape this harness
+        # exists to refuse in the product.
+        import shutil
+
+        shutil.rmtree(home, ignore_errors=True)
+        raise UnsafeEnvironment(
+            f"refusing to run: the scratch home {home!r} leaves only {budget} "
+            f"byte(s) for a profile name, and the checks need {min_name_budget}"
+            ". Chromium's process singleton binds a UNIX socket under the "
+            f"profile, and its path may not exceed {SUN_PATH_LIMIT} bytes — "
+            "over that the engine exits FATAL 'Socket path too long' seconds "
+            "into the launch, which looks from outside like a browser that "
+            "started and vanished. Pass --home with a shorter path (on this "
+            f"machine the temporary directories available are {bases!r})."
+        )
+    return home
 
 
 def require_display() -> None:
@@ -628,16 +814,20 @@ __all__ = [
     "EXIT_OK",
     "FINDING",
     "PASS",
+    "SUN_PATH_LIMIT",
     "UNCOVERED_SURFACES",
     "BehaviourCheckError",
     "Check",
     "Context",
     "Outcome",
     "UnsafeEnvironment",
+    "default_scratch_home",
     "exit_code",
     "format_report",
+    "profile_name_budget",
     "require_display",
     "require_scratch_home",
     "run_check",
     "run_checks",
+    "singleton_socket_length",
 ]

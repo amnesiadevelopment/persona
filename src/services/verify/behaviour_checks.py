@@ -17,11 +17,14 @@ from __future__ import annotations
 
 import contextlib
 import os
+import subprocess
+import time
 
 from .behaviour import (
     CANNOT_RUN,
     FINDING,
     PASS,
+    SUN_PATH_LIMIT,
     BehaviourCheckError,
     Check,
     Context,
@@ -981,6 +984,503 @@ def _falsify_trash_restore_and_wipe(ctx: Context) -> str:
     )
 
 
+# --- 8. no process survives a closed session --------------------------------
+#
+# PS-347. PS-192 was the product's most expensive failure: a launch left ~35
+# engine processes alive per run, and one chromium burned 361% CPU for 12.5
+# hours on a user's workstation. Teardown signalled only the pid it held; every
+# descendant was reparented and became unreachable from any handle we ever had.
+#
+# The fix landed (`process_group.py`) and is good. NOTHING CHECKED THAT IT
+# STAYS FIXED: before this check the suite had seven checks and not one of them
+# counted processes, so PS-192's class of defect would return silently.
+#
+# ⚠️ THIS CHECK ASKS THE OPERATING SYSTEM, NOT A RETURN VALUE. `terminate`
+# reports success on a teardown that reaped a wrapper and orphaned nine
+# descendants — that IS the defect, and PS-204 is the same shape one level
+# down (`close=all-pids-exit` asserted against a pid set captured once). So the
+# evidence here is `process_group_survivors`, which walks the live process
+# table.
+#
+# ⚠️ AND IT COUNTS THE PEAK BEFORE IT IS ALLOWED TO COUNT THE SURVIVORS. A
+# survivor count of zero because nothing was ever launched is PS-347's own
+# defect reproduced inside its fix, and this project has produced that exact
+# shape repeatedly — four distinct ways to reach `peak=1, survivors=0` from a
+# browser that never started, byte-identical to a clean teardown. The survivor
+# count alone cannot tell them apart; only the PEAK TREE SIZE can. So the check
+# refuses to publish any verdict until it has observed a real multi-process
+# tree ALIVE in the group it created (`_MIN_LIVE_TREE`), and a launch that
+# never got there is CANNOT_RUN, never a pass.
+#
+# SCOPE OF THIS FIRST SLICE, stated rather than implied: ONE engine (chromium)
+# on ONE platform (Linux). Chromium is the arm the defect was measured on — it
+# is a WRAPPER launch (fpchrome.AppImage) above a multi-process browser, which
+# is the shape that leaks; a direct, single-process launch does not leak on
+# `terminate()` at all, so a measurement taken there would be vacuous. Both
+# engines on every shipped platform is the roadmap's full bar and a later
+# widening.
+
+#: How many live processes must be observed IN THE LAUNCHED GROUP before this
+#: check will assert anything about survivors.
+#:
+#: Three, not one, and the number is the guard rather than a tuning knob. One
+#: is what a wrapper that started and immediately died looks like, and it is
+#: also what several ways of not-launching look like. A real persona chromium
+#: session is a wrapper above a browser above a zygote/gpu/renderer fan-out —
+#: measured at 10 members on the tree this check was falsified against — so
+#: three is comfortably below the real shape and far above every way of
+#: launching nothing.
+_MIN_LIVE_TREE = 3
+
+#: The tree must also be SETTLED — this many consecutive samples at the same
+#: size — before anything is asserted about it.
+#:
+#: ⭐ MEASURED, NOT CHOSEN. Without this the grow loop stopped at the first
+#: sample past `_MIN_LIVE_TREE`, which on a real launch is a tree part-way
+#: through starting: the falsification caught its own harness doing exactly
+#: that (peak 4 of an eventual 10) and REFUSED, because signalling the held pid
+#: of a half-started chromium takes the whole thing down with it and leaves
+#: zero survivors. That is a true fact about a browser that has not finished
+#: starting, and it is not the shape PS-192 is about — the leak is the settled
+#: zygote/gpu/renderer fan-out being reparented. So the check waits for the
+#: size to stop moving rather than for it to cross a bar. Measured on this
+#: engine: the tree reaches 10 within ~7s of the launch and stays there.
+_STABLE_SAMPLES = 8
+
+#: Interval between tree samples, in seconds.
+_SAMPLE_INTERVAL = 0.25
+
+#: How long to wait for the launched tree to reach `_MIN_LIVE_TREE` and settle.
+_TREE_GROW_TIMEOUT = 90.0
+
+#: How long a torn-down tree is given to finish leaving before its members are
+#: called survivors. Not a loophole: the teardown's own escalation has already
+#: run to SIGKILL by this point, so anything still here is genuinely orphaned
+#: rather than mid-exit.
+_TEARDOWN_GRACE = 5.0
+
+#: THE PROFILE NAMES THIS CHECK LAUNCHES CHROMIUM UNDER — named here, once,
+#: because they are the only names in this module whose LENGTH is a
+#: correctness property rather than a label.
+#:
+#: Chromium's process singleton binds a UNIX socket under the profile, and
+#: ``behaviour.SUN_PATH_LIMIT`` is a hard wall the engine enforces by exiting
+#: FATAL mid-launch. Every OTHER check here launches FIREFOX (see
+#: ``UNCOVERED_SURFACES``), which binds no such socket, so these two are the
+#: names a scratch home has to leave room for.
+#:
+#: ⛔ LENGTHENING EITHER OF THESE IS A BEHAVIOUR CHANGE, NOT A RENAME. The
+#: budget is asserted against them by
+#: ``tests/test_behaviour_checks.py::TestSingletonSocketBudget``, so a name
+#: that no longer fits under the CLI's own default home turns that test red
+#: rather than turning this check into a silent CANNOT RUN.
+SOCKET_BOUND_PROFILE_NAMES: "tuple[str, ...]" = ("p347a", "p347b")
+
+
+def longest_socket_bound_profile_name() -> int:
+    """The budget a scratch home must leave for this module's chromium names.
+
+    Derived from the registry rather than typed as a number, so a home is
+    sized against the names the checks ACTUALLY create — a hand-copied figure
+    is a figure that goes stale the first time a name changes.
+    """
+    return max(len(n) for n in SOCKET_BOUND_PROFILE_NAMES)
+
+
+
+def _survivors_or_refuse(pgid: int) -> "list[int]":
+    """The live members of ``pgid``, or a refusal saying we could not look.
+
+    ``process_group_survivors`` RAISES when psutil is unavailable, deliberately
+    — "nothing survived" and "I was unable to check" must never render as the
+    same value, and PS-192's reviewer once measured the product path as CLEAN
+    in a container where psutil was absent while ``ps`` showed three live
+    processes. This translates that raise into the class the harness reports as
+    CANNOT_RUN, so a broken instrument can never emit a green.
+    """
+    from ..browser.process_group import process_group_survivors
+
+    try:
+        return process_group_survivors(pgid)
+    except Exception as exc:
+        raise BehaviourCheckError(
+            f"the survivor count could not be taken: {exc}"
+        ) from exc
+
+
+def _survivor_profile(ctx: Context, name: str):
+    """A profile whose launch is the WRAPPER, multi-process shape that leaks.
+
+    ``os_type='linux'`` rather than this module's ``windows`` default, and that
+    is load-bearing rather than incidental: windows+desktop is the one
+    combination that resolves to firefox (see UNCOVERED_SURFACES), and firefox
+    is not the arm PS-192 was measured on.
+
+    ⚠️ THE NAME IS DELIBERATELY SHORT, AND ITS LENGTH IS MEASURED RATHER THAN
+    STYLISTIC — see :data:`SOCKET_BOUND_PROFILE_NAMES`, which is where the two
+    names live and where the arithmetic that sizes them is stated. Chromium's
+    process singleton binds a UNIX socket at
+    ``<user-data-dir>/.persona-tmp/org.chromium.Chromium.XXXXXX/
+    SingletonSocket``, and ``sun_path`` is 108 bytes. The profile name is a
+    path COMPONENT of that, under a scratch PERSONA_HOME, so a descriptive
+    name like ``ps347-survivors-falsify`` pushed it over: chromium exited FATAL
+    "Socket path too long" ~6s in, which reads from outside as a tree that
+    started and then vanished. That is a launch this check must never mistake
+    for a teardown — and it did not (the settle guard refused it) — but the
+    cure is the short name rather than a looser guard.
+
+    ⭐ AND SHORTENING THE NAME IS ONLY HALF THE CURE, which the first attempt
+    at this check got wrong: ``ps347-live`` (10 bytes) fits under a home an
+    operator names by hand and does NOT fit under the one the CLI provisioned
+    itself (31 bytes, leaving 4), so the check was green under
+    ``--home /tmp/x`` and reported CANNOT RUN under its own documented
+    invocation. The home is now sized against these names
+    (``behaviour.default_scratch_home``) and the pair is asserted together by
+    ``TestSingletonSocketBudget`` — a budget checked on one side only is a
+    budget that fails on the other.
+
+    ⭐ AND IT REFUSES BEFORE LAUNCHING when the operator's own ``--home`` is
+    too long for the name, which the CLI's sizing cannot cover: ``--home`` is
+    an arbitrary path this module never chose. Unguarded, that case reaches the
+    engine and comes back as FATAL several seconds in — a tree that grew to 5
+    and vanished — which the settle guard correctly refuses but can only
+    describe as "no browser tree was observed running". The operator is then
+    told the launch did not settle, when the actionable fact is that their home
+    path is N bytes too long. Measuring it here converts an opaque symptom into
+    the sentence that names the cure.
+    """
+    from .behaviour import (
+        profile_name_budget,
+        singleton_socket_is_bound,
+        singleton_socket_length,
+    )
+
+    budget = profile_name_budget(ctx.home)
+    # Scoped to the platforms whose engine binds a UNIX socket — see
+    # `singleton_socket_is_bound`. Windows uses a named mutex and has no
+    # sun_path, so this arithmetic describes nothing there.
+    if singleton_socket_is_bound() and len(name) > budget:
+        raise BehaviourCheckError(
+            f"the scratch home {ctx.home!r} is too long to launch chromium "
+            f"under: profile {name!r} puts its process-singleton socket at "
+            f"{singleton_socket_length(ctx.home, name)} bytes, and the limit "
+            f"is {SUN_PATH_LIMIT}. The engine does not degrade here — it exits "
+            "FATAL 'Socket path too long' seconds into the launch, which looks "
+            "from outside like a browser that started and then vanished, so "
+            "NOTHING would be measured. This home leaves "
+            f"{budget} byte(s) for a profile name. Use a shorter --home, or "
+            "omit --home and let the harness provision one that fits."
+        )
+    return ctx.make_profile(name, os_type="linux", engine="chromium")
+
+
+def _sweep_group(pgid: "int | None") -> None:
+    """Kill the group this check created. Independent of the code under test.
+
+    ⚠️ NOT ``reap_process_group``, and that is the whole reason this exists.
+    Cleanup that goes through the teardown being MEASURED is cleanup that
+    stops working exactly when the measurement goes red — which is not
+    hypothetical: the first sabotage run of this check (``recorded_group``
+    forced to None, the pre-PS-192 shape) correctly reported 9 survivors and
+    then leaked all 18 of them from BOTH arms, because its own ``finally``
+    called the broken reaper. A gate that leaves a leak behind when it detects
+    a leak is worse than no gate on a shared runner.
+
+    ⚠️ AND IT IS ANCHORED ON THE GROUP THIS CHECK RECORDED, NEVER ON A NAME.
+    A sweep matching "every process called chrome" can reap a browser this
+    check never launched — or, on a self-hosted runner, the agent itself.
+    ``signallable_group`` is reused rather than restated because it owns the
+    self-kill rule (it refuses a pgid equal to our own group), and it is a pure
+    guard rather than part of the teardown escalation, so reusing it does not
+    reintroduce the dependency above.
+    """
+    if pgid is None:
+        return
+    import signal
+
+    from ..browser.process_group import signallable_group
+
+    target = signallable_group(pgid)
+    if target is None:
+        return
+    with contextlib.suppress(Exception):
+        os.killpg(target, getattr(signal, "SIGKILL", 9))
+
+
+def _drain(proc) -> None:
+    """Consume the browser's stdout, exactly as the product's launcher does.
+
+    ⭐ NOT OPTIONAL, AND MEASURED. ``spawn_browser`` gives the engine a PIPE,
+    and the launcher immediately starts ``_monitor_process`` to read it. This
+    check drives ``spawn_browser`` directly (the public entry point, for
+    ``_launch_outcome``'s reason), so it must supply that reader itself — with
+    nobody draining, chromium fills the 64KB pipe buffer within seconds and
+    dies. Observed here as a tree that reached 10 and collapsed to 0 without
+    anything asking it to, which the settle guard correctly refused to measure.
+    A browser killed by our own unread pipe is an artefact of the harness, not
+    a fact about the product's teardown.
+    """
+    import threading
+
+    def _pump() -> None:
+        stream = getattr(proc, "stdout", None)
+        if stream is None:
+            return
+        with contextlib.suppress(Exception):
+            for _ in stream:
+                pass
+
+    thread = threading.Thread(target=_pump, daemon=True)
+    thread.start()
+
+
+def _launch_and_grow(
+    ctx: Context, profile
+) -> "tuple[subprocess.Popen, int, int]":
+    """Launch through the PRODUCT's own entry point and watch the tree appear.
+
+    Returns ``(proc, pgid, peak)``. Raises :class:`BehaviourCheckError` when no
+    group could be recorded or the tree never reached :data:`_MIN_LIVE_TREE` —
+    both of which are "nothing was measured", never "nothing survived".
+
+    ⭐ EVERY FAILING PATH OUT OF HERE SWEEPS THE TREE IT LAUNCHED. That is a
+    contract the caller depends on and cannot supply itself: the caller's own
+    ``try``/``finally`` opens only once this function has RETURNED, so a raise
+    from inside here — most importantly the instrument raising, not the product
+    — happens in a window nothing else guards.
+
+    ``spawn_browser`` is the entry point the UI and the REST lane both go
+    through, for the reason ``_launch_outcome`` states about the geography
+    check: asserting against an internal helper is the shape of a unit test and
+    comes apart from the product exactly where it matters.
+    """
+    from ..browser.process import spawn_browser
+    from ..browser.process_group import recorded_group
+
+    ctx.launches += 1
+    proc = spawn_browser(profile)
+
+    # ⭐ FROM HERE A REAL TREE IS RUNNING, so every way out of this function
+    # must sweep it — INCLUDING the ways that are the INSTRUMENT failing
+    # rather than the product. `_survivors_or_refuse` is *designed* to raise
+    # (psutil absent is "I could not look", never "nothing survived"), and an
+    # unguarded raise would propagate past the caller's own `try:` — which has
+    # not been entered yet — and leave the launched tree alive behind a report
+    # that reads CANNOT RUN. Measured before the guard, on a real chromium
+    # wrapper launch with the instrument broken mid-sampling: 10 live
+    # processes still running after the check gave up. A gate that leaks when
+    # its instrument breaks is the ticket's second ⛔ met on the happy path
+    # only.
+    try:
+        _drain(proc)
+
+        # THE GROUP IS READ FROM THE HANDLE, NOT GUESSED, and it is the only
+        # thing this check will ever signal or count. Anchoring on the group
+        # rather than on a command-line substring is what keeps the check from
+        # reaping unrelated processes on a shared runner — PS-185's worker lost
+        # two cycles to a `pkill -f chromium` that matched its own command
+        # line, and a group kill aimed at a non-leader kills the caller.
+        pgid = recorded_group(proc)
+    except BaseException:
+        # No group has been NAMED yet, so a sweep has nothing to anchor on.
+        # Ask once more — `recorded_group` only reads the handle — and fall
+        # back to the single pid we hold, which is the same rule the
+        # `pgid is None` branch below states: a group we cannot name is a
+        # group we must not guess at.
+        stray: "int | None" = None
+        with contextlib.suppress(Exception):
+            stray = recorded_group(proc)
+        if stray is None:
+            with contextlib.suppress(Exception):
+                proc.kill()
+        else:
+            _sweep_group(stray)
+        raise
+
+    if pgid is None:
+        # The most this may safely reach is the one pid it holds — which is
+        # exactly the reason it refuses to measure from here. Nothing else is
+        # signalled, because a group we cannot name is a group we must not
+        # guess at.
+        with contextlib.suppress(Exception):
+            proc.kill()
+        raise BehaviourCheckError(
+            "the launch recorded no process group, so this check has nothing "
+            "it may safely count or signal. A survivor count taken any other "
+            "way (a name match, a command-line substring) can reap unrelated "
+            "processes on a shared runner, so nothing is counted instead. "
+            "NOTE: only the single held pid was signalled on the way out, so a "
+            "descendant tree may have been left behind — say so rather than "
+            "guess at a group id."
+        )
+
+    # ⭐ EVERYTHING FROM HERE IS GUARDED, because the group now exists and a
+    # live tree is running under it. `except BaseException: … raise` rather
+    # than `finally:` deliberately — the SUCCESS path hands the live tree to
+    # the caller, which is the whole point of this function, so a `finally`
+    # would sweep the tree the caller is about to measure. This also covers a
+    # KeyboardInterrupt or a timeout landing inside the ~90s sampling window.
+    try:
+        peak = 0
+        stable = 0
+        last = -1
+        deadline = time.monotonic() + _TREE_GROW_TIMEOUT
+        while time.monotonic() < deadline:
+            size = len(_survivors_or_refuse(pgid))
+            peak = max(peak, size)
+            # SETTLED, not merely large. A tree sampled mid-startup is smaller
+            # than the one that leaks, and tearing that down does not orphan
+            # anything — see `_STABLE_SAMPLES`.
+            stable = (
+                stable + 1 if size == last and size >= _MIN_LIVE_TREE else 0
+            )
+            last = size
+            if stable >= _STABLE_SAMPLES:
+                break
+            time.sleep(_SAMPLE_INTERVAL)
+
+        if stable < _STABLE_SAMPLES:
+            # The precondition failed, so NOTHING is asserted about survivors.
+            # This is the branch that keeps the check from being unfailable.
+            # The sweep is the guard's job now, not this branch's.
+            raise BehaviourCheckError(
+                f"the launched group {pgid} never held a SETTLED tree of at "
+                f"least {_MIN_LIVE_TREE} live processes (peak {peak}, last "
+                f"{last}) within {_TREE_GROW_TIMEOUT:.0f}s, so no browser tree "
+                "was observed running. A survivor count of zero taken from "
+                "here would certify a teardown that had nothing to tear down "
+                "— which is precisely the defect this check exists to "
+                "prevent, reproduced inside it. Nothing was measured."
+            )
+    except BaseException:
+        _sweep_group(pgid)
+        raise
+    return proc, pgid, peak
+
+
+def _run_no_process_survives_a_closed_session(ctx: Context) -> Outcome:
+    from ..browser.process import terminate
+
+    name = SOCKET_BOUND_PROFILE_NAMES[0]
+    profile = _survivor_profile(ctx, name)
+    proc, pgid, peak = _launch_and_grow(ctx, profile)
+
+    try:
+        # THE PRODUCT'S OWN TEARDOWN, not this module's. `terminate` is what
+        # every close path in the launcher calls (stop_profile, the abort path,
+        # shutdown_all), so a regression in it is caught here rather than in a
+        # teardown written for the check.
+        terminate(proc, name, timeout=10)
+
+        deadline = time.monotonic() + _TEARDOWN_GRACE
+        survivors = _survivors_or_refuse(pgid)
+        while survivors and time.monotonic() < deadline:
+            time.sleep(0.25)
+            survivors = _survivors_or_refuse(pgid)
+
+        if survivors:
+            return Outcome(
+                name="no-process-survives-a-closed-session",
+                surface="a closed session leaves no process running",
+                status=FINDING,
+                detail=(
+                    f"{len(survivors)} process(es) of a peak {peak}-process "
+                    f"tree were STILL RUNNING {_TEARDOWN_GRACE:.0f}s after the "
+                    "product's own teardown returned. They are reparented to "
+                    "init and unreachable from any handle persona holds, so "
+                    "they accumulate for the life of the machine — PS-192 "
+                    "measured this at ~35 per launch and at 361% CPU for 12.5 "
+                    "hours on a user's workstation."
+                ),
+                evidence=[
+                    f"launched group {pgid}: peak {peak} live process(es)",
+                    f"after terminate(): {len(survivors)} alive — pids "
+                    f"{survivors}",
+                ],
+                launches=1,
+            )
+        return Outcome(
+            name="no-process-survives-a-closed-session",
+            surface="a closed session leaves no process running",
+            status=PASS,
+            detail=(
+                f"a real launch grew to {peak} live processes in its own "
+                f"group ({pgid}), and the product's teardown left ZERO of them "
+                "running — counted from the operating system's process table, "
+                "not from the teardown's return value. NOTE: chromium on "
+                "Linux only (the wrapper launch PS-192 was measured on); the "
+                "firefox arm and the other platforms are not observed here."
+            ),
+            evidence=[
+                f"peak live tree: {peak} process(es) in group {pgid}",
+                "survivors after terminate(): 0",
+            ],
+            launches=1,
+        )
+    finally:
+        # Never leave a live tree behind, on ANY path out of here — above all
+        # the FINDING path, where by construction something is still running
+        # and the product's own reaper is the thing under suspicion. Scoped to
+        # the group this check created and nothing else. See `_sweep_group`.
+        _sweep_group(pgid)
+
+
+def _falsify_no_process_survives_a_closed_session(ctx: Context) -> str:
+    """Tear a REAL tree down the pre-PS-192 way; require the check to see it.
+
+    The defect being modelled is the one the fix removed: signal only the pid
+    we hold, and let every descendant be reparented. If the check's predicate
+    reports zero survivors after that, it cannot observe a leak at all and its
+    green certifies nothing.
+
+    ⚠️ THE SIGNAL IS SENT WITH ``os.kill`` ON THE HELD PID, NOT WITH
+    ``proc.terminate()``. That is not pedantry: on persona's Linux FORK path
+    the handle's own ``kill()`` is group-aware (it IS the PS-192 fix), so a
+    "pre-fix shape" control built on the handle would be measuring the fix,
+    return a comfortable zero, and certify nothing. Addressing the pid directly
+    cannot be group-aware by accident.
+    """
+    import signal
+
+    name = SOCKET_BOUND_PROFILE_NAMES[1]
+    profile = _survivor_profile(ctx, name)
+    proc, pgid, peak = _launch_and_grow(ctx, profile)
+
+    try:
+        # The defect, exactly: the one pid we hold, escalated, and nothing else.
+        with contextlib.suppress(Exception):
+            os.kill(proc.pid, getattr(signal, "SIGTERM", 15))
+        with contextlib.suppress(Exception):
+            proc.wait(timeout=10)
+        with contextlib.suppress(Exception):
+            os.kill(proc.pid, getattr(signal, "SIGKILL", 9))
+        with contextlib.suppress(Exception):
+            proc.wait(timeout=5)
+        time.sleep(_TEARDOWN_GRACE)
+
+        survivors = _survivors_or_refuse(pgid)
+        if not survivors:
+            raise BehaviourCheckError(
+                "signalling ONLY the held pid — the exact pre-PS-192 defect — "
+                f"left NOTHING alive in group {pgid} (peak {peak}). Either the "
+                "launch was not the wrapper, multi-process shape this check "
+                "believes it is driving, or the predicate cannot observe a "
+                "survivor. Its green would certify nothing either way."
+            )
+        return (
+            f"a real {peak}-process tree torn down the pre-PS-192 way (the "
+            f"held pid only) leaves {len(survivors)} process(es) alive, and "
+            "the check's own predicate REPORTS them — so a returning leak is "
+            "observable rather than assumed absent"
+        )
+    finally:
+        # The falsification deliberately created orphans — that IS its result —
+        # so it must sweep them itself, by GROUP and WITHOUT the reaper it is
+        # modelling the absence of. A self-test that leaks is the defect it is
+        # testing. See `_sweep_group`.
+        _sweep_group(pgid)
+
+
 # --- the registry -----------------------------------------------------------
 
 CHECKS: tuple[Check, ...] = (
@@ -1033,6 +1533,19 @@ CHECKS: tuple[Check, ...] = (
         run=_run_trash_restore_and_wipe,
         falsify=_falsify_trash_restore_and_wipe,
     ),
+    Check(
+        name="no-process-survives-a-closed-session",
+        surface="a closed session leaves no process running",
+        # ⛔ NOT the needs_launch=False lane, whatever the venue situation is.
+        # This check needs a real browser BY CONSTRUCTION — there is nothing to
+        # count without one — and the launch-backed lane's missing execution
+        # venue is PS-336's problem, never a reason to mislabel a check into a
+        # lane it cannot honestly run in. A survivor count taken with no launch
+        # is the vacuous zero this whole check exists to refuse.
+        needs_launch=True,
+        run=_run_no_process_survives_a_closed_session,
+        falsify=_falsify_no_process_survives_a_closed_session,
+    ),
 )
 
 
@@ -1040,4 +1553,9 @@ def check_names() -> tuple[str, ...]:
     return tuple(c.name for c in CHECKS)
 
 
-__all__ = ["CHECKS", "check_names"]
+__all__ = [
+    "CHECKS",
+    "SOCKET_BOUND_PROFILE_NAMES",
+    "check_names",
+    "longest_socket_bound_profile_name",
+]
