@@ -186,6 +186,19 @@ sole exception, precisely so it cannot be misread as "the bundle is hardened".)
    3.1.1 build** (full plist in
    `artifacts/persona_entitlements.plist`).
 
+**Re-measured by the committed script**, which reports all three prerequisites
+directly (`signing_state.json`, `signing_state_run.txt`):
+
+| prerequisite | `persona-macos.dmg` | `personium-…-macos-arm64.dmg` |
+|---|---|---|
+| `get-task-allow` | **PRESENT AND TRUE on 3/3** slices carrying entitlements | `UNREADABLE` — no entitlements blob on any slice (**not** the claim it is absent) |
+| `_CodeSignature/CodeResources` | PRESENT — 20 seals ⚠️ presence is not identity | **ABSENT** — no seal anywhere; the engine bundle has not even the *shape* of a signature |
+| stapled notarization ticket | **ABSENT** | **ABSENT** |
+
+⚠️ The engine's `get-task-allow` row is `UNREADABLE`, not `false`. Those are
+different facts and the instrument keeps them apart deliberately — the same
+discipline that keeps an unread bundle from being reported as unsigned.
+
 **Why this matters for costing the work.** The naive plan is "buy a
 certificate, add a `codesign` step, done." That plan is wrong. Buying the
 certificate does not get you a notarized build — the `flet build macos` output
@@ -298,6 +311,24 @@ behaviour come from **running it**. Accordingly:
 
 **Everything in §1–§3 was MEASURED** — read out of the published bytes on this
 host, reproducible with the committed script. Nothing there is cited.
+
+⚠️ **"Reproducible with the committed script" is a claim about the tool, so it
+is stated precisely rather than broadly.** `scripts/ps346_signing_state.py`
+re-reads every fact in §1–§3: the PE certificate tables, the UDIF `cSig`/gap,
+the AppImage sections, the per-slice Mach-O states and hardened-runtime count,
+**and** the three §3 notarization prerequisites — `get-task-allow`, the
+`_CodeSignature/CodeResources` seals, and the absence of a stapled ticket. It
+needs three libraries the repo does not otherwise require
+(`libfsapfs-python`, `signify`, `asn1crypto`); without them the macOS bundle
+and PE-identity legs report **`UNREADABLE`** and say why, which is the honest
+degradation rather than a silent gap.
+
+**Two readings in §2 are NOT re-derived by the script and are marked as such
+here:** the `CodeResources` *requirement-string* analysis (that every one is a
+bare `cdhash` with no `anchor apple generic` clause) was read by hand from the
+extracted plist, and the `CodeDirectory` field dump in §2 was produced by an
+interactive read. The script measures that the seals **exist** and warns that
+presence is not identity; it does not parse their requirement grammar.
 
 **Everything in §4 is CITED, not measured.** Prices and platform policies
 cannot be measured from an artifact; they were read from vendor and CA sources
