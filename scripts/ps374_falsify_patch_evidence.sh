@@ -88,6 +88,25 @@ evidence_for() {
       -f "${HERE}/ps307_patch_evidence.awk" "$PATCH" "$PATCH"
 }
 
+# Edit a file in place, on BOTH sed dialects.
+#
+# ⛔ NOT `sed -i -e ...`. On GNU sed `-i` takes an OPTIONAL suffix and that form
+# works; on BSD sed (every macOS runner) the suffix is MANDATORY and positional,
+# so `-e` is swallowed as the backup extension and the command dies with
+# `sed: -e: No such file or directory`. That is not a hypothetical: it is what
+# reddened `tests (macos-latest, main)` while ubuntu and windows stayed green,
+# because Git Bash on the Windows runner ships GNU sed too. One platform-shaped
+# failure out of three is the signature of a dialect bug, not of a flake.
+#
+# Writing through a temp file and moving it sidesteps the dialect entirely
+# rather than detecting it — there is no `-i` to disagree about.
+sed_inplace() {
+  local file="$1"; shift
+  local tmp="${WORK}/.sed_inplace.$$"
+  sed "$@" "$file" > "$tmp"
+  mv "$tmp" "$file"
+}
+
 # Apply the verifier's own matcher — `grep -F` over a whitespace-stripped copy —
 # so this demonstration cannot pass or fail for a reason the real gate would not.
 check_tree() {
@@ -112,7 +131,7 @@ echo
 echo "-- the six claims the extractor produces at the SHIPPED cap (MAX_PER_FILE=3):"
 evidence_for | sed 's/^/     /'
 echo
-code_claims=$(evidence_for | awk -F'\t' '$2 != "noevidence" && $3 !~ /^\/\// ' | wc -l)
+code_claims=$(evidence_for | awk -F'\t' '$2 != "noevidence" && $3 !~ /^\/\// {n++} END {print n + 0}')
 echo "   claims pinning CODE (not a comment): ${code_claims}"
 echo
 
@@ -123,13 +142,11 @@ echo
 # Revert ONLY the three code lines, back to the raw `m_enabled` field the patch
 # replaced. Every comment stays exactly where it was. Functionally the patch is
 # gone: `enabled()` is upstream's again and both call sites read the field.
-sed -i \
+sed_inplace "${SRC}/v8-runtime-agent-impl.cc" \
   -e 's|^  if (!enabled()) return;|  if (!m_enabled) return;|' \
-  -e 's|^  if (enabled()) reportMessage(message, true);|  if (m_enabled) reportMessage(message, true);|' \
-  "${SRC}/v8-runtime-agent-impl.cc"
-sed -i \
-  -e 's|^  bool enabled() const { return false; }|  bool enabled() const { return m_enabled; }|' \
-  "${SRC}/v8-runtime-agent-impl.h"
+  -e 's|^  if (enabled()) reportMessage(message, true);|  if (m_enabled) reportMessage(message, true);|'
+sed_inplace "${SRC}/v8-runtime-agent-impl.h" \
+  -e 's|^  bool enabled() const { return false; }|  bool enabled() const { return m_enabled; }|'
 
 echo "-- sabotage applied: the three CODE lines reverted to m_enabled, comments untouched"
 grep -n "m_enabled\|enabled()" "${SRC}/v8-runtime-agent-impl.cc" "${SRC}/v8-runtime-agent-impl.h" | sed 's/^/     /'
