@@ -1,0 +1,273 @@
+name: firefox-major-watch
+
+# Has Mozilla shipped a Firefox MAJOR past the one our engine ships?
+#
+# WHY THIS JOB EXISTS (PS-372). We consume the patched-Firefox engine from
+# feder-cr/firefox_antidetect_patch, and until this workflow NOTHING anywhere
+# noticed when MOZILLA moved. `engine-autoupdate.yml` watches the PROVIDER's
+# build tag and bumps us onto newer builds of the same browser; nothing watched
+# the browser. So "we are a Firefox major behind" was something that would
+# HAPPEN to us — the same complaint PS-342 made about ungoogled-chromium on the
+# other engine, applied to this one.
+#
+# ---------------------------------------------------------------------------
+# ⛔ THE TRAP THIS WORKFLOW IS BUILT AROUND: COMPARING THE WRONG NUMBER
+# ---------------------------------------------------------------------------
+# Two numbering schemes are in play and they move independently:
+#
+#   * `firefox-NN`  — the PROVIDER'S BUILD TAG. Bumps on every rebuild.
+#   * `151.0`       — the FIREFOX VERSION that build contains.
+#
+# Measured against the provider on 2026-09-09: firefox-21 through firefox-29 —
+# NINE build tags past ours — are EVERY ONE of them still Firefox 151.0. A
+# watcher comparing build tags fires nine times, and all nine firings are the
+# upstream rebuild churn this ticket exists to NOT report. The trigger is the
+# Mozilla major and nothing else.
+#
+# So the comparison lives in ONE tested place — `watch()` / `firefox_major()` in
+# `scripts/ps372_firefox_major_watch.py`, exercised by
+# `tests/test_ps372_firefox_major_watch.py` — and this file does no version
+# arithmetic of its own. The self-test step below runs BEFORE any network work
+# and proves BOTH ARMS still hold: a higher major fires, and our own major (and
+# a build-tag bump at an unchanged Firefox version) stays quiet. If that is
+# broken, every downstream answer is meaningless and there is no point spending
+# a network call to produce one.
+#
+# ---------------------------------------------------------------------------
+# WHY THIS IS ITS OWN WORKFLOW AND NOT A STEP IN AN EXISTING ONE
+# ---------------------------------------------------------------------------
+#   * NOT `engine-autoupdate.yml`. That job watches the PROVIDER's build tag and
+#     ACTS on it — it rewrites pins, commits to main and pushes a release tag.
+#     This one watches MOZILLA and deliberately acts on nothing. Folding a
+#     read-only watcher into a job that holds `contents: write` and cuts
+#     releases would put a reporting failure and a publishing failure under one
+#     verdict, and a red autoupdate would suppress that day's Mozilla reading.
+#     That job's behaviour is untouched by this workflow.
+#
+#   * NOT `chromium-upstream-watch.yml`. Same SHAPE, different ENGINE, different
+#     source of truth, different decision. It watches ungoogled-chromium tags and
+#     drives the rebase probe; this watches Mozilla's product-details feed. One
+#     job with two engines' failure modes could no longer say WHICH engine is in
+#     trouble. The mechanism is deliberately mirrored — statuses, issue-as-
+#     notification, title-as-dedup-key, self-test-before-network — so both engine
+#     watchers behave the same way, which is what the ticket asked for.
+#
+#   * NOT `ci.yml`. A new Firefox major is NEWS, not a broken build, and it has
+#     nothing to do with the pull request that happened to trigger CI. This
+#     workflow is on a schedule and a manual dispatch ONLY — on no PR or push
+#     trigger — so it can never make an unrelated change look broken.
+#
+# ---------------------------------------------------------------------------
+# WHAT IT DOES NOT DO — DELIBERATELY
+# ---------------------------------------------------------------------------
+# It does NOT bump `engine-baseline.txt`, does NOT bump a pin, does NOT build and
+# does NOT publish. Whether to move onto a new Firefox major is a human
+# judgement, and the report says what the judgement turns on: whether the
+# provider shipped that major WITH macOS assets. An automatic engine move is how
+# a masking layer and an engine silently come to disagree — the Chromium lane
+# learned this and it is recorded here for the Firefox one.
+
+on:
+  schedule:
+    # Daily 08:20 UTC — after engine-autoupdate (06:00), engine-gpu-variance
+    # (06:40) and chromium-upstream-watch / behaviour-launch-lane (07:20), so
+    # the scheduled jobs do not contend for a runner. Nothing about this job
+    # depends on any of them. Note the ordering also means that on a day
+    # engine-autoupdate bumps the baseline, this reads the NEW one.
+    - cron: "20 8 * * *"
+  workflow_dispatch:
+    inputs:
+      latest_firefox:
+        description: >-
+          Pretend Mozilla published THIS version instead of asking it. This is
+          the falsification path: give it a HIGHER major than ours (e.g. 152.0)
+          and the run must report a decision; give it our own (e.g. 151.0) and
+          it must stay quiet. Leave blank for the normal watch.
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  issues: write      # the report is filed as an issue; that is the only write
+
+concurrency:
+  group: firefox-major-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-24.04
+    # Three small JSON reads. 15 is generous and stops a wedged fetch hanging
+    # for hours — and a timeout is a red run, never a pass.
+    timeout-minutes: 15
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: "3.13"
+
+      # INSTALL BEFORE THE SELF-TEST, OR THE SELF-TEST IS THE THING THAT FAILS.
+      #
+      # `actions/setup-python` gives a CLEAN interpreter — no pytest, no PyYAML.
+      # Without this step the "Prove both arms still hold" step below dies on
+      # `python -m pytest` under the runner's default `set -e`, aborting the job
+      # before it reaches the watch. That fails RED, which is correct for a trap,
+      # but it means the watcher delivers nothing every scheduled day while
+      # looking like it is reporting something.
+      #
+      # PyYAML is named EXPLICITLY rather than leaned on transitively: the tests
+      # `import yaml` to parse this very workflow, and PyYAML is declared in
+      # neither requirements.txt, requirements-dev.txt nor pyproject.toml. It
+      # reaches other CI jobs only as a transitive dep of `uvicorn[standard]` via
+      # `pip install .`, which this workflow deliberately does not do — the
+      # watcher is stdlib-only by design and should not need the whole product
+      # installed to check itself.
+      - name: Install the self-test's dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt PyYAML
+
+      # PROVE BOTH ARMS OF THE JUDGEMENT BEFORE TRUSTING ANY VERDICT FROM IT.
+      #
+      # Same reasoning as chromium-upstream-watch.yml's "Prove exit 2 is still
+      # not a pass", and placed first for the same reason: the live watch below
+      # can only ever demonstrate the outcome Mozilla and the provider happen to
+      # produce today, and an outcome only ever observed one way is not
+      # coverage. A watcher that cannot fail is worthless — and, just as
+      # important here, a watcher that cannot STAY QUIET is worthless too, since
+      # firing on rebuild churn is the specific failure this exists to prevent.
+      # This needs no network at all.
+      - name: Prove both arms still hold
+        run: python -m pytest tests/test_ps372_firefox_major_watch.py -q
+
+      - name: Ask Mozilla and compare
+        id: watch
+        continue-on-error: true       # see "the report is the deliverable" below
+        env:
+          # Only to raise the API rate limit on the provider release reads. Both
+          # reads are public. Mozilla's feed takes no token.
+          GITHUB_TOKEN: ${{ github.token }}
+          # Through the ENVIRONMENT, never interpolated into the command line. A
+          # `${{ inputs.* }}` expanded straight into a `run:` block is
+          # substituted before bash ever sees it, so a dispatch input becomes
+          # shell source text.
+          FORCED_LATEST: ${{ inputs.latest_firefox }}
+        run: |
+          set -euo pipefail
+          args=()
+          if [ -n "${FORCED_LATEST:-}" ]; then
+            args+=(--latest-firefox "$FORCED_LATEST")
+          fi
+          python3 scripts/ps372_firefox_major_watch.py "${args[@]}" \
+            --report-json /tmp/firefox-watch.json \
+            --report-md /tmp/firefox-watch.md \
+            --github-output "$GITHUB_OUTPUT"
+
+      # The reading is the evidence base for an engine decision and it lives on a
+      # runner about to be destroyed. `always()`, because the runs worth keeping
+      # are exactly the ones that did not go green.
+      - name: Keep the reading
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: firefox-major-watch
+          path: |
+            /tmp/firefox-watch.json
+            /tmp/firefox-watch.md
+          if-no-files-found: warn
+
+      - name: Put the report in the job summary
+        if: always()
+        run: cat /tmp/firefox-watch.md >> "$GITHUB_STEP_SUMMARY" || true
+
+      # THE REPORT IS THE DELIVERABLE — ⛔ "do not notify into a channel nobody
+      # reads".
+      #
+      # A red workflow run is not a notification. Nobody is subscribed to this
+      # repo's Actions failures, which is exactly why
+      # chromium-upstream-watch.yml files an ISSUE, and this job does the same
+      # thing for the same reason: an issue notifies watchers, appears in the
+      # issue list, and can be closed by a human as the decision it represents.
+      # Both engine watchers therefore behave identically.
+      #
+      # `report` is true for `newer_major` AND for every "we could not look" —
+      # a watcher that dies quietly on a network error looks identical to one
+      # reporting good news, so the unreadable statuses file too.
+      #
+      # ⛔ It is NOT true for `up_to_date`, and that is the churn guarantee: the
+      # provider shipping a fresher `firefox-NN` of the same Firefox lands on
+      # `up_to_date` and files NOTHING.
+      - name: File or update the report issue
+        if: steps.watch.outputs.report == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TITLE: ${{ steps.watch.outputs.title }}
+          STATUS: ${{ steps.watch.outputs.status }}
+        run: |
+          set -euo pipefail
+          # Exact-title match, done in jq against the fetched list rather than by
+          # trusting the search index: `gh issue list --search` is fuzzy and
+          # eventually-consistent, so a near-miss there would file a duplicate
+          # every single day — and this job runs daily, so the same Firefox major
+          # is re-reported every morning until a human acts on it. The title is
+          # passed as a jq ARGUMENT (--arg), so quoting inside it cannot break
+          # the filter.
+          existing="$(gh issue list --state open --limit 100 --json number,title \
+            | jq -r --arg t "$TITLE" 'map(select(.title == $t)) | .[0].number // empty')"
+          if [ -n "$existing" ]; then
+            echo "same news already filed as #$existing — commenting rather than duplicating"
+            gh issue comment "$existing" --body-file /tmp/firefox-watch.md
+          else
+            gh issue create --title "$TITLE" --body-file /tmp/firefox-watch.md
+          fi
+
+      # THE JOB'S OWN COLOUR, decided in one place and from the status only.
+      #
+      # `continue-on-error` on the watch step above exists so the report is
+      # always filed and the artifact always uploaded even on a non-green
+      # reading — not to swallow the verdict. This step re-asserts it, so the run
+      # is red for `newer_major` and for every unreadable status, and green only
+      # for `up_to_date`.
+      #
+      # ⚠️ `newer_major` FAILS THIS JOB. It is not a defect — but it is the one
+      # outcome that needs a person, and an interesting answer wearing green is
+      # an interesting answer nobody sees. Note this job is on NO pull-request or
+      # push trigger, so a red here cannot block anyone's unrelated work.
+      #
+      # ⚠️ AND EVERY "WE COULD NOT LOOK" FAILS IT TOO. "We failed to ask" must
+      # never wear the colour of "we asked and there is no news" — that is the
+      # silence this watcher exists to end.
+      - name: Report the verdict
+        env:
+          STATUS: ${{ steps.watch.outputs.status }}
+          GREEN: ${{ steps.watch.outputs.green }}
+          OURS: ${{ steps.watch.outputs.our_major }}
+          LATEST: ${{ steps.watch.outputs.latest_major }}
+          MACOS: ${{ steps.watch.outputs.macos }}
+        run: |
+          echo "status=${STATUS:-<none>} green=${GREEN:-false} ours=${OURS:-<none>} latest=${LATEST:-<none>} macos=${MACOS:-<none>}"
+          if [ "${GREEN:-false}" = "true" ]; then
+            echo "firefox major watch: ${STATUS} — no Firefox major past ours"
+            exit 0
+          fi
+          case "${STATUS:-}" in
+            newer_major)
+              echo "::error::Firefox ${LATEST} is out and our engine ships Firefox ${OURS}. This is a DECISION, not a defect: the provider's macOS reading for this major is '${MACOS}'. See the filed issue — do not bump anything automatically."
+              ;;
+            upstream_unreadable)
+              echo "::error::Could not read Mozilla's current Firefox version, so we do not know whether a newer major exists. NOTHING WAS COMPARED. This is NOT 'no news'."
+              ;;
+            provider_unreadable)
+              echo "::error::Could not establish which Firefox version our OWN engine build ships, so there was nothing to compare Mozilla against. NOTHING WAS COMPARED. This is a provider/API failure, NOT a Mozilla outage."
+              ;;
+            baseline_unreadable)
+              echo "::error::engine-baseline.txt could not be read as a firefox-NN build tag, so we do not know which engine build is ours and NOTHING WAS LOOKED UP. This is NOT an upstream outage — the file is missing or corrupt in the repository. It is written by scripts/engine_autobump.py; restore it to the firefox-NN tag we ship."
+              ;;
+            *)
+              echo "::error::the watch step produced no status at all — treat this as 'we could not look', never as 'no news'."
+              ;;
+          esac
+          exit 1
