@@ -603,11 +603,42 @@ def test_failed_launch_stops_cert_terminator_before_popen(monkeypatch, tmp_path)
 
 
 def test_hidpi_host_gets_render_scale_flag(monkeypatch, tmp_path):
-    monkeypatch.setattr(process, "_host_display_scale", lambda: 1.5)
+    """⭐ REWRITTEN BY PS-352 — this test used to assert the DEFECT.
+
+    It previously required `--force-device-scale-factor=1.5` on ANY host at
+    150%. That flag redefines the unit `--window-size` is read in, so a
+    2560x1440 pick asked for 3840x2160 physical, and on a dual-monitor host the
+    forced-vs-native DPI mismatch opened Chromium's own popups on the adjacent
+    monitor.
+
+    The behaviour is now platform-split, so the test is too: macOS still forces
+    its Retina 2x (single-scale, no popup defect, paints tiny without it), and
+    Windows/Linux force nothing because Chromium's native per-monitor DPI does
+    that scaling itself. See tests/test_ps352_hidpi_window.py for the full
+    guard set, including the fingerprint falsification.
+    """
+    monkeypatch.setattr(process, "_host_display_scale", lambda: 2.0)
+    monkeypatch.setattr(process._platform, "IS_MACOS", True)
     captured = _spawn_chromium_args(
-        monkeypatch, tmp_path, Profile(name="hidpi", resolution="2560x1440")
+        monkeypatch, tmp_path, Profile(name="hidpi-mac", os_type="macos",
+                                       resolution="2560x1440")
     )
-    assert "--force-device-scale-factor=1.5" in captured["args"]
+    assert "--force-device-scale-factor=2" in captured["args"]
+
+
+def test_a_hidpi_non_mac_host_gets_no_render_scale_flag(monkeypatch, tmp_path):
+    """The other half of the PS-352 split, and the one that fixes the defect."""
+    monkeypatch.setattr(process, "_host_display_scale", lambda: 1.5)
+    monkeypatch.setattr(process._platform, "IS_MACOS", False)
+    captured = _spawn_chromium_args(
+        monkeypatch, tmp_path, Profile(name="hidpi-win", resolution="2560x1440")
+    )
+    assert not any(
+        a.startswith("--force-device-scale-factor") for a in captured["args"]
+    ), (
+        "a Windows/Linux launch must not force a device scale factor — it "
+        "reinterprets --window-size's unit and mislocates popups (PS-352)"
+    )
 
 
 def test_scale_100_host_gets_no_render_scale_flag(monkeypatch, tmp_path):
@@ -621,8 +652,17 @@ def test_scale_100_host_gets_no_render_scale_flag(monkeypatch, tmp_path):
 
 
 def test_render_scale_flag_leaves_fingerprint_args_alone(monkeypatch, tmp_path):
+    """The fingerprint args are independent of the render scale.
+
+    PS-352 note: this now runs on the macOS arm, because that is the only
+    platform that still emits the flag at all. The stronger form of this claim
+    — that what a PAGE sees is byte-identical with and without the flag — is
+    asserted in tests/test_ps352_hidpi_window.py, which reads
+    devicePixelRatio/screen.*/dppx from a realm rather than reading argv.
+    """
     monkeypatch.setattr(process, "_host_display_scale", lambda: 2.0)
-    profile = Profile(name="fp-intact", resolution="2560x1440")
+    monkeypatch.setattr(process._platform, "IS_MACOS", True)
+    profile = Profile(name="fp-intact", os_type="macos", resolution="2560x1440")
     captured = _spawn_chromium_args(monkeypatch, tmp_path, profile)
     assert f"--fingerprint={profile.fingerprint_seed}" in captured["args"]
     assert "--force-device-scale-factor=2" in captured["args"]
