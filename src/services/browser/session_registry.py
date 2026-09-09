@@ -376,12 +376,38 @@ class SessionRegistry:
                 self._path, exc,
             )
 
-    def record(self, rec: SessionRecord) -> None:
-        """Add or replace the record for ``rec.profile``."""
+    def record(self, rec: SessionRecord) -> bool:
+        """Add or replace the record for ``rec.profile``. True if it was kept.
+
+        ⚠️ THE RETURN VALUE IS NOT DECORATIVE (PS-353). A record whose pid is
+        not probeable CANNOT SURVIVE ITS OWN FILE: ``from_json`` drops it on the
+        way back in, and — worse — the next ``record()`` of ANY profile rebuilds
+        this file from ``_load_locked()``, so the unreadable row is physically
+        ERASED and a post-mortem reader cannot even find the entry that would
+        explain a missing guard. Writing one is a silent no-op, and a safety
+        catch whose failure is silent is the defect this whole module exists to
+        avoid.
+
+        So it is REFUSED here and SAID OUT LOUD, rather than written and lost.
+        This is a backstop, not the primary fix: :func:`make_record` already
+        declines to build such a record, and callers are expected to notice
+        there. It is kept because the constructor is public and a hand-built
+        record must not be able to disappear either.
+        """
+        if rec.pid <= 0:
+            logger.warning(
+                "Refusing to record a running session for %s: the launch handle "
+                "reported no probeable pid (%s), and such a record is dropped "
+                "on the next read — so the launch guard will NOT survive a "
+                "restart for this session.",
+                rec.profile, rec.pid,
+            )
+            return False
         with self._lock:
             records = [r for r in self._load_locked() if r.profile != rec.profile]
             records.append(rec)
             self._save_locked(records)
+        return True
 
     def forget(self, profile: str) -> None:
         """Drop the record for ``profile``. Idempotent.
@@ -448,20 +474,72 @@ def default_registry() -> SessionRegistry:
     return SessionRegistry(config.SESSIONS_FILE)
 
 
-def make_record(profile_name: str, proc, engine: str) -> SessionRecord:
-    """Build a record from a live ``Popen`` handle.
+def probeable_pid(proc) -> "int | None":
+    """The pid on ``proc`` that a liveness probe could actually ask about, or
+    ``None`` when the handle carries none.
 
-    The create time is captured HERE, while the process is known to be the one
-    just launched. Capturing it later — at probe time, from the record — would
-    be circular: it would compare the process against itself and could never
-    detect reuse.
+    THE ONE HANDLE SHAPE THAT CARRIES NONE, and why this predicate exists
+    (PS-353). ``InvisibleProcess`` runs the Firefox session as a forked CHILD
+    on Linux and as a THREAD of persona on Windows/macOS, because
+    ``needs_fork_launch()`` is ``IS_LINUX``. On the thread arm there is no child
+    process, so the handle honestly sets ``pid = 0`` — and every line involved
+    was individually right, which is why this survived review: ``pid = 0`` is
+    honest, ``from_json``'s ``pid <= 0`` rejection is honest (a pid of 0 is not
+    probeable, and the module's central rule is that a record is not evidence),
+    and the old ``int(getattr(proc, "pid", 0) or 0)`` honestly recorded what the
+    handle reported.
+
+    THE GAP WAS AT THE SEAM: the writer accepted a handle shape the persistence
+    format cannot represent, and NEITHER END KNEW. ``launcher.py`` wraps the
+    write in ``contextlib.suppress(Exception)`` for a correct reason of its own
+    ("a registry write that cannot happen must cost us the guard, never the
+    session"), so there was no path on which the writer could report its own
+    no-op. Measured: the pid-0 row reached disk, a fresh reader dropped it, and
+    the NEXT ``record()`` of any profile rewrote the file without it — so a
+    post-mortem reader could not even find the entry that explained the missing
+    guard.
+
+    This is the predicate that makes the no-op reportable. It is deliberately a
+    question about the HANDLE and not about the platform: a caller keys off
+    "can this be represented" rather than re-deriving ``needs_fork_launch()``,
+    which would put a second copy of the launch-arm decision in a module whose
+    whole job is to know nothing about how a browser was started.
     """
-    from .process_group import recorded_group
+    try:
+        pid = int(getattr(proc, "pid", 0) or 0)
+    except (TypeError, ValueError):
+        return None
+    return pid if pid > 0 else None
 
-    pid = int(getattr(proc, "pid", 0) or 0)
-    pgid = None
-    with contextlib.suppress(Exception):
-        pgid = recorded_group(proc)
+
+def make_record_for_pid(
+    profile_name: str, pid: int, engine: str, *, pgid: "int | None" = None
+) -> "SessionRecord | None":
+    """Build a record around a pid resolved OUTSIDE a launch handle.
+
+    The thread arm has no child process at ``spawn`` time, but its browser IS a
+    real set of OS processes — the close-watch resolves them from the profile's
+    own ``-profile`` argument and kills each with its tree at teardown. Those
+    pids arrive on the engine's pipe (``LIFECYCLE watch-pids``) a second or two
+    after launch, which is the only honest moment to record one: at ``spawn``
+    the engine has not started, and at TEARDOWN it is far too late for a guard
+    that has to survive a restart.
+
+    Returns ``None`` rather than a record with an unprobeable pid, for the same
+    reason :func:`make_record` does — see :func:`probeable_pid`.
+
+    ⚠️ ``pgid`` DEFAULTS TO None ON THIS PATH AND THAT IS CORRECT, not an
+    omission. ``_child`` calls ``start_own_session()`` only on the FORK arm (a
+    session is process-global state, so ``setsid`` in a thread would move
+    persona's OWN session — a recorded platform gap, not an oversight). So the
+    thread arm's engine parent sits in PERSONA'S group, and recording that
+    number would hand a later ``terminate_record`` a group kill aimed at
+    persona itself. ``signallable_group`` refuses our own group and would catch
+    it, but the record should not carry the hazard in the first place; the
+    single-process fallback is the honest teardown for this arm.
+    """
+    if not isinstance(pid, int) or pid <= 0:
+        return None
     return SessionRecord(
         profile=profile_name,
         pid=pid,
@@ -471,3 +549,36 @@ def make_record(profile_name: str, proc, engine: str) -> SessionRecord:
         started_at=time.time(),
         owner_pid=os.getpid(),
     )
+
+
+def make_record(profile_name: str, proc, engine: str) -> "SessionRecord | None":
+    """Build a record from a live ``Popen`` handle, or ``None`` if the handle
+    carries no probeable identity.
+
+    The create time is captured HERE, while the process is known to be the one
+    just launched. Capturing it later — at probe time, from the record — would
+    be circular: it would compare the process against itself and could never
+    detect reuse.
+
+    ⚠️ ``None`` IS A REAL RETURN VALUE AND MUST BE HANDLED (PS-353), not an
+    error case to shrug at. It means "this handle cannot be written down", and
+    the caller's duty is to SAY SO rather than write a row the reader will
+    discard. See :func:`probeable_pid` for which handle shape produces it and
+    why every line that produced the old silent no-op was individually correct.
+
+    ⛔ THE FIX IS NOT TO RELAX ``from_json``'s ``pid <= 0`` GUARD. An
+    unprobeable record would then load and reach ``liveness_of``, which fails
+    open to UNKNOWN — but ``running_session_builds()`` reads the indeterminate
+    bucket as "live, build unknown, do not prune", so a stale row would defer
+    engine pruning forever. The guard is right; what was wrong is feeding it a
+    value it cannot represent.
+    """
+    from .process_group import recorded_group
+
+    pid = probeable_pid(proc)
+    if pid is None:
+        return None
+    pgid = None
+    with contextlib.suppress(Exception):
+        pgid = recorded_group(proc)
+    return make_record_for_pid(profile_name, pid, engine, pgid=pgid)
