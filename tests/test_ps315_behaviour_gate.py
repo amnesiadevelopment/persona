@@ -61,6 +61,7 @@ EXPECTED = (
     "proxy-assignment-survives-edit",
     "launch-refuses-broken-geography",
     "certificate-key-material",
+    "launch-perimeter-inventory",
 )
 
 
@@ -583,15 +584,24 @@ def test_the_runner_reads_the_real_report_format() -> None:
 
 
 def _console_child(tmp_path, text: str) -> Path:
-    """A child that writes `text` then a well-formed summary line."""
+    """A child that writes `text` then a well-formed summary line.
+
+    The `[PASS]` badges are derived from :data:`EXPECTED` rather than written
+    out, because the runner's corroboration rule requires EVERY expected check
+    to be certified before a 0 counts: a hand-written list here would make
+    ADDING a no-launch check fail these two console tests for a reason that has
+    nothing to do with encodings.
+    """
+    badges = "".join(
+        f"sys.stdout.write('[PASS] {name}\\n')\n" for name in EXPECTED
+    )
     child = tmp_path / "console_child.py"
     child.write_text(
         "import sys\n"
         f"sys.stdout.write({text!r} + '\\n')\n"
-        "sys.stdout.write('[PASS] proxy-assignment-survives-edit\\n')\n"
-        "sys.stdout.write('[PASS] launch-refuses-broken-geography\\n')\n"
-        "sys.stdout.write('[PASS] certificate-key-material\\n')\n"
-        "sys.stdout.write('3 passed, 0 finding(s), 0 could not run\\n')\n",
+        + badges
+        + f"sys.stdout.write('{len(EXPECTED)} passed, 0 finding(s), "
+        "0 could not run\\n')\n",
         encoding="utf-8",
     )
     return child
@@ -667,7 +677,7 @@ def test_a_character_outside_cp1252_does_not_crash_the_child(tmp_path) -> None:
         "printed and a crash wore EXIT_FINDING's code:\n"
         f"{result.stdout}\n{result.stderr}"
     )
-    assert "3 passed" in result.stdout, (
+    assert f"{len(EXPECTED)} passed" in result.stdout, (
         "the summary line never arrived — the report was truncated by the "
         "reporting seam, not by anything the product did"
     )
