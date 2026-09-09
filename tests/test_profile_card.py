@@ -223,41 +223,49 @@ def test_fresh_check_still_shows_the_country_flag():
     assert any(s.endswith("ie.svg") for s in _flag_srcs(card))
 
 
-def test_stale_check_does_not_render_the_verified_flag():
-    # AC3: past the threshold the state is visibly DIFFERENT and no bare
-    # verified flag is emitted.
+def test_stale_check_still_shows_the_flag():
+    # Deliberate reversal of the old freshness-hides-flag rule: the flag is
+    # drawn from the last successful check's country regardless of age, so the
+    # exit country is visible the moment persona opens. Freshness now rides the
+    # exit IP on the meta line (refreshed by check/rotate), not the flag.
     px = Proxy(
         name="P", url="socks5://1.2.3.4:1", country_code="ie",
         last_check_ok=True, checked_at=time.time() - (PROXY_STALE_AFTER_S + 1),
     )
     card = _card_with(px)
-    assert not any(s.endswith("ie.svg") for s in _flag_srcs(card)), (
-        "a stale check still drew the confident country flag"
+    assert any(s.endswith("ie.svg") for s in _flag_srcs(card)), (
+        "a stale check must still draw the last-known country flag"
     )
 
 
-def test_fresh_and_stale_render_differently():
-    # The core of the ticket: two proxies identical but for checked_at must not
-    # be pixel-identical. Compare the whole rendered text+image projection.
+def test_fresh_and_stale_both_show_the_flag():
+    # The freshness signal moved off the flag and onto the exit IP: two proxies
+    # identical but for checked_at now render the SAME country flag. (Before, a
+    # stale check hid the flag and showed an age — see the PS-15 history; the
+    # owner changed this so the flag is always visible and the IP carries the
+    # live truth.)
     now = time.time()
-    def shape(age_s):
-        card = _card_with(Proxy(
+    def flags(age_s):
+        return _flag_srcs(_card_with(Proxy(
             name="P", url="socks5://1.2.3.4:1", country_code="ie",
             last_check_ok=True, checked_at=now - age_s,
-        ))
-        return (_texts(card), _images(card))
-    assert shape(30) != shape(PROXY_STALE_AFTER_S + 1)
+        )))
+    assert any(s.endswith("ie.svg") for s in flags(30))
+    assert any(s.endswith("ie.svg") for s in flags(PROXY_STALE_AFTER_S + 1))
 
 
-def test_stale_check_surfaces_its_age():
-    # The flag carries its own provenance: the operator can read HOW OLD the
-    # evidence is, via the shared humanize_since vocabulary.
+def test_meta_shows_exit_ip_not_age():
+    # The meta line carries the LIVE exit IP the profile is using, not
+    # "checked Nd ago" (that provenance lives on the network page). Clicking the
+    # flag re-checks and updates this IP in place.
     px = Proxy(
         name="P", url="socks5://1.2.3.4:1", country_code="ie",
         last_check_ok=True, checked_at=time.time() - (45 * 86400),
+        last_ip="203.0.113.7",
     )
     texts = _texts(_card_with(px))
-    assert any("45d ago" in t for t in texts), texts
+    assert any("203.0.113.7" in t for t in texts), texts
+    assert not any("ago" in t for t in texts), texts
 
 
 def test_stored_country_with_no_timestamp_is_not_verified():
@@ -347,3 +355,64 @@ def test_stale_indicator_is_still_clickable_to_recheck():
     assert found, "stale indicator lost its re-check click target"
     found[0](None)
     assert clicked == ["P"]
+
+
+# --- rotate control under the flag -------------------------------------------
+
+
+def test_rotate_button_calls_on_rotate_with_proxy_name():
+    # A small rotate control sits under the flag so the operator pulls a fresh
+    # exit IP without opening the network page. It must fire on_rotate with the
+    # PROXY name (app._rotate_proxy is keyed on the proxy, like _check_proxy),
+    # not the profile name.
+    p = Profile(name="a", proxy="P", os_type="windows")
+    px = Proxy(
+        name="P", url="socks5://1.2.3.4:1", country_code="ie",
+        last_check_ok=True, checked_at=time.time() - 30, last_ip="203.0.113.7",
+    )
+    rotated = []
+    card = build_profile_card(
+        p, False, False, _noop, _noop, _noop,
+        proxy=px, on_check_proxy=lambda n: None,
+        on_rotate=lambda n: rotated.append(n),
+    )
+    found = []
+    def walk(c):
+        cb = getattr(c, "on_click", None)
+        if callable(cb) and getattr(c, "tooltip", "") == "Rotate this profile's exit IP":
+            found.append(cb)
+        for attr in ("controls", "content"):
+            v = getattr(c, attr, None)
+            if isinstance(v, list):
+                for x in v: walk(x)
+            elif v is not None and not isinstance(v, str):
+                walk(v)
+    walk(card)
+    assert found, "no rotate control found under the flag"
+    found[0](None)
+    assert rotated == ["P"]
+
+
+def test_no_rotate_control_without_a_handler():
+    # No on_rotate wired -> no rotate control at all (a direct profile, or a
+    # surface that does not offer rotation). Its PRESENCE is the signal.
+    p = Profile(name="a", proxy="P", os_type="windows")
+    px = Proxy(
+        name="P", url="socks5://1.2.3.4:1", country_code="ie",
+        last_check_ok=True, checked_at=time.time() - 30,
+    )
+    card = build_profile_card(
+        p, False, False, _noop, _noop, _noop,
+        proxy=px, on_check_proxy=lambda n: None,
+    )
+    tips = []
+    def walk(c):
+        tips.append(getattr(c, "tooltip", None))
+        for attr in ("controls", "content"):
+            v = getattr(c, attr, None)
+            if isinstance(v, list):
+                for x in v: walk(x)
+            elif v is not None and not isinstance(v, str):
+                walk(v)
+    walk(card)
+    assert "Rotate this profile's exit IP" not in tips

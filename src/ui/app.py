@@ -5431,6 +5431,7 @@ class App:
                     on_select=self.h.on_toggle_select,
                     proxy=self.pstore.get(p.proxy) if p.proxy else None,
                     on_check_proxy=self._check_proxy,
+                    on_rotate=self._rotate_proxy,
                     on_notes_change=self._save_notes_inline,
                     # The LIVE session's fact, from the launcher — deliberately
                     # not p.ai_control, which set_ai_control can flip while the
