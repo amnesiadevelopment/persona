@@ -60,7 +60,20 @@ skip in the current CI. Nothing is wrong when they do.
 | `test_invisible_launch.py:718` | `could not import 'invisible_playwright'` | `engine` |
 | `test_invisible_launch.py:2051` | `could not import 'invisible_core'` | `engine` |
 | `test_invisible_launch.py:5203` | `could not import 'invisible_playwright'` | `engine` |
+| `test_app_egress.py:1467` (×6) | `the engine driver is not installed in this environment (CI installs it; …)` | `engine` |
+| `test_verify_engine_selection.py:68` | `the engine driver is not installed here, so persona's firefox engine cannot be inspected` | `engine` |
 | `test_assets.py:40`, `:81` | `could not import 'PIL.Image'` | — (dev extra) |
+
+> **The last two rows carry a wording constraint, not just a location.** Both
+> pass `reason=` to `importorskip`, which REPLACES the wording this table's
+> `Capability` column is matched from — so the reason must contain the stem
+> `the engine driver is not installed` or it classifies as **nothing**, and a
+> runner that declares `engine` prints *"ok engine: no test declined to run"*
+> beside the skips. That has now happened twice (PS-371's macOS fence; PS-353
+> wrote *"the **pinned** engine driver…"* here and six egress tests — three of
+> them security-relevant routing assertions — went quiet). It is swept for by
+> `tests/test_skip_visibility.py::TestACustomImportorskipReasonIsStillPoliced::test_every_engine_guard_in_this_repo_writes_a_reason_that_classifies`,
+> so a third occurrence fails rather than passing silently.
 
 The three `test_ff_language_override.py` skips are the ones that matter most.
 They are the real-Firefox probes — the suite's strongest evidence, checked
