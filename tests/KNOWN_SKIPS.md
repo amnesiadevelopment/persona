@@ -78,14 +78,14 @@ Correct everywhere except the named platform. Not a provisioning gap on Linux.
 | `test_app_update.py:819` | live relaunch-bat run needs Windows + the .NET csc compiler |
 | `test_invisible_launch.py:971` | exercises the real Windows PowerShell/WMI pid query path |
 | `test_invisible_launch.py:1564` | exercises the real EnumWindows/ctypes enumeration path |
-| `test_invisible_launch.py:1564` | exercises the real EnumWindows/ctypes enumeration path |
 | `test_invisible_launch.py:3867` | exercises the real Toolhelp/PEB process scan |
 | `test_update_verify.py:217`, `:238` | exercises the real Windows `apply_and_restart` `os._exit` path |
 | `test_main_utf8_fs.py:76` | this platform's C locale still yields a UTF-8 filesystem encoding |
 | `test_ps374_runtime_enable_guard.py:592`, `:735` | `POSIX shell script` — skips on **Windows only**; runs on ubuntu + macOS |
 | `test_ps374_runtime_enable_guard.py:679` | `the BSD-sed shim is a POSIX shebang script; PATHEXT ignores it` — **Windows only** |
 
-> ⚠️ The three `test_ps374_runtime_enable_guard.py` rows are the **inverse** of
+> ⚠️ The two `test_ps374_runtime_enable_guard.py` rows above — covering **three**
+> skip sites (`:592`, `:735`, `:679`) — are the **inverse** of
 > every other row here: they skip on Windows and run on Linux/macOS, so a Linux
 > contributor never sees them skip. They model **BSD `sed`**, which macOS
 > runners have and Windows runners never will — an extensionless `#!/bin/sh`
