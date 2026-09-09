@@ -364,7 +364,6 @@ def measure(binary: str, label: str, *, timeout: float = 60.0) -> dict:
         proc = subprocess.Popen(  # noqa: S603
             args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True
         )
-
         port = _wait_for_endpoint(pathlib.Path(user_dir) / "DevToolsActivePort", deadline)
         if port is None:
             reading["errors"].append("DevToolsActivePort never appeared")
@@ -531,11 +530,47 @@ def measure(binary: str, label: str, *, timeout: float = 60.0) -> dict:
         if ws is not None:
             ws.close()
         if proc is not None:
+            # ⚠️ REAP THE GROUP, NOT THE PID. A browser is not a leaf process:
+            # chromium forks a zygote, a gpu-process, a crashpad handler and a
+            # renderer per tab, and `proc.terminate()` signals only the pid we
+            # hold — every descendant survives, is reparented to init, and is
+            # from that moment unreachable from any handle we ever had.
+            #
+            # MEASURED HERE, not inherited as advice: an earlier draft of this
+            # probe called `terminate()`/`kill()` and left a growing pile of
+            # `chrome_crashpad_handler` processes behind — 380 after a handful
+            # of runs. That is the failure PS-341 records as a false positive
+            # that looked exactly like a product defect: an exhausted PID budget
+            # degrades the NEXT launch into a contentless failure, and the leak
+            # stops looking like a leak and starts looking like a property of
+            # the code under test. On this probe it would surface as an
+            # INCONCLUSIVE reading — precisely the outcome nobody investigates.
+            #
+            # `reap_process_group` is the repo's own reaper and carries the
+            # self-kill guard (a group kill aimed at a non-leader resolves to
+            # OUR group). The launch above passes `start_new_session=True`, so
+            # there genuinely is a group to signal. Verified: every descendant
+            # is gone within ~2s of a run finishing (11 live chrome processes
+            # during a run, 0 after).
+            #
+            # ⚠️ WHAT THIS DOES NOT FIX, stated rather than glossed: a
+            # descendant killed after its parent has exited is reparented to
+            # pid 1, and if pid 1 does not reap (a bare container init, as in
+            # this project's own test container) it stays a ZOMBIE — holding a
+            # pid slot while consuming nothing else. Only pid 1 can reap those,
+            # so no code here can. It is the difference between a leak that
+            # grows without bound in CPU and memory and one that costs a handful
+            # of pid-table entries per run; this closes the first.
             with contextlib.suppress(Exception):
-                proc.terminate()
-                proc.wait(timeout=10)
+                from src.services.browser.process_group import reap_process_group
+
+                reap_process_group(proc, timeout=10.0)
+            # Belt and braces, and specifically a WAIT: even a correctly killed
+            # child stays a zombie until someone reaps its exit status.
             with contextlib.suppress(Exception):
                 proc.kill()
+            with contextlib.suppress(Exception):
+                proc.wait(timeout=10)
         shutil.rmtree(user_dir, ignore_errors=True)
 
 
