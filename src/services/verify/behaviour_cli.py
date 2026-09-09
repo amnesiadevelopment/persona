@@ -44,7 +44,6 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-import tempfile
 
 #: Set on the re-exec so the child knows the home was provisioned deliberately.
 _REEXEC_FLAG = "PERSONA_BEHAVIOUR_CLI_REEXEC"
@@ -135,7 +134,8 @@ def _cmd_run(args: argparse.Namespace) -> int:
         print(
             "NOTE: --skip-launch was used, so every launch-backed surface "
             "(restart continuity, two-profile unlinkability, edit stability, "
-            "the trash bin's 'came back whole') was NOT observed on this run."
+            "the trash bin's 'came back whole', and whether a closed session "
+            "leaves a process running) was NOT observed on this run."
         )
     return exit_code(outcomes)
 
@@ -151,7 +151,32 @@ def main(argv: "list[str] | None" = None) -> int:
         # core.config resolves PERSONA_HOME at import time, so it must be set
         # before the stores are imported. Re-exec once with a scratch home
         # rather than setting it inline and hoping nothing imported yet.
-        home = args.home or tempfile.mkdtemp(prefix="persona-behaviour-")
+        #
+        # ⭐ THE DEFAULT HOME IS SIZED, NOT MERELY TEMPORARY, and that is a
+        # correctness property rather than tidiness. A plain
+        # `mkdtemp(prefix="persona-behaviour-")` is 31 bytes under /tmp, which
+        # leaves 4 for a profile name — so the chromium launch check exited
+        # FATAL "Socket path too long" several seconds in and reported CANNOT
+        # RUN on EVERY invocation that did not pass an explicit short --home,
+        # including the one this module's own docstring prescribes. A gate
+        # whose default invocation cannot reach green measures nothing. See
+        # `behaviour.default_scratch_home`, which refuses rather than returning
+        # a home the checks cannot launch under.
+        from .behaviour import UnsafeEnvironment, default_scratch_home
+        from .behaviour_checks import longest_socket_bound_profile_name
+
+        if args.home:
+            home = args.home
+        else:
+            try:
+                home = default_scratch_home(longest_socket_bound_profile_name())
+            except UnsafeEnvironment as exc:
+                # Nothing ran, so this is CANNOT_RUN in those words — never a
+                # 1, which is reserved for a finding about the product.
+                from .behaviour import EXIT_CANNOT_RUN
+
+                print(f"CANNOT RUN: {exc}", file=sys.stderr)
+                return EXIT_CANNOT_RUN
         env = dict(os.environ)
         env["PERSONA_HOME"] = home
         env[_REEXEC_FLAG] = "1"
