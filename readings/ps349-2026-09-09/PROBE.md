@@ -114,7 +114,7 @@ process into every aggregate — PS-171 recommendation 8, adopted.
 > `windows()`), and the first contaminating sample is at **`t=234.9`**. The
 > nine-arm table, the sweep and the composite are computed entirely inside the
 > clean span. What it *does* invalidate is the **prose about the tail**, which
-> is corrected at [finding (b)](#b-the-teardown-did-not-hang--it-spun-and-it-was-still-spinning-25-minutes-later).
+> is corrected at [finding (b)](#b-the-teardown-did-not-hang--it-spun-and-it-was-still-spinning-26-minutes-later).
 
 **Window rules, stated rather than tuned.** 8 s is dropped after `READY` and
 after `DEGRADED` (startup burns CPU in every arm; a threshold fitted across a
@@ -142,7 +142,7 @@ burst in every arm).
 > was wrong.** Left in, they inflated the wedged arm's CPU to a median of 101.8%
 > and made a CPU-based rule look **better than it is**. `sweep.py:END_BOUND`
 > carries this and says why. (What the teardown was actually doing is
-> [finding (b)](#b-the-teardown-did-not-hang--it-spun-and-it-was-still-spinning-25-minutes-later),
+> [finding (b)](#b-the-teardown-did-not-hang--it-spun-and-it-was-still-spinning-26-minutes-later),
 > and it is not what it first looked like.)
 
 ---
@@ -246,16 +246,36 @@ cannot see this class of failure. The ticket said so; this measures it.
 
 PS-171 characterised its stall as *"every thread in `S`… deadlock-shaped"*. That
 is true — **and a healthy idle session looks identical.** `healthy` sits at
-`{S: 213}` sample after sample (its live samples range `S` 150–225, mode 213);
-`jugwedge` sits at `{S: 305}`. **`nonS max` is 3 on the healthy control and 0 on
-the wedged arm** — if anything the *wedged* session looks calmer.
+`{S: 222}` sample after sample (in-window mode 222, range 212–224, n=50);
+`jugwedge` sits at `{S: 305}` (in-window mode 305, range 305–315, n=30). Both
+arms are ~100% `S` — 99.88% and 100.00%. **`nonS max` is 3 on the healthy
+control and 0 on the wedged arm** — if anything the *wedged* session looks
+calmer.
 
-> ⚠️ An earlier revision of this paragraph quoted `{S: 250}` for the healthy
-> control. **That value does not occur anywhere in `healthy.txt`.** It occurs in
-> `jugwedge.txt`'s contaminated tail, which is where it was most likely read
-> from — the same stale-observer defect the instrument note above records,
-> reaching one number in the prose. The finding is untouched: both arms still
-> sit at ~100% `S`, and `nonS max` is still 3 healthy / 0 wedged.
+> ⚠️ **Two corrections have now landed on this one sentence, and the second is
+> a window mismatch introduced by the first.**
+>
+> The original text quoted `{S: 250}` for the healthy control. **That value does
+> not occur anywhere in `healthy.txt`.** It occurs in `jugwedge.txt`'s
+> contaminated tail, which is where it was most likely read from — the same
+> stale-observer defect the instrument note above records, reaching one number
+> in the prose.
+>
+> Its replacement, `{S: 213}` (range 150–225), was **`healthy`'s ALL-LIVE mode**,
+> set beside `jugwedge`'s **IN-WINDOW** `305`. Two populations, one comparison —
+> and the all-live range `150–225` is wide only because it includes the startup
+> samples this record's own `SETTLE` rule exists to drop. Every other figure in
+> the readings table is in-window, so this sentence is now in-window too.
+>
+> **The finding is untouched and the in-window figures make it stronger**: the
+> healthy control's spread collapses from 75 to 12, so it stops looking like a
+> noisy baseline and reads as what it is — a session sitting still. Both arms
+> are still ~100% `S`, `nonS max` is still 3 healthy / 0 wedged, and the two
+> modes are still 83 threads apart with no discriminating power between them.
+>
+> For the record, `healthy`'s all-live figures are mode **213**, range
+> **150–225**, n=**61**; `jugwedge`'s are mode **235**, range **3–317**,
+> n=**414**. Neither is quoted above.
 
 ⚠️ **This is a caution about reading PS-171's shape as a detector, not a
 correction to PS-171.** That record used the shape *comparatively*, to argue the
