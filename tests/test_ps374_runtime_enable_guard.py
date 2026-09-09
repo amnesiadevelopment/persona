@@ -780,22 +780,102 @@ def test_the_falsification_script_runs_on_the_macos_sed_dialect(tmp_path):
     )
 
 
+def _tracked_shell_scripts() -> list[pathlib.Path]:
+    """Every TRACKED shell script in the repository — the ratchet's population.
+
+    ⚠️ `scripts/*.sh` is NOT the population, and reading it as one is how the
+    first draft of this ratchet came to state a bound nearly twice its reach:
+    it scanned 12 of the 22 tracked `.sh` files and claimed "tracked shell
+    scripts". The ten it never opened include `install.sh` — the file users
+    pipe into `sh` from a curl one-liner, and one that already calls `sed`.
+
+    Membership is by NAME (`*.sh`) **or** by SHEBANG, because a shell script
+    is not obliged to carry the extension and an extension-only scan would
+    re-open the same gap one size down. Both halves are asked of `git
+    ls-files`, so "tracked" is git's notion of it rather than a glob's.
+    """
+    git = shutil.which("git")
+    if git is None:
+        pytest.skip("git unavailable; the tracked-file population is underivable")
+    listing = subprocess.run(  # noqa: S603
+        [git, "ls-files", "-z"],
+        cwd=str(REPO),
+        capture_output=True,
+        check=True,
+    ).stdout.decode("utf-8", "surrogateescape")
+
+    scripts = []
+    for rel in listing.split("\0"):
+        if not rel:
+            continue
+        path = REPO / rel
+        if not path.is_file():  # a deleted-but-staged path, a submodule gitlink
+            continue
+        if rel.endswith(".sh"):
+            scripts.append(path)
+            continue
+        try:
+            with path.open("rb") as fh:
+                first = fh.readline(256)
+        except OSError:
+            continue
+        if re.match(rb"#!.*\b(?:ba|da|z|k)?sh\b", first):
+            scripts.append(path)
+    return sorted(scripts)
+
+
+def test_the_tracked_script_population_is_wider_than_the_scripts_directory():
+    """Positive control on the population itself, not on the regex over it.
+
+    ⛔ A ratchet whose SCAN is empty, or silently narrowed back to
+    `scripts/*.sh`, passes exactly as loudly as one that scanned everything —
+    the assertion is `not offenders`, and zero files produce zero offenders.
+    That is the false green the ratchet below cannot detect about itself, so it
+    is detected here.
+
+    Pinned: `install.sh` and `persona.sh` — the two scripts that SHIP to users
+    and sit outside `scripts/` — are in the population, and the population is
+    strictly larger than the directory the first draft scanned.
+    """
+    scripts = _tracked_shell_scripts()
+    rel = {str(p.relative_to(REPO)) for p in scripts}
+
+    assert "install.sh" in rel, (
+        "the installer is the one unscanned script that reaches users by "
+        f"`curl | sh`; it must be in the ratchet's population.\n{sorted(rel)}"
+    )
+    assert "persona.sh" in rel, sorted(rel)
+
+    in_scripts_dir = {r for r in rel if r.startswith("scripts/")}
+    assert len(rel) > len(in_scripts_dir), (
+        "the population has collapsed back to scripts/*.sh — the ratchet below "
+        "would then mean far less than its docstring says.\n"
+        f"population={len(rel)} scripts/={len(in_scripts_dir)}"
+    )
+
+
 def test_no_shell_script_uses_the_gnu_only_in_place_sed_form():
     """Ratchet: `sed -i` must not re-enter the repo's shell scripts.
 
-    The executable guard above covers ONE script. This covers the other eleven,
-    at a cost of one regex — and it is the cheaper half, because the defect is
-    a spelling with a portable alternative rather than a subtle behaviour.
+    The executable guard above covers ONE script. This covers every OTHER
+    tracked shell script, at a cost of one regex — and it is the cheaper half,
+    because the defect is a spelling with a portable alternative rather than a
+    subtle behaviour.
 
-    ⚠️ Read a green run as "no `sed -i` in tracked shell scripts", never as
-    "these scripts are portable". Other GNU-isms (`grep -P`, `readlink -f`,
-    `date -d`) are NOT modeled here; the bound is stated rather than implied.
+    ⚠️ Read a green run as "no `sed -i` in any TRACKED shell script" — the
+    population is `git ls-files` filtered by `*.sh` or a shell shebang (see
+    `_tracked_shell_scripts`), so `install.sh`, `persona.sh` and the
+    `readings/` scripts ARE scanned. Never read it as "these scripts are
+    portable": other GNU-isms (`grep -P`, `readlink -f`, `date -d`) are NOT
+    modeled here, and an UNTRACKED script is not scanned at all. The bound is
+    stated rather than implied, and
+    `test_the_tracked_script_population_is_wider_than_the_scripts_directory`
+    is what stops the stated bound drifting wider than the scan again.
     """
     offenders = []
-    for script in sorted((REPO / "scripts").glob("*.sh")):
-        for lineno, line in enumerate(
-            script.read_text(encoding="utf-8").splitlines(), start=1
-        ):
+    for script in _tracked_shell_scripts():
+        text = script.read_text(encoding="utf-8", errors="surrogateescape")
+        for lineno, line in enumerate(text.splitlines(), start=1):
             code = line.split("#", 1)[0]
             if re.search(r"(?:^|[|;&(\s])sed\s+(?:-[a-zA-Z]+\s+)*-i(?:\s|$)", code):
                 offenders.append(f"{script.relative_to(REPO)}:{lineno}: {line.strip()}")
