@@ -199,6 +199,27 @@ directly (`signing_state.json`, `signing_state_run.txt`):
 different facts and the instrument keeps them apart deliberately — the same
 discipline that keeps an unread bundle from being reported as unsigned.
 
+⭐ **PROVENANCE NOTE — the instrument was corrected after these readings were
+captured, and the readings are unchanged.** A later audit found two defects in
+the §3 code: the staple detector also matched `_CodeSignature/CodeDirectory`
+(a `codesign` signature slot, not a `stapler` ticket), and the caller of the
+three-valued entitlements reader folded *unparseable* in with *absent*. Both
+are fixed, and the fix does **not** move a single figure in this table: the
+`ABSENT` staple rows were `ABSENT` for a measured reason (`persona.app`'s
+signatures are embedded via `LC_CODE_SIGNATURE`, so no detached `CodeDirectory`
+file exists in it; the engine image has no `_CodeSignature` at all), and the
+`3/3` entitlement reading came from XML blobs that parsed. The defects were
+**latent on today's assets** and would have fired on the first *signed*
+artifact — which is to say, on the first re-run after someone buys a
+certificate. That is exactly when this table gets re-measured, so the
+correction is recorded here rather than left in the commit log. One consequence
+worth naming so a re-runner is not surprised: the *wording* of the
+`get-task-allow` detail line changed (it now says "readable slice(s)" and sizes
+any unparseable remainder), so a fresh run will not be byte-identical to
+`signing_state_run.txt` / `signing_state.json` even though every **state** in
+it is. Those two files are kept as captured on 2026-09-07 rather than
+regenerated, because they are the record of what was measured that day.
+
 **Why this matters for costing the work.** The naive plan is "buy a
 certificate, add a `codesign` step, done." That plan is wrong. Buying the
 certificate does not get you a notarized build — the `flet build macos` output
@@ -317,7 +338,9 @@ is stated precisely rather than broadly.** `scripts/ps346_signing_state.py`
 re-reads every fact in §1–§3: the PE certificate tables, the UDIF `cSig`/gap,
 the AppImage sections, the per-slice Mach-O states and hardened-runtime count,
 **and** the three §3 notarization prerequisites — `get-task-allow`, the
-`_CodeSignature/CodeResources` seals, and the absence of a stapled ticket. It
+`_CodeSignature/CodeResources` seals, and the absence of a stapled ticket
+(matched as a `stapler`-written `*.ticket`, never as a `codesign`-written
+`CodeDirectory` — see the provenance note in §3). It
 needs three libraries the repo does not otherwise require
 (`libfsapfs-python`, `signify`, `asn1crypto`); without them the macOS bundle
 and PE-identity legs report **`UNREADABLE`** and say why, which is the honest
