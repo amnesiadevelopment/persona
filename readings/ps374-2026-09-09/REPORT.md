@@ -39,8 +39,17 @@ this project.
 | **SHIPPED** personium 152.0.7977.75 (V8 15.2.124.19) | 1 — **announced** | **SUPPRESSED** |
 | **STOCK** chromium 152.0.7977.82 | 1 — announced | reported |
 
-All six preconditions met on both arms. Artifacts:
+All seven preconditions met on both arms. Artifacts:
 `artifacts/shipped-personium.json`, `artifacts/stock-chromium.json`.
+
+> ⚠️ **Artifact note (audit round 2).** `p7_console_channel_live` was added to
+> the gate after these two readings were taken, so their stored `preconditions`
+> dicts carried only the original six. The key was **DERIVED** for each artifact
+> from evidence already recorded in it — `console_payloads` contains
+> `ps374-console-BEFORE-enable` on both arms — and not asserted blind. Both
+> verdicts are byte-unchanged (shipped → exit 0, stock → exit 1); had the marker
+> been absent the honest result would have been INCONCLUSIVE, and the reading
+> would have been retaken rather than back-filled.
 
 This agrees with `9afca5c8` on every cell, from a probe written without reading
 its code.
@@ -75,7 +84,7 @@ carrying the SAME event count and opposite verdicts.
 
 ### The probe refuses rather than reporting clean
 
-Six preconditions, any failure yielding **INCONCLUSIVE** — a third exit code,
+Seven preconditions, any failure yielding **INCONCLUSIVE** — a third exit code,
 deliberately not folded into either verdict:
 
 | | |
@@ -86,12 +95,26 @@ deliberately not folded into either verdict:
 | P4 | `Page.navigate` acked; **P4b** `1+1` → `2`, so a REAL context exists |
 | **P5** | ⭐ an UNSOLICITED event actually arrived — the event channel is LIVE |
 | P6 | `Runtime.enable` acked with no error object |
+| **P7** | ⭐ the BEFORE marker arrived — the CONSOLE channel is LIVE |
 
-P5 is load-bearing: without it *"the realm is clean"* and *"the realm was never
-reached"* are the same green, and on an absence assertion the second is the more
-likely failure. `test_all_six_preconditions_are_gated_not_merely_recorded`
-asserts every one of the seven can force INCONCLUSIVE on its own, so none can be
-quietly demoted to decoration.
+P5 and P7 are load-bearing: without them *"the realm is clean"* and *"the realm
+was never reached"* are the same green, and on an absence assertion the second is
+the more likely failure.
+
+⚠️ **P5 does not subsume P7, and the gap was a real false green.** `events` is
+filled from ANY domain and `Page.enable` runs before anything console-related,
+so a lone `Page.frameNavigated` satisfies P5 while saying nothing about the
+console — and site B is read from the console. Until P7 existed, a reading whose
+console channel never worked returned **exit 0, "PATCH 001 PRESENT AND ACTING"**,
+over a channel the probe had never successfully read. P7 costs nothing to
+require: the BEFORE marker arrives on a PATCHED binary too (patch 001 suppresses
+only what is reported *after* `Runtime.enable`), so it can never condemn a good
+engine — it is a pure liveness assertion.
+
+`test_all_preconditions_are_gated_not_merely_recorded` asserts every one of the
+seven can force INCONCLUSIVE on its own, so none can be quietly demoted to
+decoration, and `test_a_dead_console_channel_is_inconclusive_not_a_pass` pins the
+specific false green above with a live-console control beside it.
 
 ---
 
