@@ -191,13 +191,38 @@ jobs:
         # cover `browser`. Declaring it on the MAIN shard would stop policing
         # browser skips across all ~5,555 of its tests, which is the exact
         # silent-green this split exists to prevent, one axis over.
+        #
+        # ── WHY `engine` IS DECLARED HERE (PS-371) ───────────────────────────
+        # `browser` does NOT cover it: `expand_capabilities(["browser"])` is
+        # `["browser", "browser_firefox"]`. So until this line, an
+        # invisible_core that failed to install skipped its probes and reported
+        # green — including tests/test_engine_driver_platform_support.py, whose
+        # macOS fence is the ONLY assertion that the pinned driver still
+        # supports every OS we build for. That fence opens with an
+        # `importorskip`, and a skipped test is green: the guard holding macOS
+        # could go dark and say nothing.
+        #
+        # THIS IS DECLARABLE BECAUSE IT IS PROVISIONED, MEASURED NOT ASSUMED.
+        # `pip install .` resolves `invisible_core==20.14.0` on all three
+        # runners — verified in run 34156128433 (the last green push to main),
+        # where every leg logs "Successfully installed ... invisible_core-20.14.0"
+        # and NO leg logs a skip mentioning the engine. Declaring a capability
+        # no job supplies would fail for want of provisioning rather than for
+        # want of correctness, which is the mistake `browser_chromium` is
+        # deliberately left out of the umbrella to avoid. This one is supplied.
+        #
+        # BLAST RADIUS, measured against the same run rather than reasoned
+        # about: all 416 skip lines across the six jobs were re-classified
+        # through conftest's table with this declaration in force, and ZERO
+        # newly fail. It polices a state that does not currently occur — which
+        # is exactly what a guard is for.
         shard:
           - name: main
             marker: "not ui_driver"
-            capabilities: browser
+            capabilities: browser,engine
           - name: ui-driver
             marker: "ui_driver"
-            capabilities: browser,ui_driver
+            capabilities: browser,engine,ui_driver
     runs-on: ${{ matrix.os }}
     # ⚠️ THE CAP IS STILL 30. THIS SPLIT DELIBERATELY DID NOT RAISE IT.
     #
@@ -613,8 +638,20 @@ jobs:
           # skip into a red job — a gate failing for a reason that is true of
           # the runner rather than of the code. So the shard's declaration is
           # applied where the tier actually executes, and every other job keeps
-          # the `browser` declaration it had before this split.
-          PERSONA_REQUIRED_CAPABILITIES: ${{ matrix.os == 'ubuntu-24.04' && matrix.shard.capabilities || 'browser' }}
+          # the declaration it had before this split.
+          #
+          # ⚠️ THE FALLBACK IS A SECOND COPY OF A DECLARATION, AND IT HAS TO BE
+          # MAINTAINED AS ONE (PS-371). This literal is what macOS and Windows
+          # actually receive — the `matrix.shard.capabilities` value above never
+          # reaches them — so a capability added to the shard list and NOT added
+          # here is declared on ONE of the three platforms and silently absent
+          # from the other two. `engine` is in both because the engine packages
+          # install on all three runners (measured: run 34156128433 installs
+          # invisible_core-20.14.0 on every leg), unlike `ui_driver`, which is
+          # deliberately in neither. tests/test_ci_verification_gates.py pins
+          # that the non-ubuntu fallback declares `engine`, so this copy cannot
+          # drift back out of step without a red test.
+          PERSONA_REQUIRED_CAPABILITIES: ${{ matrix.os == 'ubuntu-24.04' && matrix.shard.capabilities || 'browser,engine' }}
         # `-m` here SELECTS THIS SHARD'S PORTION — it is not the `-k` narrowing
         # forbidden above. The two shards partition the suite (15 + 5551 ==
         # 5566, pinned by tests/test_ci_shard_partition.py) and both gate, so
