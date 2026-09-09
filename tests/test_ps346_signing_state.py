@@ -94,11 +94,20 @@ def _make_pe(security_size: int = 0, security_rva: int = 0) -> bytes:
 # ── fixtures: Mach-O ─────────────────────────────────────────────────────────
 
 
-def _make_macho(*, adhoc: bool, cms_payload: bytes = b"", hardened: bool = False) -> bytes:
+def _make_macho(
+    *,
+    adhoc: bool,
+    cms_payload: bytes = b"",
+    hardened: bool = False,
+    entitlements: bytes | None = None,
+) -> bytes:
     """A 64-bit Mach-O with an LC_CODE_SIGNATURE and a real SuperBlob.
 
     `cms_payload` is the ONLY thing distinguishing an ad-hoc signature from a
     genuine Developer ID one, which is exactly the point of this fixture.
+
+    `entitlements` populates the real slot 5 payload, so a test can drive the
+    CALLER of `entitlement_get_task_allow` and not merely the reader.
     """
     ident = b"dev.persona.test\0"
 
@@ -118,17 +127,26 @@ def _make_macho(*, adhoc: bool, cms_payload: bytes = b"", hardened: bool = False
     cms = struct.pack(">II", 0xFADE0B01, 8 + len(cms_payload)) + cms_payload
 
     # ── SuperBlob ──
-    count = 2
+    ent = (
+        struct.pack(">II", 0xFADE7171, 8 + len(entitlements)) + entitlements
+        if entitlements is not None
+        else b""
+    )
+    count = 3 if ent else 2
     header_len = 12 + count * 8
     cd_off = header_len
     cms_off = cd_off + len(cd)
-    total = cms_off + len(cms)
+    ent_off = cms_off + len(cms)
+    total = ent_off + len(ent)
     sb = bytearray()
     sb += struct.pack(">III", 0xFADE0CC0, total, count)
     sb += struct.pack(">II", 0, cd_off)  # slot 0: CodeDirectory
     sb += struct.pack(">II", 0x10000, cms_off)  # slot 0x10000: CMS
+    if ent:
+        sb += struct.pack(">II", 5, ent_off)  # slot 5: entitlements
     sb += cd
     sb += cms
+    sb += ent
     superblob = bytes(sb)
 
     # ── Mach-O header + LC_CODE_SIGNATURE ──
@@ -651,3 +669,213 @@ def test_get_task_allow_unparseable_is_not_reported_as_absent():
     """A DER-encoded (non-XML) entitlements blob is NOT parsed here, and must
     say so by returning None rather than claiming the entitlement is absent."""
     assert mod.entitlement_get_task_allow(b"0\x82\x01\x00\x30\x82") is None
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# §3, THE WALK — the half of the notarization check nothing was driving
+#
+# ⚠️ THE TESTS ABOVE ALL DRIVE READERS; THIS SECTION DRIVES THE WALK THAT
+# FEEDS THEM. That gap is how a defect got in twice: `entitlement_get_task_allow`
+# is carefully three-valued and pinned by three tests, and its CALLER threw the
+# third value away; `_apfs_machos` decides what counts as a notarization ticket
+# and had no test at all. A guard is only in force where something exercises the
+# site, not merely the function.
+#
+# `_apfs_machos` takes a duck-typed pyfsapfs entry, so a real APFS volume is not
+# needed to drive it — a small fake with the four methods it calls is.
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class _FakeEntry:
+    """A pyfsapfs-shaped directory/file entry, built from a nested dict.
+
+    `_apfs_machos` calls exactly four things on an entry:
+    `get_number_of_sub_file_entries`, `get_sub_file_entry`, `get_name`, and —
+    for leaves — `get_size` / `seek_offset` / `read_buffer`. That is the whole
+    contract, so this is the whole fake.
+    """
+
+    def __init__(self, name: str, content):
+        self._name = name
+        # dict => directory; bytes => file
+        self._children = (
+            [_FakeEntry(k, v) for k, v in content.items()] if isinstance(content, dict) else []
+        )
+        self._data = content if isinstance(content, bytes) else b""
+        self._pos = 0
+
+    def get_name(self):
+        return self._name
+
+    def get_number_of_sub_file_entries(self):
+        return len(self._children)
+
+    def get_sub_file_entry(self, i):
+        return self._children[i]
+
+    def get_size(self):
+        return len(self._data)
+
+    def seek_offset(self, off, whence):
+        self._pos = off
+
+    def read_buffer(self, n):
+        out = self._data[self._pos : self._pos + n]
+        self._pos += n
+        return out
+
+
+def _walk(tree: dict):
+    """Run the real `_apfs_machos` over a fake volume; return (machos, notes)."""
+    acc: list = []
+    notes: dict[str, list[str]] = {"code_resources": [], "staple": []}
+    mod._apfs_machos(_FakeEntry("", tree), "", acc, notes)
+    return acc, notes
+
+
+def test_signed_but_not_notarized_bundle_reports_no_stapled_ticket():
+    """⛔ THE CASE A STAPLE CHECK EXISTS FOR, and the one that fails CLEAN.
+
+    A bundle with a real DETACHED signature carries `_CodeSignature/CodeDirectory`
+    — written by `codesign`, a SIGNATURE slot. A notarization ticket is written
+    by `stapler staple` and is a different file entirely. Signing is not
+    notarizing, and a checker that reads the first as the second reports
+    "notarized ✓" about an artifact that was never sent to the notary.
+
+    ⚠️ READ THE FAILURE DIRECTION: this fixture is what our own bundles become
+    the first day someone buys a certificate — so the wrong answer here is not
+    latent forever, it arrives exactly when the answer starts to matter.
+    """
+    _, notes = _walk(
+        {
+            "A.app": {
+                "Contents": {
+                    "_CodeSignature": {
+                        "CodeDirectory": b"\xfa\xde\x0c\x02",  # codesign's, not stapler's
+                        "CodeResources": b"<plist/>",
+                    },
+                    "MacOS": {"A": _make_macho(adhoc=False, cms_payload=b"\x30\x82")},
+                }
+            }
+        }
+    )
+    assert notes["staple"] == [], f"signed-but-unnotarized reported a ticket: {notes['staple']}"
+    # The seal IS present — that half of the reading is unchanged and correct.
+    assert notes["code_resources"] == ["/A.app/Contents/_CodeSignature/CodeResources"]
+
+
+def test_a_real_stapled_ticket_is_still_detected():
+    """The other pole: narrowing the match must not blind the check entirely."""
+    _, notes = _walk(
+        {"A.app": {"Contents": {"CodeResources": b"x", "A.ticket": b"\x00ticket"}}}
+    )
+    assert notes["staple"] == ["/A.app/Contents/A.ticket"]
+
+
+def test_walk_finds_machos_at_any_depth():
+    """The walk's other job — the Mach-O accumulator — still works, and the
+    notes are collected on the SAME single pass rather than a second one."""
+    macho = _make_macho(adhoc=True)
+    acc, notes = _walk({"A.app": {"Contents": {"MacOS": {"A": macho}, "CodeResources": b"x"}}})
+    assert [p for p, _s, _e in acc] == ["/A.app/Contents/MacOS/A"]
+    assert notes["code_resources"] == ["/A.app/Contents/CodeResources"]
+
+
+# ── the caller of the three-valued entitlements reader ───────────────────────
+
+
+def _bundle_report(tree: dict, monkeypatch, tmp_path: Path):
+    """Drive `read_dmg_bundle`'s reporting over a fake APFS volume.
+
+    Everything up to the walk (UDIF extraction, pyfsapfs) is stubbed; the tally
+    loop, the entitlement accounting and every `report.add` below it are the
+    REAL code — which is the part these tests exist to reach.
+    """
+
+    class _Vol:
+        def get_root_directory(self):
+            return _FakeEntry("", tree)
+
+    class _Container:
+        def open(self, _p):
+            pass
+
+        def get_volume(self, _i):
+            return _Vol()
+
+    fake = type("pyfsapfs", (), {"container": _Container})
+    monkeypatch.setitem(sys.modules, "pyfsapfs", fake)
+    monkeypatch.setattr(mod, "udif_extract", lambda _p, out: Path(out).write_bytes(b"") or True)
+
+    report = mod.Report()
+    mod.read_dmg_bundle(report, "x.dmg", str(tmp_path / "x.dmg"), str(tmp_path))
+    return report
+
+
+def _ents_finding(report):
+    (f,) = [x for x in report.findings if "get-task-allow" in x.kind]
+    return f
+
+
+_DER_ENTS = b"0\x82\x01\x00\x30\x82\xde\xad"  # DER plist: real shape, not parsed here
+_XML_NO_KEY = (
+    b'<?xml version="1.0" encoding="UTF-8"?>'
+    b'<plist version="1.0"><dict>'
+    b"<key>com.apple.security.cs.allow-jit</key><true/>"
+    b"</dict></plist>"
+)
+
+
+def test_unparseable_entitlements_are_not_reported_as_absent(tmp_path: Path, monkeypatch):
+    """⛔ THE CALLER MUST NOT COLLAPSE THE READER'S THIRD VALUE.
+
+    `entitlement_get_task_allow` returns None for a DER blob and its docstring
+    says that is NOT the claim "the entitlement is absent". A caller that treats
+    None as False makes exactly that claim — a clean bill of health for a blob
+    nobody parsed, which is the UNREADABLE → UNSIGNED collapse one level down.
+    """
+    report = _bundle_report(
+        {"A": _make_macho(adhoc=True, entitlements=_DER_ENTS)}, monkeypatch, tmp_path
+    )
+    f = _ents_finding(report)
+    assert f.state == "UNREADABLE", f"unparseable entitlements reported as {f.state}"
+    assert f.state != "ABSENT"
+    assert "unparseable" in f.detail
+
+
+def test_mixed_readable_and_unparseable_entitlements_state_the_unread_count(
+    tmp_path: Path, monkeypatch
+):
+    """A partly-readable bundle reports what it MEASURED and sizes what it did
+    not — rather than quietly widening the denominator to cover both."""
+    report = _bundle_report(
+        {
+            "readable": _make_macho(adhoc=True, entitlements=_XML_NO_KEY),
+            "opaque": _make_macho(adhoc=True, entitlements=_DER_ENTS),
+        },
+        monkeypatch,
+        tmp_path,
+    )
+    f = _ents_finding(report)
+    assert f.state == "ABSENT"  # of the ONE slice actually read
+    assert "all 1 READABLE slice(s)" in f.detail
+    assert "1/2 further blob(s) were unparseable" in f.detail
+
+
+def test_readable_entitlements_still_report_the_shipped_debug_entitlement(
+    tmp_path: Path, monkeypatch
+):
+    """The published §3 finding — get-task-allow PRESENT AND TRUE — is
+    unchanged by the unreadable accounting above."""
+    xml_true = (
+        b'<?xml version="1.0" encoding="UTF-8"?>'
+        b'<plist version="1.0"><dict>'
+        b"<key>com.apple.security.get-task-allow</key><true/>"
+        b"</dict></plist>"
+    )
+    report = _bundle_report(
+        {"A": _make_macho(adhoc=True, entitlements=xml_true)}, monkeypatch, tmp_path
+    )
+    f = _ents_finding(report)
+    assert f.state == "PRESENT"
+    assert "1/1 readable slice(s)" in f.detail

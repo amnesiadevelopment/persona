@@ -559,8 +559,10 @@ def _apfs_machos(entry, path, acc, notes=None) -> None:
     same single walk rather than in a second pass:
       * `_CodeSignature/CodeResources` — the bundle seal's shape;
       * `CodeResources` in a Contents dir — same;
-      * a stapled notarization ticket (`CodeResources`' sibling `*.ticket`, or
-        `Contents/CodeResources`'s neighbour) — `stapler staple` writes one.
+      * a stapled notarization ticket (`*.ticket`) — `stapler staple` writes
+        one, and NOTHING else in a bundle is one. In particular a
+        `_CodeSignature/CodeDirectory` is a *signature* slot written by
+        `codesign`, not a ticket, and must never be matched here.
     """
     for i in range(entry.get_number_of_sub_file_entries()):
         sub = entry.get_sub_file_entry(i)
@@ -572,10 +574,20 @@ def _apfs_machos(entry, path, acc, notes=None) -> None:
         if notes is not None:
             if name == "CodeResources":
                 notes["code_resources"].append(p)
-            # `stapler staple` writes the notarization ticket into the bundle as
-            # CodeResources' sibling. Its absence is the measured half of "no
-            # stapled ticket exists anywhere in either image".
-            if name.endswith(".ticket") or name == "CodeDirectory":
+            # ⚠️ MATCH THE TICKET, AND ONLY THE TICKET.
+            # `stapler staple` writes a notarization ticket into the bundle
+            # (`Contents/CodeResources`' neighbour, named `CodeResources` in a
+            # stapled .app and `*.ticket` elsewhere). `codesign` writes an
+            # entirely different file into `_CodeSignature/`: `CodeDirectory`,
+            # a SIGNATURE slot — see SLOT_CODEDIRECTORY below and the ad-hoc
+            # `CodeDirectory flags bit 0x2` discussion in the module docstring.
+            #
+            # Matching `CodeDirectory` here would report a stapled ticket for
+            # every bundle carrying a DETACHED signature — i.e. exactly the
+            # signed-but-not-yet-notarized artifact this check exists to
+            # distinguish — and it would fail in the CLEAN direction, claiming
+            # notarization that is not there. Signing is not notarizing.
+            if name.endswith(".ticket"):
                 notes["staple"].append(p)
         try:
             size = sub.get_size()
@@ -631,6 +643,7 @@ def read_dmg_bundle(report: Report, asset: str, path: str, workdir: str) -> None
     examples: dict[str, str] = {}
     task_allow: list[str] = []
     ents_seen = 0
+    ents_unreadable = 0
     for p, size, entry in acc:
         entry.seek_offset(0, 0)
         data = entry.read_buffer(size)
@@ -647,8 +660,19 @@ def read_dmg_bundle(report: Report, asset: str, path: str, workdir: str) -> None
             ents = info.get("entitlements")
             if ents:
                 ents_seen += 1
-                if entitlement_get_task_allow(ents):
+                # ⚠️ THREE-VALUED READER, THREE-VALUED CALLER. The reader
+                # returns None for a blob it could not parse (a DER-encoded
+                # entitlements payload is the live case), and its docstring is
+                # explicit that None "is NOT the claim 'the entitlement is
+                # absent'". Folding None in with False here would make exactly
+                # that claim about a blob nobody parsed — the same UNREADABLE →
+                # UNSIGNED collapse `classify_tally` exists to prevent, one
+                # level down.
+                verdict = entitlement_get_task_allow(ents)
+                if verdict is True:
                     task_allow.append(p)
+                elif verdict is None:
+                    ents_unreadable += 1
 
     real = tally.get("SIGNED_CMS", 0)
     adhoc = tally.get("ADHOC", 0)
@@ -680,6 +704,14 @@ def read_dmg_bundle(report: Report, asset: str, path: str, workdir: str) -> None
     # rather than resting on a one-off reading nobody can re-run.
 
     # get-task-allow: a shipped debug entitlement is a hard notary rejection.
+    #
+    # ⚠️ FOUR OUTCOMES, NOT TWO — and the unreadable ones are named rather than
+    # folded into ABSENT. "no entitlements blob anywhere" and "every blob we
+    # found was in a format this script does not parse" are both *we did not
+    # measure*, and reporting either as ABSENT would be a clean bill of health
+    # for binaries nobody read. A mixed reading reports what it measured and
+    # states the size of what it could not.
+    ents_read = ents_seen - ents_unreadable
     if ents_seen == 0:
         report.add(
             asset,
@@ -689,18 +721,35 @@ def read_dmg_bundle(report: Report, asset: str, path: str, workdir: str) -> None
             "no entitlements blob found on any slice — NOT the claim that the "
             "entitlement is absent.",
         )
+    elif ents_unreadable == ents_seen:
+        report.add(
+            asset,
+            "macos",
+            "entitlement com.apple.security.get-task-allow",
+            "UNREADABLE",
+            f"all {ents_seen} entitlements blob(s) were unparseable here (DER "
+            "form is not decoded by this script) — NOT the claim that the "
+            "entitlement is absent.",
+        )
     else:
+        unread_note = (
+            f" ⚠️ {ents_unreadable}/{ents_seen} further blob(s) were unparseable "
+            "and are NOT included in that reading."
+            if ents_unreadable
+            else ""
+        )
         report.add(
             asset,
             "macos",
             "entitlement com.apple.security.get-task-allow",
             "PRESENT" if task_allow else "ABSENT",
             (
-                f"PRESENT AND TRUE on {len(task_allow)}/{ents_seen} slice(s) carrying "
-                f"entitlements (e.g. {task_allow[0]}) — an explicit notarization-"
-                "rejection condition, shipped."
+                f"PRESENT AND TRUE on {len(task_allow)}/{ents_read} readable slice(s) "
+                f"carrying entitlements (e.g. {task_allow[0]}) — an explicit "
+                "notarization-rejection condition, shipped." + unread_note
                 if task_allow
-                else f"absent or false on all {ents_seen} slice(s) carrying entitlements."
+                else f"absent or false on all {ents_read} READABLE slice(s) carrying "
+                f"entitlements." + unread_note
             ),
         )
 
