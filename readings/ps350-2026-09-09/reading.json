@@ -1,0 +1,827 @@
+{
+  "ticket": "PS-350",
+  "taken_at": "2026-09-09T16:11:47.714418+00:00",
+  "tree": "0ce4354f2a4d4665f5f5bb30cddc0a1bf3cf923e",
+  "origin_url": "http://127.0.0.1:37749/",
+  "probe_ids": [
+    "stealth.connection",
+    "stealth.contentIndex",
+    "stealth.apiPresence"
+  ],
+  "vector_keys": [
+    "navigator.connection",
+    "NetworkInformation",
+    "ServiceWorkerRegistration"
+  ],
+  "environment": {
+    "host_platform": "Linux-6.8.0-138-generic-x86_64-with-glibc2.41",
+    "host_machine": "x86_64",
+    "host_system": "Linux",
+    "kernel": "6.8.0-138-generic",
+    "display": ":101",
+    "engine_build": "firefox-29",
+    "stock_binary": "/tmp/ps350/stock/firefox/firefox",
+    "stock_version": "Mozilla Firefox 151.0",
+    "stock_sha256": "29a6161ceefebf9cd2e0954ac542328a15ec1748126cc20142df9fdf8bdaeff1",
+    "engine_binary": "/home/yatfa/.cache/invisible-playwright/firefox-29_151.0_20260905222621/firefox",
+    "engine_version": "Mozilla Firefox 151.0",
+    "engine_sha256": "826f24888ea4bab165c6aaa792d21472103597944d218de797f919e3833fa961"
+  },
+  "arms": [
+    {
+      "arm": "A1_stock_control",
+      "reveal_control": false,
+      "manufacture_control": false,
+      "gates": {
+        "channel_arith": 2,
+        "href": "http://127.0.0.1:37749/",
+        "origin": "http://127.0.0.1:37749",
+        "secure_context": true,
+        "user_agent": "Mozilla/5.0 (X11; Linux x86_64; rv:151.0) Gecko/20100101 Firefox/151.0",
+        "layout_width": 1350,
+        "build_id": "20181001000000",
+        "worker_available": true
+      },
+      "window": {
+        "stealth.connection": {
+          "v": null
+        },
+        "stealth.contentIndex": {
+          "v": {
+            "hasIndex": false
+          }
+        },
+        "stealth.apiPresence": {
+          "v": {
+            "BatteryManager": "undefined",
+            "Bluetooth": "undefined",
+            "ContactsManager": "undefined",
+            "HID": "undefined",
+            "IdleDetector": "undefined",
+            "MediaDevices": "function",
+            "NetworkInformation": "undefined",
+            "Notification": "function",
+            "OffscreenCanvas": "function",
+            "PaymentRequest": "undefined",
+            "Scheduler": "function",
+            "Serial": "function",
+            "ServiceWorkerRegistration": "function",
+            "SharedWorker": "function",
+            "SpeechSynthesis": "function",
+            "USB": "undefined",
+            "WakeLock": "function",
+            "Worker": "function",
+            "navigator.bluetooth": "undefined",
+            "navigator.clipboard": "object",
+            "navigator.connection": "undefined",
+            "navigator.credentials": "object",
+            "navigator.getBattery": "undefined",
+            "navigator.getGamepads": "function",
+            "navigator.hid": "undefined",
+            "navigator.ink": "undefined",
+            "navigator.mediaDevices": "object",
+            "navigator.mediaSession": "object",
+            "navigator.permissions": "object",
+            "navigator.presentation": "undefined",
+            "navigator.scheduling": "undefined",
+            "navigator.serial": "object",
+            "navigator.serviceWorker": "object",
+            "navigator.share": "undefined",
+            "navigator.storage": "object",
+            "navigator.usb": "undefined",
+            "navigator.userAgentData": "undefined",
+            "navigator.virtualKeyboard": "undefined",
+            "navigator.wakeLock": "object",
+            "navigator.webkitPersistentStorage": "undefined",
+            "navigator.xr": "undefined"
+          }
+        }
+      },
+      "worker": {
+        "stealth.connection": {
+          "v": null
+        },
+        "stealth.contentIndex": {
+          "v": {
+            "hasIndex": false
+          }
+        },
+        "stealth.apiPresence": {
+          "v": {
+            "BatteryManager": "undefined",
+            "Bluetooth": "undefined",
+            "ContactsManager": "undefined",
+            "HID": "undefined",
+            "IdleDetector": "undefined",
+            "MediaDevices": "undefined",
+            "NetworkInformation": "undefined",
+            "Notification": "function",
+            "OffscreenCanvas": "function",
+            "PaymentRequest": "undefined",
+            "Scheduler": "function",
+            "Serial": "function",
+            "ServiceWorkerRegistration": "function",
+            "SharedWorker": "undefined",
+            "SpeechSynthesis": "undefined",
+            "USB": "undefined",
+            "WakeLock": "undefined",
+            "Worker": "function",
+            "navigator.bluetooth": "undefined",
+            "navigator.clipboard": "undefined",
+            "navigator.connection": "undefined",
+            "navigator.credentials": "undefined",
+            "navigator.getBattery": "undefined",
+            "navigator.getGamepads": "undefined",
+            "navigator.hid": "undefined",
+            "navigator.ink": "undefined",
+            "navigator.mediaDevices": "undefined",
+            "navigator.mediaSession": "undefined",
+            "navigator.permissions": "object",
+            "navigator.presentation": "undefined",
+            "navigator.scheduling": "undefined",
+            "navigator.serial": "object",
+            "navigator.serviceWorker": "object",
+            "navigator.share": "undefined",
+            "navigator.storage": "object",
+            "navigator.usb": "undefined",
+            "navigator.userAgentData": "undefined",
+            "navigator.virtualKeyboard": "undefined",
+            "navigator.wakeLock": "undefined",
+            "navigator.webkitPersistentStorage": "undefined",
+            "navigator.xr": "undefined"
+          }
+        }
+      },
+      "answering_install": "/tmp/ps350/stock/firefox",
+      "binary": "/tmp/ps350/stock/firefox/firefox"
+    },
+    {
+      "arm": "A2_persona_engine_bare",
+      "reveal_control": false,
+      "manufacture_control": false,
+      "gates": {
+        "channel_arith": 2,
+        "href": "http://127.0.0.1:37749/",
+        "origin": "http://127.0.0.1:37749",
+        "secure_context": true,
+        "user_agent": "Mozilla/5.0 (X11; Linux x86_64; rv:151.0) Gecko/20100101 Firefox/151.0",
+        "layout_width": 1350,
+        "build_id": "20181001000000",
+        "worker_available": true
+      },
+      "window": {
+        "stealth.connection": {
+          "v": null
+        },
+        "stealth.contentIndex": {
+          "v": {
+            "hasIndex": false
+          }
+        },
+        "stealth.apiPresence": {
+          "v": {
+            "BatteryManager": "undefined",
+            "Bluetooth": "undefined",
+            "ContactsManager": "undefined",
+            "HID": "undefined",
+            "IdleDetector": "undefined",
+            "MediaDevices": "function",
+            "NetworkInformation": "undefined",
+            "Notification": "function",
+            "OffscreenCanvas": "function",
+            "PaymentRequest": "undefined",
+            "Scheduler": "function",
+            "Serial": "undefined",
+            "ServiceWorkerRegistration": "function",
+            "SharedWorker": "function",
+            "SpeechSynthesis": "function",
+            "USB": "undefined",
+            "WakeLock": "function",
+            "Worker": "function",
+            "navigator.bluetooth": "undefined",
+            "navigator.clipboard": "object",
+            "navigator.connection": "undefined",
+            "navigator.credentials": "object",
+            "navigator.getBattery": "undefined",
+            "navigator.getGamepads": "function",
+            "navigator.hid": "undefined",
+            "navigator.ink": "undefined",
+            "navigator.mediaDevices": "object",
+            "navigator.mediaSession": "object",
+            "navigator.permissions": "object",
+            "navigator.presentation": "undefined",
+            "navigator.scheduling": "undefined",
+            "navigator.serial": "undefined",
+            "navigator.serviceWorker": "object",
+            "navigator.share": "undefined",
+            "navigator.storage": "object",
+            "navigator.usb": "undefined",
+            "navigator.userAgentData": "undefined",
+            "navigator.virtualKeyboard": "undefined",
+            "navigator.wakeLock": "object",
+            "navigator.webkitPersistentStorage": "undefined",
+            "navigator.xr": "undefined"
+          }
+        }
+      },
+      "worker": {
+        "stealth.connection": {
+          "v": null
+        },
+        "stealth.contentIndex": {
+          "v": {
+            "hasIndex": false
+          }
+        },
+        "stealth.apiPresence": {
+          "v": {
+            "BatteryManager": "undefined",
+            "Bluetooth": "undefined",
+            "ContactsManager": "undefined",
+            "HID": "undefined",
+            "IdleDetector": "undefined",
+            "MediaDevices": "undefined",
+            "NetworkInformation": "undefined",
+            "Notification": "function",
+            "OffscreenCanvas": "function",
+            "PaymentRequest": "undefined",
+            "Scheduler": "function",
+            "Serial": "undefined",
+            "ServiceWorkerRegistration": "function",
+            "SharedWorker": "undefined",
+            "SpeechSynthesis": "undefined",
+            "USB": "undefined",
+            "WakeLock": "undefined",
+            "Worker": "function",
+            "navigator.bluetooth": "undefined",
+            "navigator.clipboard": "undefined",
+            "navigator.connection": "undefined",
+            "navigator.credentials": "undefined",
+            "navigator.getBattery": "undefined",
+            "navigator.getGamepads": "undefined",
+            "navigator.hid": "undefined",
+            "navigator.ink": "undefined",
+            "navigator.mediaDevices": "undefined",
+            "navigator.mediaSession": "undefined",
+            "navigator.permissions": "object",
+            "navigator.presentation": "undefined",
+            "navigator.scheduling": "undefined",
+            "navigator.serial": "undefined",
+            "navigator.serviceWorker": "object",
+            "navigator.share": "undefined",
+            "navigator.storage": "object",
+            "navigator.usb": "undefined",
+            "navigator.userAgentData": "undefined",
+            "navigator.virtualKeyboard": "undefined",
+            "navigator.wakeLock": "undefined",
+            "navigator.webkitPersistentStorage": "undefined",
+            "navigator.xr": "undefined"
+          }
+        }
+      },
+      "answering_install": "/home/yatfa/.cache/invisible-playwright/firefox-29_151.0_20260905222621",
+      "binary": "/home/yatfa/.cache/invisible-playwright/firefox-29_151.0_20260905222621/firefox"
+    },
+    {
+      "arm": "R_reveal_control_stock",
+      "reveal_control": true,
+      "manufacture_control": false,
+      "gates": {
+        "channel_arith": 2,
+        "href": "http://127.0.0.1:37749/",
+        "origin": "http://127.0.0.1:37749",
+        "secure_context": true,
+        "user_agent": "Mozilla/5.0 (X11; Linux x86_64; rv:151.0) Gecko/20100101 Firefox/151.0",
+        "layout_width": 1350,
+        "build_id": "20181001000000",
+        "worker_available": true
+      },
+      "reveal_installed": "reveal-installed",
+      "window": {
+        "stealth.connection": {
+          "v": null
+        },
+        "stealth.contentIndex": {
+          "v": {
+            "hasIndex": true
+          }
+        },
+        "stealth.apiPresence": {
+          "v": {
+            "BatteryManager": "undefined",
+            "Bluetooth": "undefined",
+            "ContactsManager": "undefined",
+            "HID": "undefined",
+            "IdleDetector": "undefined",
+            "MediaDevices": "function",
+            "NetworkInformation": "undefined",
+            "Notification": "function",
+            "OffscreenCanvas": "function",
+            "PaymentRequest": "undefined",
+            "Scheduler": "function",
+            "Serial": "function",
+            "ServiceWorkerRegistration": "function",
+            "SharedWorker": "function",
+            "SpeechSynthesis": "function",
+            "USB": "undefined",
+            "WakeLock": "function",
+            "Worker": "function",
+            "navigator.bluetooth": "undefined",
+            "navigator.clipboard": "object",
+            "navigator.connection": "undefined",
+            "navigator.credentials": "object",
+            "navigator.getBattery": "undefined",
+            "navigator.getGamepads": "function",
+            "navigator.hid": "undefined",
+            "navigator.ink": "undefined",
+            "navigator.mediaDevices": "object",
+            "navigator.mediaSession": "object",
+            "navigator.permissions": "object",
+            "navigator.presentation": "undefined",
+            "navigator.scheduling": "undefined",
+            "navigator.serial": "object",
+            "navigator.serviceWorker": "object",
+            "navigator.share": "undefined",
+            "navigator.storage": "object",
+            "navigator.usb": "undefined",
+            "navigator.userAgentData": "undefined",
+            "navigator.virtualKeyboard": "undefined",
+            "navigator.wakeLock": "object",
+            "navigator.webkitPersistentStorage": "undefined",
+            "navigator.xr": "undefined"
+          }
+        }
+      },
+      "worker": {
+        "stealth.connection": {
+          "v": null
+        },
+        "stealth.contentIndex": {
+          "v": {
+            "hasIndex": false
+          }
+        },
+        "stealth.apiPresence": {
+          "v": {
+            "BatteryManager": "undefined",
+            "Bluetooth": "undefined",
+            "ContactsManager": "undefined",
+            "HID": "undefined",
+            "IdleDetector": "undefined",
+            "MediaDevices": "undefined",
+            "NetworkInformation": "undefined",
+            "Notification": "function",
+            "OffscreenCanvas": "function",
+            "PaymentRequest": "undefined",
+            "Scheduler": "function",
+            "Serial": "function",
+            "ServiceWorkerRegistration": "function",
+            "SharedWorker": "undefined",
+            "SpeechSynthesis": "undefined",
+            "USB": "undefined",
+            "WakeLock": "undefined",
+            "Worker": "function",
+            "navigator.bluetooth": "undefined",
+            "navigator.clipboard": "undefined",
+            "navigator.connection": "undefined",
+            "navigator.credentials": "undefined",
+            "navigator.getBattery": "undefined",
+            "navigator.getGamepads": "undefined",
+            "navigator.hid": "undefined",
+            "navigator.ink": "undefined",
+            "navigator.mediaDevices": "undefined",
+            "navigator.mediaSession": "undefined",
+            "navigator.permissions": "object",
+            "navigator.presentation": "undefined",
+            "navigator.scheduling": "undefined",
+            "navigator.serial": "object",
+            "navigator.serviceWorker": "object",
+            "navigator.share": "undefined",
+            "navigator.storage": "object",
+            "navigator.usb": "undefined",
+            "navigator.userAgentData": "undefined",
+            "navigator.virtualKeyboard": "undefined",
+            "navigator.wakeLock": "undefined",
+            "navigator.webkitPersistentStorage": "undefined",
+            "navigator.xr": "undefined"
+          }
+        }
+      },
+      "answering_install": "/tmp/ps350/stock/firefox",
+      "binary": "/tmp/ps350/stock/firefox/firefox"
+    },
+    {
+      "arm": "M_manufacture_control_stock",
+      "reveal_control": false,
+      "manufacture_control": true,
+      "gates": {
+        "channel_arith": 2,
+        "href": "http://127.0.0.1:37749/",
+        "origin": "http://127.0.0.1:37749",
+        "secure_context": true,
+        "user_agent": "Mozilla/5.0 (X11; Linux x86_64; rv:151.0) Gecko/20100101 Firefox/151.0",
+        "layout_width": 1350,
+        "build_id": "20181001000000",
+        "worker_available": true
+      },
+      "manufacture_installed": "manufactured",
+      "window": {
+        "stealth.connection": {
+          "v": {
+            "present": true,
+            "hasDownlinkMax": true,
+            "downlinkMax": "Infinity",
+            "type": "ethernet"
+          }
+        },
+        "stealth.contentIndex": {
+          "v": {
+            "hasIndex": false
+          }
+        },
+        "stealth.apiPresence": {
+          "v": {
+            "BatteryManager": "undefined",
+            "Bluetooth": "undefined",
+            "ContactsManager": "undefined",
+            "HID": "undefined",
+            "IdleDetector": "undefined",
+            "MediaDevices": "function",
+            "NetworkInformation": "undefined",
+            "Notification": "function",
+            "OffscreenCanvas": "function",
+            "PaymentRequest": "undefined",
+            "Scheduler": "function",
+            "Serial": "function",
+            "ServiceWorkerRegistration": "function",
+            "SharedWorker": "function",
+            "SpeechSynthesis": "function",
+            "USB": "undefined",
+            "WakeLock": "function",
+            "Worker": "function",
+            "navigator.bluetooth": "undefined",
+            "navigator.clipboard": "object",
+            "navigator.connection": "object",
+            "navigator.credentials": "object",
+            "navigator.getBattery": "undefined",
+            "navigator.getGamepads": "function",
+            "navigator.hid": "undefined",
+            "navigator.ink": "undefined",
+            "navigator.mediaDevices": "object",
+            "navigator.mediaSession": "object",
+            "navigator.permissions": "object",
+            "navigator.presentation": "undefined",
+            "navigator.scheduling": "undefined",
+            "navigator.serial": "object",
+            "navigator.serviceWorker": "object",
+            "navigator.share": "undefined",
+            "navigator.storage": "object",
+            "navigator.usb": "undefined",
+            "navigator.userAgentData": "undefined",
+            "navigator.virtualKeyboard": "undefined",
+            "navigator.wakeLock": "object",
+            "navigator.webkitPersistentStorage": "undefined",
+            "navigator.xr": "undefined"
+          }
+        }
+      },
+      "worker": {
+        "stealth.connection": {
+          "v": null
+        },
+        "stealth.contentIndex": {
+          "v": {
+            "hasIndex": false
+          }
+        },
+        "stealth.apiPresence": {
+          "v": {
+            "BatteryManager": "undefined",
+            "Bluetooth": "undefined",
+            "ContactsManager": "undefined",
+            "HID": "undefined",
+            "IdleDetector": "undefined",
+            "MediaDevices": "undefined",
+            "NetworkInformation": "undefined",
+            "Notification": "function",
+            "OffscreenCanvas": "function",
+            "PaymentRequest": "undefined",
+            "Scheduler": "function",
+            "Serial": "function",
+            "ServiceWorkerRegistration": "function",
+            "SharedWorker": "undefined",
+            "SpeechSynthesis": "undefined",
+            "USB": "undefined",
+            "WakeLock": "undefined",
+            "Worker": "function",
+            "navigator.bluetooth": "undefined",
+            "navigator.clipboard": "undefined",
+            "navigator.connection": "undefined",
+            "navigator.credentials": "undefined",
+            "navigator.getBattery": "undefined",
+            "navigator.getGamepads": "undefined",
+            "navigator.hid": "undefined",
+            "navigator.ink": "undefined",
+            "navigator.mediaDevices": "undefined",
+            "navigator.mediaSession": "undefined",
+            "navigator.permissions": "object",
+            "navigator.presentation": "undefined",
+            "navigator.scheduling": "undefined",
+            "navigator.serial": "object",
+            "navigator.serviceWorker": "object",
+            "navigator.share": "undefined",
+            "navigator.storage": "object",
+            "navigator.usb": "undefined",
+            "navigator.userAgentData": "undefined",
+            "navigator.virtualKeyboard": "undefined",
+            "navigator.wakeLock": "undefined",
+            "navigator.webkitPersistentStorage": "undefined",
+            "navigator.xr": "undefined"
+          }
+        }
+      },
+      "answering_install": "/tmp/ps350/stock/firefox",
+      "binary": "/tmp/ps350/stock/firefox/firefox"
+    },
+    {
+      "arm": "B_persona_product_path",
+      "reveal_control": false,
+      "manufacture_control": false,
+      "gates": {
+        "channel_arith": 2,
+        "href": "http://127.0.0.1:37749/",
+        "origin": "http://127.0.0.1:37749",
+        "secure_context": true,
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:151.0) Gecko/20100101 Firefox/151.0",
+        "layout_width": 1904,
+        "build_id": "20181001000000",
+        "worker_available": true
+      },
+      "window": {
+        "stealth.connection": {
+          "v": null
+        },
+        "stealth.contentIndex": {
+          "v": {
+            "hasIndex": false
+          }
+        },
+        "stealth.apiPresence": {
+          "v": {
+            "BatteryManager": "undefined",
+            "Bluetooth": "undefined",
+            "ContactsManager": "undefined",
+            "HID": "undefined",
+            "IdleDetector": "undefined",
+            "MediaDevices": "function",
+            "NetworkInformation": "undefined",
+            "Notification": "function",
+            "OffscreenCanvas": "function",
+            "PaymentRequest": "undefined",
+            "Scheduler": "function",
+            "Serial": "undefined",
+            "ServiceWorkerRegistration": "function",
+            "SharedWorker": "function",
+            "SpeechSynthesis": "function",
+            "USB": "undefined",
+            "WakeLock": "function",
+            "Worker": "function",
+            "navigator.bluetooth": "undefined",
+            "navigator.clipboard": "object",
+            "navigator.connection": "undefined",
+            "navigator.credentials": "object",
+            "navigator.getBattery": "undefined",
+            "navigator.getGamepads": "function",
+            "navigator.hid": "undefined",
+            "navigator.ink": "undefined",
+            "navigator.mediaDevices": "object",
+            "navigator.mediaSession": "object",
+            "navigator.permissions": "object",
+            "navigator.presentation": "undefined",
+            "navigator.scheduling": "undefined",
+            "navigator.serial": "undefined",
+            "navigator.serviceWorker": "object",
+            "navigator.share": "undefined",
+            "navigator.storage": "object",
+            "navigator.usb": "undefined",
+            "navigator.userAgentData": "undefined",
+            "navigator.virtualKeyboard": "undefined",
+            "navigator.wakeLock": "object",
+            "navigator.webkitPersistentStorage": "undefined",
+            "navigator.xr": "undefined"
+          }
+        }
+      },
+      "worker": {
+        "stealth.connection": {
+          "v": null
+        },
+        "stealth.contentIndex": {
+          "v": {
+            "hasIndex": false
+          }
+        },
+        "stealth.apiPresence": {
+          "v": {
+            "BatteryManager": "undefined",
+            "Bluetooth": "undefined",
+            "ContactsManager": "undefined",
+            "HID": "undefined",
+            "IdleDetector": "undefined",
+            "MediaDevices": "undefined",
+            "NetworkInformation": "undefined",
+            "Notification": "function",
+            "OffscreenCanvas": "function",
+            "PaymentRequest": "undefined",
+            "Scheduler": "function",
+            "Serial": "undefined",
+            "ServiceWorkerRegistration": "function",
+            "SharedWorker": "undefined",
+            "SpeechSynthesis": "undefined",
+            "USB": "undefined",
+            "WakeLock": "undefined",
+            "Worker": "function",
+            "navigator.bluetooth": "undefined",
+            "navigator.clipboard": "undefined",
+            "navigator.connection": "undefined",
+            "navigator.credentials": "undefined",
+            "navigator.getBattery": "undefined",
+            "navigator.getGamepads": "undefined",
+            "navigator.hid": "undefined",
+            "navigator.ink": "undefined",
+            "navigator.mediaDevices": "undefined",
+            "navigator.mediaSession": "undefined",
+            "navigator.permissions": "object",
+            "navigator.presentation": "undefined",
+            "navigator.scheduling": "undefined",
+            "navigator.serial": "undefined",
+            "navigator.serviceWorker": "object",
+            "navigator.share": "undefined",
+            "navigator.storage": "object",
+            "navigator.usb": "undefined",
+            "navigator.userAgentData": "undefined",
+            "navigator.virtualKeyboard": "undefined",
+            "navigator.wakeLock": "undefined",
+            "navigator.webkitPersistentStorage": "undefined",
+            "navigator.xr": "undefined"
+          }
+        }
+      },
+      "profile": "ps350-stealth",
+      "seed": 1009816118
+    }
+  ],
+  "rows": {
+    "A1_stock_control": {
+      "window": {
+        "stealth.connection": null,
+        "stealth.contentIndex": {
+          "hasIndex": false
+        },
+        "apiPresence[navigator.connection]": "undefined",
+        "apiPresence[NetworkInformation]": "undefined",
+        "apiPresence[ServiceWorkerRegistration]": "function"
+      },
+      "worker": {
+        "stealth.connection": null,
+        "stealth.contentIndex": {
+          "hasIndex": false
+        },
+        "apiPresence[navigator.connection]": "undefined",
+        "apiPresence[NetworkInformation]": "undefined",
+        "apiPresence[ServiceWorkerRegistration]": "function"
+      }
+    },
+    "A2_persona_engine_bare": {
+      "window": {
+        "stealth.connection": null,
+        "stealth.contentIndex": {
+          "hasIndex": false
+        },
+        "apiPresence[navigator.connection]": "undefined",
+        "apiPresence[NetworkInformation]": "undefined",
+        "apiPresence[ServiceWorkerRegistration]": "function"
+      },
+      "worker": {
+        "stealth.connection": null,
+        "stealth.contentIndex": {
+          "hasIndex": false
+        },
+        "apiPresence[navigator.connection]": "undefined",
+        "apiPresence[NetworkInformation]": "undefined",
+        "apiPresence[ServiceWorkerRegistration]": "function"
+      }
+    },
+    "R_reveal_control_stock": {
+      "window": {
+        "stealth.connection": null,
+        "stealth.contentIndex": {
+          "hasIndex": true
+        },
+        "apiPresence[navigator.connection]": "undefined",
+        "apiPresence[NetworkInformation]": "undefined",
+        "apiPresence[ServiceWorkerRegistration]": "function"
+      },
+      "worker": {
+        "stealth.connection": null,
+        "stealth.contentIndex": {
+          "hasIndex": false
+        },
+        "apiPresence[navigator.connection]": "undefined",
+        "apiPresence[NetworkInformation]": "undefined",
+        "apiPresence[ServiceWorkerRegistration]": "function"
+      }
+    },
+    "M_manufacture_control_stock": {
+      "window": {
+        "stealth.connection": {
+          "present": true,
+          "hasDownlinkMax": true,
+          "downlinkMax": "Infinity",
+          "type": "ethernet"
+        },
+        "stealth.contentIndex": {
+          "hasIndex": false
+        },
+        "apiPresence[navigator.connection]": "object",
+        "apiPresence[NetworkInformation]": "undefined",
+        "apiPresence[ServiceWorkerRegistration]": "function"
+      },
+      "worker": {
+        "stealth.connection": null,
+        "stealth.contentIndex": {
+          "hasIndex": false
+        },
+        "apiPresence[navigator.connection]": "undefined",
+        "apiPresence[NetworkInformation]": "undefined",
+        "apiPresence[ServiceWorkerRegistration]": "function"
+      }
+    },
+    "B_persona_product_path": {
+      "window": {
+        "stealth.connection": null,
+        "stealth.contentIndex": {
+          "hasIndex": false
+        },
+        "apiPresence[navigator.connection]": "undefined",
+        "apiPresence[NetworkInformation]": "undefined",
+        "apiPresence[ServiceWorkerRegistration]": "function"
+      },
+      "worker": {
+        "stealth.connection": null,
+        "stealth.contentIndex": {
+          "hasIndex": false
+        },
+        "apiPresence[navigator.connection]": "undefined",
+        "apiPresence[NetworkInformation]": "undefined",
+        "apiPresence[ServiceWorkerRegistration]": "function"
+      }
+    }
+  },
+  "apiPresence_full_diff": {
+    "A1_vs_A2_persona_engine_bare": {
+      "window": {
+        "Serial": [
+          "function",
+          "undefined"
+        ],
+        "navigator.serial": [
+          "object",
+          "undefined"
+        ]
+      },
+      "worker": {
+        "Serial": [
+          "function",
+          "undefined"
+        ],
+        "navigator.serial": [
+          "object",
+          "undefined"
+        ]
+      }
+    },
+    "A1_vs_B_persona_product_path": {
+      "window": {
+        "Serial": [
+          "function",
+          "undefined"
+        ],
+        "navigator.serial": [
+          "object",
+          "undefined"
+        ]
+      },
+      "worker": {
+        "Serial": [
+          "function",
+          "undefined"
+        ],
+        "navigator.serial": [
+          "object",
+          "undefined"
+        ]
+      }
+    }
+  }
+}
