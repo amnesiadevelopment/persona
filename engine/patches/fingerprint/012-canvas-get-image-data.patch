@@ -110,7 +110,7 @@ diff --git a/third_party/blink/renderer/platform/graphics/static_bitmap_image.cc
    }
  
    auto colorType = info.colorType();
-@@ -148,120 +149,265 @@
+@@ -148,120 +149,321 @@
  
    DLOG(INFO) << "BRM: ShuffleSubchannelColorData() w=" << w << " h=" << h << " colorType=" << colorType << " fRowBytes=" << fRowBytes;
  
@@ -213,6 +213,62 @@ diff --git a/third_party/blink/renderer/platform/graphics/static_bitmap_image.cc
 -         g = shuffleComponent(g, UINT8_MAX-1, shuffleG);
 -         b = shuffleComponent(b, UINT8_MAX-1, shuffleB);
 -         // alpha is left unchanged
++  // Reference-render guard (PS-373).
++  //
++  // Masking detectors do not measure HOW MUCH a canvas was altered. They fill a
++  // small canvas with a handful of solid reference colours and check it reads
++  // back BYTE-EXACT; any substitution at all fails that equality check, so one
++  // modified pixel fails it exactly as hard as a thousand would. Tuning the
++  // budget above cannot pass such a probe — only not writing to it can.
++  //
++  // We already left a SINGLE-colour buffer untouched, but only as a side effect:
++  // the edge test below (*current != *right) finds nothing to do on a uniform
++  // buffer. That made our effective tolerance exactly one distinct colour, which
++  // is narrower than any real reference pattern. This makes the guard explicit
++  // and widens it to cover multi-colour reference renders.
++  //
++  // The scan early-exits the moment the ceiling is passed, so a genuine
++  // fingerprinting canvas -- antialiased text runs to hundreds of distinct
++  // colours -- leaves this block within its first few pixels and is then noised
++  // exactly as before. Only renders that are ALREADY reference-like are
++  // exempted, so no masking that was previously applied is given up here.
++  {
++    constexpr size_t kMaxRefColors = 16;
++    std::unordered_set<uint32_t> distinct_colors;
++    bool exceeded_ref_colors = false;
++    for (int y = 0; y < h && !exceeded_ref_colors; y++) {
++      for (int x = 0; x < w; x++) {
++        uint32_t value = 0;
++        switch (colorType) {
++          case kRGBA_8888_SkColorType:
++          case kBGRA_8888_SkColorType:
++            value = *writable_addr(uint32_t, addr, fRowBytes, x, y);
++            break;
++          case kRGB_565_SkColorType:
++          case kARGB_4444_SkColorType:
++            value = *writable_addr(uint16_t, addr, fRowBytes, x, y);
++            break;
++          case kAlpha_8_SkColorType:
++          case kGray_8_SkColorType:
++            value = *writable_addr(uint8_t, addr, fRowBytes, x, y);
++            break;
++          default:
++            // A format the noise loop below does not handle either.
++            return;
++        }
++        distinct_colors.insert(value);
++        if (distinct_colors.size() > kMaxRefColors) {
++          exceeded_ref_colors = true;
++          break;
++        }
++      }
++    }
++    if (!exceeded_ref_colors) {
++      // A reference-like render. Leave it byte-exact.
++      return;
++    }
++  }
++
 +  int modified_pixels = 0;
 +  std::unordered_set<int> processed_rows;
 +  std::unordered_set<int> processed_cols;

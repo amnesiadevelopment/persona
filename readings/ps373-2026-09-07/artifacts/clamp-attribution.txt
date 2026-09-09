@@ -1,0 +1,23 @@
+# Output of clamp_attribution — is the '< 2' clamp the culprit?
+
+== Does removing the `< 2` clamp change the probe outcome? ==
+
+   size       area     shipped    no-clamp   mod(ship) mod(no)   clamp fires?
+   70x5       350      2          2          1         1         no    (pixelscan probe)
+   16x16      256      2          2          2         2         no    (area 256)
+   15x15      225      2          1          2         1         YES   (area 225)
+   8x8        64       2          0          1         0         YES   (area 64)
+   100x30     3000     10         10         9         9         no    (small fp)
+   300x150    45000    10         10         9         9         no    (default)
+
+== verdict ==
+   At 70x5: (70*5)/128 = 2. The clause is `else if (max_pixels < 2)`,
+   and 2 < 2 is FALSE, so the clamp DOES NOT FIRE. Shipped budget 2,
+   budget with the clamp deleted 2 — IDENTICAL.
+
+   ⭐ So the finding stands (we modify the probe and fail it) but the
+   ATTRIBUTION does not: the `< 2` clamp is innocent on this geometry.
+   Deleting it would change nothing at 70x5. The real cause is that the
+   budget is a FLOOR-DIVIDED AREA with no notion of whether the render is
+   a reference pattern — a 350-pixel banded canvas earns a budget of 2 on
+   its own, without help from any clamp.

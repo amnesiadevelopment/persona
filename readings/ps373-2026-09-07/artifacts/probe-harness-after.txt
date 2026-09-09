@@ -1,0 +1,34 @@
+# Output of probe_harness — AFTER the reference-render guard
+# (regenerate: python3 extract_shuffle.py && g++ -std=c++17 -O1 -o probe_harness probe_harness.cc && ./probe_harness)
+
+shim self-test: PASS
+
+== A. pixelscan reference probe, as REed by feder (70x5, 14 bands) ==
+   budget arithmetic: (70*5)/128 = 2  -> after clamp = 2
+   seed=0         modified reference pixels = 0   PASSES probe
+   seed=12345     modified reference pixels = 0   PASSES probe
+   seed=deadbeef  modified reference pixels = 0   PASSES probe
+
+== B. is it the geometry or the algorithm? sweep small canvases ==
+   size         w*h/128  budget   modified
+   16x16        2        2        0
+   32x32        8        8        0
+   70x5         2        2        0
+   64x64        32       10       0
+   100x30       23       10       0
+   128x128      128      10       0
+   280x60       131      10       0
+   256x256      512      10       0
+
+== C. uniform (single-colour) render — the degenerate reference ==
+   16x16        modified = 0  (byte-exact)
+   32x32        modified = 0  (byte-exact)
+   70x5         modified = 0  (byte-exact)
+   64x64        modified = 0  (byte-exact)
+   100x30       modified = 0  (byte-exact)
+   128x128      modified = 0  (byte-exact)
+   280x60       modified = 0  (byte-exact)
+   256x256      modified = 0  (byte-exact)
+
+== D. determinism: same seed twice, different seeds differ ==
+   280x60 seed=12345 run1=0 run2=0 (stable=yes), seed=99999 -> 0
