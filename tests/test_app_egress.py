@@ -25,6 +25,7 @@ The two assertions that carry this file:
   SENT rather than silently falling back to the operator's real IP.
 """
 import asyncio
+import contextlib
 import json
 import socket
 import struct
@@ -1395,8 +1396,46 @@ from src.services.browser import engine_install as eng  # noqa: E402
 # that fixture, so it was the one that failed in isolation while passing in a
 # full-file run — i.e. it was passing on file ordering. Warming for the whole
 # module removes the ordering dependency for every test here, not just that one.
-import invisible_playwright.constants  # noqa: E402,F401
-import invisible_playwright.download  # noqa: E402,F401
+#
+# ⚠️ THE WARMING IS BEST-EFFORT, THE SKIP IS PER-TEST — and the two must not be
+# collapsed into one gesture. The driver is an OPTIONAL, git-pinned dependency
+# (`invisible_playwright @ git+…` in pyproject); CI installs it (ci.yml) and a
+# bare development container legitimately does not have it. A hard module-scope
+# `import` made that absence a COLLECTION ERROR, which pytest reports as
+# `Interrupted: 1 error during collection` — so the whole run stopped and the
+# 31 tests ABOVE this line, which need no driver at all, never executed either.
+# An absent optional dependency must cost the tests that need it, never the
+# ones that do not, and it must never masquerade as a suite-wide failure.
+#
+# So the warming is attempted and its failure tolerated HERE, while the three
+# tests that actually reach `_download_invisible` assert the requirement for
+# themselves via `_require_engine_driver()`. That keeps the property intact:
+# where the driver IS installed (CI, and any release runner) the import happens
+# at module scope exactly as before and the ordering hazard above stays closed;
+# where it is absent, those three SKIP with a reason instead of erroring, and
+# every driver-free test in this file still runs.
+with contextlib.suppress(ImportError):
+    import invisible_playwright.constants  # noqa: E402,F401
+    import invisible_playwright.download  # noqa: E402,F401
+
+
+def _require_engine_driver():
+    """Skip unless the pinned engine driver is importable.
+
+    Named rather than inlined because three tests share it and a skip reason is
+    the only thing standing between "this environment has no driver" and a
+    reader concluding the routing under test is broken.
+
+    ⛔ NOT a module-level skipif. Most of this file tests persona's OWN egress
+    authority (`egress.download_opener`, `httpdl`, the chromium arm through
+    `updater._download_to`) and needs no driver whatsoever — skipping the file
+    would silently retire real coverage over an unrelated missing package.
+    """
+    pytest.importorskip(
+        "invisible_playwright",
+        reason="the pinned engine driver is not installed in this environment "
+               "(CI installs it; see .github/workflows/ci.yml)",
+    )
 
 
 def _socks_listener_capturing(seen: dict, reply: bytes = b""):
@@ -1471,6 +1510,7 @@ def _wire_firefox_install(monkeypatch, tmp_path, host="engine.example.com"):
     test: a test that composed the opener and handed it in would pass with the
     consultation deleted, which is the AC9 trap.
     """
+    _require_engine_driver()
     import invisible_playwright.download as ipdl
 
     cache = tmp_path / "cache"
@@ -1633,6 +1673,13 @@ def test_refused_policy_opens_no_socket_for_either_engine_download(monkeypatch):
     one back on REFUSE would silently degrade "we cannot honour your proxy"
     into "send from the real IP", with 200MB behind it.
     """
+    # The Firefox half drives `_download_invisible`, which imports the driver
+    # LAZILY and BEFORE the egress consultation — so without it installed this
+    # test would record `opened == []` because the import died, not because a
+    # refusal was honoured. That is precisely the "green for a reason unrelated
+    # to the property" failure the module-scope comment above documents, and it
+    # is worth skipping over rather than passing vacuously.
+    _require_engine_driver()
     settings.set_app_egress_proxy("this is not a proxy url")
 
     opened = []
