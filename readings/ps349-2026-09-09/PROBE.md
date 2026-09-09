@@ -29,12 +29,13 @@ per session and **report** them, so a stall arrives with evidence attached —
 and leave the verdict to a human.
 
 **One finding is not about signals at all and is the most actionable thing
-here.** The wedged arm's **teardown blocked**, and the session **orphaned its
-entire 12-process engine tree**. The next arm's pre-flight check refused to
-launch because of it. That is the `process_group.py` docstring's own failure
-mode — the one that degrades a later launch into a contentless
-`TargetClosedError` — observed live, and it is reachable without solving the
-health-signal question at all.
+here.** The wedged arm's **teardown never completed**: the session **orphaned
+its entire 12-process engine tree**, and the tearing-down process was still
+**spinning at 100% CPU 26 minutes later, with no browser left attached**. The
+next arm's pre-flight check refused to launch because of it. That is the
+`process_group.py` docstring's own failure mode — the one that degrades a later
+launch into a contentless `TargetClosedError` — observed live, and it is
+reachable without solving the health-signal question at all.
 
 ---
 
@@ -92,14 +93,17 @@ launch fires on every launch), and 10 s is dropped from each tail (teardown is a
 burst in every arm).
 
 > ⚠️ **ONE WINDOW BOUND IS NOT COSMETIC AND IS DISCLOSED RATHER THAN QUIETLY
-> APPLIED.** The `jugwedge` arm's **teardown blocked**: after the recovery ping
-> at `t=121.5` the subject printed nothing more and the observer kept sampling
-> to **`t=1230`**. Those ~1100 s are *"wedged AND being torn down"*, which is not
-> the state under test, and they contain **249 samples above 60% CPU** that are
-> teardown work. Left in, they inflated the wedged arm's CPU to a median of
-> 101.8% and made a CPU-based rule look **better than it is**. The wedged window
-> therefore ends at `t=121.5` — the last moment the subject *confirmed* the
-> session's state. `sweep.py:END_BOUND` carries this and says why.
+> APPLIED.** The `jugwedge` arm's teardown **never completed**: after the
+> recovery ping at `t=121.5` the subject printed nothing more and the observer
+> kept sampling to **`t=1497`**. Those ~1370 s are *"wedged AND being torn
+> down"*, which is not the state under test, and they contain **249 samples
+> above 60% CPU** that are teardown work. Left in, they inflated the wedged
+> arm's CPU to a median of 101.8% and made a CPU-based rule look **better than
+> it is**. The wedged window therefore ends at `t=121.5` — the last moment the
+> subject *confirmed* the session's state. `sweep.py:END_BOUND` carries this and
+> says why. (What that teardown was actually doing is
+> [finding (b)](#b-the-teardown-did-not-hang--it-spun-and-it-was-still-spinning-25-minutes-later),
+> and it is not what it first looked like.)
 
 ---
 
@@ -254,7 +258,12 @@ container, one engine build, one OS, no GPU, no compositor, is a hypothesis.**
 
 ---
 
-## ⭐ The leak — the most actionable finding, and not about signals
+## ⭐ The teardown findings — the most actionable part, and not about signals
+
+Two distinct things went wrong when the wedged arm ended, and they are stated
+separately because they have different strengths.
+
+### (a) Twelve orphaned engine processes — measured, one occurrence
 
 When the `jugwedge` arm ended, the next arm **refused to start**:
 
@@ -263,13 +272,11 @@ PREFLIGHT FAIL: engine already running
 [27917, 27971, 28024, 28028, 28036, 28074, 28118, 28155, 28157, 28175, 28183, 28262]
 ```
 
-**Twelve orphaned engine processes.** The wedged session's teardown blocked
-(~1100 s of samples after the last ground-truth observation) and the tree
-survived it. This is exactly what `process_group.py`'s docstring describes — the
-accumulation that degrades a later launch into a contentless
-`TargetClosedError`, *"the error PS-133 records being misattributed to
-fingerprint seed 4242"* — **observed live**, and it is the mechanism behind this
-ticket's own evidence-corruption argument.
+**Twelve orphaned engine processes.** This is exactly what `process_group.py`'s
+docstring describes — the accumulation that degrades a later launch into a
+contentless `TargetClosedError`, *"the error PS-133 records being misattributed
+to fingerprint seed 4242"* — **observed live**, and it is the mechanism behind
+this ticket's own evidence-corruption argument.
 
 ⚠️ **Stated at the strength it carries.** One occurrence, in a container, on a
 deliberately wedged session, through the arm-F harness rather than persona's
@@ -277,6 +284,39 @@ launcher — **so it is NOT a measurement of the product's teardown path** and
 must not be quoted as one. Its value is that the **pre-flight check caught it in
 one line**, and it is a candidate for a real ticket independent of everything
 above.
+
+### (b) The teardown did not hang — it SPUN, and it was still spinning 25 minutes later
+
+The first reading of this record said the wedged arm's teardown "blocked". That
+was **wrong in a way worth correcting rather than smoothing over**, because the
+two states have different causes and different fixes. A live probe taken while
+writing this record (`post_state.py`, output below) found:
+
+```
+surviving ENGINE processes: 0
+pid 27900: state=R age=1544s threads=1 cpu=100.0%   <- subject.py
+pid 27899: state=S age=1546s threads=2 cpu=0.0%     <- observe.py
+```
+
+The engine tree was **gone**; the single remaining Python thread was **burning a
+full core**, in state `R`, **1544 s (≈26 min) after launch** and ~1400 s after
+its last ground-truth output. It was not waiting on anything. That is why the
+observer went on emitting samples to `t=1497` — it was faithfully sampling a
+tree that no longer existed (`nproc: 0`), which is also why the tail of
+`jugwedge.txt` is all-null rather than merely quiet.
+
+⚠️ **Attribution is NOT established and must not be assumed.** The spinning
+process is the **arm-F harness** (`InvisiblePlaywright.__exit__` on a wedged
+session), **not persona's launcher**, so this says nothing about the product's
+own teardown until someone runs the same wedge through `spawn_browser`. What it
+does establish is the shape: a torn-down wedged session can leave a **live,
+CPU-burning process with no browser attached** — which is the same
+already-degraded-machine condition (a) describes, arriving by a different route.
+
+⭐ **And note what observed it: nothing did.** Both failures were found because
+the *next arm's pre-flight refused to launch* and because a person went looking.
+That is the ticket's thesis reproduced at one level up — the observation gap is
+not only in-session, it is also in-teardown.
 
 ---
 
@@ -307,8 +347,11 @@ but *"how low does a genuinely busy, genuinely healthy session go, and for how
 long"*. `busymax` says: lower than a wedged one. Until that is measured on real
 browsing on real hardware, any threshold is a guess with a number on it.
 
-**5. The leak is a separate, cheaper ticket** and does not depend on any of the
-above.
+**5. The two teardown findings are a separate, cheaper ticket** and do not
+depend on any of the above — neither the orphaned tree nor the spinning
+teardown needs the health-signal question answered first. Both want the same
+next step: run the same wedge through `spawn_browser` rather than the arm-F
+harness, so the product's own teardown path is the thing measured.
 
 ---
 
@@ -380,7 +423,8 @@ the healthy arms are unaffected — they returned in 0.01–0.03 s.
 | `unreachable.txt` | **Healthy**, eval hook torn out — the channel-probe false-positive trap. |
 | `sigstop.txt` | Degraded, ground truth certain. Instrument validation. |
 | `spin.txt` | Degraded with HIGH cpu. |
-| `jugwedge.txt` | Degraded with LOW cpu — PS-171's tab-3 stall reproduced. **Contains the blocked teardown; see `END_BOUND`.** |
+| `jugwedge.txt` | Degraded with LOW cpu — PS-171's tab-3 stall reproduced. **Its tail is the never-completing teardown, sampling a tree that no longer exists (`nproc: 0`); see `END_BOUND`.** |
+| `post_state.py` | The live post-run probe behind finding (b). Excludes SELF and probe processes — the self-match trap bit three times this session. |
 
 Every `.txt` was `git check-ignore`'d **before** the run that produced it —
 `.gitignore:183` is `*.log`, the trap that cost PS-171 its only layer-ON arm and

@@ -39,10 +39,12 @@ SETTLE = 8.0
 TAIL_DROP = 10.0
 
 # ⚠️ EXPLICIT END BOUND, and it is not a convenience. The jugwedge arm's
-# teardown BLOCKED: after the recovery ping at t=121.5 the subject printed
-# nothing more and the observer kept sampling to t=1230 — ~1100 s of "wedged
-# AND being torn down", which is not the state under test, and which carried
-# 249 samples above 60% CPU that are teardown work rather than the wedge. The
+# teardown NEVER COMPLETED: after the recovery ping at t=121.5 the subject
+# printed nothing more and the observer kept sampling to t=1605 — "wedged AND
+# being torn down", which is not the state under test, and which carried 249
+# samples above 60% CPU that are teardown work rather than the wedge. (The
+# teardown was not blocked but SPINNING — 100% CPU with the engine tree already
+# gone, still going 26 min later; see PROBE.md finding (b).) The
 # window therefore ends at the LAST GROUND-TRUTH OBSERVATION: the moment the
 # subject last confirmed the session's state. Left unbounded it inflates the
 # wedged arm's CPU and would have made a CPU rule look better than it is.
@@ -182,4 +184,4 @@ for T_HI in (60, 80, 90, 95, 100, 105, 110):
               f" low={'Y' if low else '.'} cpu={'Y' if hi else '.'}"
               f" -> {'DEGRADED' if got else 'healthy':9s} {'ok' if ok else '** WRONG **'}")
     print(f"   => fp={fp} fn={fn}"
-          + ("   <-- SEPARATES ALL FIVE" if fp == 0 and fn == 0 else ""))
+          + ("   <-- SEPARATES ALL ARMS" if fp == 0 and fn == 0 else ""))
