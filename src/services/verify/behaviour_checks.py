@@ -1481,6 +1481,298 @@ def _falsify_no_process_survives_a_closed_session(ctx: Context) -> str:
         _sweep_group(pgid)
 
 
+# --- 9. every out-of-perimeter launch artifact is enumerated ----------------
+#
+# PS-355 / PS-8 DoD#3. The ONLY check here that observes the TREE rather than a
+# running product, and that is the point rather than a compromise: the surface
+# under test is "does the code write somewhere the inventory does not know
+# about", which is a property of the source and is answered before a browser
+# exists. It is `needs_launch=False` for that reason and not to dodge the venue.
+#
+# ⛔ WHAT MAKES THIS DIFFERENT FROM THE LIST IT READS. A hand-written inventory
+# with nothing checking it is the "check that cannot fail" PS-8 names — six
+# defects of one class were each found by a person reading code, and the
+# seventh would have been too. The comparison below is the deliverable; the
+# list is its input. The check runs BOTH directions deliberately: an unlisted
+# write site is a finding, and so is a listed site that has vanished, because
+# an inventory that can be satisfied by deleting its own entries certifies
+# nothing.
+
+
+def _run_launch_perimeter_inventory(ctx: Context) -> Outcome:
+    from .launch_perimeter import PERIMETER_ARTIFACTS, validate_inventory
+    from .launch_perimeter_scan import (
+        missing_removal_sites,
+        repo_root,
+        scan_launch_surface,
+    )
+
+    problems = validate_inventory()
+    if problems:
+        # A malformed inventory cannot be the input to anything, and this is
+        # NOT a finding about the product — it is this check being unable to
+        # say anything, which is exactly what CANNOT_RUN is for.
+        raise BehaviourCheckError(
+            "the inventory is structurally invalid, so nothing can be compared "
+            "against it: " + "; ".join(problems)
+        )
+
+    root = repo_root()
+    try:
+        sites = scan_launch_surface(root=root)
+    except (FileNotFoundError, SyntaxError) as exc:
+        raise BehaviourCheckError(
+            f"the launch surface could not be scanned: {exc}"
+        ) from exc
+
+    accounted = {a.site for a in PERIMETER_ARTIFACTS if a.detected}
+    found = {s.site for s in sites}
+    by_site = {s.site: s for s in sites}
+
+    unaccounted = sorted(found - accounted)
+    vanished = sorted(accounted - found)
+
+    # ⭐ THE SECOND HALF, AND IT IS NOT DECORATION. Three of the six historical
+    # defects were a MISSING REMOVAL rather than a new write — PS-16 above all,
+    # which added no write site and removed none. A gate reading only the two
+    # sets above passes it. Measured: this one did, before this loop existed.
+    broken_reach: list[tuple[str, list[str]]] = []
+    total_reach = 0
+    for artifact in PERIMETER_ARTIFACTS:
+        if not artifact.removal_sites:
+            continue
+        total_reach += len(artifact.removal_sites)
+        gone = missing_removal_sites(artifact.removal_sites, root=root)
+        if gone:
+            broken_reach.append((artifact.site, gone))
+
+    evidence = [
+        f"launch surface: {len(_surface_modules())} module(s) scanned",
+        f"inventory: {len(PERIMETER_ARTIFACTS)} artifact(s), "
+        f"{len(accounted)} statically checkable",
+        f"write sites found: {len(found)}",
+        f"removal paths verified: {total_reach}",
+    ]
+
+    if unaccounted or vanished or broken_reach:
+        lines = list(evidence)
+        for site in unaccounted:
+            s = by_site[site]
+            lines.append(
+                f"UNACCOUNTED: {s.path}:{s.lineno} in {s.symbol} — "
+                f"[{s.kind}] {s.detail}"
+            )
+        for site in vanished:
+            lines.append(
+                f"VANISHED: {site} is in the inventory but the scan no longer "
+                "finds it"
+            )
+        for owner, gone in broken_reach:
+            for edge in gone:
+                lines.append(f"UNREACHED: {owner} declares {edge}, which is gone")
+        return Outcome(
+            name="launch-perimeter-inventory",
+            surface="every out-of-perimeter launch artifact is enumerated",
+            status=FINDING,
+            detail=(
+                f"{len(unaccounted)} write site(s) outside a profile's own "
+                f"directory are not in the inventory, {len(vanished)} "
+                "inventory entry(ies) name a site the scan cannot find, and "
+                f"{sum(len(g) for _, g in broken_reach)} declared removal "
+                "path(s) no longer exist. An unlisted site is the seventh "
+                "instance of the class that produced PS-16, PS-57, PS-129, "
+                "PS-175, PS-234 and PS-283 — each of which was found by a "
+                "person reading code. A MISSING REMOVAL PATH is that class's "
+                "other half: PS-16 stranded a profile name on the host by "
+                "dropping ONE call, adding no write site anywhere. Either add "
+                "the artifact to PERIMETER_ARTIFACTS with its platform column "
+                "and its removal path (or its reason), or restore the reach."
+            ),
+            evidence=lines,
+        )
+
+    return Outcome(
+        name="launch-perimeter-inventory",
+        surface="every out-of-perimeter launch artifact is enumerated",
+        status=PASS,
+        detail=(
+            "every write site the scan finds outside a profile's own directory "
+            "is accounted for in PERIMETER_ARTIFACTS, every inventory entry "
+            "claiming a static site still resolves to one, and every declared "
+            "removal path still exists in the tree. NOTE: this observes the "
+            "SOURCE across a traced launch surface, so a write reached only "
+            "dynamically, or from a module not on that surface, is not seen; "
+            "and a removal path is checked for EXISTENCE, not for working — "
+            "see UNCOVERED_SURFACES."
+        ),
+        evidence=evidence,
+    )
+
+
+def _surface_modules():
+    from .launch_perimeter import LAUNCH_SURFACE
+
+    return LAUNCH_SURFACE
+
+
+def _falsify_launch_perimeter_inventory(ctx: Context) -> str:
+    """Plant a real out-of-perimeter write and require the check to name it.
+
+    ⭐ THE PLANTED DEFECT IS A REAL MODULE ON A REAL SCAN, NOT A STUBBED
+    PREDICATE. A temporary package is written to disk carrying the exact shape
+    of PS-57 — ``tempfile.mkstemp()`` with no ``dir=``, which is how the mTLS
+    scratch file landed in the host's temp dir — and the scanner is pointed at
+    it as an extra surface module. Faking the comparison (handing the check a
+    doctored set) would prove only that set arithmetic works; this proves the
+    PARSER sees the shape, which is the half that can rot.
+
+    Two halves, because one alone is not enough:
+
+    1. The planted site must be FOUND and reported as unaccounted. A scanner
+       that has stopped parsing reports nothing and its green is vacuous.
+    2. The SAME file with the ``dir=`` keyword — PS-57's actual fix — must NOT
+       be reported. Without this, a scanner that flagged every line would pass
+       half 1 while being useless: it would fire on any write at all rather
+       than on an out-of-perimeter one.
+
+    ⭐ AND A THIRD HALF, WHICH IS THE ONE THIS CHECK ORIGINALLY FAILED. The
+    write scan cannot see PS-16 at all: that defect DELETED a removal call and
+    added no write anywhere. So the reach reader is falsified separately —
+    against the real ``manager.py``, with the real declared edges — because a
+    reach check that cannot notice a missing caller is exactly the half of this
+    gate that would silently rot.
+    """
+    import tempfile
+
+    from .launch_perimeter_scan import missing_removal_sites, scan_module
+
+    defect = (
+        "import tempfile\n"
+        "\n"
+        "\n"
+        "def _stash_the_password():\n"
+        "    # The PS-57 shape exactly: no dir=, so this lands in the host's\n"
+        "    # shared temp dir where nothing persona owns can reach it.\n"
+        "    fd, path = tempfile.mkstemp(prefix='persona-mtls-nsspw-')\n"
+        "    return path\n"
+    )
+    fixed = defect.replace(
+        "tempfile.mkstemp(prefix='persona-mtls-nsspw-')",
+        "tempfile.mkstemp(prefix='persona-mtls-nsspw-', dir=profile_dir)",
+    )
+
+    with tempfile.TemporaryDirectory(prefix="ps355-falsify-") as tmp:
+        import os as _os
+
+        defect_rel = "planted_defect.py"
+        fixed_rel = "planted_fixed.py"
+        with open(_os.path.join(tmp, defect_rel), "w", encoding="utf-8") as fh:
+            fh.write(defect)
+        with open(_os.path.join(tmp, fixed_rel), "w", encoding="utf-8") as fh:
+            fh.write(fixed)
+
+        planted = scan_module(defect_rel, root=tmp)
+        if not planted:
+            raise BehaviourCheckError(
+                "the scanner found NOTHING in a module that calls "
+                "tempfile.mkstemp() with no dir= — the exact shape PS-57 "
+                "fixed. It cannot observe an out-of-perimeter write, so its "
+                "green certifies nothing."
+            )
+        kinds = {s.kind for s in planted}
+        if "host-temp" not in kinds:
+            raise BehaviourCheckError(
+                f"the planted host-temp write was classified as {kinds!r} "
+                "rather than host-temp, so the check would not report it as a "
+                "write outside the perimeter."
+            )
+        # The planted site is by construction absent from the inventory, which
+        # is the FINDING arm: confirm the comparison reports it rather than
+        # merely that the scan saw it.
+        from .launch_perimeter import inventory_sites
+
+        if planted[0].site in inventory_sites():
+            raise BehaviourCheckError(  # pragma: no cover - defensive
+                "the planted site collides with a real inventory entry, so it "
+                "could not demonstrate the unaccounted arm."
+            )
+
+        scoped = scan_module(fixed_rel, root=tmp)
+        if any(s.kind == "host-temp" for s in scoped):
+            raise BehaviourCheckError(
+                "the SAME call with dir= — PS-57's actual fix — was still "
+                "reported as a host-temp write. The check fires on any write "
+                "rather than on an out-of-perimeter one, so a green from it "
+                "says nothing about the perimeter."
+            )
+
+    # --- the reach half, falsified on a PLANTED PAIR -----------------------
+    #
+    # ⚠️ PS-16 MODELLED AS A BEFORE/AFTER PAIR, AND THE PAIR IS WHY. Its defect
+    # was the ABSENCE of `update_profile -> _remove_window_entry`, so the
+    # reproduction is two modules identical but for that one call, with the
+    # reader required to tell them apart. A reader that answers "nothing
+    # missing" for the reverted one cannot notice a deleted caller; one that
+    # answers "missing" for the fixed one fires on any edge and its red is
+    # worthless.
+    #
+    # ⛔ DELIBERATELY NOT ASSERTED AGAINST THE REAL manager.py, and the reason
+    # is a measured one rather than a preference. A control pinned to a live
+    # inventory edge INVERTS on precisely the tree this check exists to catch:
+    # revert PS-16 for real and the falsification itself fails, so the run
+    # reports CANNOT_RUN ("this check is broken") instead of FINDING ("the
+    # removal path is gone") — the true statement in the words reserved for the
+    # wrong one. Observed while building this check. The planted pair says the
+    # same thing about the READER without borrowing the tree's health.
+    with tempfile.TemporaryDirectory(prefix="ps355-reach-") as tmp:
+        import os as _os
+
+        fixed_mod = (
+            "class ProfileManager:\n"
+            "    def update_profile(self, original_name, new_name):\n"
+            "        self._rename_data_dir(original_name, new_name)\n"
+            "        # The PS-16 fix, in one line.\n"
+            "        self._remove_window_entry(original_name)\n"
+            "        return True\n"
+        )
+        reverted_mod = fixed_mod.replace(
+            "        # The PS-16 fix, in one line.\n"
+            "        self._remove_window_entry(original_name)\n",
+            "",
+        )
+        with open(_os.path.join(tmp, "fixed_mgr.py"), "w", encoding="utf-8") as fh:
+            fh.write(fixed_mod)
+        with open(_os.path.join(tmp, "reverted_mgr.py"), "w", encoding="utf-8") as fh:
+            fh.write(reverted_mod)
+
+        edge = "update_profile->_remove_window_entry"
+        if missing_removal_sites((f"fixed_mgr.py:{edge}",), root=tmp):
+            raise BehaviourCheckError(
+                "the reach reader reported a removal call that IS present as "
+                "missing. It fires on any edge rather than on an absent one, "
+                "so its red would mean nothing."
+            )
+        if not missing_removal_sites((f"reverted_mgr.py:{edge}",), root=tmp):
+            raise BehaviourCheckError(
+                "the reach reader reported NOTHING missing from a module with "
+                "the PS-16 removal call deleted — the exact defect that "
+                "stranded a profile name on the host while adding no write "
+                "site anywhere. It cannot detect a deleted removal path, so "
+                "this check's green says nothing about whether anything still "
+                "reaches these artifacts."
+            )
+
+    return (
+        "a planted module calling tempfile.mkstemp() with NO dir= (the PS-57 "
+        f"shape) is found and classified host-temp at {planted[0].symbol!r}, "
+        "is absent from the inventory and would be reported UNACCOUNTED — "
+        "while the identical call WITH dir= is not reported at all; AND on a "
+        "planted PS-16 pair the reach reader reports the removal call as "
+        "missing when it is deleted and present when it is not, so a deleted "
+        "removal path — the half no write scan can see — is observable too"
+    )
+
+
 # --- the registry -----------------------------------------------------------
 
 CHECKS: tuple[Check, ...] = (
@@ -1545,6 +1837,18 @@ CHECKS: tuple[Check, ...] = (
         needs_launch=True,
         run=_run_no_process_survives_a_closed_session,
         falsify=_falsify_no_process_survives_a_closed_session,
+    ),
+    Check(
+        name="launch-perimeter-inventory",
+        surface="every out-of-perimeter launch artifact is enumerated",
+        # ⛔ NOT A DODGE OF THE LAUNCH VENUE. This check's surface is the
+        # SOURCE — "does the code write somewhere the inventory does not know
+        # about" — which is answered before a browser exists and would be
+        # answered identically with one running. A launch is what PRODUCED the
+        # inventory (it was measured, not grepped); it is not what checks it.
+        needs_launch=False,
+        run=_run_launch_perimeter_inventory,
+        falsify=_falsify_launch_perimeter_inventory,
     ),
 )
 
