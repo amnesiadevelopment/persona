@@ -38,21 +38,25 @@ therefore carries one of five positions, and the fifth is the deliverable:
                          addresses. The cell names the constraint that makes it
                          so, and a test below asserts that constraint still holds.
 * ``NOT_ESTABLISHED``  — NOTHING IN THE TREE RECORDS A POSITION. An honest
-                         unknown, and never a claim of coverage. These cells are
-                         the actual finding: ``stealth`` and ``measuretext``.
-                         Three names left this list on the day each was
-                         established BY MEASUREMENT — ``geo`` (PS-312, now
+                         unknown, and never a claim of coverage. This is the
+                         actual finding, and ``measuretext`` is the ONE cell
+                         left in it. Four names left this list on the day each
+                         was established BY MEASUREMENT — ``geo`` (PS-312, now
                          NOT_COVERED_RECORDED); the mediaDevices half of
                          ``device`` (PS-330, now NOT_COVERED_RECORDED — a real
                          headful launch found the engine already answering with
-                         a constant synthetic roster carrying empty ids); and,
-                         running the OTHER direction, Chromium's position on
-                         Firefox's ``outer-size`` (#327, now COVERED_ELSEWHERE
-                         via a launch argument rather than a spoof). The list
-                         shrinks only against a reading; ``test_the_open_cells_
-                         are_the_deliverable_and_are_named`` pins what is left
-                         AS DATA so this sentence cannot quietly disagree with
-                         it.
+                         a constant synthetic roster carrying empty ids);
+                         ``stealth`` (PS-350, now NOT_APPLICABLE — a STOCK
+                         Firefox launched beside persona's engine on one host
+                         found a real Firefox missing both APIs the vector adds,
+                         and half the vector structurally unable to fire here at
+                         all); and, running the OTHER direction, Chromium's
+                         position on Firefox's ``outer-size`` (#327, now
+                         COVERED_ELSEWHERE via a launch argument rather than a
+                         spoof). The list shrinks only against a reading;
+                         ``test_the_open_cells_are_the_deliverable_and_are_named``
+                         pins what is left AS DATA so this sentence cannot
+                         quietly disagree with it.
 
 This is a CHARACTERIZATION test, on exactly the terms its network sibling states:
 it pins the matrix AS IT IS TODAY, unknowns included, and is green on day one —
@@ -81,12 +85,25 @@ init-script SOURCE THE BUILDERS EMIT, which is the layer that engine's spoofs
 actually arrive on. Where a cell can only be read structurally, it is read by
 walking the product's own AST rather than by matching text.
 
-⚠️ NO BROWSER WAS EXECUTED. There is no engine binary and no display in this
-container, so what every cell below establishes is the CODE SHAPE — which
-builders a launch calls, under which conditions, and which spoof source each
-engine emits. That a vector is INSTALLED is not evidence it reached the page; the
-``masking_layer`` module makes the same distinction in its own words ("an install
-is still not a reading"). This matrix pins installation, deliberately and only.
+⚠️ NO BROWSER IS EXECUTED **BY THIS FILE**, and the distinction has grown teeth
+rather than stayed rhetorical. What every cell below establishes IN THIS SUITE
+is the CODE SHAPE — which builders a launch calls, under which conditions, and
+which spoof source each engine emits. That a vector is INSTALLED is not evidence
+it reached the page; the ``masking_layer`` module makes the same distinction in
+its own words ("an install is still not a reading"). This matrix pins
+installation, deliberately and only.
+
+⭐ THAT IS A BOUND ON THIS FILE, NOT ON THE MATRIX. Three cells have since been
+established BY LAUNCHING A REAL BROWSER, each in a sibling suite that skips
+where the instrument is absent: ``test_ps312_ff_geolocation_live`` (geo),
+``test_ps330_ff_mediadevices_live`` (device), and
+``test_ps350_ff_stealth_live`` (stealth — the only one whose instrument is a
+browser persona DOES NOT SHIP, because its question was a claim about an
+ordinary Firefox). Where a cell rests on a live reading, the cell says so and
+names the artifact under ``readings/``; this file then re-reads that artifact
+rather than re-launching anything, so CI checks the position without a display.
+An earlier version of this sentence read "NO BROWSER WAS EXECUTED" flatly, which
+stopped being true of the matrix as a whole the moment PS-312 landed.
 
 The matrix, for ONE profile per column:
 
@@ -95,7 +112,7 @@ The matrix, for ONE profile per column:
 | native      | build_native_extension (always)       | ELSEWHERE: _native_cloak_js prelude |
 | locale      | build_locale_extension (always)       | COVERED: _install_spoof("locale") |
 | voice       | build_voice_extension (always)        | NOT COVERED, reason recorded      |
-| stealth     | build_stealth_extension (always)      | ⭐ POSITION NOT ESTABLISHED       |
+| stealth     | build_stealth_extension (always)      | NOT APPLICABLE (stock control)   |
 | measuretext | build_measuretext_extension (always)  | ⭐ POSITION NOT ESTABLISHED       |
 | audio       | build_audio_extension (always)        | COVERED: raw add_init_script      |
 | mobile      | build_mobile_extension (mobile only)  | NOT APPLICABLE (coherence)       |
@@ -109,6 +126,7 @@ The matrix, for ONE profile per column:
 
 import ast
 import inspect
+import json
 from pathlib import Path, PurePath
 
 import pytest
@@ -221,14 +239,36 @@ MATRIX = {
     "stealth": {
         "chromium": (COVERED, "build_stealth_extension, unconditional"),
         "firefox": (
-            NOT_ESTABLISHED,
-            "No spoof, and NO RECORDED REASON anywhere in the tree. The vector "
-            "re-adds two Chrome-only Navigator APIs (navigator.connection."
-            "downlinkMax, ServiceWorkerRegistration.prototype.index) that "
-            "CreepJS counts toward 'like headless'. A plausible position is "
-            "'not applicable — Firefox exposes neither API, so a real Firefox "
-            "is missing them too' — but plausible is not recorded, and this "
-            "file will not mint a position the tree does not hold.",
+            NOT_APPLICABLE,
+            "PS-350 established this BY MEASUREMENT, against a STOCK Firefox — "
+            "the only instrument that could, since the vector's plausible "
+            "position was a claim about a browser persona does not ship and "
+            "every one of the 20 committed Firefox artifacts is persona's own "
+            "engine. THE CONSTRAINT: this engine cannot reach the "
+            "configuration the vector addresses. stealth_ext re-adds two "
+            "CHROME-ONLY Navigator APIs to a browser that a real desktop "
+            "Chrome would have and a headless one lost; Gecko never shipped "
+            "either, so there is no lost API to restore. Measured, not "
+            "assumed: a stock Firefox 151.0 and persona's firefox-29 (also "
+            "151.0, so not a version comparison) read on the same host in the "
+            "same run agree on all 12 rows in BOTH realms — "
+            "navigator.connection and NetworkInformation undefined, "
+            "ServiceWorkerRegistration present WITHOUT index — and agree with "
+            "the committed corpus. ⭐ AND HALF THE VECTOR STRUCTURALLY CANNOT "
+            "FIRE HERE, which is what makes this NOT_APPLICABLE rather than "
+            "merely unnecessary: stealth_ext's downlinkMax shim is guarded "
+            "\"if (conn && ...)\" and Firefox exposes no navigator.connection "
+            "to hang it off, so installing the builder would run one shim that "
+            "cannot fire and one that manufactures a Chrome-only API on a "
+            "Gecko browser — an IMPOSSIBLE PAIR and a detectable mechanism at "
+            "once, the trade PS-312 declined on geo. That guard's inertness is "
+            "proved by two opposite mutations rather than argued (see "
+            "test_the_reveal_controls_prove_the_probes_are_live). SHELF LIFE: "
+            "read on firefox-29 / Firefox 151.0 / Linux x86_64 — the host is "
+            "named as well as the build because this very probe carries "
+            "host-gated rows (the WebSerial pair, ENV_SENSITIVE_PROBES in "
+            "baseline.py). Re-run scripts/ps350_stealth_control.py if a future "
+            "Gecko ships either API.",
         ),
     },
     "measuretext": {
@@ -983,8 +1023,15 @@ def test_firefox_not_established_cells_are_not_quietly_covered():
     js = _firefox_installed_js()
     spoofs, _ = _firefox_spoof_census()
     tokens = {
-        "stealth": ("downlinkMax", "ContentIndex"),
         "measuretext": ("measureText",),
+        # "stealth" left this dict in PS-350, which established the cell by
+        # measurement against a STOCK Firefox control. Its absence-guard did
+        # NOT go with it: the same two tokens are still swept in
+        # ``test_the_established_stealth_absence_is_still_an_absence`` below,
+        # where they now guard a NOT_APPLICABLE cell instead of an
+        # unestablished one. Deleting the guard along with the entry would
+        # have traded a stated unknown for an unwatched decision.
+        #
         # "geo" left this dict in PS-312, which established the cell by
         # measurement. Its absence-guard did NOT go with it: the same two
         # tokens are still swept in
@@ -1036,6 +1083,51 @@ def test_the_recorded_geo_absence_is_still_an_absence():
         assert name not in js, (
             f"Firefox now emits {name!r}, so the recorded 'no spoof ships' "
             f"decision no longer describes this tree. Restate the cell."
+        )
+
+
+def test_the_established_stealth_absence_is_still_an_absence():
+    # PS-350's cell, guarded exactly as PS-312's and PS-330's are, and for the
+    # same reason: moving a cell out of the unknown set must not cost it its
+    # guard. The position established in readings/ps350-2026-09-09/ is
+    # "persona ships NO Firefox stealth spoof, because a real Firefox exposes
+    # neither API either — and half the Chromium vector structurally cannot
+    # fire on this engine". A spoof that quietly appeared would make that
+    # established position describe a tree that no longer matches it.
+    #
+    # BOTH oracles the NOT_ESTABLISHED sweep uses are applied here, because
+    # either alone has a blind spot the other covers: the emitted source
+    # catches a BUILDER that grew the vector, and the registry census catches a
+    # NEW LABEL registered for it.
+    #
+    # ⚠️ THE THIRD ORACLE IS DELIBERATELY NOT USED, and the omission is
+    # reasoned rather than forgotten. ``_launch_site_code`` exists for the
+    # PS-302 class — an override concatenated INLINE into an already-registered
+    # label's payload — and the device cell needs it because
+    # ``enumerateDevices`` is a plausible thing to append to an existing spoof.
+    # It would be actively WRONG here: this cell's recorded reason has to
+    # discuss ``downlinkMax`` and ``ContentIndex`` by name to say why they are
+    # inapplicable, and any such sentence written as a STRING LITERAL rather
+    # than a comment would red this guard while describing an absence. The two
+    # oracles below read what the builders EMIT and what the registry HOLDS,
+    # neither of which can be tripped by prose about the vector.
+    js = _firefox_installed_js()
+    spoofs, _ = _firefox_spoof_census()
+    assert MATRIX["stealth"]["firefox"][0] == NOT_APPLICABLE
+    assert "stealth" not in spoofs, (
+        "a Firefox stealth spoof is now registered, contradicting the position "
+        "PS-350 established by measurement — that a real Firefox exposes "
+        "neither API, so there is nothing to restore. Either a real Firefox's "
+        "behaviour changed (RE-MEASURE with "
+        "scripts/ps350_stealth_control.py, then restate the cell) or the spoof "
+        "is the defect: it would manufacture Chrome-only APIs on a Gecko "
+        "browser, which is an impossible pair AND a detectable mechanism."
+    )
+    for name in ("downlinkMax", "ContentIndex"):
+        assert name not in js, (
+            f"Firefox now emits {name!r}, so the established 'no spoof ships' "
+            f"position no longer describes this tree. RE-MEASURE with "
+            f"scripts/ps350_stealth_control.py, then restate the cell."
         )
 
 
@@ -1370,6 +1462,60 @@ def test_not_applicable_cells_rest_on_a_live_coherence_rule():
         assert MATRIX[vector]["firefox"][0] == NOT_APPLICABLE
 
 
+def test_the_stealth_not_applicable_cell_rests_on_a_measured_outcome():
+    # THE THIRD NOT_APPLICABLE CELL, and its constraint is a DIFFERENT KIND
+    # from the two above — which is exactly why it is asserted here separately
+    # rather than folded into that parametrize. ``mobile`` and ``canvas_ctx``
+    # rest on a CONSTRUCTION rule persona itself owns (coherence refuses a
+    # mobile Firefox), so their constraint is assertable in-process against
+    # ``coherence``. ``stealth`` rests on a fact about MOZILLA'S BROWSER —
+    # Gecko never shipped either API — which no module in this tree can be
+    # asked about, because persona does not own it.
+    #
+    # ⚠️ SO THE OUTCOME IS ASSERTED WHERE IT CAN BE MEASURED, AND THIS TEST
+    # SAYS WHERE. The rule that file's sibling states — assert the OUTCOME the
+    # cell depends on, not whichever rule happens to answer today — is honoured
+    # by ``tests/test_ps350_ff_stealth_live.py``, which LAUNCHES a real stock
+    # Firefox and asserts that it exposes neither API. That suite skips where
+    # no stock control is provisioned (no CI job downloads an upstream
+    # Firefox), so its offline half re-reads the committed reading on every run
+    # instead, with no browser at all.
+    #
+    # What THIS test pins is the pairing itself: the cell claims
+    # NOT_APPLICABLE, the reading that established it is still in the tree, and
+    # the suite that asserts its outcome still exists. Delete either and the
+    # cell becomes a position resting on nothing — the exact silent degradation
+    # this matrix exists to prevent.
+    assert MATRIX["stealth"]["firefox"][0] == NOT_APPLICABLE
+    reading = REPO_ROOT / "readings" / "ps350-2026-09-09" / "reading.json"
+    assert reading.is_file(), (
+        "the reading the firefox:stealth cell was established from is gone. "
+        "Either restore it or restate the cell — do not leave a cell resting "
+        "on a measurement the tree no longer holds."
+    )
+    live = REPO_ROOT / "tests" / "test_ps350_ff_stealth_live.py"
+    assert live.is_file(), (
+        "the suite that asserts the firefox:stealth cell's constraint against "
+        "a real stock Firefox is gone, so nothing checks the outcome the cell "
+        "depends on. A NOT_APPLICABLE cell must name a constraint AND have it "
+        "asserted."
+    )
+    # The reading must still SAY what the cell claims. Read here rather than
+    # merely existence-checked: a file that was emptied or re-measured to a
+    # different answer would satisfy the assertions above while the cell went
+    # on citing it.
+    record = json.loads(reading.read_text(encoding="utf-8"))
+    stock = record["rows"]["A1_stock_control"]
+    for realm in ("window", "worker"):
+        assert stock[realm]["apiPresence[navigator.connection]"] == "undefined"
+        assert stock[realm]["apiPresence[NetworkInformation]"] == "undefined"
+        assert stock[realm]["stealth.contentIndex"] == {"hasIndex": False}, (
+            "the committed STOCK reading no longer shows a real Firefox "
+            "missing this vector's APIs, so 'not applicable' is no longer what "
+            "it establishes. RE-MEASURE and restate the cell."
+        )
+
+
 def test_firefox_os_type_absence_is_coherent_not_a_gap():
     # The honesty clause, pinned. os_type legitimately appears zero times on the
     # Firefox launch path, and that is NOT an uncovered vector: the engine
@@ -1455,8 +1601,23 @@ def test_the_open_cells_are_the_deliverable_and_are_named():
         if row[engine][0] == NOT_ESTABLISHED
     }
     assert unknown == {
-        "firefox:stealth",
         "firefox:measuretext",
+        # "firefox:stealth" was here until PS-350 established it BY
+        # MEASUREMENT — and it is the one cell of this set whose question
+        # could only be answered by a browser persona DOES NOT SHIP. The
+        # plausible position was "a real Firefox is missing these APIs too",
+        # which is a claim about TWO browsers; the 20 committed Firefox
+        # artifacts are all persona's own engine and could never answer the
+        # second half at any sample size. So a STOCK Firefox 151.0 was
+        # launched beside persona's firefox-29 (also 151.0) on one host in one
+        # run — readings/ps350-2026-09-09/ — and they agree on all 12 rows in
+        # both realms. Its deletion IS that commit's record; the cell now
+        # reads NOT_APPLICABLE, the constraint it names is asserted live
+        # against a real stock browser by
+        # ``tests/test_ps350_ff_stealth_live.py``, and the absence itself is
+        # still guarded from BOTH sides by
+        # ``test_the_established_stealth_absence_is_still_an_absence``.
+        #
         # "firefox:device" was here until PS-330 established it BY MEASUREMENT
         # — a real headful launch reading what a page receives from
         # enumerateDevices(), on three profiles with three distinct seeds.
