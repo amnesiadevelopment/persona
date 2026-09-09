@@ -102,6 +102,8 @@ import importlib.util
 import json
 import os
 import pathlib
+import re
+import shutil
 import subprocess
 import sys
 
@@ -600,6 +602,157 @@ def test_the_falsification_script_reports_the_guard_is_now_sighted():
     assert "GUARD IS SIGHTED" in result.stdout, result.stdout
     assert "FALSE GREEN DEMONSTRATED" not in result.stdout, (
         "the tree-presence guard is blind to a reverted patch 001 again"
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# THE SCRIPT'S OWN PORTABILITY — the guard the guard needed
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# `sed -i` is TWO different commands wearing one spelling. GNU sed (Linux, and
+# Git Bash on the Windows runner) treats the backup suffix as OPTIONAL; BSD sed
+# (every macOS runner) treats it as MANDATORY and POSITIONAL, so `sed -i -e …`
+# swallows `-e` as the suffix and dies with `sed: -e: No such file or directory`.
+#
+# ⛔ THIS IS NOT HYPOTHETICAL. It reddened `tests (macos-latest, main)` on PR
+# #310 while ubuntu-24.04 and windows-latest both stayed GREEN — and the test
+# above, which RUNS the script, passed on two of the three runners with the bug
+# fully present. Running a script is not the same as running it on the dialect
+# that breaks it, and the difference is invisible from a Linux container.
+#
+# ⚠️ THE SHAPE OF THE FAILURE MATTERS MORE THAN THE FIX. The script exits
+# NON-ZERO, which is why it was caught at all. Had it exited 0 with the sabotage
+# step silently skipped, the demonstration would have printed a verdict about a
+# tree it never modified — a false green inside the very script this ticket
+# shipped to remove a false green.
+#
+# So the guard below does not grep for `sed -i`; it EXECUTES the real script
+# with a BSD-dialect `sed` shim ahead of it on PATH. A grep would pin today's
+# spelling; this pins the BEHAVIOUR, and fires for any other GNU-only construct
+# the script grows later.
+_BSD_SED_SHIM = r"""#!/bin/sh
+# Emulate BSD (macOS) sed's -i: the following argument is a MANDATORY suffix.
+args=""
+while [ $# -gt 0 ]; do
+  if [ "$1" = "-i" ]; then
+    shift
+    [ $# -eq 0 ] && { echo "sed: option requires an argument -- i" >&2; exit 1; }
+    case "$1" in
+      -*) echo "sed: $1: No such file or directory" >&2; exit 1 ;;
+    esac
+    shift
+    continue
+  fi
+  args="$args
+$1"
+  shift
+done
+IFS='
+'
+# shellcheck disable=SC2086
+exec {REAL_SED} $args
+"""
+
+
+def _bsd_sed_dir(tmp_path):
+    """A directory holding a `sed` that refuses GNU-only `-i` the way BSD does."""
+    real = shutil.which("sed")
+    if real is None:  # pragma: no cover — no sed at all
+        pytest.skip("no sed on PATH")
+    shim_dir = tmp_path / "bsdsed"
+    shim_dir.mkdir()
+    shim = shim_dir / "sed"
+    shim.write_text(_BSD_SED_SHIM.replace("{REAL_SED}", real), encoding="utf-8")
+    shim.chmod(0o755)
+    return shim_dir, real
+
+
+def test_the_bsd_sed_shim_actually_rejects_the_gnu_only_form(tmp_path):
+    """⛔ POSITIVE CONTROL for the shim itself, before anything is concluded from it.
+
+    A shim that silently forwards everything would make the macOS guard below
+    pass on a script that is still broken — the shim would be the false green.
+    So assert BOTH directions: the GNU-only form must die exactly as BSD sed
+    dies, and the portable form must still work.
+    """
+    shim_dir, _ = _bsd_sed_dir(tmp_path)
+    env = {**os.environ, "PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}"}
+    target = tmp_path / "f.txt"
+
+    target.write_text("alpha\n", encoding="utf-8")
+    gnu_only = subprocess.run(  # noqa: S603
+        ["sed", "-i", "-e", "s/alpha/beta/", str(target)],
+        capture_output=True, text=True, encoding="utf-8", env=env, check=False,
+    )
+    assert gnu_only.returncode != 0, "the shim accepted `sed -i -e`; BSD sed does not"
+    assert "No such file or directory" in gnu_only.stderr, gnu_only.stderr
+    assert target.read_text(encoding="utf-8") == "alpha\n", "the file was edited anyway"
+
+    portable = subprocess.run(  # noqa: S603
+        ["sed", "s/alpha/beta/", str(target)],
+        capture_output=True, text=True, encoding="utf-8", env=env, check=False,
+    )
+    assert portable.returncode == 0, portable.stderr
+    assert portable.stdout == "beta\n", portable.stdout
+
+
+def test_the_falsification_script_runs_on_the_macos_sed_dialect(tmp_path):
+    """⛔ The script must reach the SAME verdict under BSD sed as under GNU sed.
+
+    This is the test that would have caught PR #310's macOS-only failure from a
+    Linux container. It reproduces the dialect rather than the platform, so it
+    runs on every runner instead of only on the one that breaks.
+
+    Asserting the VERDICT, not merely exit 0: a script that dies before the
+    sabotage step could still be made to exit 0 by a careless `|| true`, and
+    would then report a verdict about an unmodified tree.
+    """
+    if os.name == "nt":  # pragma: no cover — the script is POSIX shell
+        pytest.skip("POSIX shell script")
+    shim_dir, _ = _bsd_sed_dir(tmp_path)
+    result = subprocess.run(  # noqa: S603
+        ["bash", str(FALSIFY_SH)],
+        cwd=str(REPO),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env={**os.environ, "PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}"},
+        check=False,
+    )
+    assert result.returncode == 0, (
+        "the falsification script fails under BSD sed — this is the "
+        f"macos-latest failure, reproduced:\n{result.stdout}\n{result.stderr}"
+    )
+    assert "GUARD IS SIGHTED" in result.stdout, result.stdout
+    assert "sabotage applied" in result.stdout, (
+        "the script exited 0 without reaching the sabotage step, so its verdict "
+        f"describes a tree it never modified:\n{result.stdout}"
+    )
+
+
+def test_no_shell_script_uses_the_gnu_only_in_place_sed_form():
+    """Ratchet: `sed -i` must not re-enter the repo's shell scripts.
+
+    The executable guard above covers ONE script. This covers the other eleven,
+    at a cost of one regex — and it is the cheaper half, because the defect is
+    a spelling with a portable alternative rather than a subtle behaviour.
+
+    ⚠️ Read a green run as "no `sed -i` in tracked shell scripts", never as
+    "these scripts are portable". Other GNU-isms (`grep -P`, `readlink -f`,
+    `date -d`) are NOT modeled here; the bound is stated rather than implied.
+    """
+    offenders = []
+    for script in sorted((REPO / "scripts").glob("*.sh")):
+        for lineno, line in enumerate(
+            script.read_text(encoding="utf-8").splitlines(), start=1
+        ):
+            code = line.split("#", 1)[0]
+            if re.search(r"(?:^|[|;&(\s])sed\s+(?:-[a-zA-Z]+\s+)*-i(?:\s|$)", code):
+                offenders.append(f"{script.relative_to(REPO)}:{lineno}: {line.strip()}")
+    assert not offenders, (
+        "`sed -i` is GNU-only in this form and dies on macOS runners. Write "
+        "through a temp file and `mv` it, as scripts/ps374_falsify_patch_evidence.sh "
+        "does with sed_inplace().\n" + "\n".join(offenders)
     )
 
 
