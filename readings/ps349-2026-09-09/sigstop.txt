@@ -1,0 +1,75 @@
+{"meta": "preflight", "arm": "sigstop", "engine_pids_before_launch": [], "clean_box": true, "period_s": 2.0, "kernel": "6.8.0-138-generic"}
+{"t": 0.0, "nproc": 0, "alive": false, "cpu": null, "ctxt_v": null, "ctxt_nv": null, "rss_mb": 0.0, "threads": 0, "st": {}, "wchan": {}}
+{"meta": "subject", "t": 0.0, "line": "SUBJ 0.0 arm=sigstop profile=ps349-sigstop pid=24486"}
+{"meta": "subject", "t": 0.5, "line": "SUBJ 0.4 spawned handle=InvisibleProcess"}
+{"t": 2.0, "nproc": 5, "alive": true, "cpu": null, "ctxt_v": null, "ctxt_nv": null, "rss_mb": 422.7, "threads": 119, "st": {"R": 2, "S": 117}, "wchan": {"futex_wait_queue": 93, "ep_poll": 7, "do_poll.constprop.0": 6, "pipe_read": 4, "__skb_wait_for_more_packets": 4, "0": 3}}
+{"t": 4.0, "nproc": 10, "alive": true, "cpu": 164.8, "ctxt_v": 1505, "ctxt_nv": 280, "rss_mb": 965.1, "threads": 253, "st": {"R": 1, "S": 252}, "wchan": {"futex_wait_queue": 207, "do_poll.constprop.0": 12, "ep_poll": 12, "pipe_read": 9, "__skb_wait_for_more_packets": 9, "0": 2}}
+{"meta": "subject", "t": 4.6, "line": "SUBJ 4.5 first-eval ok=True 0.08s  -> 2"}
+{"meta": "subject", "t": 4.6, "line": "SUBJ 4.5 ENGINE_PIDS [24502, 24550, 24602, 24610, 24618, 24653, 24705, 24713, 24715, 24719]"}
+{"meta": "mark", "mark": "READY", "t": 4.6, "line": "SUBJ 4.5 READY"}
+{"meta": "subject", "t": 4.6, "line": "SUBJ 4.5 DEGRADE sigstop 10 pids"}
+{"meta": "mark", "mark": "DEGRADED", "t": 4.6, "line": "SUBJ 4.5 DEGRADED"}
+{"t": 6.0, "nproc": 10, "alive": true, "cpu": 47.3, "ctxt_v": 457, "ctxt_nv": 90, "rss_mb": 1028.2, "threads": 253, "st": {"T": 253}, "wchan": {"do_signal_stop": 253}}
+{"t": 8.1, "nproc": 10, "alive": true, "cpu": 0.0, "ctxt_v": 0, "ctxt_nv": 0, "rss_mb": 1028.2, "threads": 253, "st": {"T": 253}, "wchan": {"do_signal_stop": 253}}
+{"t": 10.1, "nproc": 10, "alive": true, "cpu": 0.0, "ctxt_v": 0, "ctxt_nv": 0, "rss_mb": 1028.2, "threads": 253, "st": {"T": 253}, "wchan": {"do_signal_stop": 253}}
+{"t": 12.1, "nproc": 10, "alive": true, "cpu": 0.0, "ctxt_v": 0, "ctxt_nv": 0, "rss_mb": 1028.2, "threads": 253, "st": {"T": 253}, "wchan": {"do_signal_stop": 253}}
+{"t": 14.1, "nproc": 10, "alive": true, "cpu": 0.0, "ctxt_v": 0, "ctxt_nv": 0, "rss_mb": 1028.2, "threads": 253, "st": {"T": 253}, "wchan": {"do_signal_stop": 253}}
+{"t": 16.2, "nproc": 10, "alive": true, "cpu": 0.0, "ctxt_v": 0, "ctxt_nv": 0, "rss_mb": 1028.2, "threads": 253, "st": {"T": 253}, "wchan": {"do_signal_stop": 253}}
+{"t": 18.2, "nproc": 10, "alive": true, "cpu": 0.0, "ctxt_v": 0, "ctxt_nv": 0, "rss_mb": 1028.2, "threads": 253, "st": {"T": 253}, "wchan": {"do_signal_stop": 253}}
+{"t": 20.2, "nproc": 10, "alive": true, "cpu": 0.0, "ctxt_v": 0, "ctxt_nv": 0, "rss_mb": 1028.2, "threads": 253, "st": {"T": 253}, "wchan": {"do_signal_stop": 253}}
+{"t": 22.2, "nproc": 10, "alive": true, "cpu": 0.0, "ctxt_v": 0, "ctxt_nv": 0, "rss_mb": 1028.2, "threads": 253, "st": {"T": 253}, "wchan": {"do_signal_stop": 253}}
+{"t": 24.2, "nproc": 10, "alive": true, "cpu": 0.0, "ctxt_v": 0, "ctxt_nv": 0, "rss_mb": 1028.2, "threads": 253, "st": {"T": 253}, "wchan": {"do_signal_stop": 253}}
+{"meta": "subject", "t": 24.6, "line": "SUBJ 24.5 post-degrade-eval ok=True 20.0s"}
+{"t": 26.3, "nproc": 10, "alive": true, "cpu": 0.0, "ctxt_v": 0, "ctxt_nv": 0, "rss_mb": 1028.2, "threads": 253, "st": {"T": 253}, "wchan": {"do_signal_stop": 253}}
+{"t": 28.3, "nproc": 10, "alive": true, "cpu": 0.0, "ctxt_v": 0, "ctxt_nv": 0, "rss_mb": 1028.2, "threads": 253, "st": {"T": 253}, "wchan": {"do_signal_stop": 253}}
+{"t": 30.3, "nproc": 10, "alive": true, "cpu": 0.0, "ctxt_v": 0, "ctxt_nv": 0, "rss_mb": 1028.2, "threads": 253, "st": {"T": 253}, "wchan": {"do_signal_stop": 253}}
+{"t": 32.3, "nproc": 10, "alive": true, "cpu": 0.0, "ctxt_v": 0, "ctxt_nv": 0, "rss_mb": 1028.2, "threads": 253, "st": {"T": 253}, "wchan": {"do_signal_stop": 253}}
+{"t": 34.3, "nproc": 10, "alive": true, "cpu": 0.0, "ctxt_v": 0, "ctxt_nv": 0, "rss_mb": 1028.2, "threads": 253, "st": {"T": 253}, "wchan": {"do_signal_stop": 253}}
+{"t": 36.4, "nproc": 10, "alive": true, "cpu": 0.0, "ctxt_v": 0, "ctxt_nv": 0, "rss_mb": 1028.2, "threads": 253, "st": {"T": 253}, "wchan": {"do_signal_stop": 253}}
+{"t": 38.4, "nproc": 10, "alive": true, "cpu": 0.0, "ctxt_v": 0, "ctxt_nv": 0, "rss_mb": 1028.2, "threads": 253, "st": {"T": 253}, "wchan": {"do_signal_stop": 253}}
+{"t": 40.4, "nproc": 10, "alive": true, "cpu": 0.0, "ctxt_v": 0, "ctxt_nv": 0, "rss_mb": 1028.2, "threads": 253, "st": {"T": 253}, "wchan": {"do_signal_stop": 253}}
+{"t": 42.4, "nproc": 10, "alive": true, "cpu": 0.0, "ctxt_v": 0, "ctxt_nv": 0, "rss_mb": 1028.2, "threads": 253, "st": {"T": 253}, "wchan": {"do_signal_stop": 253}}
+{"t": 44.4, "nproc": 10, "alive": true, "cpu": 0.0, "ctxt_v": 0, "ctxt_nv": 0, "rss_mb": 1028.2, "threads": 253, "st": {"T": 253}, "wchan": {"do_signal_stop": 253}}
+{"t": 46.5, "nproc": 10, "alive": true, "cpu": 0.0, "ctxt_v": 0, "ctxt_nv": 0, "rss_mb": 1028.2, "threads": 253, "st": {"T": 253}, "wchan": {"do_signal_stop": 253}}
+{"t": 48.5, "nproc": 10, "alive": true, "cpu": 0.0, "ctxt_v": 0, "ctxt_nv": 0, "rss_mb": 1028.2, "threads": 253, "st": {"T": 253}, "wchan": {"do_signal_stop": 253}}
+{"t": 50.5, "nproc": 10, "alive": true, "cpu": 0.0, "ctxt_v": 0, "ctxt_nv": 0, "rss_mb": 1028.2, "threads": 253, "st": {"T": 253}, "wchan": {"do_signal_stop": 253}}
+{"t": 52.5, "nproc": 10, "alive": true, "cpu": 0.0, "ctxt_v": 0, "ctxt_nv": 0, "rss_mb": 1028.2, "threads": 253, "st": {"T": 253}, "wchan": {"do_signal_stop": 253}}
+{"t": 54.5, "nproc": 10, "alive": true, "cpu": 0.0, "ctxt_v": 0, "ctxt_nv": 0, "rss_mb": 1028.2, "threads": 253, "st": {"T": 253}, "wchan": {"do_signal_stop": 253}}
+{"t": 56.6, "nproc": 10, "alive": true, "cpu": 0.0, "ctxt_v": 0, "ctxt_nv": 0, "rss_mb": 1028.2, "threads": 253, "st": {"T": 253}, "wchan": {"do_signal_stop": 253}}
+{"t": 58.6, "nproc": 10, "alive": true, "cpu": 0.0, "ctxt_v": 0, "ctxt_nv": 0, "rss_mb": 1028.2, "threads": 253, "st": {"T": 253}, "wchan": {"do_signal_stop": 253}}
+{"t": 60.6, "nproc": 10, "alive": true, "cpu": 0.0, "ctxt_v": 0, "ctxt_nv": 0, "rss_mb": 1028.2, "threads": 253, "st": {"T": 253}, "wchan": {"do_signal_stop": 253}}
+{"t": 62.6, "nproc": 10, "alive": true, "cpu": 0.0, "ctxt_v": 0, "ctxt_nv": 0, "rss_mb": 1028.2, "threads": 253, "st": {"T": 253}, "wchan": {"do_signal_stop": 253}}
+{"t": 64.6, "nproc": 10, "alive": true, "cpu": 0.0, "ctxt_v": 0, "ctxt_nv": 0, "rss_mb": 1028.2, "threads": 253, "st": {"T": 253}, "wchan": {"do_signal_stop": 253}}
+{"t": 66.7, "nproc": 10, "alive": true, "cpu": 0.0, "ctxt_v": 0, "ctxt_nv": 0, "rss_mb": 1028.2, "threads": 253, "st": {"T": 253}, "wchan": {"do_signal_stop": 253}}
+{"t": 68.7, "nproc": 10, "alive": true, "cpu": 0.0, "ctxt_v": 0, "ctxt_nv": 0, "rss_mb": 1028.2, "threads": 253, "st": {"T": 253}, "wchan": {"do_signal_stop": 253}}
+{"t": 70.7, "nproc": 10, "alive": true, "cpu": 0.0, "ctxt_v": 0, "ctxt_nv": 0, "rss_mb": 1028.2, "threads": 253, "st": {"T": 253}, "wchan": {"do_signal_stop": 253}}
+{"t": 72.7, "nproc": 10, "alive": true, "cpu": 0.0, "ctxt_v": 0, "ctxt_nv": 0, "rss_mb": 1028.2, "threads": 253, "st": {"T": 253}, "wchan": {"do_signal_stop": 253}}
+{"t": 74.7, "nproc": 10, "alive": true, "cpu": 0.0, "ctxt_v": 0, "ctxt_nv": 0, "rss_mb": 1028.2, "threads": 253, "st": {"T": 253}, "wchan": {"do_signal_stop": 253}}
+{"t": 76.8, "nproc": 10, "alive": true, "cpu": 0.0, "ctxt_v": 0, "ctxt_nv": 0, "rss_mb": 1028.2, "threads": 253, "st": {"T": 253}, "wchan": {"do_signal_stop": 253}}
+{"t": 78.8, "nproc": 10, "alive": true, "cpu": 0.0, "ctxt_v": 0, "ctxt_nv": 0, "rss_mb": 1028.2, "threads": 253, "st": {"T": 253}, "wchan": {"do_signal_stop": 253}}
+{"t": 80.8, "nproc": 10, "alive": true, "cpu": 0.0, "ctxt_v": 0, "ctxt_nv": 0, "rss_mb": 1028.2, "threads": 253, "st": {"T": 253}, "wchan": {"do_signal_stop": 253}}
+{"t": 82.8, "nproc": 10, "alive": true, "cpu": 0.0, "ctxt_v": 0, "ctxt_nv": 0, "rss_mb": 1028.2, "threads": 253, "st": {"T": 253}, "wchan": {"do_signal_stop": 253}}
+{"t": 84.8, "nproc": 10, "alive": true, "cpu": 0.0, "ctxt_v": 0, "ctxt_nv": 0, "rss_mb": 1028.2, "threads": 253, "st": {"T": 253}, "wchan": {"do_signal_stop": 253}}
+{"t": 86.9, "nproc": 10, "alive": true, "cpu": 0.0, "ctxt_v": 0, "ctxt_nv": 0, "rss_mb": 1028.2, "threads": 253, "st": {"T": 253}, "wchan": {"do_signal_stop": 253}}
+{"t": 88.9, "nproc": 10, "alive": true, "cpu": 0.0, "ctxt_v": 0, "ctxt_nv": 0, "rss_mb": 1028.2, "threads": 253, "st": {"T": 253}, "wchan": {"do_signal_stop": 253}}
+{"t": 90.9, "nproc": 10, "alive": true, "cpu": 0.0, "ctxt_v": 0, "ctxt_nv": 0, "rss_mb": 1028.2, "threads": 253, "st": {"T": 253}, "wchan": {"do_signal_stop": 253}}
+{"t": 92.9, "nproc": 10, "alive": true, "cpu": 0.0, "ctxt_v": 0, "ctxt_nv": 0, "rss_mb": 1028.2, "threads": 253, "st": {"T": 253}, "wchan": {"do_signal_stop": 253}}
+{"t": 94.9, "nproc": 10, "alive": true, "cpu": 0.0, "ctxt_v": 0, "ctxt_nv": 0, "rss_mb": 1028.2, "threads": 253, "st": {"T": 253}, "wchan": {"do_signal_stop": 253}}
+{"t": 97.0, "nproc": 10, "alive": true, "cpu": 0.0, "ctxt_v": 0, "ctxt_nv": 0, "rss_mb": 1028.2, "threads": 253, "st": {"T": 253}, "wchan": {"do_signal_stop": 253}}
+{"t": 99.0, "nproc": 10, "alive": true, "cpu": 0.0, "ctxt_v": 0, "ctxt_nv": 0, "rss_mb": 1028.2, "threads": 253, "st": {"T": 253}, "wchan": {"do_signal_stop": 253}}
+{"t": 101.0, "nproc": 10, "alive": true, "cpu": 0.0, "ctxt_v": 0, "ctxt_nv": 0, "rss_mb": 1028.2, "threads": 253, "st": {"T": 253}, "wchan": {"do_signal_stop": 253}}
+{"t": 103.0, "nproc": 10, "alive": true, "cpu": 0.0, "ctxt_v": 0, "ctxt_nv": 0, "rss_mb": 1028.2, "threads": 253, "st": {"T": 253}, "wchan": {"do_signal_stop": 253}}
+{"t": 105.0, "nproc": 10, "alive": true, "cpu": 0.0, "ctxt_v": 0, "ctxt_nv": 0, "rss_mb": 1028.2, "threads": 253, "st": {"T": 253}, "wchan": {"do_signal_stop": 253}}
+{"t": 107.1, "nproc": 10, "alive": true, "cpu": 0.0, "ctxt_v": 0, "ctxt_nv": 0, "rss_mb": 1028.2, "threads": 253, "st": {"T": 253}, "wchan": {"do_signal_stop": 253}}
+{"t": 109.1, "nproc": 10, "alive": true, "cpu": 0.0, "ctxt_v": 0, "ctxt_nv": 0, "rss_mb": 1028.2, "threads": 253, "st": {"T": 253}, "wchan": {"do_signal_stop": 253}}
+{"t": 111.1, "nproc": 10, "alive": true, "cpu": 0.0, "ctxt_v": 0, "ctxt_nv": 0, "rss_mb": 1028.2, "threads": 253, "st": {"T": 253}, "wchan": {"do_signal_stop": 253}}
+{"t": 113.1, "nproc": 10, "alive": true, "cpu": 0.0, "ctxt_v": 0, "ctxt_nv": 0, "rss_mb": 1028.2, "threads": 253, "st": {"T": 253}, "wchan": {"do_signal_stop": 253}}
+{"t": 115.1, "nproc": 10, "alive": true, "cpu": 0.0, "ctxt_v": 0, "ctxt_nv": 0, "rss_mb": 1028.2, "threads": 253, "st": {"T": 253}, "wchan": {"do_signal_stop": 253}}
+{"t": 117.2, "nproc": 10, "alive": true, "cpu": 0.0, "ctxt_v": 0, "ctxt_nv": 0, "rss_mb": 1028.2, "threads": 253, "st": {"T": 253}, "wchan": {"do_signal_stop": 253}}
+{"t": 119.2, "nproc": 10, "alive": true, "cpu": 0.0, "ctxt_v": 0, "ctxt_nv": 0, "rss_mb": 1028.2, "threads": 253, "st": {"T": 253}, "wchan": {"do_signal_stop": 253}}
+{"t": 121.2, "nproc": 10, "alive": true, "cpu": 0.0, "ctxt_v": 0, "ctxt_nv": 0, "rss_mb": 1028.2, "threads": 253, "st": {"T": 253}, "wchan": {"do_signal_stop": 253}}
+{"t": 123.2, "nproc": 10, "alive": true, "cpu": 0.0, "ctxt_v": 0, "ctxt_nv": 0, "rss_mb": 1028.2, "threads": 253, "st": {"T": 253}, "wchan": {"do_signal_stop": 253}}
+{"meta": "mark", "mark": "TEARDOWN", "t": 124.6, "line": "SUBJ 124.5 TEARDOWN"}
+{"t": 125.2, "nproc": 5, "alive": true, "cpu": 57.0, "ctxt_v": 385, "ctxt_nv": 31, "rss_mb": 553.0, "threads": 92, "st": {"R": 1, "S": 90}, "wchan": {"futex_wait_queue": 67, "ep_poll": 7, "do_poll.constprop.0": 6, "pipe_read": 4, "__skb_wait_for_more_packets": 4, "0": 1}}
+{"meta": "subject", "t": 125.3, "line": "SUBJ 125.3 RESULT {\"arm\": \"sigstop\", \"profile\": \"ps349-sigstop\", \"subject_pid\": 24486, \"pings\": [], \"first_eval\": {\"ok\": true, \"s\": 0.08, \"detail\": \"\"}, \"engine_pids_at_ready\": [24502, 24550, 24602, 24610, 24618, 24653, 24705, 24713, 24715, 24719], \"stopped_pids\": [24502, 24550, 24602, 24610, 24618, 24653, 24705, 24713, 24715, 24719], \"post_degrade_eval\": {\"ok\": true, \"s\": 20.0, \"detail\": \"\"}, \"ou"}
+{"meta": "child_exit", "rc": 0, "t": 127.3, "marks": [{"mark": "READY", "t": 4.6}, {"mark": "DEGRADED", "t": 4.6}, {"mark": "TEARDOWN", "t": 124.6}]}
