@@ -43,6 +43,14 @@ TREE_REUSED="${TREE_REUSED:-}"
 # licenses the "16 fingerprint patches" claim below; anything else means the
 # claim is unbacked and the manifest says so instead of asserting it.
 PATCHES_VERIFIED="${PATCHES_VERIFIED:-}"
+# PS-359 — the THIRD result: did the compiled tree become an artifact somebody
+# else can launch? Until PS-359 the binary upload shipped two files out of a
+# runtime tree, which died on any machine that had not built them with an ICU
+# error that reads like a broken compile. So "compiled" and "packaged" are two
+# results, exactly as "applied" and "compiled" are two, and this manifest's one
+# job is never to let two results collapse into one. Empty on a run predating
+# the packaging step.
+PACKAGE_RESULT="${PACKAGE_RESULT:-}"
 
 REC="record"
 mkdir -p "$REC"
@@ -143,6 +151,17 @@ say() {
   echo "|---|---|"
   echo "| **1. Patches APPLIED** (as text) | $(say "$PREPARE_RESULT") |"
   echo "| **2. Tree COMPILED** | $(say "$COMPILE_RESULT") |"
+  # PS-359 — the third row, and it is a THIRD RESULT rather than a detail of
+  # the second. A tree can compile perfectly and still yield an artifact nobody
+  # but the builder can launch; that was this workflow's actual behaviour for
+  # months, and it presented as a compile-shaped error message.
+  #
+  # Omitted entirely on a run that predates the packaging step, rather than
+  # rendered as "UNKNOWN" — a row claiming a result was not recorded is worse
+  # than no row when the step did not exist at all.
+  if [ -n "$PACKAGE_RESULT" ]; then
+    echo "| **3. Artifact PACKAGED** (runnable off this machine) | $(say "$PACKAGE_RESULT") |"
+  fi
   echo "| chrome binary on disk | ${BINARY_STATE} |"
   echo "| chrome sha256 | \`${BINARY_SHA}\` |"
   echo
@@ -171,6 +190,25 @@ say() {
     if [ "$TREE" = "unmodified" ]; then
       echo "The instrument is sound: this environment CAN build Chromium, so a failure"
       echo "on the patched tree is attributable to our patches rather than to the setup."
+    fi
+    # PS-359 — a compiled tree is not yet a usable one, and the difference is
+    # invisible until somebody tries to launch it somewhere else.
+    if [ "$PACKAGE_RESULT" = "failure" ]; then
+      echo
+      echo "⚠️ **Packaging FAILED, and that is not a build failure.** The tree compiled;"
+      echo "what failed was turning it into an artifact that runs on a machine that did"
+      echo "not build it. The uploaded artifact may therefore be incomplete — see"
+      echo "\`package-${TREE}.txt\`. Do not read this row as a finding about the patch layer."
+    elif [ "$PACKAGE_RESULT" = "success" ]; then
+      echo
+      echo "It was also **packaged with upstream's own packager**, so the uploaded artifact"
+      echo "carries the runtime tree rather than the bare executables. Before PS-359 this"
+      echo "workflow shipped two files out of \`out/Default\`, which died on any machine"
+      echo "that had not built them with \`Invalid file descriptor to ICU data received\`"
+      echo "— an error that reads like a broken compile and is not one."
+      echo
+      echo "**That the artifact was produced is not the same claim as that it launches.**"
+      echo "See \`package-${TREE}.txt\` for what was produced and what it establishes."
     fi
   elif [ "$COMPILE_RESULT" = "skipped" ]; then
     echo "The compile **was not attempted**. This is neither a pass nor a failure."
