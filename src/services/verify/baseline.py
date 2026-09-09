@@ -90,6 +90,7 @@ read on either side". See :class:`BaselineResult.ok`.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import time
@@ -118,6 +119,73 @@ BASELINE_ENGINE = "firefox"
 BASELINE_RESOLUTION = "1920x1080"
 BASELINE_SEARCH_ENGINE = "duckduckgo"
 BASELINE_REALMS: tuple[str, ...] = (WINDOW, WORKER)
+
+# The main-window geometry the RECORDER pins before every launch, in DEVICE px
+# (xulstore.json's own unit — see `_seed_window_size`'s docstring for the live
+# proof of that unit).
+#
+# WHY THIS EXISTS. `window.innerSize` is a WINDOW_ONLY probe that is neither
+# seed-derived nor an identity vector — its own note in `probes.py` says
+# "Window chrome geometry; differs with a resized window, not a spoof change."
+# Nothing in the recording path used to fix it, so the recorded value was
+# whatever default the ENGINE happened to choose. `_seed_window_size` looks like
+# it would, but it cannot: `_work_area()` returns (0, 0) on everything that is
+# not Windows and the helper bails on `if not (aw and ah)`, so on the
+# `ubuntu-24.04` runner the gate records under `xvfb-run` with no seeding at all.
+#
+# firefox-21 changed that default (1152 -> 1280 CSS px) and every later build
+# kept the new value, so `engine_gate compare` reported a moved probe on every
+# bump from firefox-20 onwards — permanently, for no security reason, beside two
+# genuine `canvas.readback` findings. `engine_gate.py` states the cost in its own
+# words: "a gate that is always red is a gate people learn to ignore, which is
+# worse than no gate." Pinning makes the geometry an INPUT to the recording
+# rather than an observation OF it, so the gate stops comparing two engines'
+# private defaults and the two canvas lines stand alone.
+#
+# ⛔ THIS DOES NOT BLIND ANYTHING. The probe still reports what it reads, still
+# diffs, and a genuine re-roll of window geometry still moves it — which is
+# exactly the property `behaviour_checks.py:20-65` protects when it refuses to
+# solve the same transient with an ignore list. What changes is that both sides
+# of an engine comparison are now sized by US, so a difference between them is
+# attributable to the engine.
+#
+# ⚠️ AND THE PIN IS SCOPED TO RECORDINGS THAT ASK FOR IT — read that claim with
+# this bound, because round 1 made it while the pin was unconditional and the
+# two sentences could not both be true. `_pin_recording_window` DEFERS to an
+# existing `xulstore.json`, so:
+#   * a FRESH recording (the gate's, always) is pinned — the rmtree removed the
+#     file, so the pin always writes, and both sides of a comparison are ours;
+#   * a WARM recording (`--reuse-profile`, and the launch-backed behavioural
+#     checks) keeps the profile's own persisted geometry.
+# That second line is what makes the first claim honest: `behaviour_checks.py`'s
+# restart-continuity model is a question ABOUT a profile's persisted state, so a
+# recorder that rewrote it on every launch would be writing over the thing being
+# observed — blinding, in that lane, exactly what this comment says it does not.
+#
+# WHY THESE NUMBERS. Two constraints, both from code:
+#   * It must stay inside the baseline profile's spoofed screen
+#     (BASELINE_RESOLUTION, 1920x1080 CSS px). A CSS innerWidth larger than
+#     `screen.width` is the #216 impossibility `_seed_window_size` caps against
+#     — no real un-maximized window is wider than its own screen. 1280x800
+#     device px at dpr 1.0 leaves the content area far below 1920x1080 with room
+#     to spare for window chrome at any plausible dpr the runner reports.
+#
+#     ⚠️ 800 IS THE OUTER WINDOW, NOT THE CONTENT AREA — stated because the AC7
+#     test asserts `800 < 1080` on the DEVICE figure while the invariant it
+#     stands for is about the CSS `innerHeight` a page reads. Live on the runner,
+#     an 800px window records `innerHeight: 687`: window chrome takes ~113px. So
+#     the real headroom is larger than the test's arithmetic suggests, and the
+#     assertion holds comfortably either way — but anyone RAISING this constant
+#     must reason from 687-per-800, not from 800, or they will size the window
+#     against the wrong number.
+#   * It must be an ORDINARY desktop window, because the recorded reading is a
+#     reference an operator's profile is compared against. 1280x800 is the
+#     engine's own post-firefox-21 default width beside a common laptop height,
+#     not a synthetic number that would itself read as a tell.
+#
+# The value is named HERE, once, rather than written as a literal at the call
+# site, so what the gate pins is readable in one place (AC1).
+BASELINE_WINDOW_SIZE: tuple[int, int] = (1280, 800)
 
 # The two channels the recorder can speak, canonical and lowercase.
 #
@@ -262,13 +330,55 @@ def baseline_profile(name: str = BASELINE_PROFILE_NAME) -> Profile:
     )
 
 
-def provenance(profile: Profile) -> dict:
+def _effective_window_size(profile: Profile) -> list[int] | None:
+    """The main-window geometry the recording ACTUALLY ran with, read back off
+    disk, or ``None`` when there is nothing to read.
+
+    WHY THIS IS READ RATHER THAN ASSUMED. :func:`provenance` reports the pinned
+    geometry as an INPUT, and that was honest while :func:`_pin_recording_window`
+    wrote unconditionally. It is not honest now that the pin DEFERS to a
+    profile's own persisted state: a warm (``fresh=False``) recording keeps
+    whatever the previous session left behind, so a provenance field naming
+    ``BASELINE_WINDOW_SIZE`` would claim an input that recording did not use.
+    An artifact that misreports its own inputs is worse than one that omits
+    them — it is the reference every later comparison is read against.
+
+    So this reports what the file says, whoever wrote it: the pin on a fresh
+    recording, the profile's own history on a warm one. ``None`` when the file
+    is absent or unreadable (the chromium arm never launches and never pins, and
+    a malformed file is not a geometry) — the field is then omitted rather than
+    guessed at.
+    """
+    from ...core.config import DATA_DIR
+    from ..browser.invisible_launch import _INVISIBLE_SUBDIR
+
+    path = os.path.join(
+        DATA_DIR, profile.name, _INVISIBLE_SUBDIR, "xulstore.json"
+    )
+    try:
+        with open(path, encoding="utf-8") as fh:
+            stored = json.load(fh)
+        main = stored["chrome://browser/content/browser.xhtml"]["main-window"]
+        return [int(main["width"]), int(main["height"])]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def provenance(profile: Profile, *, window_size: list[int] | None = None) -> dict:
     """How this recording was produced, as data.
 
     Recorded next to the readings so the next person can reproduce the artifact
     exactly instead of guessing which knobs were set.
+
+    ``window_size`` is the geometry the recording ACTUALLY ran with, supplied by
+    the caller that did the recording — see :func:`_effective_window_size` for
+    why it is measured rather than restated from ``BASELINE_WINDOW_SIZE``. The
+    key is OMITTED when it is unknown, which is the honest answer for a
+    recording that never launched a window; a caller reading this field can
+    therefore trust it, and a missing field says "not recorded" rather than
+    standing in for a value nobody observed.
     """
-    return {
+    out = {
         "profile_name": profile.name,
         "fingerprint_seed": profile.fingerprint_seed,
         "os_type": profile.os_type,
@@ -285,6 +395,19 @@ def provenance(profile: Profile) -> dict:
         # sees the caveat in the same file as the values it applies to.
         "env_sensitive_probes": list(ENV_SENSITIVE_PROBES),
     }
+    # The window geometry the recording ACTUALLY ran with, stated as data so a
+    # reader of a red `window.innerSize` diff can tell "the pin moved" from "the
+    # engine moved" without reading the recorder's source. Before the pin existed
+    # this field could not have been written honestly: the geometry was the
+    # engine's own default, i.e. an OBSERVATION, and provenance records INPUTS.
+    #
+    # ⚠️ MEASURED, NOT RESTATED. It is what the caller read back off disk, not
+    # `BASELINE_WINDOW_SIZE` — a warm recording defers to the profile's own
+    # persisted geometry, so naming the constant here would claim an input that
+    # recording did not use. Omitted entirely when unknown, rather than guessed.
+    if window_size is not None:
+        out["window_size"] = list(window_size)
+    return out
 
 
 # --- recording --------------------------------------------------------------
@@ -433,6 +556,110 @@ def _teardown(proc: Any, name: str) -> None:
     unregister_ff_eval(name)
 
 
+def _pin_recording_window(profile: Profile) -> str:
+    """Write the recorder's fixed main-window geometry, and say where.
+
+    Returns the path written, so the caller (and the tests) can assert on the
+    exact file the LAUNCH will read rather than on a directory that merely
+    looks right.
+
+    THREE THINGS ABOUT THE PATH, each found in code and each easy to get wrong:
+
+    1. It is the ENGINE's inner profile dir, not the outer data dir.
+       ``process.spawn_browser`` makes ``DATA_DIR/<name>/`` and then hands the
+       child ``profile_dir = os.path.join(profile_dir, ".invisible-profile")``
+       (``process.py:493``). ``_seed_window_size`` is called with THAT inner
+       path, so the file the launch consults is
+       ``DATA_DIR/<name>/.invisible-profile/xulstore.json``. A pin written one
+       level up is never read by anything.
+
+    2. The directory does not exist yet at this point, so it is created. On a
+       ``fresh`` recording the whole tree was just removed; on a warm one the
+       inner dir exists only if a previous launch made it.
+
+    3. ``_seed_window_size`` DEFERS to it. That helper early-returns when
+       ``xulstore.json`` is already present (``invisible_launch.py:914-916``),
+       and that early return happens before it writes anything — so the file we
+       leave here reaches the engine byte-for-byte. This is why the pin needs no
+       change to the seeding helper at all: it is not fighting it, it is using
+       the deferral the helper already promises to a user's own manual resize.
+
+    ⭐ AND THIS FUNCTION HONOURS THAT SAME DEFERRAL, which is the point of the
+    ``os.path.exists`` guard below. Round 1 wrote unconditionally and so was the
+    one write in this path that OVERRODE a persisted resize — the exact contract
+    ``_seed_window_size`` states ("a manual resize must survive relaunches") and
+    the exact contract this docstring claimed to be using. Executed against a
+    profile carrying real persisted state, the unconditional ``json.dump``
+    destroyed ``PersonalToolbar`` and ``sidebar-box`` and rewrote ``main-window``
+    — a comment asserting a property the code beneath it does not have.
+
+    ⚠️ SO NOT EVERY RECORDING IS PINNED, and a reader of a red diff needs to
+    know which:
+
+    * ``fresh=True`` — ALWAYS pinned. The rmtree in :func:`_record_on_firefox`
+      has just removed the whole tree, so the file cannot exist and the write
+      always happens. This is the GATE's path (``engine_gate.py`` records with
+      ``fresh=True`` unconditionally), so the gate is pinned on both sides and
+      ACs 1-7 are untouched by the guard.
+    * ``fresh=False`` — pinned only on the FIRST such recording, and thereafter
+      the profile's own persisted geometry wins. That is what ``--reuse-profile``
+      and the launch-backed behavioural checks want: ``fresh=False`` means "do
+      not wipe the data dir, start from what the previous session left behind",
+      and ``restart-continuity`` is asking a question ABOUT that state. A pin
+      that rewrote it every launch would be writing over the thing being
+      observed.
+
+    :func:`provenance` reports the pinned geometry, so it must be read with the
+    same scope: it states what the recorder pins, which is what the artifact it
+    accompanies was recorded with (that artifact is recorded ``fresh``).
+
+    ⚠️ THE CALL SITE IS PART OF THE FIX. This must run AFTER the ``fresh``
+    rmtree in :func:`_record_on_firefox` and BEFORE ``spawn_browser``. Written
+    before the rmtree it is deleted, and the recording silently falls back to
+    the engine's default — which is the exact defect, restored, and looking
+    green. ``test_the_window_pin_survives_a_fresh_recording`` holds that
+    ordering.
+
+    ONE PATH COULD STILL UNDO IT, and it is stated rather than assumed:
+    ``_init_places_db`` (``invisible_launch.py:1650-1666``) deletes
+    ``xulstore.json`` after its throwaway headless run. It is unreachable for
+    THIS profile — ``baseline_profile()`` sets ``bookmarks=[]`` (explicitly
+    cleared), and ``_seed_firefox_bookmarks`` returns immediately when places is
+    not ready and there are no bookmarks, so no init run happens. That is a
+    property of the pinned profile, not a guarantee of the launcher: a future
+    change that gives the baseline profile bookmarks would reintroduce the
+    unpinned reading, and the live check in AC4 is what would catch it.
+    """
+    from ...core.config import DATA_DIR
+    from ..browser.invisible_launch import _INVISIBLE_SUBDIR
+
+    width, height = BASELINE_WINDOW_SIZE
+    inner_dir = os.path.join(DATA_DIR, profile.name, _INVISIBLE_SUBDIR)
+    os.makedirs(inner_dir, exist_ok=True)
+    path = os.path.join(inner_dir, "xulstore.json")
+    if os.path.exists(path):
+        # Defer, exactly as `_seed_window_size` does to a user's manual resize.
+        # See the docstring: a warm recording's own persisted state is the thing
+        # the behavioural checks are observing, and must not be written over.
+        return path
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(
+            {
+                "chrome://browser/content/browser.xhtml": {
+                    "main-window": {
+                        "width": str(width),
+                        "height": str(height),
+                        "screenX": "0",
+                        "screenY": "0",
+                        "sizemode": "normal",
+                    }
+                }
+            },
+            fh,
+        )
+    return path
+
+
 def _record_on_firefox(
     profile: Profile, realms: tuple[str, ...], timeout: float, fresh: bool
 ) -> tuple[dict, str]:
@@ -474,6 +701,11 @@ def _record_on_firefox(
 
     if fresh:
         shutil.rmtree(os.path.join(DATA_DIR, profile.name), ignore_errors=True)
+
+    # AFTER the wipe, BEFORE the launch — the only seam where the pin both
+    # survives `fresh` and is in place when the engine reads it. See
+    # `_pin_recording_window` for why the order is load-bearing.
+    _pin_recording_window(profile)
 
     # in_process=True: the eval hook is published per-process, so a forked
     # session would register it somewhere this code cannot see.
@@ -629,7 +861,14 @@ def record_snapshot(
     snapshot = build_snapshot(
         results, engine=observed, profile=profile.name, realms=realms
     )
-    snapshot["provenance"] = provenance(profile)
+    # Read back AFTER the recording, so provenance states the geometry the
+    # launch actually ran with rather than the one the pin would have written.
+    # On the firefox arm this is the pin (fresh) or the profile's own persisted
+    # state (warm); on the chromium arm nothing launched and it reads None, so
+    # the field is omitted rather than fabricated.
+    snapshot["provenance"] = provenance(
+        profile, window_size=_effective_window_size(profile)
+    )
     return snapshot
 
 
@@ -862,6 +1101,7 @@ __all__ = [
     "BASELINE_ENGINE",
     "BASELINE_PROFILE_NAME",
     "BASELINE_REALMS",
+    "BASELINE_WINDOW_SIZE",
     "BaselineResult",
     "BaselineUnavailable",
     "baseline_profile",
