@@ -363,7 +363,21 @@ class SessionRegistry:
                     out.append(rec)
         return out
 
-    def _save_locked(self, records: list[SessionRecord]) -> None:
+    def _save_locked(self, records: list[SessionRecord]) -> bool:
+        """Write the file. **False if the write did not happen.**
+
+        ⚠️ THE RETURN VALUE EXISTS SO A NO-OP CAN BE REPORTED (PS-353). The
+        failure is SWALLOWED here on purpose — a registry that cannot be
+        written must never cost the user a session, which is the same
+        fail-open direction the whole module is built on — but swallowing the
+        exception must not also swallow the FACT. Before this returned
+        anything, `record()` answered True for a write this method had just
+        warned it could not perform, and `launcher.py`'s monitor logged "the
+        restart guard now covers this session" directly beneath that warning.
+        A safety catch whose failure is silent is the defect this module
+        exists to avoid; announcing a guard that is not there is worse still,
+        because it is the sentence the operator reads as the outcome.
+        """
         try:
             atomic_write_json(
                 self._path,
@@ -375,24 +389,41 @@ class SessionRegistry:
                 "launch guard will not survive a restart for these sessions.",
                 self._path, exc,
             )
+            return False
+        return True
 
     def record(self, rec: SessionRecord) -> bool:
         """Add or replace the record for ``rec.profile``. True if it was kept.
 
-        ⚠️ THE RETURN VALUE IS NOT DECORATIVE (PS-353). A record whose pid is
-        not probeable CANNOT SURVIVE ITS OWN FILE: ``from_json`` drops it on the
-        way back in, and — worse — the next ``record()`` of ANY profile rebuilds
-        this file from ``_load_locked()``, so the unreadable row is physically
-        ERASED and a post-mortem reader cannot even find the entry that would
-        explain a missing guard. Writing one is a silent no-op, and a safety
-        catch whose failure is silent is the defect this whole module exists to
-        avoid.
+        ⚠️ THE RETURN VALUE IS NOT DECORATIVE (PS-353), AND IT ANSWERS FOR
+        BOTH WAYS A WRITE CAN FAIL TO STICK — the record being unrepresentable,
+        and the file being unwritable. It is False for either.
+
+        **(1) A record whose pid is not probeable CANNOT SURVIVE ITS OWN
+        FILE:** ``from_json`` drops it on the way back in, and — worse — the
+        next ``record()`` of ANY profile rebuilds this file from
+        ``_load_locked()``, so the unreadable row is physically ERASED and a
+        post-mortem reader cannot even find the entry that would explain a
+        missing guard. Writing one is a silent no-op, and a safety catch whose
+        failure is silent is the defect this whole module exists to avoid.
 
         So it is REFUSED here and SAID OUT LOUD, rather than written and lost.
         This is a backstop, not the primary fix: :func:`make_record` already
         declines to build such a record, and callers are expected to notice
         there. It is kept because the constructor is public and a hand-built
         record must not be able to disappear either.
+
+        **(2) A write ``_save_locked`` could not perform did not happen.** That
+        failure is swallowed there (fail-open: an unwritable registry must not
+        cost a session), and this method used to fall through to ``return
+        True`` regardless — so a caller was told a row was kept that was
+        never written, and ``launcher.py``'s monitor announced "the restart
+        guard now covers this session" on the line after the warning saying it
+        does not. That is this ticket's own defect class reproduced in the API
+        added to fix it: a writer whose success signal cannot express its own
+        no-op. The outcome is now threaded through, so False means the guard
+        is genuinely absent for this session in BOTH cases and a caller that
+        gates its claims on it cannot overstate them.
         """
         if rec.pid <= 0:
             logger.warning(
@@ -406,8 +437,7 @@ class SessionRegistry:
         with self._lock:
             records = [r for r in self._load_locked() if r.profile != rec.profile]
             records.append(rec)
-            self._save_locked(records)
-        return True
+            return self._save_locked(records)
 
     def forget(self, profile: str) -> None:
         """Drop the record for ``profile``. Idempotent.

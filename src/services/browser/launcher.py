@@ -1508,6 +1508,19 @@ class BrowserLauncher:
                     if pending_engine is not None:
                         try:
                             rec = make_record_for_pid(name, pid, pending_engine)
+                            # ⛔ THE `and record(...)` IS THE GATE, NOT A TIDY
+                            # CHAIN. This INFO is the sentence an operator
+                            # reads as the OUTCOME, so it may only print when
+                            # a row is genuinely on disk. `record()` answers
+                            # False for both ways that fails — an
+                            # unrepresentable pid and an unwritable file — and
+                            # it warns in each, which is why there is no
+                            # `else` here: a second line would duplicate the
+                            # registry's own, and saying nothing beside its
+                            # warning is already the honest outcome. Before
+                            # `record()` reported its no-op, this line printed
+                            # directly beneath the warning that the guard
+                            # would NOT survive a restart (PS-353 audit).
                             if rec is not None and self._registry.record(rec):
                                 logger.info(
                                     "Durable running-session record for %s "

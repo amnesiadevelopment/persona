@@ -1447,9 +1447,26 @@ def _require_engine_driver():
     would silently retire real coverage over an unrelated missing package. The
     chromium half of every "both call sites" pair still runs here.
     """
+    # ⛔ THE WORDING IS LOAD-BEARING — DO NOT "IMPROVE" IT WITHOUT RE-MEASURING.
+    #
+    # `importorskip`'s `reason=` REPLACES its default text, and conftest.py's
+    # capability table classifies skips by SUBSTRING against that text. So a
+    # more helpful sentence that drops the matched stem leaves this skip
+    # classified as NOTHING, and a runner that declared `engine` then prints
+    # "ok engine: no test declined to run" beside `SKIPPED [6]` — six tests
+    # gone, three of them security-relevant egress-routing assertions, and the
+    # layer built to report exactly that reporting the opposite. Measured:
+    # this reason previously read "the PINNED engine driver is not installed",
+    # and that one extra word broke the match.
+    #
+    # The stem below is `conftest.CAPABILITIES["engine"]`'s third
+    # reason_pattern, which PS-371 added for precisely this shape and which
+    # tests/test_skip_visibility.py::test_the_pattern_is_the_stem_not_one_
+    # guards_exact_sentence pins: it is the ENVIRONMENT-INDEPENDENT part, so a
+    # guard may append its own detail after it and still classify.
     pytest.importorskip(
         "invisible_playwright",
-        reason="the pinned engine driver is not installed in this environment "
+        reason="the engine driver is not installed in this environment "
                "(CI installs it; see .github/workflows/ci.yml)",
     )
 

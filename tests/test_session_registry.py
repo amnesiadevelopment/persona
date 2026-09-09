@@ -381,3 +381,67 @@ def test_make_record_for_pid_records_a_pid_the_handle_never_carried(tmp_path):
         "a record built this way must be probeable — that is its whole point"
     )
     assert make_record_for_pid("ff-thread", 0, "firefox") is None
+
+
+def test_record_reports_a_write_that_did_not_happen(tmp_path):
+    """A WRITE THE FILESYSTEM REFUSED IS A NO-OP, AND `record()` MUST SAY SO.
+
+    This is the OTHER way a row fails to stick, and it is the one the pid
+    guard above cannot see: the record is perfectly representable, the guard
+    passes, and `_save_locked` then cannot write the file at all.
+
+    ⛔ THE FAILURE IS STILL SWALLOWED, AND THAT IS DELIBERATE — an unwritable
+    registry must never cost the user a session, which is this module's whole
+    fail-open direction. What must NOT also be swallowed is the FACT. Before
+    PS-353's audit, `record()` returned True here regardless, so
+    `launcher.py`'s monitor logged "the restart guard now covers this session"
+    on the line after the registry warned that it would not — a writer whose
+    success signal could not express its own no-op, which is the very defect
+    class this ticket was filed on, reproduced in the API added to fix it.
+
+    ⭐ THE CONTROL IS LOAD-BEARING. Without it a False here would be satisfied
+    by a `record()` that had simply stopped working; with it, the refusal is
+    located precisely at the unwritable path, and the same record on a
+    writable one is kept and reloads.
+    """
+    blocker = tmp_path / "notadir"
+    blocker.write_text("I am a file, so nothing can live underneath me")
+
+    unwritable = SessionRegistry(str(blocker / "s.json"))
+    subject = _record(profile="ff-thread", engine="firefox")
+
+    assert unwritable.record(subject) is False, (
+        "record() answered True for a write _save_locked could not perform — "
+        "a caller gating a 'the guard now covers this session' claim on this "
+        "value would announce a guard that does not exist"
+    )
+    assert unwritable.load() == [], "nothing can have been written"
+
+    writable = SessionRegistry(str(tmp_path / "s.json"))
+    assert writable.record(subject) is True, (
+        "the control must be kept, or this test says nothing about WHERE the "
+        "refusal comes from"
+    )
+    assert [r.profile for r in writable.load()] == ["ff-thread"]
+
+
+def test_a_registry_that_cannot_be_written_still_refuses_no_launch(tmp_path):
+    """FAIL-OPEN SURVIVES THE NEW RETURN VALUE.
+
+    Reporting the no-op must not become ENFORCING it. An unwritable registry
+    is the least informed state there is, and this module's header is explicit
+    that a false "already running" is worse than the double launch it set out
+    to prevent — so a False from `record()` is a statement about the GUARD,
+    never a veto over the session.
+    """
+    blocker = tmp_path / "notadir"
+    blocker.write_text("x")
+    reg = SessionRegistry(str(blocker / "s.json"))
+
+    reg.record(_record(profile="ff-thread", engine="firefox"))
+
+    assert reg.load() == []
+    assert reg.live_records() == ([], []), (
+        "an unwritable registry must yield no ALIVE record, so nothing it "
+        "holds can justify refusing a launch"
+    )
