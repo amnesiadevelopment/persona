@@ -1,0 +1,43 @@
+# Output of threshold_cost — what a distinct-colour guard costs
+
+== distinct-colour counts: reference renders vs real fingerprint canvases ==
+
+-- population A: reference / probe renders (what a detector fills) --
+   solid single fill                                   1
+   two-tone test pattern                               2
+   pixelscan canvasNoiseOn2d probe (per feder RE)     14
+   feder's kMaxRefColors ceiling                      16
+
+-- population B: antialiased text canvas (MODELLED, not captured) --
+   model: a glyph edge blends fg->bg over `steps` coverage levels;
+   each level is a distinct RGB triple. Counting unique triples.
+
+   fg/bg pairs    AA steps       distinct colours
+   1              8              9
+   1              16             17
+   1              32             33
+   1              64             65
+   1              256            249
+   2              8              18
+   2              16             34
+   2              32             66
+   2              64             130
+   2              256            396
+   3              8              27
+   3              16             51
+   3              32             99
+   3              64             195
+   3              256            499
+
+== the separation, and what threshold it admits ==
+   population A tops out at 16 distinct colours (feder's own ceiling).
+   population B starts, on the WEAKEST antialiasing modelled here
+   (1 colour pair, 8 coverage steps), at 9 and rises steeply.
+
+   ⚠️ THE POPULATIONS TOUCH at the weak end: 8-step AA on a single
+   colour pair yields 9, which is BELOW feder's 16. So a threshold of
+   16 is NOT free — it would exempt a hypothetical canvas drawn with a
+   single glyph in one colour at coarse AA. Whether such a canvas is a
+   real fingerprinting surface is a question for the host, not for me.
+   A conservative threshold (i.e. materially lower than 16) buys the
+   probe exemption with a strictly smaller exposed population.
