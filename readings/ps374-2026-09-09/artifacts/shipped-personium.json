@@ -48,7 +48,8 @@
     "p4_page_navigate_acked": true,
     "p4b_execution_context_real": true,
     "p5_unsolicited_event_arrived": true,
-    "p6_runtime_enable_acked": true
+    "p6_runtime_enable_acked": true,
+    "p7_console_channel_live": true
   },
   "runtime_enable_reply": {
     "id": 5,

@@ -272,7 +272,7 @@ def test_an_unmet_precondition_yields_inconclusive_never_a_pass(probe, unmet):
     assert "INCONCLUSIVE" in headline
 
 
-def test_all_six_preconditions_are_gated_not_merely_recorded(probe):
+def test_all_preconditions_are_gated_not_merely_recorded(probe):
     """Each of the seven named checks must be able to force INCONCLUSIVE alone.
 
     A precondition that is collected but never consulted is decoration. This
@@ -287,6 +287,43 @@ def test_all_six_preconditions_are_gated_not_merely_recorded(probe):
             }
         )
         assert code == probe.EXIT_INCONCLUSIVE, f"{name} does not gate the verdict"
+
+
+def test_a_dead_console_channel_is_inconclusive_not_a_pass(probe):
+    """⛔ THE FALSE GREEN THIS GUARD EXISTS TO REMOVE, pinned as its own case.
+
+    Site B is an ABSENCE assertion: the verdict passes when no console message
+    arrives after `Runtime.enable`. An absence assertion passes hardest when the
+    channel was never live at all — "site B is suppressed" and "site B was never
+    reached" produce the SAME empty reading, and before `p7_console_channel_live`
+    existed the second returned exit 0, headline "PATCH 001 PRESENT AND ACTING",
+    over a channel the probe had never successfully read.
+
+    ⚠️ `p5_unsolicited_event_arrived` does NOT cover this and the distinction is
+    the whole point: `events` is filled from ANY domain and `Page.enable` is
+    called before anything console-related, so a lone `Page.frameNavigated`
+    satisfies P5. P5 proves the EVENT channel is live; only P7 proves the
+    CONSOLE channel is — and site B is read from the console.
+    """
+    dead_console = {
+        "preconditions": _met(probe, p7_console_channel_live=False),
+        "execution_context_created_count": 0,
+        "console_before_enable_reported": False,
+        "console_after_enable_reported": False,
+    }
+    code, headline, _ = probe.verdict(dead_console)
+    assert code == probe.EXIT_INCONCLUSIVE, (
+        "a reading whose console channel never produced the BEFORE marker must "
+        f"be INCONCLUSIVE, not a pass — got exit {code}: {headline}"
+    )
+    assert "p7_console_channel_live" in headline
+
+    # ...and the control: the SAME reading with the console channel proven live
+    # is a genuine pass. P7 is a liveness gate, not a second verdict — it must
+    # never condemn a patched binary, only refuse to speak for a dead channel.
+    live_console = {**dead_console, "console_before_enable_reported": True}
+    live_console["preconditions"] = _met(probe)
+    assert probe.verdict(live_console)[0] == probe.EXIT_PATCH_PRESENT
 
 
 def test_probe_self_test_reaches_every_verdict(probe, capsys):
@@ -378,6 +415,7 @@ def _claims(patch: pathlib.Path, max_per_file: int = 3) -> list[tuple[str, str, 
         ["awk", "-v", f"MAX_PER_FILE={max_per_file}", "-f", str(EVIDENCE_AWK), str(patch), str(patch)],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         check=True,
     )
     rows = []
@@ -551,7 +589,12 @@ def test_the_falsification_script_reports_the_guard_is_now_sighted():
     if os.name == "nt":  # pragma: no cover — the script is POSIX shell
         pytest.skip("POSIX shell script")
     result = subprocess.run(  # noqa: S603
-        ["bash", str(FALSIFY_SH)], cwd=str(REPO), capture_output=True, text=True, check=False
+        ["bash", str(FALSIFY_SH)],
+        cwd=str(REPO),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
     )
     assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
     assert "GUARD IS SIGHTED" in result.stdout, result.stdout

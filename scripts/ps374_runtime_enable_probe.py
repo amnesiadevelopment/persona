@@ -50,12 +50,12 @@ patched site.
   GENERAL RULE FOR THIS DOMAIN: whenever a CDP domain replays history on enable,
   distinguish by PAYLOAD, never by cardinality.
 
-SIX PRECONDITIONS, AND THE PROBE REFUSES RATHER THAN REPORTS CLEAN
-───────────────────────────────────────────────────────────────────
+SEVEN PRECONDITIONS, AND THE PROBE REFUSES RATHER THAN REPORTS CLEAN
+────────────────────────────────────────────────────────────────────
 An absence assertion passes hardest when the channel was never live: "the realm
 is clean" and "the realm was never reached" are the same green, and on this
 vector the second is the more likely failure. So every reading is gated behind
-six separately-asserted preconditions, and any failure yields INCONCLUSIVE —
+seven separately-asserted preconditions, and any failure yields INCONCLUSIVE —
 never "no leak":
 
   P1  the debugging endpoint answered
@@ -65,8 +65,14 @@ never "no leak":
   P4b `1 + 1` evaluated to `2` — a REAL execution context exists
   P5  ⭐ an UNSOLICITED event actually arrived — the event channel is LIVE
   P6  `Runtime.enable` was acked with no error object
+  P7  ⭐ the BEFORE marker arrived — the CONSOLE channel is LIVE
 
-P5 is the load-bearing one and the easy one to omit.
+P5 and P7 are the load-bearing ones and the easy ones to omit. ⚠️ They are NOT
+redundant: `events` is filled from ANY domain, so a `Page.frameNavigated` alone
+satisfies P5 while saying nothing about the console — and site B is read from
+the console. Without P7 a reading whose console never worked is byte-identical
+to one the patch suppressed. P7 is free: the BEFORE marker arrives on a PATCHED
+binary too, so requiring it can never condemn a good engine.
 
 BOUNDS OF WHAT THIS INSTRUMENT CAN SAY
 ───────────────────────────────────────
@@ -114,7 +120,7 @@ MARKER_BEFORE = "ps374-console-BEFORE-enable"
 MARKER_AFTER = "ps374-console-AFTER-enable"
 
 #: Every precondition, in the order the probe asserts them. Named here so the
-#: verdict function and the probe cannot drift about what the six are.
+#: verdict function and the probe cannot drift about what the seven are.
 PRECONDITIONS = (
     "p1_endpoint_answered",
     "p2_page_target",
@@ -123,6 +129,16 @@ PRECONDITIONS = (
     "p4b_execution_context_real",
     "p5_unsolicited_event_arrived",
     "p6_runtime_enable_acked",
+    # p7 is the CONSOLE channel's own liveness, and it is not covered by p5.
+    # p5 proves the EVENT channel is live, but `events` is filled from ANY
+    # domain — a Page.frameNavigated alone satisfies it. Site B is read from
+    # the CONSOLE channel specifically, so without p7 a reading in which the
+    # console never worked at all is indistinguishable from one in which the
+    # patch suppressed it: both report site B absent, and both would pass.
+    # This costs nothing to require: the BEFORE marker arrives on a PATCHED
+    # binary too (patch 001 suppresses reporting only after Runtime.enable),
+    # so p7 can never condemn a good engine — it is a free liveness assertion.
+    "p7_console_channel_live",
 )
 
 # Exit codes. INCONCLUSIVE is deliberately distinct from both verdicts: "I could
@@ -337,7 +353,7 @@ def measure(binary: str, label: str, *, timeout: float = 60.0) -> dict:
         return reading
     try:
         v = subprocess.run(  # noqa: S603
-            [str(real), "--version"], capture_output=True, text=True, timeout=30
+            [str(real), "--version"], capture_output=True, text=True, encoding="utf-8", timeout=30
         )
         reading["version_string"] = (v.stdout or v.stderr).strip()
     except (OSError, subprocess.SubprocessError) as exc:
@@ -522,6 +538,10 @@ def measure(binary: str, label: str, *, timeout: float = 60.0) -> dict:
         reading["console_payloads"] = console_text
         reading["console_before_enable_reported"] = MARKER_BEFORE in console_text
         reading["console_after_enable_reported"] = MARKER_AFTER in console_text
+        # p7: the console channel produced the BEFORE marker, so site B is
+        # readable at all. Without this a dead console channel reads exactly
+        # like a suppressed one.
+        reading["preconditions"]["p7_console_channel_live"] = MARKER_BEFORE in console_text
         return reading
     except Exception as exc:  # noqa: BLE001 — a probe records its own failure
         reading["errors"].append(f"{type(exc).__name__}: {exc}")
@@ -608,6 +628,20 @@ def _self_test() -> int:
             {
                 "preconditions": {**_all_preconditions_met(), "p5_unsolicited_event_arrived": False},
                 "execution_context_created_count": 0,
+                "console_after_enable_reported": False,
+            },
+            EXIT_INCONCLUSIVE,
+        ),
+        (
+            "⭐ console channel never live — P7 unmet, the false-green case",
+            # AFTER absent and BEFORE absent: site B looks suppressed, but the
+            # console never produced anything at all. Before P7 existed this
+            # returned exit 0 "PATCH 001 PRESENT AND ACTING" over a channel it
+            # had never read. It must be INCONCLUSIVE, never a pass.
+            {
+                "preconditions": {**_all_preconditions_met(), "p7_console_channel_live": False},
+                "execution_context_created_count": 0,
+                "console_before_enable_reported": False,
                 "console_after_enable_reported": False,
             },
             EXIT_INCONCLUSIVE,
