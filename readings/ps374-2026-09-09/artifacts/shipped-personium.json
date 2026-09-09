@@ -1,0 +1,72 @@
+{
+  "all_events_seen": [
+    "Page.domContentEventFired",
+    "Page.frameNavigated",
+    "Page.frameResized",
+    "Page.frameStartedLoading",
+    "Page.frameStartedNavigating",
+    "Page.frameStoppedLoading",
+    "Page.loadEventFired",
+    "Runtime.consoleAPICalled",
+    "Runtime.executionContextCreated"
+  ],
+  "binary": "/tmp/ps374/squashfs-root/opt/ungoogled-chromium/chrome",
+  "browser_string": "Chrome/152.0.7977.75",
+  "cdp_port": 33951,
+  "console_after_enable_reported": false,
+  "console_before_enable_reported": true,
+  "console_payloads": [
+    "ps374-console-BEFORE-enable"
+  ],
+  "errors": [],
+  "events_seen": [
+    "Runtime.consoleAPICalled",
+    "Runtime.executionContextCreated"
+  ],
+  "execution_context_created_count": 1,
+  "execution_context_created_payloads": [
+    {
+      "context": {
+        "auxData": {
+          "frameId": "30F32F3BA9554389F87E6B3C78D6122C",
+          "isDefault": true,
+          "type": "default"
+        },
+        "id": 2,
+        "name": "",
+        "origin": "://",
+        "uniqueId": "-4081309925837807393.4197351858924845602"
+      }
+    }
+  ],
+  "label": "personium-152.0.7977.75 (SHIPPED)",
+  "measured_at": "2026-09-09T15:15:24Z",
+  "preconditions": {
+    "p1_endpoint_answered": true,
+    "p2_page_target": true,
+    "p3_ws_handshake_101": true,
+    "p4_page_navigate_acked": true,
+    "p4b_execution_context_real": true,
+    "p5_unsolicited_event_arrived": true,
+    "p6_runtime_enable_acked": true
+  },
+  "runtime_enable_reply": {
+    "id": 5,
+    "result": {}
+  },
+  "ticket": "PS-374",
+  "v8_version": "15.2.124.19",
+  "verdict": {
+    "detail": {
+      "leak_present": true,
+      "site_a_execution_context_created": 1,
+      "site_b_console_after_enable_reported": false,
+      "site_b_console_before_enable_reported": true,
+      "unmet_preconditions": []
+    },
+    "exit": 0,
+    "headline": "PATCH 001 PRESENT AND ACTING \u2014 console reporting is suppressed after Runtime.enable; NOTE site A still announces executionContextCreated x1 (reportExecutionContextCreated was never in patch 001's scope)"
+  },
+  "version_string": "Chromium 152.0.7977.75",
+  "ws_status_line": "HTTP/1.1 101 WebSocket Protocol Handshake"
+}
