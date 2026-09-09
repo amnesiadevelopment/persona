@@ -694,8 +694,25 @@ def test_ci_declares_the_engine_capability_on_every_platform(ci_yaml, ci_text) -
         )
 
     # The fallback literal — what macOS and Windows are actually handed.
+    #
+    # ⚠️ SCANNED THROUGH `_effective_lines`, NOT RAW `ci_text`, and that is
+    # load-bearing rather than tidiness. `re.search` takes the FIRST match
+    # anywhere in the text, and the directive it is looking for sits directly
+    # under a 6-line comment explaining that this value is a second copy which
+    # must be kept in step — so the most likely way the drift actually happens
+    # is a maintainer editing the directive and leaving the old value behind in
+    # a comment. Against raw text this assertion then reads the COMMENT's
+    # `browser,engine`, passes, and reports fine while macOS and Windows are
+    # silently handed `browser` — the fence going unpoliced on exactly the OS
+    # this guard exists to protect. Verified in both directions: the commented
+    # mutant fails here, and the shipped tree still passes.
+    #
+    # This is the same miss `test_ci_states_the_measured_floor_for_every_platform`
+    # records having already made once in this file, which is why the helper
+    # exists: scan what the runner would execute, not the prose about it.
     fallback = re.search(
-        r"PERSONA_REQUIRED_CAPABILITIES:.*\|\|\s*'([^']*)'", ci_text
+        r"PERSONA_REQUIRED_CAPABILITIES:.*\|\|\s*'([^']*)'",
+        "\n".join(_effective_lines(ci_text)),
     )
     assert fallback, (
         "could not find the non-ubuntu fallback declaration in the env "

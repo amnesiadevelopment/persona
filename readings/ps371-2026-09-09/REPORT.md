@@ -170,6 +170,7 @@ Each half was reverted independently and the guards were observed **red**:
 | pattern removed from `conftest.py` | `2 failed` (`..._fails_where_the_engine_is_declared`, `..._is_the_stem_not_one_guards_exact_sentence`) |
 | `engine` removed from matrix shards only | `1 failed` (`test_ci_declares_the_engine_capability_on_every_platform`) |
 | `engine` removed from fallback literal only | `1 failed` (same test) |
+| **fallback changed to `browser` with the old value left in a COMMENT above it** | **`1 failed`** (same test, reporting `declares 'browser'`) — see §4b |
 | restored | all pass |
 
 End-to-end, driver absent + CI's real declaration — the fence now **fails
@@ -197,6 +198,52 @@ currently occur**, which is what a guard is for. It cannot turn today's CI red.
 
 ---
 
+## §4b — A defect the review found in THIS guard, and the one-line fix
+
+⚠️ **Round 1's fallback assertion could be defeated by a comment, and reported
+green.** Found by the reviewer on `c45b215`; reproduced here before fixing.
+
+The assertion scanned the **raw** `ci_text`, and `re.search` takes the FIRST
+match anywhere in the file. The directive it looks for sits directly beneath a
+6-line comment explaining that this value is a second copy which must be kept
+in step — so the most likely way the drift actually happens is a maintainer
+editing the directive and leaving the old value behind in a comment:
+
+```yaml
+          # was: PERSONA_REQUIRED_CAPABILITIES: ${{ ... || 'browser,engine' }}
+          PERSONA_REQUIRED_CAPABILITIES: ${{ matrix.os == 'ubuntu-24.04' && matrix.shard.capabilities || 'browser' }}
+```
+
+Against raw text the assertion read the **comment's** `browser,engine`, passed,
+and reported fine — while macOS and Windows were handed `browser` and the fence
+went unpoliced on exactly the OS this guard exists to protect. Measured on the
+mutant before the fix: **`1 passed`**.
+
+⭐ **This is the ticket's own defect class, one level up** — a guard that
+declines to fire and reads as green. It is also the *same miss this file has
+already recorded making once*:
+`test_ci_states_the_measured_floor_for_every_platform` documents an earlier
+version asserting `"2446" in ci_text`, which the surrounding narrative also
+contained, and which mutation-testing did not catch.
+
+**The fix is the helper the repo already wrote for this.** `_effective_lines`
+strips YAML comments — *"scan what the runner would execute, not the prose
+about it"* — and every other `ci.yml` content assertion in this file already
+routes through it. This one was the exception; it no longer is.
+
+Verified in **both** directions, because a guard that fires on everything is as
+useless as one that fires on nothing:
+
+| direction | expected | observed |
+|---|---|---|
+| commented mutant (above) | **red** — caught | **`1 failed`**, reporting `declares 'browser'` |
+| shipped tree, unmodified | green — no false red | **`1 passed`** |
+
+The `shard.capabilities` half of the same test needed no change: it reads
+`ci_yaml`, so comments cannot reach it.
+
+---
+
 ## §5 — Traps, honoured
 
 - ⛔ **No second guard over the macOS property.** The fence is untouched; not
@@ -205,7 +252,8 @@ currently occur**, which is what a guard is for. It cannot turn today's CI red.
   a different property from the one the fence asserts.
 - ⛔ **`build-macos` not touched.** No workflow job was removed.
 - ⛔ **The pin was not lowered.** `pyproject.toml` is unmodified.
-- ✅ **The new guard is proved capable of failing** (three mutants above).
+- ✅ **The new guard is proved capable of failing** (four mutants above,
+  including the comment-defeat mutant the review found — §4b).
 
 ## §5b — A near-miss caught in this session, worth recording
 
