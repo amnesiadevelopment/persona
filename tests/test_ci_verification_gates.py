@@ -655,6 +655,101 @@ def test_the_capability_declaration_uses_the_projects_existing_vocabulary() -> N
     )
 
 
+def test_ci_declares_the_engine_capability_on_every_platform(ci_yaml, ci_text) -> None:
+    """The engine packages install on all three runners, so an engine skip in
+    CI is a FAILURE — including a skip of the one guard holding macOS.
+
+    WHAT RIDES ON THIS (PS-371).
+    ``tests/test_engine_driver_platform_support.py`` is the only assertion in
+    this repo that the pinned ``invisible_core`` still supports every OS
+    ``release.yml`` builds for. It probes the INSTALLED driver, so a bump past
+    the macOS removal turns it red — verified by installing
+    ``invisible_core==20.16.0`` and watching the ``darwin`` case fail. But it
+    opens with ``pytest.importorskip("invisible_core", ...)``, and a skipped
+    test is green: if the driver were ever absent, the fence holding macOS
+    would go dark and NOTHING would say so. `browser` does not cover it —
+    ``expand_capabilities(["browser"])`` is ``["browser", "browser_firefox"]``.
+
+    WHY IT IS SAFE TO DECLARE, measured rather than assumed: run 34156128433
+    (the last green push to main) logs ``invisible_core-20.14.0`` installed on
+    ubuntu, macOS and Windows, and all 416 skip lines across its six jobs
+    re-classify with ZERO new failures under this declaration. It polices a
+    state that does not currently occur, which is what a guard is for.
+
+    ⚠️ CHECKS BOTH COPIES, because there are two and only one is obvious. The
+    matrix ``shard.capabilities`` value reaches the ubuntu legs; the ``||``
+    fallback in the env expression is what macOS and Windows actually receive.
+    A capability added to the first and not the second is declared on ONE of
+    three platforms and silently absent from the other two — which would leave
+    the fence unpoliced on exactly the OS this whole guard exists to protect.
+    """
+    shards = ci_yaml["jobs"]["tests"]["strategy"]["matrix"]["shard"]
+    for shard in shards:
+        declared = str(shard.get("capabilities", ""))
+        assert "engine" in declared.split(","), (
+            f"shard {shard.get('name')!r} declares {declared!r}, which does not "
+            "include 'engine' — an engine probe that declines to run on a "
+            "machine where `pip install .` has run still reads as green, and "
+            "that includes the macOS platform fence"
+        )
+
+    # The fallback literal — what macOS and Windows are actually handed.
+    #
+    # ⚠️ SCANNED THROUGH `_effective_lines`, NOT RAW `ci_text`, and that is
+    # load-bearing rather than tidiness. `re.search` takes the FIRST match
+    # anywhere in the text, and the directive it is looking for sits directly
+    # under a 6-line comment explaining that this value is a second copy which
+    # must be kept in step — so the most likely way the drift actually happens
+    # is a maintainer editing the directive and leaving the old value behind in
+    # a comment. Against raw text this assertion then reads the COMMENT's
+    # `browser,engine`, passes, and reports fine while macOS and Windows are
+    # silently handed `browser` — the fence going unpoliced on exactly the OS
+    # this guard exists to protect. Verified in both directions: the commented
+    # mutant fails here, and the shipped tree still passes.
+    #
+    # This is the same miss `test_ci_states_the_measured_floor_for_every_platform`
+    # records having already made once in this file, which is why the helper
+    # exists: scan what the runner would execute, not the prose about it.
+    fallback = re.search(
+        r"PERSONA_REQUIRED_CAPABILITIES:.*\|\|\s*'([^']*)'",
+        "\n".join(_effective_lines(ci_text)),
+    )
+    assert fallback, (
+        "could not find the non-ubuntu fallback declaration in the env "
+        "expression — if the expression was restructured, re-point this "
+        "assertion at whatever macOS and Windows now receive rather than "
+        "deleting it"
+    )
+    assert "engine" in fallback.group(1).split(","), (
+        f"the non-ubuntu fallback declares {fallback.group(1)!r}, which does "
+        "not include 'engine' — so the engine capability is policed on ubuntu "
+        "only, and the macOS fence is unpoliced on macOS"
+    )
+
+
+def test_the_engine_capability_the_workflow_declares_actually_exists() -> None:
+    """A declaration naming a capability the harness does not know is a hard
+    usage error at startup, so a typo here would take the whole suite down
+    rather than silently doing nothing. Assert the name resolves, and assert it
+    classifies the fence's own skip reason — the widened pattern and the
+    declaration are two halves of one guard, and either alone enforces
+    nothing."""
+    import conftest as persona_conftest
+
+    assert "engine" in persona_conftest.CAPABILITIES, (
+        "ci.yml declares 'engine', which is not a known capability — every "
+        "tests job would fail at startup with a UsageError"
+    )
+    cap = persona_conftest.capability_for_skip(
+        "the engine driver is not installed in this environment"
+    )
+    assert cap is not None and cap.name == "engine", (
+        "the macOS platform fence's own skip reason does not classify as the "
+        "'engine' capability, so declaring it in ci.yml polices that fence not "
+        "at all — see tests/test_engine_driver_platform_support.py"
+    )
+
+
 def test_ci_states_the_measured_floor_for_every_platform(ci_text) -> None:
     """A floor is the sentence the next reader trusts when deciding whether
     their change broke something, so each platform's figure must be stated —

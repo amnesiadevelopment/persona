@@ -287,6 +287,27 @@ CAPABILITIES: dict[str, Capability] = {
     ),
     # The engine packages themselves. Absent in a bare checkout; present
     # wherever `pip install .` has run, which includes the release pipeline.
+    #
+    # THE THIRD PATTERN IS NOT A SYNONYM OF THE OTHER TWO — it exists because
+    # `importorskip` lets a caller REPLACE the wording this table matches on.
+    # A bare `pytest.importorskip("invisible_core")` skips with importorskip's
+    # own text ("could not import 'invisible_core'...") and is caught by the
+    # pattern above it. Passing `reason=` overrides that text entirely, and the
+    # skip then matches NOTHING here — the same absence, the same cause,
+    # silently unclassified because the guard was written more helpfully.
+    #
+    # MEASURED, PS-371, and the asymmetry sat inside ONE file:
+    # tests/test_engine_driver_platform_support.py guards its macOS fence with
+    # `importorskip("invisible_core", reason="the engine driver is not
+    # installed in this environment")` -> classified as [] , while
+    # `test_the_probe_can_actually_fail` in the same module uses the bare form
+    # -> classified as ['engine']. The fence is the one that matters: it is the
+    # ONLY thing asserting that the pinned driver still supports macOS, and it
+    # is the one whose absence nothing could report.
+    #
+    # The pattern is deliberately the ENVIRONMENT-INDEPENDENT stem ("the engine
+    # driver is not installed") rather than the full sentence, so a guard that
+    # appends its own detail still classifies.
     "engine": Capability(
         name="engine",
         summary="the invisible_playwright / invisible_core engine packages",
@@ -294,6 +315,7 @@ CAPABILITIES: dict[str, Capability] = {
         reason_patterns=(
             "could not import 'invisible_playwright",
             "could not import 'invisible_core",
+            "the engine driver is not installed",
         ),
     ),
     # Driving persona's OWN flet UI (tests/test_ui_driven.py). Distinct from
