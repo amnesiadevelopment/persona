@@ -160,6 +160,7 @@ EXPECTED_CHECKS = (
     "proxy-assignment-survives-edit",
     "launch-refuses-broken-geography",
     "certificate-key-material",
+    "launch-perimeter-inventory",
 )
 
 #: Set on the re-exec so the child knows the home was provisioned deliberately.
