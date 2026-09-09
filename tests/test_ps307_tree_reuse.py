@@ -368,6 +368,46 @@ def _verify(workdir: Path, mode: str, tree: str = "patched") -> subprocess.Compl
     )
 
 
+def _claims_for(patch_path: Path, max_per_file: int = 3) -> list[tuple[str, str, str]]:
+    """Run the evidence extractor over one patch and return its CHECKABLE claims.
+
+    `(relative_path, kind, text)` triples, with the `noevidence` diagnostics
+    dropped — the same predicate the verifier's own consumer loop applies, so a
+    test asking "what does this patch claim?" gets the answer the verifier acts
+    on rather than the raw record stream.
+
+    ⚠️ Derived from the extractor rather than hard-coded, deliberately: a test
+    that plants a stale claim string degrades into planting nothing once a
+    rebase changes the patch layer, and then passes while asserting about a
+    situation that never arose.
+    """
+    result = subprocess.run(
+        [
+            "awk",
+            "-v", f"MAX_PER_FILE={max_per_file}",
+            "-f", str(EVIDENCE_AWK),
+            str(patch_path), str(patch_path),
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
+        # The SAME locale the verifier pins at its own call site, and for the
+        # same reason: `length()` counts bytes under mawk and characters under
+        # gawk, so without this a test could assert about evidence the verifier
+        # would never produce. `test_evidence_is_identical_under_gawk_and_mawk`
+        # pins the invariant itself.
+        env={**os.environ, "LC_ALL": "C"},
+    )
+    claims: list[tuple[str, str, str]] = []
+    for line in result.stdout.splitlines():
+        parts = line.split("\t")
+        if len(parts) != 3 or not parts[0] or parts[1] == "noevidence":
+            continue
+        claims.append((parts[0], parts[1], parts[2]))
+    return claims
+
+
 def _plan(workdir: Path, tree: str, tag: str = TAG) -> subprocess.CompletedProcess:
     return _run(
         TREE_STATE_SH,
@@ -550,6 +590,367 @@ def test_absent_mode_refuses_a_contaminated_control(patched_tree: Path):
         "could never detect a contaminated control."
     )
     assert "supposed to be the UNMODIFIED control" in result.stdout
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PS-382 — ONE ACCIDENTAL MATCH WITH UPSTREAM IS NOT A CONTAMINATED CONTROL
+# ─────────────────────────────────────────────────────────────────────────────
+# `absent` used to fail on ANY single claim holding, which made the check MORE
+# fragile the more evidence a patch carried. It failed run 34405524686 on one of
+# `014-client-rects.patch`'s 16 claims — `const auto [min, max] = Extents();`, a
+# C++17 idiom vanilla Chromium 152.0.7977.75 writes at `quad_f.cc:171` in
+# `QuadF::IntersectsRect`, unrelated to our patch.
+#
+# The rule is now a majority. These four tests pin BOTH directions of it,
+# because relaxing a check without proving it can still fail converts a false
+# positive into a false negative — the strictly worse error here, since a
+# contaminated control attributes things it cannot attribute.
+# ─────────────────────────────────────────────────────────────────────────────
+def _one_patch_control(root: Path, keep: str) -> Path:
+    """A control tree carrying EXACTLY ONE of our patches, and nothing else.
+
+    The sharpest possible contamination: the least a real contamination can be.
+    A rule that catches all 16 but not one is not protecting the control, and
+    `test_absent_mode_refuses_a_contaminated_control` above cannot tell the two
+    apart because it plants everything.
+    """
+    others = {p.name for p in sorted(PATCH_DIR.glob("*.patch")) if p.name != keep}
+    _build_ucpl(root, apply_ours=True, skip=others)
+    return root
+
+
+@pytest.mark.parametrize(
+    "patch_name",
+    [
+        "014-client-rects.patch",   # 16 claims — the patch that fired the false positive
+        "007-shadow-root.patch",    # 3 claims  — an ordinary middling patch
+        "009-webdriver.patch",      # 1 claim   — removal-only, THE threshold edge
+        "010-headless.patch",       # 1 claim   — the other single-claim patch
+    ],
+)
+def test_absent_mode_still_catches_a_control_carrying_a_single_patch(
+    tmp_path: Path, patch_name: str
+):
+    """THE ANTI-FALSE-NEGATIVE TEST, and the one that decides the shape of the rule.
+
+    ⛔ THIS IS WHY THE THRESHOLD IS A FRACTION AND NOT A FIXED `N > 1`.
+    009-webdriver and 010-headless yield exactly ONE claim each. Under any fixed
+    threshold above one they become UNDETECTABLE in the control forever — a tree
+    genuinely carrying 009 would pass silently, and the control's whole purpose
+    ("a contaminated control cannot attribute anything") would be gone for two
+    of our sixteen patches with nothing anywhere saying so.
+
+    They are parametrized here BY NAME rather than covered by a "some patch"
+    assertion so that the day a rebase gives either of them a second claim, this
+    test still names the patch whose sensitivity is being asserted.
+    """
+    control = _one_patch_control(tmp_path, patch_name)
+    result = _verify(control, "absent", "unmodified")
+
+    assert result.returncode != 0, (
+        f"a control carrying {patch_name} was passed as clean. The corroboration "
+        f"threshold has been raised past what this patch can ever produce, so a "
+        f"genuinely contaminated control is now invisible — a false NEGATIVE, "
+        f"which is worse than the false positive the threshold exists to stop."
+    )
+    report = (control / "record" / "patch-presence-unmodified.txt").read_text(encoding="utf-8")
+    assert "PRESENT IN THE CONTROL" in report
+    assert patch_name in report
+
+
+def test_a_single_upstream_coincidence_does_not_condemn_a_clean_control(
+    unmodified_tree: Path,
+):
+    """THE REGRESSION TEST FOR PS-382 ITSELF — the exact shape that failed the build.
+
+    A control that carries NONE of our patches, plus ONE line that a current
+    claim of `014-client-rects.patch` happens to match — standing in for
+    upstream independently writing an idiom our patch also adds, which is
+    precisely what happened at `quad_f.cc:171`.
+
+    The tree is clean. The verdict must be PASS.
+    """
+    src = unmodified_tree / "ucpl" / "build" / "src"
+    quad = src / "ui/gfx/geometry/quad_f.cc"
+
+    # Taken from the CURRENT evidence rather than hard-coded, so this keeps
+    # testing the rule after a rebase changes which claims 014 yields. Planting
+    # a stale string would silently degrade into planting nothing at all — the
+    # test would pass while asserting about a coincidence that never occurred.
+    claims = _claims_for(PATCH_DIR / "014-client-rects.patch")
+    coincidence = next(
+        text for rel, kind, text in claims
+        if rel.endswith("quad_f.cc") and kind == "added"
+    )
+    assert coincidence not in quad.read_text(encoding="utf-8"), (
+        "the control already contains this line, so planting it proves nothing"
+    )
+    quad.write_text(
+        quad.read_text(encoding="utf-8")
+        + "\n// upstream code that has nothing to do with our patch\n"
+        + coincidence
+        + "\n  return;\n}\n",
+        encoding="utf-8",
+    )
+
+    result = _verify(unmodified_tree, "absent", "unmodified")
+
+    assert result.returncode == 0, (
+        "ONE claim matching upstream by accident failed the whole control check. "
+        "This is run 34405524686 exactly: 15 of 16 patches verified absent, 1 of "
+        "16 of 014's claims held, and an engine build that had every right to "
+        "run was stopped by the instrument rather than by the tree.\n"
+        f"{result.stdout}"
+    )
+
+
+def test_a_sub_threshold_coincidence_is_reported_rather_than_passed_in_silence(
+    unmodified_tree: Path,
+):
+    """Green is not the same as nothing-to-say, and the run must not conflate them.
+
+    ⛔ THE FAILURE MODE THIS PINS IS THE ONE THE FIX ITSELF COULD INTRODUCE. A
+    claim that has stopped discriminating is drifting: today it matches upstream
+    once and is below the majority, and after a rebase that touches the same
+    region it can cross the threshold and fail a build with no history behind
+    it. Passing quietly would make the first legible symptom a red engine build.
+
+    So the coincidence is named on the GREEN run — in the report, on stdout, and
+    in a counter that is printed even when it is zero, so "nothing coincided" is
+    something the report SAYS rather than something inferred from an absent line.
+    """
+    src = unmodified_tree / "ucpl" / "build" / "src"
+    quad = src / "ui/gfx/geometry/quad_f.cc"
+    claims = _claims_for(PATCH_DIR / "014-client-rects.patch")
+    coincidence = next(
+        text for rel, kind, text in claims
+        if rel.endswith("quad_f.cc") and kind == "added"
+    )
+    quad.write_text(
+        quad.read_text(encoding="utf-8") + "\n" + coincidence + "\n",
+        encoding="utf-8",
+    )
+
+    result = _verify(unmodified_tree, "absent", "unmodified")
+    assert result.returncode == 0
+    report = (unmodified_tree / "record" / "patch-presence-unmodified.txt").read_text(
+        encoding="utf-8"
+    )
+
+    assert "NOTED COINCIDENCE" in report, (
+        "the coincidence was passed in silence. A claim that no longer "
+        "discriminates is invisible until it fails a build."
+    )
+    assert "014-client-rects.patch" in report
+    assert "noted coincidences: 1" in report
+    # And loudly enough that a green CI run still surfaces it.
+    assert "::warning::" in result.stdout
+
+
+def test_a_clean_control_reports_zero_coincidences_explicitly(unmodified_tree: Path):
+    """The counter is stated on every absent run, zero included.
+
+    A number that appears only when it is non-zero cannot distinguish "we looked
+    and found none" from "this version does not count them" — and a reader
+    comparing two runs would read the absent line as the former either way.
+    """
+    result = _verify(unmodified_tree, "absent", "unmodified")
+    assert result.returncode == 0
+    report = (unmodified_tree / "record" / "patch-presence-unmodified.txt").read_text(
+        encoding="utf-8"
+    )
+    assert "noted coincidences: 0" in report
+    assert "NOTED COINCIDENCE" not in report
+
+
+def test_present_mode_is_still_all_or_nothing(tmp_path: Path):
+    """⛔ THE CORROBORATION RULE MUST NOT HAVE LEAKED INTO `present` MODE.
+
+    The two modes fail in opposite directions and only one of them is safe to
+    relax. `present` refusing to compile is conservative — the build stops and
+    nothing is mislabelled. A majority rule there would mean a tree missing a
+    MINORITY of a patch's claims compiles anyway and is labelled as carrying the
+    full fingerprint layer, which is the exact false green PS-307 exists to
+    prevent.
+
+    `014-client-rects.patch` is the sharpest case available: 16 claims, so a
+    majority rule would tolerate up to 7 missing ones. The tree here is missing
+    all 16 — but the assertion that matters is the mode, and the sibling
+    `test_verifier_fails_when_a_single_patch_is_missing` pins the same rule from
+    the other side.
+    """
+    _build_ucpl(tmp_path, apply_ours=True, skip={"014-client-rects.patch"})
+    result = _verify(tmp_path, "present")
+
+    assert result.returncode != 0, (
+        "`present` mode passed a tree missing one of the 16 patches. The "
+        "corroboration threshold added for `absent` mode has leaked into "
+        "`present`, where a partial match must never be a pass."
+    )
+    report = (tmp_path / "record" / "patch-presence-patched.txt").read_text(encoding="utf-8")
+    assert "014-client-rects.patch" in report
+    assert "NOT IN THE TREE" in report
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PS-382 — THE EVIDENCE EXTRACTOR CHOOSES THE MOST SPECIFIC CANDIDATES
+# ─────────────────────────────────────────────────────────────────────────────
+def test_evidence_is_chosen_by_specificity_not_by_file_order(tmp_path: Path):
+    """A generic line must not displace a distinctive one that follows it.
+
+    THE MEASURED CASE. `014-client-rects.patch`'s `quad_f.cc` section adds, in
+    this order: the function signature, a Chinese comment, `const auto [min,
+    max] = Extents();`, and — five lines later — `if (WithinEpsilon(width,
+    0.0f) || WithinEpsilon(height, 0.0f)) {`. File order took the first three,
+    so a 33-character C++17 idiom became a claim while a 63-character guard that
+    could only be ours was never considered. Upstream writes that idiom
+    verbatim, and the build died on it.
+
+    Length is the same proxy for specificity the extractor's own 30-character
+    floor already uses; this asserts it is applied to the CHOICE and not only to
+    eligibility.
+    """
+    patch = tmp_path / "500-order.patch"
+    patch.write_text(
+        "--- a/ui/gfx/geometry/quad_f.cc\n"
+        "+++ b/ui/gfx/geometry/quad_f.cc\n"
+        "@@ -137,6 +137,10 @@\n"
+        " }\n"
+        "+  const auto [min, max] = Extents();\n"
+        "+  float width = max.x() - min.x() + 0.0f;\n"
+        "+  float height = max.y() - min.y() + 0.0f;\n"
+        "+  if (WithinEpsilon(width, 0.0f) || WithinEpsilon(height, 0.0f)) {\n"
+        " }\n",
+        encoding="utf-8",
+    )
+    texts = [text for _, _, text in _claims_for(patch)]
+
+    assert "if (WithinEpsilon(width, 0.0f) || WithinEpsilon(height, 0.0f)) {" in texts, (
+        "the most specific candidate in the section was not selected. Candidates "
+        "are being taken in file order, which is where the line happens to sit "
+        "rather than how much finding it proves."
+    )
+    assert "const auto [min, max] = Extents();" not in texts, (
+        "the shortest eligible candidate was still chosen over longer ones in "
+        "the same section — this is the exact line that failed run 34405524686 "
+        "against a clean upstream tree."
+    )
+
+
+def test_the_real_014_no_longer_claims_the_line_upstream_writes(tmp_path: Path):
+    """And on the ACTUAL patch, not a fixture: the offending claim is gone.
+
+    ⛔ It must be gone because a BETTER candidate was chosen, not because anyone
+    deleted it or allowlisted the patch — that would blind the instrument at the
+    one site it was built to watch. So this asserts BOTH: the idiom is no longer
+    a claim, AND the section still yields evidence from the same file.
+    """
+    claims = _claims_for(PATCH_DIR / "014-client-rects.patch")
+    quad_claims = [text for rel, _, text in claims if rel.endswith("quad_f.cc")]
+
+    assert quad_claims, (
+        "the quad_f.cc section now yields no evidence at all. The claim was "
+        "removed rather than replaced, which weakens the check instead of "
+        "sharpening it."
+    )
+    assert "const auto [min, max] = Extents();" not in quad_claims, (
+        "014 still claims the line vanilla Chromium 152.0.7977.75 writes at "
+        "quad_f.cc:171 inside QuadF::IntersectsRect."
+    )
+
+
+def test_a_line_a_patch_adds_twice_is_one_claim_not_two(tmp_path: Path):
+    """Duplicate text in one section is ONE claim, because one grep answers it.
+
+    ⚠️ THIS BECAME LOAD-BEARING WITH THE CORROBORATION RULE. The verifier
+    resolves a claim with a single `grep -F` for its text, so N copies of the
+    same string hold or fail together — they are one piece of evidence recorded
+    N times. Counting them as N would let a SINGLE accidental match contribute
+    two or three "corroborating" claims and carry a threshold by itself, which
+    is the very thing corroboration is there to prevent.
+
+    Not hypothetical: `014-client-rects.patch` adds the identical
+    `kDisableSpoofing ... find("clientrects")` guard at three sites.
+    """
+    patch = tmp_path / "501-dupes.patch"
+    line = "if (command_line->HasSwitch(switches::kFingerprintDupeCase)) {"
+    patch.write_text(
+        "--- a/some/file.cc\n"
+        "+++ b/some/file.cc\n"
+        "@@ -1,3 +1,9 @@\n"
+        " void A() {\n"
+        f"+  {line}\n"
+        " }\n"
+        " void B() {\n"
+        f"+  {line}\n"
+        " }\n"
+        " void C() {\n"
+        f"+  {line}\n"
+        " }\n",
+        encoding="utf-8",
+    )
+    texts = [text for _, _, text in _claims_for(patch)]
+
+    assert texts.count(line) == 1, (
+        f"the same string was emitted {texts.count(line)} times as separate "
+        "claims. One grep answers all of them, so they are one piece of "
+        "evidence — counting them separately inflates corroboration."
+    )
+
+
+def test_evidence_is_identical_under_gawk_and_mawk():
+    """The evidence must not depend on WHICH awk the host happens to ship.
+
+    ⚠️ MEASURED DIVERGENCE, not a precaution. `length()` counts BYTES under mawk
+    and CHARACTERS under gawk in a UTF-8 locale. `014-client-rects.patch` adds
+    the comment `// 计算轴对齐边界框的宽高` — 36 bytes but 14 characters — so under
+    gawk it falls below the 30-character floor of filter 1 and is discarded,
+    while under mawk it is kept. The two produced DIFFERENT claim sets for the
+    same patch, and gawk's set re-included `const auto [min, max] = Extents();`
+    — the exact line whose accidental match with upstream failed run
+    34405524686. A "fix" that only holds under one awk is not a fix.
+
+    The divergence pre-dates PS-382, since the floor is original. It became
+    CONSEQUENTIAL when selection started RANKING candidates instead of taking
+    the first three, which is why it is pinned now.
+
+    Skipped rather than failed where only one awk is installed: the invariant is
+    about two implementations agreeing, and a host with one cannot answer it.
+    """
+    gawk = shutil.which("gawk")
+    mawk = shutil.which("mawk")
+    if not gawk or not mawk:
+        pytest.skip("both gawk and mawk are needed to compare their output")
+
+    patch = PATCH_DIR / "014-client-rects.patch"
+
+    def claims(binary: str) -> str:
+        return subprocess.run(
+            [binary, "-v", "MAX_PER_FILE=3", "-f", str(EVIDENCE_AWK), str(patch), str(patch)],
+            capture_output=True, text=True, encoding="utf-8", check=True,
+            env={**os.environ, "LC_ALL": "C"},
+        ).stdout
+
+    assert claims(gawk) == claims(mawk), (
+        "gawk and mawk drew different evidence from the same patch under the "
+        "locale the verifier pins. The check would then reach different "
+        "verdicts about the same tree depending on the runner's awk."
+    )
+
+
+def test_the_verifier_pins_the_locale_it_extracts_evidence_under():
+    """And the pin lives at the VERIFIER's call site, not only in this test file.
+
+    A test that sets `LC_ALL=C` itself and asserts on the result proves nothing
+    about the script CI runs — it would pass while the workflow drew different
+    evidence on a gawk host. So the invocation in the script is what is asserted.
+    """
+    source = VERIFY_SH.read_text(encoding="utf-8")
+    assert "LC_ALL=C awk" in source, (
+        "the evidence extractor is invoked without pinning the locale, so "
+        "`length()` counts characters on a gawk host and bytes on a mawk one "
+        "and the claims drawn from our patches differ between runners."
+    )
 
 
 def test_verifier_refuses_a_tree_that_does_not_exist(tmp_path: Path):
