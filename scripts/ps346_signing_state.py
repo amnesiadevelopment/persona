@@ -564,18 +564,59 @@ def looks_like_plist(head: bytes) -> bool:
     return stripped.startswith(_PLIST_XML_MAGIC)
 
 
-def looks_like_der(head: bytes) -> bool:
-    """True when these leading bytes are DER-encoded ASN.1.
+#: The first four bytes of every notarization ticket Apple issues.
+#:
+#: ⚠️ THIS IS THE DISCRIMINATOR, AND IT IS NOT DER. An earlier revision of this
+#: file matched a ticket as "an ASN.1 SEQUENCE at offset 0", on the strength of
+#: apple-platform-rs' concepts doc calling a ticket "DER-encoded ASN.1 with data
+#: structures that commonly appear in X.509 certificates". ⛔ **"CONTAINS DER" IS
+#: A WEAKER CLAIM THAN "BEGINS WITH DER", AND THE DIFFERENCE IS SIXTEEN BYTES.**
+#: The DER certificate chain a ticket contains starts at offset 16, *after* a
+#: fixed little-endian header — so the ticket's own first byte is `s`, never
+#: 0x30, and matching DER-at-zero answered ABSENT on the one file that IS a
+#: ticket. The same page that supplied the wording says outright that "the exact
+#: format and content of notarization tickets is not well known"; a sentence
+#: hedged like that cannot carry a byte-level predicate.
+_TICKET_MAGIC = b"s8ch"
 
-    A notarization TICKET is "DER-encoded ASN.1 with data structures that
-    commonly appear in X.509 certificates" (apple-platform-rs' own concepts
-    doc). DER's outermost element here is a SEQUENCE — tag 0x30 — followed by a
-    definite-length header: either a short form (< 0x80) or a long form whose
-    first byte is 0x81..0x84 for the sizes a real ticket reaches.
+
+def looks_like_ticket(head: bytes) -> bool:
+    """True when these leading bytes are an Apple NOTARIZATION TICKET.
+
+    The ticket's on-disk layout, little-endian, is a 16-byte header followed by
+    the DER certificate chain::
+
+        offset  0   uint32  magic  = "s8ch"
+        offset  4   uint32  version
+        offset  8   uint32  signer length  (of the DER chain that follows)
+        offset 12   uint32  content length
+        offset 16   ...     DER-encoded certificate chain
+
+    ⭐ EVERY CLAIM ABOVE IS VERIFIED AGAINST CODE THAT RUNS, not against prose,
+    and against three sources that do not derive from each other:
+
+    * `deploymenttheory/go-macos-pkg`, `pkg/staple` — `ticketMagic =
+      []byte("s8ch")`; `StapleApp` REFUSES to write a blob that does not carry
+      that prefix, and `AppHasTicket` recognises a stapled bundle by reading
+      exactly these four bytes back from `Contents/CodeResources`. That is the
+      same question this function asks, decided the same way.
+    * `appsworld/katalina`, `parseS8chHeader` — names the four fields above at
+      those offsets, and documents "Bytes 16+: DER-encoded certificate chain".
+    * `indygreg/apple-platform-rs` — `staple_ticket_to_bundle` writes the ticket
+      to the bundle path `CodeResources` *verbatim*, and the bytes it writes are
+      the base64-decoded `signedTicket` field straight off Apple's CloudKit
+      lookup. So the file on disk is the raw ticket, not a re-encoding of it,
+      and this magic survives the trip to disk.
+
+    ⛔ MATCHING THE MAGIC IS STRICTER **IN BOTH DIRECTIONS** THAN MATCHING DER,
+    which is why nothing here falls back to a SEQUENCE check. `Contents/
+    CodeResources` has a second documented occupant that is not a ticket: the
+    `Install macOS` app carries an **IMG4** there, and an IMG4 *is* an ASN.1
+    SEQUENCE (`0x30 0x82 <len> 0x16 0x04 "IMG4"`). A DER-at-zero predicate
+    reports that file as a stapled ticket — a false NOTARIZATION claim, which is
+    the CLEAN-direction failure this checker exists to avoid.
     """
-    if len(head) < 2 or head[0] != 0x30:
-        return False
-    return head[1] < 0x80 or 0x81 <= head[1] <= 0x84
+    return head[:4] == _TICKET_MAGIC
 
 
 def _peek(sub, n: int) -> bytes | None:
@@ -633,8 +674,10 @@ def _apfs_machos(entry, path, acc, notes=None) -> None:
             # — so `codesign` never puts a seal at the bundle root, and the two
             # facts genuinely never contend for the same path.
             #
-            # A ticket is DER-encoded ASN.1; a seal is a plist. BOTH sides are
-            # tested POSITIVELY, and a file matching NEITHER is reported as
+            # A ticket is recognised by its four-byte MAGIC `s8ch` (its DER
+            # certificate chain begins at offset 16, *after* a fixed header — so
+            # a ticket does NOT start with DER); a seal is a plist. BOTH sides
+            # are tested POSITIVELY, and a file matching NEITHER is reported as
             # neither: "some other file called CodeResources" must not become a
             # notarization claim, and must not silently inflate the seal count.
             #
@@ -648,10 +691,14 @@ def _apfs_machos(entry, path, acc, notes=None) -> None:
             #   * matching `_CodeSignature/CodeDirectory` — a `codesign`
             #     SIGNATURE slot — reports notarization on a merely SIGNED
             #     bundle, the CLEAN-direction failure. Signing is not
-            #     notarizing, and that name must never be matched here.
+            #     notarizing, and that name must never be matched here;
+            #   * matching an ASN.1 SEQUENCE at offset 0 misses the ticket
+            #     entirely (its DER starts at offset 16) AND matches the IMG4
+            #     that `Install macOS.app` carries at this very path — wrong in
+            #     both directions from one predicate. See `looks_like_ticket`.
             if name == "CodeResources":
                 head = _peek(sub, 16)
-                if head and looks_like_der(head):
+                if head and looks_like_ticket(head):
                     notes.setdefault("staple", []).append(p)
                 elif head is None or not head or looks_like_plist(head):
                     # ⚠️ UNREADABLE / EMPTY FALLS BACK TO **SEAL**, NOT TICKET.
@@ -662,10 +709,33 @@ def _apfs_machos(entry, path, acc, notes=None) -> None:
                 else:
                     notes.setdefault("unclassified", []).append(p)
             elif name.endswith(".ticket"):
-                # Kept as a second, narrower match: `stapler` uses this shape
-                # for non-bundle entities. It costs nothing and it cannot be
-                # the only match — a `.app` never gets one.
-                notes.setdefault("staple", []).append(p)
+                # Kept as a second, narrower match for non-bundle entities —
+                # but gated on the SAME magic, not on the name.
+                #
+                # ⚠️ NOBODY ASKED FOR THIS BRANCH TO CHANGE, AND IT IS THE SAME
+                # DEFECT AS THE ONE ABOVE. It matched on the filename alone, so
+                # any file called `*.ticket` — a fixture, a log, an unrelated
+                # vendor asset — was reported as a stapled notarization ticket
+                # with nothing about its contents ever read. That is a false
+                # PRESENT in the CLEAN direction, which is the failure this
+                # checker exists to avoid, arriving through the one door the
+                # content discriminator was not put on.
+                #
+                # ⛔ AND THE PREMISE UNDER IT IS UNSUPPORTED: of the three
+                # stapler implementations checked for `looks_like_ticket`, NONE
+                # writes a `*.ticket` file anywhere — apple-platform-rs writes
+                # bundle `Contents/CodeResources` or a XAR/UDIF trailer, and
+                # go-macos-pkg writes the same two shapes. So this branch is
+                # kept only because a file carrying real ticket bytes should be
+                # reported wherever it is found; it is NOT evidence that any
+                # tool produces that name. A `*.ticket` whose bytes are not a
+                # ticket — or could not be read — claims nothing and lands in
+                # `unclassified`, exactly like its `CodeResources` sibling.
+                head = _peek(sub, 16)
+                if head and looks_like_ticket(head):
+                    notes.setdefault("staple", []).append(p)
+                else:
+                    notes.setdefault("unclassified", []).append(p)
         try:
             size = sub.get_size()
             if size < 4:
@@ -848,10 +918,10 @@ def read_dmg_bundle(report: Report, asset: str, path: str, workdir: str) -> None
             "have the SHAPE of a signature."
         )
         + (
-            f" ⚠️ {len(notes['unclassified'])} further file(s) named "
-            f"`CodeResources` were NEITHER a plist nor DER "
-            f"(e.g. {notes['unclassified'][0]}) — NOT counted as a seal and NOT "
-            "counted as a ticket, because neither claim was measured."
+            f" ⚠️ {len(notes['unclassified'])} further candidate file(s) "
+            f"(e.g. {notes['unclassified'][0]}) carried neither a plist nor the "
+            "`s8ch` ticket magic — NOT counted as a seal and NOT counted as a "
+            "ticket, because neither claim was measured."
             if notes["unclassified"]
             else ""
         ),

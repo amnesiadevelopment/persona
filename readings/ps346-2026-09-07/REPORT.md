@@ -205,9 +205,9 @@ directly (`signing_state.json`, `signing_state_run.txt`):
 different facts and the instrument keeps them apart deliberately — the same
 discipline that keeps an unread bundle from being reported as unsigned.
 
-⭐ **PROVENANCE NOTE — the instrument was corrected three times after these
+⭐ **PROVENANCE NOTE — the instrument was corrected five times after these
 readings were captured, and the readings are unchanged.** Successive audits
-found three defects in the §3 code, and it is worth recording all three
+found five defects in the §3 code, and it is worth recording all five
 together because they share one shape:
 
 1. the staple detector matched `_CodeSignature/CodeDirectory` — a `codesign`
@@ -221,25 +221,51 @@ together because they share one shape:
    So the narrowed check failed in the *opposite* direction: it reported a
    genuinely notarized, genuinely stapled bundle as `ABSENT`, **and** silently
    counted that ticket as a second `CodeResources` seal, moving the seal count
-   by one with nothing to say why.
+   by one with nothing to say why;
+4. the fix for (3) discriminated the ticket from the seal by testing for
+   **DER-encoded ASN.1 at offset 0** — and a notarization ticket does not begin
+   with DER. It begins with the four-byte magic `s8ch`; the DER certificate
+   chain it *contains* starts at **offset 16**, after a fixed header. Wrong in
+   both directions from one line: `ABSENT` on the one file that *is* a ticket,
+   and `PRESENT` on the IMG4 that `Install macOS.app` carries at that very path
+   — an ASN.1 SEQUENCE that was never notarized;
+5. the `*.ticket` branch kept from (3) still matched on the **filename alone**,
+   so any file with that suffix was reported as a stapled ticket without a byte
+   of it being read — the same false-`PRESENT` failure as (1) and (4), in the
+   one place the content discriminator had not been applied.
 
-All three are fixed. ⚠️ **Defect (3) is the one worth carrying forward, because
-it was introduced by a review instruction rather than by the code**: the
-instruction that produced it contained a factual claim about what `stapler`
-writes, and nobody had checked that claim against the world. The current fix
-does not rest on recollection either — it is verified against
+All five are fixed. ⚠️ **Defects (3) and (4) are the ones worth carrying
+forward, because each was introduced by a review instruction rather than by the
+code** — and (4) is the sharper lesson, because the instruction that produced it
+*was* verified. After (3), the rule adopted was "do not take a review
+instruction on faith; check it against an executable source." That was done: the
+claim about *where* `stapler` writes the ticket was confirmed against
 [`apple-platform-rs`](https://github.com/indygreg/apple-platform-rs), whose
 `stapling::staple_ticket_to_bundle` resolves the bundle path `"CodeResources"`
 and writes the ticket into it verbatim, and whose `bundle_signing` adds an
 exclusion rule for `^CodeResources$` so `codesign` never puts a seal at the
-bundle root. The two facts genuinely never contend for the same path.
+bundle root. That verification was correct and still holds. But the same
+instruction carried a *second* claim — about **what a ticket is** — and nobody
+checked it, because nobody had been handed it as an instruction. ⭐ **A verified
+instruction is not a verified premise.**
 
 The instrument now discriminates the two by **content, not filename** — a
-notarization ticket is DER-encoded ASN.1, a seal is a plist — and tests **both**
-sides positively, so a `CodeResources` matching neither format is reported as
-neither rather than being guessed into one bucket.
+notarization ticket is recognised by its four-byte magic `s8ch`, a seal is a
+plist — and tests **both** sides positively, so a `CodeResources` matching
+neither format is reported as neither rather than being guessed into one bucket.
+The ticket format is verified against three independent *executable* sources
+rather than prose: `deploymenttheory/go-macos-pkg` `pkg/staple`, whose
+`AppHasTicket` recognises a stapled bundle by reading exactly those four bytes
+back from `Contents/CodeResources` and whose `StapleApp` refuses to write a blob
+without them; `appsworld/katalina`'s `parseS8chHeader`, which names the header's
+four little-endian fields and documents "Bytes 16+: DER-encoded certificate
+chain"; and `apple-platform-rs`, which writes the base64-decoded `signedTicket`
+from Apple's CloudKit lookup to disk verbatim, so the magic survives the trip.
+⚠️ Matching the magic is stricter **in both directions** than matching DER,
+which is why nothing falls back to a SEQUENCE check: the IMG4 case is precisely
+what a DER-at-zero predicate gets wrong in the CLEAN direction.
 
-**None of this moves a single figure in this table.** All three defects were
+**None of this moves a single figure in this table.** All five defects were
 **latent on today's assets**: `persona.app`'s signatures are embedded via
 `LC_CODE_SIGNATURE` so no detached `CodeDirectory` file exists in it; the engine
 image has no `_CodeSignature` at all; `persona.app` has **no bundle-root
@@ -389,7 +415,8 @@ re-reads every fact in §1–§3: the PE certificate tables, the UDIF `cSig`/gap
 the AppImage sections, the per-slice Mach-O states and hardened-runtime count,
 **and** the three §3 notarization prerequisites — `get-task-allow`, the
 `_CodeSignature/CodeResources` seals, and the absence of a stapled ticket
-(discriminated by CONTENT — a ticket is DER, a seal is a plist — never by
+(discriminated by CONTENT — a ticket carries the magic `s8ch`, a seal is a
+plist — never by
 filename alone, and never as a `codesign`-written `CodeDirectory`; see the
 provenance note in §3, including the **bundle-level bound** on that row). It
 needs three libraries the repo does not otherwise require

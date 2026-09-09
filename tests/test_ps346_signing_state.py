@@ -776,7 +776,7 @@ def test_a_real_stapled_ticket_is_still_detected():
 
     ⚠️ SO ONE FILENAME CARRIES TWO DIFFERENT FACTS, and this fixture holds both
     at once — which is the real shape of a stapled bundle:
-        Contents/CodeResources                 -> the TICKET (DER blob)
+        Contents/CodeResources                 -> the TICKET (`s8ch` blob)
         Contents/_CodeSignature/CodeResources  -> the SEAL   (a plist)
 
     Both assertions matter and they fail independently:
@@ -789,8 +789,8 @@ def test_a_real_stapled_ticket_is_still_detected():
         {
             "A.app": {
                 "Contents": {
-                    # DER-encoded ASN.1 — what a notarization ticket actually is
-                    "CodeResources": b"\x30\x82\x0a\x1f\x02\x01\x01",
+                    # A REAL ticket head — magic `s8ch`, not DER. See `_ticket`.
+                    "CodeResources": _ticket(),
                     "_CodeSignature": {
                         "CodeResources": b'<?xml version="1.0"?><plist/>',
                         "CodeDirectory": b"\xfa\xde\x0c\x02",
@@ -832,9 +832,9 @@ def test_unreadable_code_resources_falls_back_to_seal_not_ticket():
         def read_buffer(self, n):
             raise OSError("simulated read failure")
 
-    root = _FakeEntry("", {"A.app": {"Contents": {"CodeResources": b"\x30\x82"}}})
+    root = _FakeEntry("", {"A.app": {"Contents": {"CodeResources": _ticket()}}})
     contents = root._children[0]._children[0]
-    contents._children = [_Unreadable("CodeResources", b"\x30\x82")]
+    contents._children = [_Unreadable("CodeResources", _ticket())]
 
     acc: list = []
     notes: dict[str, list[str]] = {"code_resources": [], "staple": [], "unclassified": []}
@@ -844,7 +844,7 @@ def test_unreadable_code_resources_falls_back_to_seal_not_ticket():
     assert notes["code_resources"] == ["/A.app/Contents/CodeResources"]
 
 
-def test_a_codeResources_that_is_neither_plist_nor_der_is_claimed_as_neither():
+def test_a_codeResources_that_is_neither_plist_nor_ticket_is_claimed_as_neither():
     """⚠️ THE THIRD OUTCOME, and the reason both sides are tested POSITIVELY.
 
     "Not a plist" is not the same claim as "is a ticket". A file called
@@ -853,18 +853,55 @@ def test_a_codeResources_that_is_neither_plist_nor_der_is_claimed_as_neither():
     would fabricate a notarization claim, and counting it as a seal would
     inflate a figure the report quotes.
     """
-    _, notes = _walk({"A.app": {"Contents": {"CodeResources": b"not a plist or der"}}})
+    _, notes = _walk({"A.app": {"Contents": {"CodeResources": b"not a plist or ticket"}}})
     assert notes["staple"] == []
     assert notes["code_resources"] == []
     assert notes["unclassified"] == ["/A.app/Contents/CodeResources"]
 
 
-def test_dot_ticket_match_is_kept_for_non_bundle_entities():
-    """The narrower `*.ticket` match still fires — it costs nothing, and it is
-    the shape `stapler` uses for entities that are not app bundles. It simply
-    cannot be the ONLY match, because a `.app` never gets one."""
-    _, notes = _walk({"thing": {"A.ticket": b"\x30\x82\x00"}})
-    assert notes["staple"] == ["/thing/A.ticket"]
+def test_an_img4_at_the_ticket_path_is_not_a_notarization_claim():
+    """⛔ THE FALSE-**PRESENT** DIRECTION, which is the one that fails CLEAN.
+
+    `Contents/CodeResources` has a second documented occupant that is not a
+    ticket: `Install macOS.app` carries an **IMG4** there. An IMG4 *is* a valid
+    ASN.1 SEQUENCE, so a DER-at-offset-zero predicate reports it as a stapled
+    notarization ticket — asserting that something was notarized when it never
+    went near the notary.
+
+    ⚠️ This lands in `unclassified`, NOT in `code_resources`: it is not a seal
+    either, and the report says on the row that it found something it could not
+    classify rather than quietly absorbing it into a count.
+    """
+    _, notes = _walk({"Install macOS.app": {"Contents": {"CodeResources": _IMG4_HEAD}}})
+    assert notes["staple"] == [], (
+        f"an IMG4 was reported as a stapled notarization ticket: {notes['staple']}"
+    )
+    assert notes["code_resources"] == [], "an IMG4 was counted as a bundle seal"
+    assert notes["unclassified"] == ["/Install macOS.app/Contents/CodeResources"]
+
+
+def test_dot_ticket_is_matched_on_CONTENT_not_on_its_name():
+    """⛔ THE SAME DEFECT, IN THE BRANCH NOBODY WAS POINTED AT.
+
+    The `*.ticket` branch used to match on the FILENAME alone, so any file with
+    that suffix — a fixture, a log, a vendored asset — was reported as a stapled
+    notarization ticket without a single byte of it being read. That is a false
+    PRESENT in the CLEAN direction, arriving through the one door the content
+    discriminator had not been put on.
+
+    ⚠️ AND THE PREMISE UNDER THE BRANCH IS UNSUPPORTED: none of the three
+    stapler implementations checked writes a `*.ticket` file at all. It is kept
+    only so that real ticket bytes are reported wherever they are found — which
+    is precisely why the bytes, not the name, must decide.
+    """
+    _, notes = _walk({"thing": {"A.ticket": _ticket()}})
+    assert notes["staple"] == ["/thing/A.ticket"], "real ticket bytes were missed"
+
+    _, notes = _walk({"thing": {"A.ticket": b"\x30\x82\x00 not really a ticket"}})
+    assert notes["staple"] == [], (
+        f"a file was claimed as a notarization ticket on its NAME alone: {notes['staple']}"
+    )
+    assert notes["unclassified"] == ["/thing/A.ticket"]
 
 
 def test_walk_finds_machos_at_any_depth():
@@ -1007,7 +1044,7 @@ def test_reported_rows_split_a_stapled_bundle_correctly(tmp_path: Path, monkeypa
         {
             "A.app": {
                 "Contents": {
-                    "CodeResources": b"\x30\x82\x0a\x1f\x02\x01\x01",  # the ticket
+                    "CodeResources": _ticket(),  # the ticket — magic `s8ch`
                     "_CodeSignature": {"CodeResources": b"<?xml ?><plist/>"},  # the seal
                 }
             }
@@ -1033,7 +1070,7 @@ def test_the_dmg_bound_is_stated_on_every_ticket_row(tmp_path: Path, monkeypatch
     itself, in both the PRESENT and the ABSENT branch.
     """
     for tree in (
-        {"A.app": {"Contents": {"CodeResources": b"\x30\x82\x0a\x1f"}}},  # PRESENT
+        {"A.app": {"Contents": {"CodeResources": _ticket()}}},  # PRESENT
         {"A.app": {"Contents": {"_CodeSignature": {"CodeResources": b"<?xml ?><plist/>"}}}},  # ABSENT
     ):
         report = _bundle_report(tree, monkeypatch, tmp_path)
@@ -1049,7 +1086,7 @@ def test_an_unclassified_codeResources_is_disclosed_on_the_seal_row(tmp_path: Pa
         {
             "A.app": {
                 "Contents": {
-                    "CodeResources": b"neither plist nor der",
+                    "CodeResources": b"neither plist nor ticket",
                     "_CodeSignature": {"CodeResources": b"<?xml ?><plist/>"},
                 }
             }
@@ -1059,42 +1096,95 @@ def test_an_unclassified_codeResources_is_disclosed_on_the_seal_row(tmp_path: Pa
     )
     seal = _row(report, "CodeResources")
     assert "1 CodeResources seal(s)" in seal.detail
-    assert "NEITHER a plist nor DER" in seal.detail, f"the unclassified file vanished: {seal.detail}"
+    assert "neither a plist nor the" in seal.detail, (
+        f"the unclassified file vanished: {seal.detail}"
+    )
     assert _row(report, "stapled notarization ticket").state == "ABSENT"
 
 
 # ── the two format predicates, and the property that matters most ────────────
 
 
+def _ticket(signer_len: int = 0x400, content_len: int = 0x100) -> bytes:
+    """The real on-disk head of an Apple notarization ticket.
+
+    Layout, little-endian — magic, version, signer length, content length, then
+    the DER certificate chain at offset 16. Verified against three independent
+    executable sources: `deploymenttheory/go-macos-pkg` `pkg/staple`
+    (`ticketMagic = []byte("s8ch")`; `AppHasTicket` recognises a stapled bundle
+    by these four bytes and `StapleApp` refuses to write anything else),
+    `appsworld/katalina` `parseS8chHeader` (names all four fields and documents
+    "Bytes 16+: DER-encoded certificate chain"), and `indygreg/apple-platform-rs`
+    `staple_ticket_to_bundle` (writes the ticket to `Contents/CodeResources`
+    verbatim, so the magic survives to disk).
+
+    ⚠️ NOTE THE DER AT OFFSET 16, because it is the whole trap: a ticket
+    *contains* DER and does not *begin* with it. A predicate testing for an
+    ASN.1 SEQUENCE at offset 0 answers ABSENT on this — a genuinely notarized
+    bundle reported unnotarized.
+    """
+    return b"s8ch" + struct.pack("<III", 1, signer_len, content_len) + b"\x30\x82\x03\xf0"
+
+
+#: An IMG4, which `Install macOS.app` carries at the very path a stapled ticket
+#: uses. ⛔ IT IS A VALID ASN.1 SEQUENCE — `0x30 0x82 <len> 0x16 0x04 "IMG4"`,
+#: per `blacktop/ipsw` `pkg/img4` (`Tag string \`asn1:"ia5"\`` unmarshalled from
+#: the outer SEQUENCE). This is the file that makes a DER-at-zero predicate
+#: report notarization on something that was never notarized.
+_IMG4_HEAD = b"\x30\x82\x12\x34\x16\x04IMG4"
+
+
 _FORMAT_CASES = [
-    # (leading bytes, label, is_plist, is_der)
+    # (leading bytes, label, is_plist, is_ticket)
     (b'<?xml version="1.0"?>', "XML plist", True, False),
     (b"bplist00\xd1", "binary plist", True, False),
     (b"\xef\xbb\xbf<?xml v", "BOM + XML", True, False),
     (b"\n  <?xml ver", "leading whitespace + XML", True, False),
     (b"<!DOCTYPE plist PUB", "DOCTYPE", True, False),
     (b'<plist version="1', "bare <plist>", True, False),
-    (b"\x30\x82\x0a\x1f\x02\x01", "DER, 2-byte long form", False, True),
-    (b"\x30\x81\x80\x02\x01\x01", "DER, 1-byte long form", False, True),
-    (b"\x30\x0a\x02\x01\x01", "DER, short form", False, True),
-    (b"\x30\x84\x00\x01\x00\x00", "DER, 4-byte long form", False, True),
+    (_ticket(), "a real notarization ticket", False, True),
+    (b"s8ch", "the ticket magic alone", False, True),
+    # ⛔ EVERY DER SHAPE BELOW IS A **NON**-TICKET. They were the positive cases
+    # of the predicate this replaced, and that is exactly the premise that was
+    # wrong: none of these is what `stapler` writes.
+    (b"\x30\x82\x0a\x1f\x02\x01", "DER, 2-byte long form — NOT a ticket", False, False),
+    (b"\x30\x81\x80\x02\x01\x01", "DER, 1-byte long form — NOT a ticket", False, False),
+    (b"\x30\x0a\x02\x01\x01", "DER, short form — NOT a ticket", False, False),
+    (b"\x30\x84\x00\x01\x00\x00", "DER, 4-byte long form — NOT a ticket", False, False),
+    (_IMG4_HEAD, "an IMG4 — DER, and the false-PRESENT trap", False, False),
     (b"not a plist or der", "stray text", False, False),
-    (b"\x30\x85\xff\xff\xff\xff\xff", "0x30 with implausible length", False, False),
     (b"\xfa\xde\x0c\x02", "a codesign CodeDirectory blob", False, False),
     (b"\x7fELF", "an ELF", False, False),
-    (b"\x30", "a single 0x30 byte", False, False),
+    (b"s8c", "a truncated magic", False, False),
+    (b"S8CH\x01\x00\x00\x00", "wrong case", False, False),
     (b"", "empty", False, False),
 ]
 
 
-@pytest.mark.parametrize("head,label,is_plist,is_der", _FORMAT_CASES)
-def test_format_predicates_classify_each_shape(head, label, is_plist, is_der):
+@pytest.mark.parametrize("head,label,is_plist,is_ticket", _FORMAT_CASES)
+def test_format_predicates_classify_each_shape(head, label, is_plist, is_ticket):
     assert mod.looks_like_plist(head) is is_plist, f"plist verdict wrong for {label}"
-    assert mod.looks_like_der(head) is is_der, f"DER verdict wrong for {label}"
+    assert mod.looks_like_ticket(head) is is_ticket, f"ticket verdict wrong for {label}"
 
 
-@pytest.mark.parametrize("head,label,_p,_d", _FORMAT_CASES)
-def test_the_two_predicates_are_mutually_exclusive(head, label, _p, _d):
+def test_a_ticket_is_not_matched_by_being_der():
+    """⛔ THE PREMISE THAT COST A ROUND, PINNED AS A TEST.
+
+    A ticket *contains* DER (at offset 16) and does not *begin* with it. Both
+    halves are asserted here, because a fixture and a predicate authored from
+    the same wrong premise agree with each other perfectly.
+    """
+    head = _ticket()
+    assert head[:4] == b"s8ch", "a ticket begins with its magic"
+    assert head[0] != 0x30, "a ticket does NOT begin with an ASN.1 SEQUENCE"
+    assert head[16:18] == b"\x30\x82", "its DER certificate chain begins at offset 16"
+    assert mod.looks_like_ticket(head) is True
+    # ...and the DER that sits inside it, taken alone, is not a ticket.
+    assert mod.looks_like_ticket(head[16:]) is False
+
+
+@pytest.mark.parametrize("head,label,_p,_t", _FORMAT_CASES)
+def test_the_two_predicates_are_mutually_exclusive(head, label, _p, _t):
     """⛔ THE PROPERTY THE WHOLE DISCRIMINATOR RESTS ON.
 
     If any byte sequence could satisfy both, the branch order in `_apfs_machos`
@@ -1102,7 +1192,7 @@ def test_the_two_predicates_are_mutually_exclusive(head, label, _p, _d):
     depend on the order rather than on the bytes. Neither is fine (that is the
     `unclassified` bucket, which claims nothing); BOTH is not.
     """
-    assert not (mod.looks_like_plist(head) and mod.looks_like_der(head)), (
+    assert not (mod.looks_like_plist(head) and mod.looks_like_ticket(head)), (
         f"{label} satisfies both predicates — the branch order, not the bytes, "
         "would decide what it is"
     )
