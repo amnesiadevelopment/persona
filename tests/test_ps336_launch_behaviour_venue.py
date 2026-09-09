@@ -746,6 +746,19 @@ def test_a_missing_display_is_reported_as_cannot_run_not_as_a_finding(
     """
     import os
 
+    # ⚠️ THE SKIP MUST PRECEDE THE SPAWN, AND THIS ORDER IS THE WHOLE POINT.
+    # The preflight under test is linux-only (`sys.platform.startswith("linux")`
+    # in the runner's `main`), so off linux this driver does NOT short-circuit
+    # at the DISPLAY check — it falls through into the real harness and launches
+    # browsers, which is minutes of work whose result is then thrown away by a
+    # skip. That is not merely wasteful: it exceeds pytest-timeout's 120s bound,
+    # and a timeout is a FAILURE, so the skip never runs and the job goes red.
+    # Measured on main @ ef87ca3: windows-latest and macos-latest both failed
+    # here with `Failed: Timeout (>120.0s)` while the linux lanes passed.
+    # A guard that runs after the thing it guards is not a guard.
+    if not sys.platform.startswith("linux"):
+        pytest.skip("the display preflight is linux-only, matching baseline's")
+
     driver = tmp_path / "driver.py"
     driver.write_text(
         "import sys\n"
@@ -763,9 +776,6 @@ def test_a_missing_display_is_reported_as_cannot_run_not_as_a_finding(
         encoding="utf-8",
         env=env,
     )
-
-    if not sys.platform.startswith("linux"):
-        pytest.skip("the display preflight is linux-only, matching baseline's")
 
     assert result.returncode == 2, (
         "a run with no display did not report 'nothing was certified' — exit 1 "
