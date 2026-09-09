@@ -172,6 +172,28 @@ UNCOVERED_SURFACES: tuple[tuple[str, str], ...] = (
         "did not have would be worse than no document. Chromium recordings "
         "are therefore warm reads of a live session only.",
     ),
+    (
+        "the LAUNCH-PERIMETER INVENTORY observes the SOURCE, never a running "
+        "launch",
+        "launch-perimeter-inventory (PS-355) walks a traced launch surface "
+        "with an AST parser and compares what it finds against "
+        "PERIMETER_ARTIFACTS. Three consequences it does NOT hide. (1) A write "
+        "reached only DYNAMICALLY — through a built attribute name, an exec, "
+        "or a third-party library's own file handling — is invisible to it, "
+        "because a parser sees the shape of a call and not the calls that "
+        "actually happen. (2) Its population is LAUNCH_SURFACE, the modules a "
+        "real traced firefox launch entered plus env_policy (which the forked "
+        "child reaches, where the tracer does not follow); a new "
+        "out-of-perimeter write in a module NOT on that list is not seen at "
+        "all, and widening the list is the fix rather than a reason to read "
+        "the check more generously. (3) The INVENTORY ITSELF was measured on "
+        "ONE platform — Linux, firefox, one launch — so its platform column is "
+        "a claim about where each artifact is EXPECTED, verified against the "
+        "guards in the source, and not a reading taken on Windows or macOS. "
+        "What the check does guarantee is narrow and real: the tree cannot "
+        "grow a statically-visible out-of-perimeter write, or lose an "
+        "enumerated one, without this going red and naming it.",
+    ),
 )
 
 
