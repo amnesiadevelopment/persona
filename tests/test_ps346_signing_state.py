@@ -1061,3 +1061,48 @@ def test_an_unclassified_codeResources_is_disclosed_on_the_seal_row(tmp_path: Pa
     assert "1 CodeResources seal(s)" in seal.detail
     assert "NEITHER a plist nor DER" in seal.detail, f"the unclassified file vanished: {seal.detail}"
     assert _row(report, "stapled notarization ticket").state == "ABSENT"
+
+
+# ── the two format predicates, and the property that matters most ────────────
+
+
+_FORMAT_CASES = [
+    # (leading bytes, label, is_plist, is_der)
+    (b'<?xml version="1.0"?>', "XML plist", True, False),
+    (b"bplist00\xd1", "binary plist", True, False),
+    (b"\xef\xbb\xbf<?xml v", "BOM + XML", True, False),
+    (b"\n  <?xml ver", "leading whitespace + XML", True, False),
+    (b"<!DOCTYPE plist PUB", "DOCTYPE", True, False),
+    (b'<plist version="1', "bare <plist>", True, False),
+    (b"\x30\x82\x0a\x1f\x02\x01", "DER, 2-byte long form", False, True),
+    (b"\x30\x81\x80\x02\x01\x01", "DER, 1-byte long form", False, True),
+    (b"\x30\x0a\x02\x01\x01", "DER, short form", False, True),
+    (b"\x30\x84\x00\x01\x00\x00", "DER, 4-byte long form", False, True),
+    (b"not a plist or der", "stray text", False, False),
+    (b"\x30\x85\xff\xff\xff\xff\xff", "0x30 with implausible length", False, False),
+    (b"\xfa\xde\x0c\x02", "a codesign CodeDirectory blob", False, False),
+    (b"\x7fELF", "an ELF", False, False),
+    (b"\x30", "a single 0x30 byte", False, False),
+    (b"", "empty", False, False),
+]
+
+
+@pytest.mark.parametrize("head,label,is_plist,is_der", _FORMAT_CASES)
+def test_format_predicates_classify_each_shape(head, label, is_plist, is_der):
+    assert mod.looks_like_plist(head) is is_plist, f"plist verdict wrong for {label}"
+    assert mod.looks_like_der(head) is is_der, f"DER verdict wrong for {label}"
+
+
+@pytest.mark.parametrize("head,label,_p,_d", _FORMAT_CASES)
+def test_the_two_predicates_are_mutually_exclusive(head, label, _p, _d):
+    """⛔ THE PROPERTY THE WHOLE DISCRIMINATOR RESTS ON.
+
+    If any byte sequence could satisfy both, the branch order in `_apfs_machos`
+    would silently decide which fact a file becomes — and the answer would
+    depend on the order rather than on the bytes. Neither is fine (that is the
+    `unclassified` bucket, which claims nothing); BOTH is not.
+    """
+    assert not (mod.looks_like_plist(head) and mod.looks_like_der(head)), (
+        f"{label} satisfies both predicates — the branch order, not the bytes, "
+        "would decide what it is"
+    )
