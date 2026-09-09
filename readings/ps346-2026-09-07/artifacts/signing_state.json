@@ -1,0 +1,218 @@
+[
+  {
+    "asset": "persona-windows-setup.exe",
+    "platform": "windows",
+    "kind": "PE installer",
+    "state": "UNSIGNED",
+    "detail": "IMAGE_DIRECTORY_ENTRY_SECURITY size=0 (no certificate table)",
+    "identity": null
+  },
+  {
+    "asset": "persona-macos.dmg",
+    "platform": "macos",
+    "kind": "UDIF image signature",
+    "state": "UNSIGNED",
+    "detail": "no cSig resource (keys: blkx,plst), 0 bytes between plist end and koly trailer",
+    "identity": null
+  },
+  {
+    "asset": "persona-macos.dmg",
+    "platform": "macos",
+    "kind": "bundle Mach-O binaries (113 files)",
+    "state": "ADHOC",
+    "detail": "arch slices: ADHOC=196, UNSIGNED=28, SIGNED_CMS=1, UNREADABLE=0; hardened-runtime slices: 1/225 (only: /persona.app/Contents/Frameworks/serious_python_darwin.framework/Versions/A/Resources/python.bundle/Contents/Resources/site-packages/playwright/driver/node)",
+    "identity": "/persona.app/Contents/Frameworks/serious_python_darwin.framework/Versions/A/Resources/python.bundle/Contents/Resources/site-packages/playwright/driver/node: Common Name: Developer ID Certification Authority, Organizational Unit: Apple Certification Authority, Organization: Apple Inc., Country: US; Common Name: Apple Root CA, Organizational Unit: Apple Certification Authority, Organization: Apple Inc., Country: US; User ID: HX7739G8FX, Common Name: Developer ID Application: Node.js Foundation (HX7739G8FX), Organizational Unit: HX7739G8FX, Organization: Node.js Foundation, Country: US"
+  },
+  {
+    "asset": "persona-macos.dmg",
+    "platform": "macos",
+    "kind": "entitlement com.apple.security.get-task-allow",
+    "state": "PRESENT",
+    "detail": "PRESENT AND TRUE on 3/3 slice(s) carrying entitlements (e.g. /persona.app/Contents/MacOS/persona) \u2014 an explicit notarization-rejection condition, shipped.",
+    "identity": null
+  },
+  {
+    "asset": "persona-macos.dmg",
+    "platform": "macos",
+    "kind": "bundle _CodeSignature/CodeResources",
+    "state": "PRESENT",
+    "detail": "20 CodeResources seal(s) present (e.g. /persona.app/Contents/_CodeSignature/CodeResources) \u2014 \u26a0\ufe0f presence is NOT identity: an ad-hoc seal's requirement strings are bare cdhashes with no `anchor apple generic` clause.",
+    "identity": null
+  },
+  {
+    "asset": "persona-macos.dmg",
+    "platform": "macos",
+    "kind": "stapled notarization ticket",
+    "state": "ABSENT",
+    "detail": "no stapled ticket found anywhere in the image.",
+    "identity": null
+  },
+  {
+    "asset": "persona-x86_64.AppImage",
+    "platform": "linux",
+    "kind": "AppImage .sha256_sig",
+    "state": "UNSIGNED",
+    "detail": "section present, 1024 bytes, ALL ZERO",
+    "identity": null
+  },
+  {
+    "asset": "persona-x86_64.AppImage",
+    "platform": "linux",
+    "kind": "AppImage .sig_key",
+    "state": "UNSIGNED",
+    "detail": "section present, 8192 bytes, ALL ZERO",
+    "identity": null
+  },
+  {
+    "asset": "personium-152.0.7977.75-windows-x86_64.zip",
+    "platform": "windows",
+    "kind": "PE Chrome-bin/152.0.7977.75/chrome.dll",
+    "state": "UNSIGNED",
+    "detail": "IMAGE_DIRECTORY_ENTRY_SECURITY size=0 (no certificate table)",
+    "identity": null
+  },
+  {
+    "asset": "personium-152.0.7977.75-windows-x86_64.zip",
+    "platform": "windows",
+    "kind": "PE Chrome-bin/152.0.7977.75/chrome_elf.dll",
+    "state": "UNSIGNED",
+    "detail": "IMAGE_DIRECTORY_ENTRY_SECURITY size=0 (no certificate table)",
+    "identity": null
+  },
+  {
+    "asset": "personium-152.0.7977.75-windows-x86_64.zip",
+    "platform": "windows",
+    "kind": "PE Chrome-bin/152.0.7977.75/chrome_pwa_launcher.exe",
+    "state": "UNSIGNED",
+    "detail": "IMAGE_DIRECTORY_ENTRY_SECURITY size=0 (no certificate table)",
+    "identity": null
+  },
+  {
+    "asset": "personium-152.0.7977.75-windows-x86_64.zip",
+    "platform": "windows",
+    "kind": "PE Chrome-bin/152.0.7977.75/chrome_wer.dll",
+    "state": "UNSIGNED",
+    "detail": "IMAGE_DIRECTORY_ENTRY_SECURITY size=0 (no certificate table)",
+    "identity": null
+  },
+  {
+    "asset": "personium-152.0.7977.75-windows-x86_64.zip",
+    "platform": "windows",
+    "kind": "PE Chrome-bin/152.0.7977.75/d3dcompiler_47.dll",
+    "state": "SIGNED_CMS",
+    "detail": "certificate table present, 10688 bytes",
+    "identity": "CN=Microsoft Windows Code Signing PCA 2024, O=Microsoft Corporation, C=US; CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, ST=Washington, C=US"
+  },
+  {
+    "asset": "personium-152.0.7977.75-windows-x86_64.zip",
+    "platform": "windows",
+    "kind": "PE Chrome-bin/152.0.7977.75/dxcompiler.dll",
+    "state": "UNSIGNED",
+    "detail": "IMAGE_DIRECTORY_ENTRY_SECURITY size=0 (no certificate table)",
+    "identity": null
+  },
+  {
+    "asset": "personium-152.0.7977.75-windows-x86_64.zip",
+    "platform": "windows",
+    "kind": "PE Chrome-bin/152.0.7977.75/dxil.dll",
+    "state": "SIGNED_CMS",
+    "detail": "certificate table present, 10664 bytes",
+    "identity": "CN=Microsoft Windows Code Signing PCA 2024, O=Microsoft Corporation, C=US; CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, ST=Washington, C=US"
+  },
+  {
+    "asset": "personium-152.0.7977.75-windows-x86_64.zip",
+    "platform": "windows",
+    "kind": "PE Chrome-bin/152.0.7977.75/notification_helper.exe",
+    "state": "UNSIGNED",
+    "detail": "IMAGE_DIRECTORY_ENTRY_SECURITY size=0 (no certificate table)",
+    "identity": null
+  },
+  {
+    "asset": "personium-152.0.7977.75-windows-x86_64.zip",
+    "platform": "windows",
+    "kind": "PE Chrome-bin/152.0.7977.75/vk_swiftshader.dll",
+    "state": "UNSIGNED",
+    "detail": "IMAGE_DIRECTORY_ENTRY_SECURITY size=0 (no certificate table)",
+    "identity": null
+  },
+  {
+    "asset": "personium-152.0.7977.75-windows-x86_64.zip",
+    "platform": "windows",
+    "kind": "PE Chrome-bin/152.0.7977.75/vulkan-1.dll",
+    "state": "UNSIGNED",
+    "detail": "IMAGE_DIRECTORY_ENTRY_SECURITY size=0 (no certificate table)",
+    "identity": null
+  },
+  {
+    "asset": "personium-152.0.7977.75-windows-x86_64.zip",
+    "platform": "windows",
+    "kind": "PE Chrome-bin/chrome.exe",
+    "state": "UNSIGNED",
+    "detail": "IMAGE_DIRECTORY_ENTRY_SECURITY size=0 (no certificate table)",
+    "identity": null
+  },
+  {
+    "asset": "personium-152.0.7977.75-windows-x86_64.zip",
+    "platform": "windows",
+    "kind": "PE Chrome-bin/chrome_proxy.exe",
+    "state": "UNSIGNED",
+    "detail": "IMAGE_DIRECTORY_ENTRY_SECURITY size=0 (no certificate table)",
+    "identity": null
+  },
+  {
+    "asset": "personium-152.0.7977.75-macos-arm64.dmg",
+    "platform": "macos",
+    "kind": "UDIF image signature",
+    "state": "UNSIGNED",
+    "detail": "no cSig resource (keys: blkx,plst), 0 bytes between plist end and koly trailer",
+    "identity": null
+  },
+  {
+    "asset": "personium-152.0.7977.75-macos-arm64.dmg",
+    "platform": "macos",
+    "kind": "bundle Mach-O binaries (11 files)",
+    "state": "ADHOC",
+    "detail": "arch slices: ADHOC=11, UNSIGNED=0, SIGNED_CMS=0, UNREADABLE=0; hardened-runtime slices: 0/11",
+    "identity": null
+  },
+  {
+    "asset": "personium-152.0.7977.75-macos-arm64.dmg",
+    "platform": "macos",
+    "kind": "entitlement com.apple.security.get-task-allow",
+    "state": "UNREADABLE",
+    "detail": "no entitlements blob found on any slice \u2014 NOT the claim that the entitlement is absent.",
+    "identity": null
+  },
+  {
+    "asset": "personium-152.0.7977.75-macos-arm64.dmg",
+    "platform": "macos",
+    "kind": "bundle _CodeSignature/CodeResources",
+    "state": "ABSENT",
+    "detail": "no CodeResources anywhere in the image \u2014 the bundle does not even have the SHAPE of a signature.",
+    "identity": null
+  },
+  {
+    "asset": "personium-152.0.7977.75-macos-arm64.dmg",
+    "platform": "macos",
+    "kind": "stapled notarization ticket",
+    "state": "ABSENT",
+    "detail": "no stapled ticket found anywhere in the image.",
+    "identity": null
+  },
+  {
+    "asset": "personium-152.0.7977.75-linux-x86_64.AppImage",
+    "platform": "linux",
+    "kind": "AppImage .sha256_sig",
+    "state": "UNSIGNED",
+    "detail": "section present, 1024 bytes, ALL ZERO",
+    "identity": null
+  },
+  {
+    "asset": "personium-152.0.7977.75-linux-x86_64.AppImage",
+    "platform": "linux",
+    "kind": "AppImage .sig_key",
+    "state": "UNSIGNED",
+    "detail": "section present, 8192 bytes, ALL ZERO",
+    "identity": null
+  }
+]
