@@ -402,12 +402,69 @@ def test_the_windows_arm_publishes_nothing():
     assert "softprops/action-gh-release" not in text
 
 
-def test_the_windows_arm_is_dispatch_only():
-    """A push trigger would fetch ~38 paths from googlesource on every commit
-    and earn exactly the 429s this ticket measured."""
+def test_the_windows_arm_is_not_broadly_triggered():
+    """A `paths`-less or push trigger would fetch ~38 googlesource paths on
+    every commit and earn exactly the 429s this ticket measured.
+
+    ⚠️ THIS ARM IS DELIBERATELY NOT DISPATCH-ONLY, unlike the Linux one, and the
+    reason is a hard GitHub constraint rather than a preference:
+    `workflow_dispatch` can only be fired from the DEFAULT BRANCH, so a
+    dispatch-only arm cannot be run until after it is merged — its first
+    execution would be on `main`, and AC1 ("a completed run's own output, not an
+    assertion that a YAML key exists") could not be met before review.
+
+    So what is asserted is NARROWNESS, not dispatch-only: no `push` trigger at
+    all, and a `pull_request` trigger confined by `paths:` to this arm and the
+    things it drives.
+    """
     wf = windows_workflow()
     triggers = wf[True] if True in wf else wf["on"]
-    assert list(triggers) == ["workflow_dispatch"]
+
+    assert "push" not in triggers, (
+        "a push trigger would fetch ~38 googlesource paths on every commit"
+    )
+    assert set(triggers) == {"workflow_dispatch", "pull_request"}
+
+    pr = triggers["pull_request"]
+    assert "paths" in pr and pr["paths"], (
+        "the pull_request trigger MUST be paths-confined; without it this arm "
+        "runs on every PR in the repository"
+    )
+    # It may only fire for things that can actually change its answer.
+    assert set(pr["paths"]) == {
+        ".github/workflows/engine-trial-build-windows.yml",
+        "scripts/ps299_rebase_probe.py",
+        "scripts/ps218_stage_patches.sh",
+        "engine/patches/fingerprint/*.patch",
+    }
+
+
+def test_inputs_have_workflow_level_fallbacks_because_a_pr_run_has_no_inputs():
+    """On `pull_request` the `inputs.*` context is EMPTY.
+
+    An empty tag reaches the probe as a bare `--tag ""`, which does NOT fail
+    loudly — it clones something else. Centralising the fallbacks means no use
+    site can forget one, so assert they exist and that the steps read the
+    resolved variables rather than `inputs.*` directly.
+    """
+    wf = windows_workflow()
+    env = wf["env"]
+    assert "152.0.7977.75-1.1" in env["UNGOOGLED_TAG"]
+    assert "cacf0f0" in env["EXPECT_BASE"]
+    assert "'none'" in env["FALSIFY"], (
+        "falsify must fall back to 'none' so a PR run measures the REAL thing "
+        "and can never go red for a breakage nobody asked for"
+    )
+
+    run_text = "\n".join(
+        s.get("run", "") for job in wf["jobs"].values() for s in job["steps"]
+    )
+    assert "inputs.ungoogled_tag" not in run_text, (
+        "steps must read ${UNGOOGLED_TAG}, not inputs.* — the latter is empty "
+        "on the pull_request trigger"
+    )
+    assert "inputs.expect_base" not in run_text
+    assert "${UNGOOGLED_TAG}" in run_text and "${EXPECT_BASE}" in run_text
 
 
 def test_the_falsification_switch_offers_both_failure_shapes():

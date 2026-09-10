@@ -138,12 +138,12 @@
 name: engine-trial-build-windows
 
 on:
-  # ⚠️ workflow_dispatch ONLY, and for a DIFFERENT reason than the Linux arm.
-  # That arm is dispatch-only to protect the owner's personal workstation from
-  # unattended multi-hour compiles. This one runs on a hosted runner and is
-  # cheap — but it reaches out to googlesource for ~38 files per run, and a
-  # push-triggered version would hammer that on every commit and earn exactly
-  # the 429s described above. Dispatch-only keeps the measurement honest.
+  # ⚠️ DISPATCH IS THE PRIMARY TRIGGER, and for a DIFFERENT reason than the
+  # Linux arm's. That arm is dispatch-only to protect the owner's personal
+  # workstation from unattended multi-hour compiles. This one runs on a hosted
+  # runner and is cheap — but it reaches out to googlesource for ~38 files per
+  # run, and a broadly-triggered version would hammer that on every commit and
+  # earn exactly the 429s described above.
   workflow_dispatch:
     inputs:
       ungoogled_tag:
@@ -213,8 +213,55 @@ on:
           - drop_patch
           - corrupt_hunk
 
+  # ⭐ AND A NARROW `pull_request` TRIGGER, WHICH IS NOT A LOOSENING.
+  #
+  # Two reasons, and the first is a hard GitHub constraint rather than a
+  # preference: `workflow_dispatch` CAN ONLY BE FIRED FROM THE DEFAULT BRANCH.
+  # A dispatch-only arm therefore cannot be RUN until after it is merged — so
+  # its first execution would be on `main`, and PS-361's acceptance criterion
+  # ("a completed run's own output, not an assertion that a YAML key exists")
+  # could not be met before review. An arm nobody has watched run is exactly
+  # the shape this file's falsification switch exists to prevent.
+  #
+  # The second is that it is genuine regression protection: this arm's
+  # correctness is a property of the probe and the staging script it drives, so
+  # a change to either should be MEASURED rather than assumed.
+  #
+  # ⛔ `paths:` KEEPS IT NARROW, AND THAT IS LOAD-BEARING. It fires ONLY when
+  # this arm or the things it drives change — NOT on every commit, and NOT on
+  # the vast majority of pull requests. Do not widen it: a `paths`-less version
+  # would fetch ~38 googlesource paths on every PR in the repository and earn
+  # the 429s this file already documents.
+  #
+  # ⚠️ ON THIS TRIGGER THE INPUTS ABOVE ARE ABSENT, so every step that reads one
+  # falls back to a default. That fallback is explicit at each use site rather
+  # than implied here — an empty `inputs.ungoogled_tag` would otherwise clone
+  # whatever a bare `--tag ""` resolves to.
+  pull_request:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/engine-trial-build-windows.yml"
+      - "scripts/ps299_rebase_probe.py"
+      - "scripts/ps218_stage_patches.sh"
+      - "engine/patches/fingerprint/*.patch"
+
 permissions:
   contents: read
+
+# ⛔ THE INPUT FALLBACKS LIVE HERE, ONCE, BECAUSE THIS ARM HAS TWO TRIGGERS.
+# On `pull_request` the `inputs.*` context is EMPTY, and an empty tag would
+# reach the probe as a bare `--tag ""` — which does not fail loudly, it clones
+# something else. Defining the defaults at workflow level means every step reads
+# ONE resolved value and no use site can forget the fallback.
+#
+# ⚠️ FALSIFY DEFAULTS TO `none` ON BOTH TRIGGERS. A PR run measures the REAL
+# thing; the deliberate-breakage paths are opt-in through dispatch only, so a
+# PR can never go red for a reason nobody asked for.
+env:
+  UNGOOGLED_TAG: ${{ inputs.ungoogled_tag || '152.0.7977.75-1.1' }}
+  EXPECT_BASE: ${{ inputs.expect_base || 'cacf0f0fd2446a837528c54df1880b75874b9580' }}
+  FALSIFY: ${{ inputs.falsify || 'none' }}
 
 concurrency:
   # Serialised deliberately: concurrent runs fetch the same ~38 paths from
@@ -281,13 +328,13 @@ jobs:
         run: |
           set -uo pipefail
           BASE_ARG=""
-          if [ -n "${{ inputs.expect_base }}" ]; then
-            BASE_ARG="--expect-base ${{ inputs.expect_base }}"
+          if [ -n "${EXPECT_BASE}" ]; then
+            BASE_ARG="--expect-base ${EXPECT_BASE}"
           fi
           set -x
           python3 scripts/ps299_rebase_probe.py \
             --platform windows \
-            --tag "${{ inputs.ungoogled_tag }}" \
+            --tag "${UNGOOGLED_TAG}" \
             $BASE_ARG \
             --trees unmodified \
             2>&1 | tee control.log
@@ -295,7 +342,7 @@ jobs:
           set +x
           echo "PROBE_EXIT=${rc}" | tee -a "$GITHUB_ENV"
           if [ "$rc" -ne 0 ]; then
-            echo "::error::THE INSTRUMENT CHECK FAILED (exit ${rc}). This is a finding about the ungoogled-chromium-windows tree at ${{ inputs.ungoogled_tag }} — or about this runner's ability to reach googlesource — and says NOTHING about our 16 fingerprint patches. Do not read it as a patch failure."
+            echo "::error::THE INSTRUMENT CHECK FAILED (exit ${rc}). This is a finding about the ungoogled-chromium-windows tree at ${UNGOOGLED_TAG} — or about this runner's ability to reach googlesource — and says NOTHING about our 16 fingerprint patches. Do not read it as a patch failure."
             exit "$rc"
           fi
 
@@ -334,11 +381,11 @@ jobs:
       # engine/patches/fingerprint on the runner; nothing is committed and the
       # repository is untouched.
       - name: ⚠️ Deliberately break the patch layer (falsification)
-        if: inputs.falsify != 'none'
+        if: ${{ (inputs.falsify || 'none') != 'none' }}
         run: |
           set -eu
           cd engine/patches/fingerprint
-          case "${{ inputs.falsify }}" in
+          case "${FALSIFY}" in
             drop_patch)
               echo "::warning::FALSIFICATION drop_patch — removing 018-timezone.patch so only 15 remain. The 16-count guard in ps218_stage_patches.sh MUST fail this run."
               rm -f 018-timezone.patch
@@ -371,13 +418,13 @@ jobs:
         run: |
           set -uo pipefail
           BASE_ARG=""
-          if [ -n "${{ inputs.expect_base }}" ]; then
-            BASE_ARG="--expect-base ${{ inputs.expect_base }}"
+          if [ -n "${EXPECT_BASE}" ]; then
+            BASE_ARG="--expect-base ${EXPECT_BASE}"
           fi
           set -x
           python3 scripts/ps299_rebase_probe.py \
             --platform windows \
-            --tag "${{ inputs.ungoogled_tag }}" \
+            --tag "${UNGOOGLED_TAG}" \
             $BASE_ARG \
             --trees patched \
             --staged \
@@ -393,11 +440,11 @@ jobs:
           # sends them to rebase patches that were never tested.
           case "$rc" in
             0)
-              echo "RESULT: PATCH APPLICATION SUCCEEDED on ungoogled-chromium-windows ${{ inputs.ungoogled_tag }}."
+              echo "RESULT: PATCH APPLICATION SUCCEEDED on ungoogled-chromium-windows ${UNGOOGLED_TAG}."
               echo "⛔ THIS IS NOT A COMPILE RESULT. Nothing was built; no MSVC toolchain was invoked."
               ;;
             1)
-              echo "::error::MEASURED FAILURE — our 16 do NOT apply cleanly at ${{ inputs.ungoogled_tag }} (probe exit 1). Rejects and/or fuzz are named in the table above. A rebase stands between us and this platform."
+              echo "::error::MEASURED FAILURE — our 16 do NOT apply cleanly at ${UNGOOGLED_TAG} (probe exit 1). Rejects and/or fuzz are named in the table above. A rebase stands between us and this platform."
               ;;
             *)
               echo "::error::NOTHING WAS MEASURED (probe exit ${rc}). This is NOT a pass and must not be read as one — whether our patches apply on Windows is UNKNOWN from this run. Common causes: googlesource rate-limiting (429/5xx), a base-commit mismatch, or a wrong patch count. Read the log."
