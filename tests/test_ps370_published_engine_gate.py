@@ -132,6 +132,28 @@ def _resolver(version: str, verdict: str = "ok", message: str = ""):
     return _resolve
 
 
+def _release(version: str, *, asset: bool = True):
+    """Stand in for `updater.fetch_release_full` — the SINGLE release-reading
+    path, which the dispatch arm now goes through rather than around.
+
+    Records the tag it was asked for on the function object, so a test can
+    assert the prefix was normalised on the way IN and not only on the way out.
+    """
+
+    def _resolve(tag):
+        _resolve.asked_for = tag
+        if not asset:
+            return version, "", ""
+        return (
+            version,
+            f"https://example.invalid/personium-{version}-linux-x86_64.AppImage",
+            "sha256:" + "b" * 64,
+        )
+
+    _resolve.asked_for = None
+    return _resolve
+
+
 # ---------------------------------------------------------------------------
 # THE HAZARD: a version other than 152, end to end through the derivation.
 # ---------------------------------------------------------------------------
@@ -427,14 +449,243 @@ def test_the_prefix_is_handled_by_the_updaters_own_helpers(gate):
     assert "personium-" not in plan["product_id"]
     assert "personium-" not in plan["product_file"]
     # And an explicitly supplied version that ALREADY carries the prefix is
-    # normalised rather than doubled.
+    # normalised rather than doubled — including on the way INTO the release
+    # lookup, which is why the release stub records what it was asked for.
     code, plan = gate.plan(
         engine_version="personium-153.0.8100.12",
+        resolve_release=_release("153.0.8100.12"),
         index_fetcher=lambda: _index("153.0.8100.12"),
     )
     assert code == gate.PLAN_OK
     assert plan["engine_version"] == "153.0.8100.12"
     assert plan["engine_tag"] == "personium-153.0.8100.12"
+
+
+# ---------------------------------------------------------------------------
+# THE DISPATCH ARM. It resolves a REAL release, or it refuses to plan.
+#
+# ⭐ WHY THIS SECTION EXISTS. The first cut of this gate treated an explicit
+# `--engine-version` as "skip the release lookup": it derived the tag from the
+# string and returned PLAN_OK with an EMPTY engine_url and digest. That plan
+# printed a correct-looking tag, control and filenames, spent the ~200 MB
+# Chrome for Testing download, and then died inside the runner —
+# `updater.download_engine("")` returns False on its first statement — so the
+# `workflow_dispatch` arm could only ever reach exit 2 INDETERMINATE.
+#
+# The two moments the workflow NAMES as the reasons that arm exists (a human
+# who has just published an engine; re-reading a red run after a fix) were
+# exactly the two it could not serve, and it failed wearing the colour of a
+# transient upstream flake — so an operator following the printed remedy would
+# re-dispatch, get the identical exit 2, and conclude upstream was down.
+#
+# ⚠️ AND THE SUITE WAS BLIND TO IT even though it exercised the branch: the
+# explicit-version test asserted PLAN_OK and the ids, and NOTHING in this file
+# ever asserted anything about `engine_url`. A branch can be covered and still
+# be untested at the one field that breaks it. Hence the tests below assert the
+# plan is ACTIONABLE, not merely well-shaped.
+# ---------------------------------------------------------------------------
+
+
+def test_a_dispatched_version_produces_a_plan_the_runner_can_act_on(gate):
+    """THE REGRESSION. A dispatched run must carry a downloadable asset."""
+    code, plan = gate.plan(
+        engine_version="153.0.8100.12",
+        resolve_release=_release("153.0.8100.12"),
+        index_fetcher=lambda: _index("153.0.8100.12"),
+    )
+    assert code == gate.PLAN_OK
+    assert plan["engine_url"], "a PLAN_OK with no engine URL cannot be acted on"
+    assert plan["engine_digest"], (
+        "download_engine fails closed without a digest, so a plan that carries "
+        "none is a plan that cannot install anything"
+    )
+    assert plan["engine_url"].endswith(".AppImage")
+    # And the digest travels into the product label, which is the arm's
+    # provenance record in the readings file.
+    assert plan["engine_digest"] in plan["product_label"]
+
+
+def test_the_dispatched_plan_reaches_the_runners_download_attempt(gate, tmp_path):
+    """Past `plan()` and into the runner: the download is genuinely ATTEMPTED.
+
+    Asserting `engine_url` is non-empty proves the plan is well-formed. This
+    proves the WIRING — that the field the plan fills is the field the runner
+    reads and hands to `updater.download_engine` — which is the coupling the
+    empty-URL branch actually broke. A stub downloader records what it was
+    given, so no network and no 200 MB download are involved.
+    """
+    runner = _load(RUN_SCRIPT, "ps344_run_verdict_download")
+    _, plan = gate.plan(
+        engine_version="153.0.8100.12",
+        resolve_release=_release("153.0.8100.12"),
+        index_fetcher=lambda: _index("153.0.8100.12"),
+    )
+
+    from src.services.engine import updater
+
+    engine_dir = tmp_path / "engine-published"
+    seen = {}
+
+    def _fake_download(url, digest=None, tag="", **kw):
+        seen.update(url=url, digest=digest, tag=tag)
+        # What download_engine's contract says: nothing to install without a URL.
+        return bool(url)
+
+    real_download = updater.download_engine
+    real_write = updater.write_version
+    real_binary = updater.ENGINE_BINARY
+    updater.download_engine = _fake_download
+    updater.write_version = lambda *_a, **_k: None
+    updater.ENGINE_BINARY = str(engine_dir / "chrome-stub")
+    engine_dir.mkdir(parents=True, exist_ok=True)
+    (engine_dir / "chrome-stub").write_bytes(b"stub")
+    try:
+        runner.stage_engine(plan, tmp_path)
+    finally:
+        updater.download_engine = real_download
+        updater.write_version = real_write
+        updater.ENGINE_BINARY = real_binary
+
+    assert seen["url"] == plan["engine_url"], (
+        "the runner must download the asset the plan resolved — an empty URL "
+        "here is the defect this test exists for"
+    )
+    assert seen["digest"] == plan["engine_digest"]
+    assert seen["tag"] == plan["engine_tag"]
+
+
+def test_a_dispatched_tag_that_does_not_resolve_is_named_not_planned(gate):
+    """`('','','')` is a REAL answer from `fetch_release_full`, not an error.
+
+    Its docstring names three ways to get it: a yanked or deleted release, a tag
+    that never existed, and an APPLICATION tag handed over by mistake. None of
+    those is a plan — and crucially none may be a PLAN_OK, because the runner
+    would then spend a CfT download before failing as INDETERMINATE, a word
+    reserved for "an arm could not be produced or read".
+    """
+    code, plan = gate.plan(
+        engine_version="153.0.8100.12",
+        resolve_release=lambda tag: ("", "", ""),
+        index_fetcher=lambda: _index("153.0.8100.12"),
+    )
+    assert code == gate.CANNOT_PLAN
+    assert plan["outcome"] == "CANNOT_PLAN"
+    # The TAG is named — a run that cannot say which build it was looking at
+    # cannot be acted on.
+    assert plan["engine_tag"] == "personium-153.0.8100.12"
+    assert "yanked" in plan["reason"] or "never have existed" in plan["reason"]
+
+
+def test_a_dispatched_release_that_raises_is_indeterminate_not_a_pass(gate):
+    def _boom(tag):
+        raise OSError("the release endpoint 500'd")
+
+    code, plan = gate.plan(
+        engine_version="153.0.8100.12",
+        resolve_release=_boom,
+        index_fetcher=lambda: _index("153.0.8100.12"),
+    )
+    assert code == gate.CANNOT_PLAN
+    assert "500" in plan["reason"]
+    assert plan["engine_tag"] == "personium-153.0.8100.12"
+
+
+def test_a_dispatched_tag_persona_refuses_is_not_measured_either(gate):
+    """`policy.check` is NOT bypassed on the dispatch arm.
+
+    The scheduled arm gets it free from `fetch_latest_checked`. A human
+    dispatching a specific tag is the caller MOST likely to name a build that
+    was just blocklisted — because naming it in `KNOWN_BAD_VERSIONS` is the
+    documented remedy for a red run here, so "re-read the tag I just
+    blocklisted" is a natural next gesture. It must reach the same named,
+    non-green outcome a resolved refusal does.
+    """
+    code, plan = gate.plan(
+        engine_version="153.0.8100.12",
+        resolve_release=_release("153.0.8100.12"),
+        policy_check=lambda v: ("known_bad", f"{v} is on the known-bad list"),
+        index_fetcher=lambda: _index("153.0.8100.12"),
+    )
+    assert code == gate.ENGINE_REFUSED_BY_POLICY
+    assert plan["outcome"] == "ENGINE_REFUSED_BY_POLICY"
+    assert plan["engine_tag"] == "personium-153.0.8100.12"
+    assert plan["policy_verdict"] == "known_bad"
+
+
+def test_the_dispatch_arm_has_no_policy_override(gate):
+    """There is no flag that measures a build persona refuses — deliberately.
+
+    A re-run switch that can undo this job's own documented remedy would let a
+    red run be answered by re-reading the very tag someone just blocklisted.
+    Asserted at the CLI surface rather than in prose, because prose does not
+    stop a flag being added.
+    """
+    import argparse
+    import contextlib
+    import io
+
+    with contextlib.redirect_stdout(io.StringIO()) as out:
+        with pytest.raises(SystemExit):
+            gate.main(["--help"])
+    help_text = out.getvalue()
+    for forbidden in ("--force", "--ignore-policy", "--no-policy", "--skip-policy"):
+        assert forbidden not in help_text, (
+            f"{forbidden} would let this job re-litigate a refusal it exists "
+            "to produce"
+        )
+    assert isinstance(argparse.ArgumentParser(), argparse.ArgumentParser)
+
+
+def test_no_plan_is_ok_without_an_engine_url_whichever_branch_made_it(gate):
+    """The invariant, at the branch neither arm anticipated.
+
+    An upstream shape change that stops the asset matching would hand back a
+    version with an empty URL from either path. The runner cannot act on it, so
+    it is not a plan — and a PLAN_OK that spends a download before failing as
+    INDETERMINATE is precisely the misattributed red this vocabulary resists.
+    """
+    # Dispatch branch: a release that names a version but serves no asset.
+    code, plan = gate.plan(
+        engine_version="153.0.8100.12",
+        resolve_release=lambda tag: ("153.0.8100.12", "", ""),
+        index_fetcher=lambda: _index("153.0.8100.12"),
+    )
+    assert code == gate.CANNOT_PLAN
+    assert plan["outcome"] == "CANNOT_PLAN"
+
+    # Resolved branch: policy said OK but the asset URL came back empty.
+    def _no_asset():
+        return ("personium-153.0.8100.12", "", "", "ok", "")
+
+    code, plan = gate.plan(
+        resolve_engine=_no_asset,
+        index_fetcher=lambda: _index("153.0.8100.12"),
+    )
+    assert code == gate.CANNOT_PLAN
+    assert plan["engine_tag"] == "personium-153.0.8100.12"
+
+
+def test_every_plan_ok_in_this_suite_is_actionable(gate):
+    """A guard against the shape of the original defect, not only its instance.
+
+    The empty-URL branch survived review because every test asserting PLAN_OK
+    looked at ids and filenames and none looked at the URL. This asserts the
+    property directly over both entry paths.
+    """
+    for kwargs in (
+        {
+            "resolve_engine": _resolver("153.0.8100.12"),
+            "index_fetcher": lambda: _index("153.0.8100.12"),
+        },
+        {
+            "engine_version": "153.0.8100.12",
+            "resolve_release": _release("153.0.8100.12"),
+            "index_fetcher": lambda: _index("153.0.8100.12"),
+        },
+    ):
+        code, plan = gate.plan(**kwargs)
+        assert code == gate.PLAN_OK
+        assert plan["engine_url"] and plan["engine_digest"], plan
 
 
 def test_build_line_is_the_first_three_components(gate):
@@ -668,7 +919,9 @@ def test_the_selftest_installs_what_this_suite_needs_to_not_skip(workflow_yaml):
     assert "-ra" in executable.split(), executable
 
 
-def test_the_plan_writes_its_json_even_when_the_directory_is_new(gate, tmp_path, capsys):
+def test_the_plan_writes_its_json_even_when_the_directory_is_new(
+    gate, tmp_path, capsys, monkeypatch
+):
     """FOUND BY RUNNING IT IN CI. A correct plan that cannot be SAVED is red.
 
     The first CI run printed `outcome: PLAN_OK` / `engine tag:
@@ -678,7 +931,25 @@ def test_the_plan_writes_its_json_even_when_the_directory_is_new(gate, tmp_path,
     `plan outcome: <none>` over a plan that had in fact succeeded, which is
     exactly the kind of misattributed red this job's whole vocabulary exists to
     prevent.
+
+    Driven through `main()` — the real CLI — with the release lookup and the
+    CfT index stubbed at the module boundary, because `--engine-version` is a
+    production flag that resolves a real release and is NOT a test hook. Using
+    it as one is what let the empty-URL branch ship.
     """
+    from src.services.engine import updater
+
+    monkeypatch.setattr(
+        updater,
+        "fetch_release_full",
+        lambda tag, timeout=20: (
+            "152.0.7977.75",
+            "https://example.invalid/personium-152.0.7977.75-linux-x86_64.AppImage",
+            "sha256:" + "c" * 64,
+        ),
+    )
+    monkeypatch.setattr(gate, "fetch_cft_index", lambda: _index("152.0.7977.75"))
+
     out = tmp_path / "does" / "not" / "exist" / "plan.json"
     code = gate.main(["--out", str(out), "--engine-version", "152.0.7977.75"])
     assert code == gate.PLAN_OK
@@ -686,6 +957,9 @@ def test_the_plan_writes_its_json_even_when_the_directory_is_new(gate, tmp_path,
     body = json.loads(out.read_text(encoding="utf-8"))
     assert body["outcome"] == "PLAN_OK"
     assert body["engine_version"] == "152.0.7977.75"
+    # And the saved plan is ACTIONABLE — the field the runner reads.
+    assert body["engine_url"]
+    assert body["engine_digest"]
 
 
 def test_the_failure_block_is_a_quoted_heredoc_that_survives_backticks():
@@ -722,6 +996,51 @@ def test_the_readings_are_kept_when_the_gate_goes_red(workflow_yaml):
     upload = [s for s in steps if "upload-artifact" in str(s.get("uses", ""))]
     assert upload, "a red run must keep its readings"
     assert upload[0].get("if") == "failure()"
+
+
+def test_the_failure_block_says_how_well_matched_the_control_was(workflow_yaml):
+    """A NEAREST control changes how hard a reader should press on a finding.
+
+    PS-344's central claim — "a difference between the arms is the patch set or
+    it is nothing" — rests on the control being the SAME Chromium version. When
+    it is not, the arms differ by a patch level too, and the claim is weaker.
+    The arm LABEL carries that into the readings, but the readings only survive
+    on `failure()` and are an artifact download away; the match belongs beside
+    the tag in the log a reader sees first.
+    """
+    steps = workflow_yaml["jobs"]["verdict"]["steps"]
+    failure_steps = [
+        s for s in steps if s.get("if") == "failure()" and "run" in s
+    ]
+    assert failure_steps, "a red run must explain itself"
+    block = failure_steps[-1]
+    env = block.get("env") or {}
+    assert "CONTROL_MATCH" in env, (
+        "the failure block reads the plan's tag and outcome but not how well "
+        f"version-matched the control was. env: {sorted(env)}"
+    )
+    assert "control_match" in env["CONTROL_MATCH"]
+    assert "CONTROL_MATCH" in block["run"], (
+        "wiring the value into env without echoing it leaves the reader with "
+        "the same blind spot"
+    )
+    # And the run says what a NEAREST reading MEANS, not only its value.
+    assert "nearest" in block["run"].lower()
+
+
+def test_the_dispatch_input_says_policy_still_applies(workflow_yaml):
+    """The one behaviour a dispatching human would otherwise be surprised by.
+
+    Naming a tag in `KNOWN_BAD_VERSIONS` is this job's documented remedy for a
+    red run, so "re-dispatch the tag I just blocklisted" is a natural next
+    gesture — and it comes back exit 4 rather than measuring anything. That is
+    correct and must be stated where the input is typed, not only in a Python
+    docstring nobody dispatching a workflow reads.
+    """
+    inputs = workflow_yaml[True]["workflow_dispatch"]["inputs"]
+    description = inputs["engine_version"]["description"]
+    assert "policy.check" in description or "policy" in description
+    assert "ENGINE_REFUSED_BY_POLICY" in description or "exit 4" in description
 
 
 def test_the_runner_stages_with_a_symlink_and_does_not_touch_the_resolver():
