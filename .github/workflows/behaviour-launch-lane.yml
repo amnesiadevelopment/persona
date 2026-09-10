@@ -274,6 +274,18 @@ jobs:
           python -c "import platform, sys; print('platform:', platform.platform()); print('machine :', platform.machine()); print('python  :', sys.version)"
           echo "DISPLAY=[${DISPLAY:-<unset>}]"
           echo "engine baseline: $(cat engine-baseline.txt)"
+          # ⭐ THE KERNEL FACT THIS LANE'S CHROMIUM ARM DEPENDS ON (PS-383).
+          # Printed rather than assumed, because it is the difference between a
+          # browser tree that settles and one that dies at the zygote — and the
+          # symptom is indistinguishable from a wedged launch unless the value
+          # is on the log.
+          echo "apparmor_restrict_unprivileged_userns=$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null || echo '<absent>')"
+          echo "max_user_namespaces=$(cat /proc/sys/user/max_user_namespaces 2>/dev/null || echo '<absent>')"
+          if unshare --user --map-root-user true 2>/dev/null; then
+            echo "unprivileged user namespaces: USABLE"
+          else
+            echo "unprivileged user namespaces: DENIED"
+          fi
 
       - name: Provision a display and the project
         # THE PROJECT, not requirements-dev.txt. The lane imports `cryptography`
@@ -289,6 +301,60 @@ jobs:
           python -m pip install --upgrade pip
           pip install --prefer-binary .
           pip check
+
+      - name: Let the chromium sandbox start
+        # ⭐⭐ WITHOUT THIS THE CHROMIUM ARM CANNOT LAUNCH, AND MEASURED RATHER
+        # THAN REASONED (PS-383): run 34451331560 on this branch reported
+        #
+        #   [CANNOT RUN] no-process-survives-a-closed-session
+        #     … the launched group 6157 never held a SETTLED tree of at least 3
+        #     live processes (peak 3, last 0) within 90s …
+        #
+        # and the engine's own stderr says why:
+        #
+        #   FATAL:zygote_host_impl_linux.cc:129] No usable sandbox! If you are
+        #   running on Ubuntu 23.10+ … that has disabled unprivileged user
+        #   namespaces with AppArmor …
+        #
+        # ubuntu-24.04 ships `kernel.apparmor_restrict_unprivileged_userns=1`,
+        # which stops an unprivileged process creating the user namespace
+        # chromium's sandbox is built on. The wrapper starts, the zygote refuses,
+        # and the tree collapses — a peak of 3 that never settles, which the
+        # check correctly refuses to read as a teardown.
+        #
+        # ⛔ AND THE OBVIOUS ALTERNATIVE IS THE WRONG ONE. `--no-sandbox` is
+        # what `engine-gpu-variance.yml` passes, and it is why that workflow
+        # launches chromium on this same image where this lane could not. It is
+        # NOT available here, and `chromium_tier`'s own docstring says exactly
+        # why: *"persona's own launch path passes that flag NOWHERE — a grep of
+        # src/ finds no occurrence — so adding it silently here would mean the
+        # verification tier ran the engine with a security boundary the product
+        # keeps, and then recorded the result as though it were the product's
+        # behaviour."* That tier takes the flag only when an operator asks for
+        # it explicitly, and it is asking for a DIFFERENT reading (a GPU string,
+        # where the sandbox is irrelevant).
+        #
+        # THIS check counts the PROCESS TREE. The sandbox is what CREATES that
+        # tree's shape — the zygote and its renderer fan-out are sandboxed
+        # processes — so measuring teardown of an unsandboxed launch would be
+        # measuring a tree the product never produces. That is the vacuous
+        # measurement this whole check was written to avoid, one level down. So
+        # the RUNNER is changed to permit what the product needs, and the
+        # product's launch line is left alone.
+        #
+        # `sudo sysctl` is available on GitHub-hosted runners; the step is
+        # explicit rather than folded into the install above so a failure here
+        # names itself instead of reading as a dependency problem.
+        shell: bash
+        run: |
+          echo "before: $(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null || echo '<absent>')"
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          echo "after : $(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null || echo '<absent>')"
+          # PROVE IT, rather than trusting the write. A silent failure here
+          # shows up 90 seconds later as a browser tree that never settled,
+          # which is the least legible symptom this lane can produce.
+          unshare --user --map-root-user true
+          echo "unprivileged user namespaces: USABLE"
 
       - name: Provision the Personium engine binary
         # `engine-autoupdate.yml`'s shape, deliberately: read the tag from
