@@ -18,6 +18,21 @@ python3 scripts/ps299_rebase_probe.py                       # newest ungoogled t
 python3 scripts/ps299_rebase_probe.py --tag 152.0.7977.75-1 # a specific one
 ```
 
+Since PS-361 the probe also measures the **Windows** sibling, so the same tool
+answers the same question on both platforms:
+
+```bash
+# the WINDOWS repo, at the counterpart of our linux pin. NOTE THE TAG GRAMMAR:
+# portablelinux is `-1`, windows is `-1.1`. They are not interchangeable.
+python3 scripts/ps299_rebase_probe.py --platform windows --tag 152.0.7977.75-1.1 \
+    --expect-base cacf0f0fd2446a837528c54df1880b75874b9580
+```
+
+`--platform` **defaults to `linux`**, so every pre-PS-361 invocation above is
+unchanged. `--expect-base` asserts the ungoogled-chromium submodule pin and is
+what keeps the cross-platform argument honest — see "Why our 16 work unchanged
+on Windows" below.
+
 About a minute, no Chromium checkout, no compile. It reconstructs only the ~38
 files our patches touch, applies ungoogled's own prerequisite patches on top,
 then applies ours and reports per-patch rejects. Exit status is 0 only when all
@@ -310,3 +325,39 @@ Windows build synchronously from the same set; macOS is deferred.
 a platform-conditional. If a reject genuinely cannot be resolved
 platform-neutrally, say so on the ticket — that is the owner's decision, not a
 judgement call inside a rebase.
+
+### Why our 16 work unchanged on Windows (PS-361)
+
+The ruling above says the patches are the same on every OS. PS-361 measured
+*why that is structurally true*, rather than leaving it as an aspiration:
+
+```
+our 16 fingerprint patches   -> 38 distinct files
+ungoogled BASE layer         -> 678 files   (submodule, pinned cacf0f0)
+linux platform layer         -> 12 files
+windows platform layer       -> 54 files
+
+ours ∩ windows  =  0     our patches touch no windows-specific file
+ours ∩ linux    =  0     and no linux-specific one either — a SYMMETRY
+ours ∩ BASE     = 16     the only layer we overlap is the SHARED one
+CONTROLS: ours∩ours=38, win∩win=54, linux∩windows=0
+```
+
+Both siblings pin the **same** `ungoogled-chromium` submodule commit
+(`cacf0f0`), verified by `git ls-tree HEAD ungoogled-chromium` on each checkout
+at `152.0.7977.75-1` and `152.0.7977.75-1.1`. So the content our hunks anchor
+against is byte-identical across platforms, and the Linux arm already proves
+those hunks apply to it.
+
+⛔ **That argument expires silently if a future tag pairing ever pins different
+base commits.** `--expect-base` is the guard rather than the comment: the probe
+exits 2 on a mismatch. Leave it set.
+
+**Measured result, PS-361, `152.0.7977.75-1.1`: all 16 apply, 81/81 hunks, 0
+rejects, `--fuzz=0`** — identical to the Linux figure at the counterpart tag.
+
+⚠️ **This is patch APPLICATION, not a compile.** The warning at the top of this
+file governs unchanged: the probe measures TEXT. No Windows compile has ever
+been run, and `006-font-fingerprint.patch`'s `IS_WIN` arm — the only platform
+conditional in our set — has never been *taken*, only skipped. It is the first
+thing to look at whenever a Windows compile is finally attempted.

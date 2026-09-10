@@ -190,6 +190,19 @@ publish them under a `personium-<version>` tag **with the prerelease box
 ticked**. Building and packaging the engine artifacts is not automated yet —
 see PS-299 for the patch rebase and compile.
 
+⚠️ **The three assets do not have equal provenance in this repository, and the
+gap is per-platform.** `engine-trial-build.yml` builds the **Linux** engine and
+is the only arm that reaches a compile. PS-361 added
+`engine-trial-build-windows.yml`, which measures that our 16 fingerprint patches
+apply to `ungoogled-chromium-windows` at the counterpart tag — **patch
+application only, not a compile**; it invokes no MSVC toolchain and produces no
+artifact. **macOS has no arm at all** (deferred by the owner's platform ruling
+in `engine/patches/fingerprint/REBASING.md`).
+
+So a published Windows `.zip` is still built by hand today. What changed is that
+the patch layer it must carry is now *reproducibly measurable* from this
+repository instead of being described nowhere.
+
 Then **write the release's provenance record** into `engine/releases/` and run
 the verifier against the published assets:
 
