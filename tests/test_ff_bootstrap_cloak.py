@@ -476,7 +476,7 @@ def test_the_worker_realm_is_reached_under_the_default_start_pages_csp(tmp_path)
 # --- the counterfactual: reverting must go red ON THE STRINGIFICATION -------
 
 
-@pytest.mark.parametrize("wrapper", ("Worker", "SharedWorker"))
+@pytest.mark.parametrize("wrapper", ("contentWindow", "contentDocument"))
 def test_the_pre_fix_cloak_leaks_patch_source_to_the_window_realm(tmp_path, wrapper):
     """Reverting the fix turns the check red on the stringification itself.
 
@@ -488,6 +488,28 @@ def test_the_pre_fix_cloak_leaks_patch_source_to_the_window_realm(tmp_path, wrap
     The window realm is asserted here rather than the worker one deliberately:
     pre-fix, the worker realm was never reached, so it reads native and could
     not witness the regression. That asymmetry IS the defect.
+
+    ⚠️ THE WRAPPERS THIS ARM READS MOVED IN PS-368, AND IGNORING THAT WOULD HAVE
+    LEFT A COUNTERFACTUAL THAT NO LONGER FALSIFIES. It used to read `Worker` /
+    `SharedWorker`: under the Chromium cloak those took a `__pnaName` own
+    property and NO in-page toString registration, so on an engine with no
+    extension to read the marker they stringified as raw patch source — 2109
+    characters, the original PS-128 measurement.
+
+    PS-368 removed that marker. `W` is built inside `__pnaInstall`, where the DOM
+    inserters' `__hnm` WeakMap already lives, so it now registers THERE and the
+    Chromium cloak covers it IN-PAGE on any engine. Measured under this very
+    counterfactual: `Worker` reads `function Worker() { [native code] }`. That is
+    a genuine improvement to the Chromium seam and NOT a reason to relax the
+    assertion — but it does mean `Worker` can no longer witness the PS-131
+    defect, and an arm left pointing at it would pass while testing nothing.
+
+    So the arm moves to the two wrappers the Chromium seam still leaves bare, by
+    design: the iframe accessors. `CHROMIUM_WORKER_CLOAK` supplies empty
+    `frame_open`/`frame_close`, where `firefox_worker_cloak()` splices `__bcloak`
+    around them — which is precisely the per-engine difference PS-131 is about,
+    and it is untouched by this ticket. Their seats above assert the native form
+    under the correct cloak, so this reads the same two under the wrong one.
     """
     report = _probe(tmp_path, cloak=CHROMIUM_WORKER_CLOAK)
     # The realm is genuinely patched — this is a real leak, not an empty realm.
@@ -499,7 +521,40 @@ def test_the_pre_fix_cloak_leaks_patch_source_to_the_window_realm(tmp_path, wrap
         "pinned to anything — this counterfactual has stopped witnessing the "
         "defect and must be re-grounded."
     )
-    assert len(read) > 500, (
+    assert len(read) > 100, (
         f"expected the raw patch source a page could read off {wrapper}; got "
         f"{len(read)} characters"
     )
+
+
+def test_the_pre_fix_cloak_no_longer_leaks_the_worker_constructor(tmp_path):
+    """⭐ The half of the PS-131 defect that PS-368 closed, pinned as a FACT.
+
+    Recorded rather than deleted, because this is where the original measurement
+    was taken (`Worker.toString()` -> 2109 characters of raw patch source in the
+    window realm) and a future reader re-deriving that reading needs to find why
+    it no longer reproduces.
+
+    Under Chromium's cloak on this engine, `Worker` used to take a `__pnaName`
+    own property and no in-page toString registration — a marker no browser has,
+    which nothing on Firefox reads. PS-368 removed the marker from that seam
+    entirely and registered `W` in the bootstrap's own `__hnm` WeakMap instead,
+    so the Chromium cloak covers its own Worker wrapper on ANY engine.
+
+    ⛔ THIS IS NOT A CLAIM THAT `CHROMIUM_WORKER_CLOAK` IS NOW SAFE ON FIREFOX.
+    Two things it still gets wrong here, both asserted above: it emits V8's
+    one-line native form where SpiderMonkey prints three lines (itself a masking
+    tell, one `Array.prototype.map.toString()` away), and it leaves the iframe
+    accessors bare. `firefox_worker_cloak()` remains required, and the seats
+    above are what require it.
+    """
+    report = _probe(tmp_path, cloak=CHROMIUM_WORKER_CLOAK)
+    _assert_realm_was_reached(report, "window")
+
+    for wrapper in ("Worker", "SharedWorker"):
+        read = report["realms"]["window"]["stringified"][wrapper]
+        assert read == "function " + wrapper + "() { [native code] }", (
+            f"{wrapper} no longer reads as native under the Chromium cloak — "
+            f"PS-368 registered it in the bootstrap's own WeakMap, so a raw "
+            f"source read here means that registration was lost. Got {read[:120]!r}"
+        )

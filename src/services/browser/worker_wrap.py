@@ -228,13 +228,14 @@ class WorkerCloak(NamedTuple):
       ``device_ext`` invariant was RESTORED rather than its assertion rewritten:
       a module that never synthesises a native string should not carry the text
       of one.
-    * The ``Worker``/``SharedWorker`` wrapper still takes ``__pnaName``
-      (``apply`` is untouched, and
-      ``tests/test_ff_webgl_seed.py::test_chromiums_bootstrap_keeps_its_marker``
-      pins it), and the two iframe accessors are still spliced bare.
+    * The ``Worker``/``SharedWorker`` wrapper registers in this same ``__hnm``
+      map rather than taking a ``__pnaName`` own property (PS-368 removed that
+      marker from the last Chromium seam that still carried it — ``W`` is built
+      inside ``__pnaInstall``, where this map already lives, so it needed no new
+      machinery). The two iframe accessors are still spliced bare.
     * The added text only installs a closure WeakMap and CHAINS
-      ``Function.prototype.toString``, which composes with native_ext's
-      ``__pnaName`` reader rather than replacing or racing it.
+      ``Function.prototype.toString``, which composes with the twelve leaves'
+      own cloaks rather than replacing or racing them.
     * It is additive per realm and reaches no value channel, so no digest moves
       — ``tests/test_realm_value_channels.py`` is the neighbour that pins that.
 
@@ -300,10 +301,14 @@ class WorkerCloak(NamedTuple):
     "CHAINING answers the same question without any shared state" is the same
     argument; this is that argument holding at N=13 rather than N=2.
 
-    WHY THESE WRAPPERS DO NOT TAKE ``__pnaName`` LIKE EVERY OTHER CHROMIUM ONE:
-    see :data:`_CHROMIUM_HOOK_CLOAK_SETUP`. Briefly — ``appendChild``'s
-    own-property list is known by heart, so a marker there is a cheaper tell
-    than the ``toString`` comparison it exists to satisfy.
+    WHY THESE WRAPPERS TAKE NO MARKER OWN PROPERTY: see
+    :data:`_CHROMIUM_HOOK_CLOAK_SETUP`. Briefly — ``appendChild``'s own-property
+    list is known by heart, so a marker there is a cheaper tell than the
+    ``toString`` comparison it exists to satisfy. That argument was made here
+    first, for these wrappers alone, while every other Chromium wrapper carried
+    ``__pnaName``; PS-368 measured it on those wrappers too and generalised the
+    exemption into the rule, so this is now how the whole engine's arm works
+    rather than one seam's exception.
     """
 
     setup: str
@@ -317,15 +322,26 @@ class WorkerCloak(NamedTuple):
 
 # --- the DOM-insertion wrappers' cloak, on CHROMIUM -------------------------
 #
-# THE ONE PLACE THE CHROMIUM BOOTSTRAP DOES NOT USE `__pnaName`, and the reason
-# is a constraint rather than a preference.
+# THE FIRST PLACE THE CHROMIUM BOOTSTRAP REFUSED `__pnaName`, and the reasoning
+# that PS-368 later generalised to the entire engine's arm.
 #
-# Everywhere else on this engine a wrapper carries a non-enumerable `__pnaName`
-# own property and native_ext.py's single `Function.prototype.toString` patch
-# reads it. That is a fine trade for `Worker`: a page that enumerates
-# `Worker`'s own properties is already doing something unusual.
+# ⭐ THE HISTORY MATTERS HERE, so it is recorded rather than tidied away. When
+# this was written, every other wrapper on this engine carried a non-enumerable
+# `__pnaName` own property that native_ext.py's single
+# `Function.prototype.toString` patch read — a cross-script protocol, and the
+# only thing that could serve twelve content scripts with no shared closure. The
+# note below argued that was a fine trade for `Worker` ("a page that enumerates
+# `Worker`'s own properties is already doing something unusual") and NOT a fine
+# trade for the DOM inserters.
 #
-# It is NOT a fine trade for the functions the PS-215 indexed-frame reach wraps.
+# The second half held; the first did not. Measured on the wrappers against a
+# native-shaped control, `"__pnaName" in fn` is one line, costs a detector
+# nothing on ANY wrapper, and identifies persona SPECIFICALLY rather than a
+# wrapper generically. So the exemption became the rule: every module now carries
+# its own closure-WeakMap cloak (`chromium_leaf_cloak_js`), `W` registers in the
+# very map declared below, and no Chromium wrapper takes a marker property.
+#
+# THE ORIGINAL ARGUMENT, which is why THESE wrappers never paid it even once:
 # `appendChild`, `insertBefore` and the `innerHTML` setter are among the most
 # heavily exercised functions in the DOM, their own-property lists (`length`,
 # `name`) are known by heart, and `Object.getOwnPropertyNames(el.appendChild)`
@@ -1327,8 +1343,13 @@ def firefox_worker_cloak() -> WorkerCloak:
     (``invisible_launch.py:601``, ``return __cloak(W,Orig.name,undefined,Orig.length)``,
     whose marker-absence ``tests/test_ff_language_override.py:166`` pins).
 
-    The Chromium default is not merely unnecessary on this engine, it is a tell:
-    ``__pnaName`` exists on no browser, and nothing on Firefox reads it.
+    The Chromium default was, when this was written, not merely unnecessary on
+    this engine but a tell: ``__pnaName`` exists on no browser, and nothing on
+    Firefox reads it. PS-368 removed that marker from the Chromium arm too — for
+    the same reason one level up, measured on the wrappers rather than reasoned
+    from the engine — so the two arms no longer differ in whether they stamp an
+    own property. They still differ in the NATIVE FORM they emit (V8's one line
+    vs SpiderMonkey's three), which is what this seam now exists for.
 
     ALSO carries this engine's WORKER-BODY DELIVERY (``blob_setup`` /
     ``blob_resolve``), which is not a cloak: the shared sync-XHR path is refused
