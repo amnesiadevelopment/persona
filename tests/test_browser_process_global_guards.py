@@ -513,6 +513,7 @@ def test_gate_names_the_real_pre_fix_defect(launch_source):
             ["git", "show", f"{_PRE_FIX_REV}:src/services/browser/invisible_launch.py"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             cwd=str(LAUNCH_FILE.parents[3]),
             timeout=30,
         )

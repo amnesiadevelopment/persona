@@ -158,13 +158,30 @@ def test_detected_false_cannot_be_used_to_excuse_a_site_silently() -> None:
     assert any("detected=False" in p for p in problems), problems
 
 
-def test_the_three_platform_gaps_are_recorded_as_decided_exceptions() -> None:
+def test_the_thread_path_gaps_are_recorded_as_decided_exceptions() -> None:
     """AC2, and the entries that invent nothing.
 
     Each reason is lifted from a comment already at that site, and each carries
     the two things that comment carries: the process-global-state argument, and
     the counterpart that IS covered everywhere (the chromium seam's ``Popen``
     kwargs). ⛔ This RECORDS them; nothing here closes or weakens them.
+
+    ⭐ WAS THREE, IS FOUR (PS-360). The fourth is the Wayland app_id
+    (``MOZ_APP_REMOTINGNAME``), which shipped WITHOUT the ``not in_thread``
+    term its three siblings carried and was guarded to match. Growing this
+    census is the correct outcome of that ticket, not a side effect: a
+    process-global mutation moved from "silently wrong on the thread path" to
+    "a recorded absence", which is precisely the state this inventory exists
+    to hold.
+
+    ⚠️ THE FOURTH ENTRY'S ``platforms`` DIFFERS AND MUST, so the assertion
+    below is per-entry rather than uniform. The first three are guarded on
+    ``not in_thread and IS_LINUX`` AND are only reachable as absences off
+    Linux, so ("windows", "macos") describes them. The fourth carries the same
+    guard but its absence is reachable on LINUX too, because
+    ``in_process=True`` forces the thread arm there (verify/baseline.py's
+    recorder). Asserting ("windows", "macos") for it would re-state the exact
+    reading error PS-360 was raised to correct.
     """
     gaps = {
         a.site: a
@@ -172,36 +189,64 @@ def test_the_three_platform_gaps_are_recorded_as_decided_exceptions() -> None:
         if a.site.startswith("src/services/browser/invisible_launch.py:")
         and a.disposition == LP.DISPOSITION_EXCEPTION
     }
-    expected = {
+    windows_macos_only = {
         "src/services/browser/invisible_launch.py:_apply_child_cwd",
         "src/services/browser/invisible_launch.py:_pin_tmpdir_here",
         "src/services/browser/invisible_launch.py:scrub_current_process_environ",
     }
-    assert set(gaps) == expected
+    every_platform = {
+        "src/services/browser/invisible_launch.py:_remoting_name",
+    }
+    assert set(gaps) == windows_macos_only | every_platform
 
     for site, artifact in gaps.items():
-        assert artifact.platforms == ("windows", "macos"), site
         assert "recorded absence" in artifact.reason, site
         assert "Popen" in artifact.reason, site
+        if site in windows_macos_only:
+            assert artifact.platforms == ("windows", "macos"), site
+        else:
+            assert artifact.platforms == LP.ALL_PLATFORMS, site
 
 
-def test_the_three_platform_gaps_still_carry_their_guards_in_the_source() -> None:
+def test_the_thread_path_gaps_still_carry_their_guards_in_the_source() -> None:
     """The inventory records an absence; this pins that the absence is real.
 
     If someone "closed" a gap by widening its guard, the entry above would be
     describing a tree that no longer exists — a decided exception recorded
     against a decision that was reversed. ⛔ Out of scope for PS-355 is CLOSING
     these; this is what makes that boundary observable rather than trusted.
+
+    ⭐ THE COUNT WENT 3 -> 4 WITH PS-360, in the opposite direction from the
+    one this test was written to catch. It guards against a guard being
+    REMOVED; a guard being ADDED to a fifth mutation that never had one is the
+    inventory gaining an entry, which the test above pins. Both numbers are
+    asserted here rather than one, so neither direction is silent.
+
+    ⛔ The two counts are DIFFERENT SHAPES and are not interchangeable — the
+    bare ``if not in_thread:`` guard on ``start_own_session`` carries no
+    platform term at all, so a single total would blur three facts into one.
+    See tests/test_browser_process_global_guards.py, which derives the whole
+    set by AST rather than counting substrings.
     """
-    source = (
-        SCAN.repo_root() + "/src/services/browser/invisible_launch.py"
-    )
+    source = SCAN.repo_root() + "/src/services/browser/invisible_launch.py"
     with open(source, encoding="utf-8") as fh:
         text = fh.read()
-    assert text.count("not in_thread and _platform.IS_LINUX") == 3, (
-        "one of the three fork-path guards has moved or been widened. PS-355 "
+    assert text.count("not in_thread and _platform.IS_LINUX") == 4, (
+        "a fork-path guard has moved, been widened, or been added without "
+        "the inventory entry that records the absence it creates. PS-355 "
         "RECORDS these gaps; it does not close them, and an inventory entry "
         "describing a guard that is gone is worse than no entry."
+    )
+    assert text.count("not in_thread") == 8, (
+        "the total number of thread-path guards changed. Every one of them "
+        "is an absence on the thread path and needs an inventory entry or a "
+        "reason it needs none.\n"
+        "⚠️ This counts SUBSTRINGS, so it includes the one occurrence inside "
+        "a COMMENT (at the --name argument, explaining why that line is "
+        "deliberately NOT guarded). That is why the AST gate in "
+        "tests/test_browser_process_global_guards.py is the real instrument "
+        "and this is only a tripwire: a substring count cannot tell code from "
+        "prose, and must not be read as a census."
     )
 
 
