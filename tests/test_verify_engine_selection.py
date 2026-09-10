@@ -67,7 +67,16 @@ def test_the_firefox_constructor_really_has_no_os_parameter():
     """
     inv = pytest.importorskip(
         "invisible_playwright",
-        reason="persona's firefox engine is not installed here",
+        # The stem `conftest.CAPABILITIES["engine"]` matches on. A `reason=`
+        # REPLACES importorskip's own wording, and this file's skip is
+        # classified BY that wording — so the previous, more readable
+        # "persona's firefox engine is not installed here" classified as
+        # nothing, and a runner declaring `engine` reported "no test declined
+        # to run" while this assertion sat out. See
+        # tests/test_skip_visibility.py::TestACustomImportorskipReasonIsStill
+        # Policed, which now sweeps every engine guard for exactly this.
+        reason="the engine driver is not installed here, so persona's firefox "
+               "engine cannot be inspected",
     )
     import inspect
 

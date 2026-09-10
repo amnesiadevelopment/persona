@@ -77,13 +77,79 @@ class _Proc:
         self.terminate()
 
 
-def _quiet_launcher(monkeypatch, registry, proc=None):
-    """A launcher whose spawn is stubbed and whose monitor threads do nothing."""
+class _ThreadArmProc:
+    """The handle shape ``InvisibleProcess`` presents on its NON-FORK arm.
+
+    ``pid = 0`` because there is no child process: the session runs on a THREAD
+    of persona. ``needs_fork_launch()`` is ``IS_LINUX``, so this is the arm a
+    WINDOWS or macOS host takes for a Firefox profile — and the shape is not
+    asserted from this class but pinned against the real one by
+    ``test_the_in_process_launch_arm_really_reports_no_pid`` below, so this
+    stand-in cannot drift away from the product it stands in for.
+
+    ``lines`` are the engine's own stdout, delivered one per ``readline`` and
+    then BLOCKING (never EOF) until the handle is terminated — a session that
+    is still on screen, which is the whole situation the restart guard is for.
+    """
+
+    def __init__(self, lines=()):
+        self._done = threading.Event()
+        self.returncode = None
+        self.pid = 0
+        self.stdout = _BlockingStdout(list(lines), self._done)
+
+    def poll(self):
+        return None if not self._done.is_set() else 0
+
+    def wait(self, timeout=None):
+        self._done.wait(timeout)
+        return 0
+
+    def terminate(self):
+        self._done.set()
+        self.returncode = 0
+
+    def kill(self):
+        self.terminate()
+
+
+class _BlockingStdout:
+    """A stdout that yields queued lines and then STAYS OPEN.
+
+    Returning "" after the queue drains would end the monitor loop, which on
+    this path means the session is over — the opposite of the state under test.
+    """
+
+    def __init__(self, lines, done):
+        self._lines = lines
+        self._done = done
+
+    def readline(self):
+        if self._lines:
+            return self._lines.pop(0) + "\n"
+        self._done.wait(10)
+        return ""
+
+    def close(self):
+        pass
+
+
+def _quiet_launcher(monkeypatch, registry, proc=None, *, real_monitor=False):
+    """A launcher whose spawn is stubbed and whose monitor threads do nothing.
+
+    ``real_monitor`` keeps the PRODUCT's ``_monitor_process`` in place, for the
+    one thing a stubbed monitor structurally cannot exercise: the durable record
+    the in-process launch arm can only complete from the engine's own stdout
+    (PS-353). Defaulted off, so every existing caller is byte-identical.
+    """
     monkeypatch.setattr(
         launcher_mod, "spawn_browser", lambda profile: proc or _Proc()
     )
     monkeypatch.setattr(launcher_mod, "wait_for_exit", lambda *a, **k: None)
-    monkeypatch.setattr(BrowserLauncher, "_monitor_process", lambda *a, **k: None)
+    if not real_monitor:
+        monkeypatch.setattr(
+            BrowserLauncher, "_monitor_process", lambda *a, **k: None
+        )
     return BrowserLauncher(registry=registry)
 
 
@@ -630,3 +696,284 @@ def test_closing_all_survivors_reports_the_one_that_would_not_die(
         "a survivor we could not close must KEEP its record, or the next start "
         "loses the guard over a browser we promised to close and did not"
     )
+
+
+# --------------------------------------------------------------------------
+# PS-353 — THE IN-PROCESS (THREAD) LAUNCH ARM, whose durable record used to be
+# written and then silently discarded.
+#
+# THE DEFECT, in one sentence: `InvisibleProcess` runs the Firefox session on a
+# THREAD of persona wherever `needs_fork_launch()` is false (i.e. on a WINDOWS
+# or macOS host), so the handle honestly reports `pid = 0`; `make_record` wrote
+# that verbatim, `from_json`'s `pid <= 0` guard dropped it on the way back in,
+# and the NEXT `record()` of any profile rebuilt the file without it. Every one
+# of those lines is individually correct, which is why it survived review — the
+# gap was at the seam, where the writer accepted a handle shape the persistence
+# format cannot represent and NEITHER END KNEW.
+#
+# ⚠️ THESE TESTS RUN ON LINUX and the arm under test does not fire here, so
+# the platform switch is DRIVEN EXPLICITLY rather than waited for: the handle
+# shape is used directly in the launcher tests, and
+# `test_the_in_process_launch_arm_really_reports_no_pid` pins that shape against
+# the REAL `InvisibleProcess` with `needs_fork_launch()` forced false — so the
+# stand-in cannot drift away from the product it stands in for.
+#
+# ⛔ THE FIX IS NOT TO RELAX `from_json`'s `pid <= 0` GUARD, and
+# `test_an_unprobeable_record_is_still_refused_by_the_reader` pins that: an
+# unprobeable record would load, probe UNKNOWN, and be read by
+# `running_session_builds()` as "live, build unknown, do not prune" — deferring
+# an engine prune forever.
+# --------------------------------------------------------------------------
+
+_WATCH = "LIFECYCLE watch-pids pids=[%d]"
+
+
+def test_the_in_process_launch_arm_really_reports_no_pid(monkeypatch):
+    """THE PREMISE, MEASURED ON THE PRODUCT rather than assumed.
+
+    `_ThreadArmProc` above claims to be the shape `InvisibleProcess` presents on
+    its non-fork arm. This is what makes that claim checkable: the real class,
+    with `needs_fork_launch()` forced FALSE — which is precisely what a Windows
+    or macOS host reports — must take the thread path and carry pid 0.
+
+    THE SWITCH IS DRIVEN, NOT WAITED FOR. This suite runs on Linux, where the
+    arm never fires on its own, so a test that merely launched would exercise
+    the fork path and pass while establishing nothing. Forcing the platform
+    predicate reproduces the host decision at the one line that makes it.
+
+    Safe to run anywhere, and deliberately NOT guarded by the fork-path skipif
+    in test_browser_process_group.py (which exists because that path's stand-in
+    child calls `os._exit(0)`, killing pytest outright where the thread arm is
+    taken). Here `_child` is replaced by a no-op and the thread arm's `_finish`
+    never calls `os._exit` at all — the class checks `in_thread` for exactly
+    that reason.
+    """
+    from src.services.browser import invisible_launch as il
+
+    monkeypatch.setattr(il._platform, "needs_fork_launch", lambda: False)
+    monkeypatch.setattr(il, "_child", lambda cfg, wf, stop_event=None: None)
+
+    proc = il.InvisibleProcess({})
+    try:
+        assert proc._fork is False, (
+            "this test must exercise the THREAD arm; it took the fork path, so "
+            "it establishes nothing about the platform under test"
+        )
+        assert proc.pid == 0, (
+            "the premise of PS-353 has been overtaken: the thread arm now "
+            "carries a pid, so the record is no longer unrepresentable"
+        )
+    finally:
+        proc.terminate()
+        proc.wait(timeout=5)
+
+
+def test_an_unprobeable_record_is_still_refused_by_the_reader(tmp_path):
+    """THE FIX MUST NOT BE 'LET pid 0 THROUGH'.
+
+    Relaxing `from_json` would make such a record LOAD, probe UNKNOWN (pid 0 is
+    not probeable), and land in the indeterminate bucket — which
+    `running_session_builds()` reads as "live, build unknown, do not prune",
+    deferring an engine prune forever on a row that names nothing.
+
+    So the guard stays, and this pins it: hand-write the row onto disk, past
+    every product writer, and the reader must still drop it.
+    """
+    import json
+
+    path = tmp_path / "s.json"
+    path.write_text(json.dumps({
+        "version": 1,
+        "sessions": [{
+            "profile": "ff-thread", "pid": 0, "create_time": None, "pgid": None,
+            "engine": "firefox", "started_at": 0.0, "owner_pid": 0,
+        }],
+    }), encoding="utf-8")
+
+    assert SessionRegistry(str(path)).load() == [], (
+        "an unprobeable record must not load: it would be read as an "
+        "indeterminate live session and defer engine pruning forever"
+    )
+
+
+def test_a_restarted_persona_reports_a_thread_arm_browser_as_running(
+    tmp_path, monkeypatch
+):
+    """THE DEFECT, ASSERTED THROUGH WHAT THE PRODUCT ANSWERS.
+
+    A Firefox profile launched from a Windows/macOS host takes the thread arm,
+    so its handle has no pid. Before the fix that session got NO durable record
+    at all, and a restarted persona answered "not running" about a browser alive
+    on screen — the exact sentence PS-223 was filed on, still true on the
+    platforms the thread arm fires on.
+
+    The engine's own close-watch resolves the profile's REAL firefox processes a
+    moment after launch and announces them on the same pipe every other
+    LIFECYCLE line travels on. That is the first honest moment a record is
+    possible, and this asserts the product uses it: launch, let the monitor read
+    the engine's report, then ask a FRESH launcher over the same registry file.
+
+    The pid announced is a REAL live process (a sleeper this test owns), because
+    a fabricated one would either not exist — making every assertion vacuous by
+    probing GONE — or belong to something unrelated.
+    """
+    engine = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        reg = SessionRegistry(str(tmp_path / "s.json"))
+        proc = _ThreadArmProc([_WATCH % engine.pid])
+        bl = _quiet_launcher(monkeypatch, reg, proc=proc, real_monitor=True)
+
+        bl.start_thread(Profile(name="fox", os_type="windows"), lambda m: None)
+
+        deadline = time.time() + 5
+        while time.time() < deadline and not reg.load():
+            time.sleep(0.02)
+
+        # THE RESTART: a second launcher over the same file, exactly as the
+        # rest of this suite models it. Its dicts are empty, so it can only
+        # answer from what was persisted.
+        restarted = _quiet_launcher(monkeypatch, SessionRegistry(reg.path))
+        survivors, unknown = restarted.scan_survivors()
+
+        assert restarted.is_running("fox") is True, (
+            "a restarted persona reports the profile as NOT running while its "
+            "browser is alive on screen — the user is offered a second launch "
+            "on the same profile directory"
+        )
+        assert restarted.survivor_for("fox") is not None, (
+            "the UI has nothing to warn with"
+        )
+        assert [r.profile for r in survivors] == ["fox"]
+        assert unknown == []
+        # Corroboration only — the assertions above are the product's answer.
+        assert [(r.profile, r.pid) for r in reg.load()] == [("fox", engine.pid)]
+    finally:
+        proc.terminate()
+        engine.kill()
+        engine.wait()
+
+
+def test_a_thread_arm_launch_that_never_reports_a_pid_says_so(
+    tmp_path, monkeypatch
+):
+    """A WRITER THAT CANNOT REPORT ITS OWN NO-OP IS THE DEFECT, not a detail.
+
+    Where the engine never resolves a pid there is genuinely nothing probeable
+    to record, and the honest outcome is an EMPTY registry plus a statement —
+    never a row written and silently discarded, which is what shipped. The
+    ticket's roadmap names this failure mode exactly: not a mechanism that does
+    not work, but a check that cannot fail.
+
+    The launch itself must be untouched: provenance is a by-product of
+    launching, never a precondition for it.
+    """
+    reg = SessionRegistry(str(tmp_path / "s.json"))
+    proc = _ThreadArmProc()  # the engine reports no pids at all
+    logs: list[str] = []
+    bl = _quiet_launcher(monkeypatch, reg, proc=proc, real_monitor=True)
+    try:
+        bl.start_thread(Profile(name="fox", os_type="windows"), logs.append)
+
+        assert bl.is_running("fox") is True, (
+            "the session must still be launched and tracked — a record that "
+            "cannot be written must cost the guard, never the browser"
+        )
+        assert reg.load() == [], (
+            "an unprobeable row must not be written: the reader drops it and "
+            "the next record() erases it, so it is a no-op that also destroys "
+            "the evidence of itself"
+        )
+        assert any("restart guard is pending" in m for m in logs), (
+            "the no-op was silent — the operator has no way to learn that this "
+            "session has no durable guard"
+        )
+    finally:
+        proc.terminate()
+
+
+def test_a_thread_arm_record_does_not_outlive_the_session_that_needed_it(
+    tmp_path, monkeypatch
+):
+    """A PENDING RECORD MUST NOT BE COMPLETED AFTER THE SESSION IS OVER.
+
+    The repair is deferred to a line the engine emits later, which opens a
+    window this closes: if the session ends first, a stale `watch-pids` line
+    must not write a durable record asserting a browser that is no longer
+    running. That is the stale-record shape the whole module is built to avoid,
+    and it would refuse the user's NEXT launch.
+    """
+    engine = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        reg = SessionRegistry(str(tmp_path / "s.json"))
+        proc = _ThreadArmProc()
+        bl = _quiet_launcher(monkeypatch, reg, proc=proc, real_monitor=True)
+        bl.start_thread(Profile(name="fox", os_type="windows"), lambda m: None)
+        assert "fox" in bl._pending_record, "precondition: the record is pending"
+
+        bl.stop_profile("fox")
+
+        assert "fox" not in bl._pending_record, (
+            "a session that ended still has a record pending; a later engine "
+            "line would write a durable record for a browser that is gone"
+        )
+        assert reg.load() == []
+    finally:
+        proc.terminate()
+        engine.kill()
+        engine.wait()
+
+
+def test_the_fork_and_popen_arm_is_untouched(tmp_path, monkeypatch):
+    """THE CONTROL, and it is load-bearing.
+
+    Without it these tests read as "the registry is fragile". With it, the
+    discard is located precisely at the one handle shape that carries no pid:
+    the chromium arm (and the Linux Firefox fork arm) go through a real Popen,
+    yield a real pid, and must record at SPAWN exactly as they always did —
+    nothing pending, no engine line needed, the record on disk immediately.
+    """
+    reg = SessionRegistry(str(tmp_path / "s.json"))
+    proc = _Proc()  # a real pid, the fork/Popen shape
+    bl = _quiet_launcher(monkeypatch, reg, proc=proc)
+
+    bl.start_thread(Profile(name="cr", os_type="windows"), lambda m: None)
+
+    assert [(r.profile, r.pid) for r in reg.load()] == [("cr", proc.pid)], (
+        "the arm that carries a real pid must record at spawn, unchanged"
+    )
+    assert bl._pending_record == {}, (
+        "a handle with a probeable pid has nothing to defer"
+    )
+
+
+def test_the_engine_pid_parser_reads_only_the_line_that_carries_pids():
+    """THE MATCHER, PINNED — because it reads strings another module emits.
+
+    `engine_pid_from` matches `LIFECYCLE watch-pids` and NOTHING ELSE, and each
+    negative here is a line invisible_launch.py really emits:
+
+    * `watch-pid pid=N` is the FORK path's singular form. That arm records a
+      real pid at spawn and has nothing pending, so matching it would be a
+      branch that can never usefully fire — and, if it ever did, would rewrite
+      a good record from a line meant for a different arm.
+    * `close=` and `teardown-kill` lines ALSO carry a `pids=[...]` list. They
+      describe a session that is ENDING, and completing a durable record from
+      one would assert a running browser at the moment it stopped running.
+
+    A loose matcher here is not a cosmetic problem: it is the stale-record
+    shape the whole module is built to avoid.
+    """
+    from src.services.browser.launcher import engine_pid_from
+
+    assert engine_pid_from("LIFECYCLE watch-pids pids=[1234, 5678]") == 1234, (
+        "the lowest pid is the deterministic choice and the likeliest parent"
+    )
+    assert engine_pid_from("LIFECYCLE watch-pids pids=[42]") == 42
+
+    # An empty set carries no pid: "not a usable line", never a pid of 0.
+    assert engine_pid_from("LIFECYCLE watch-pids pids=[]") is None
+
+    assert engine_pid_from("LIFECYCLE watch-pid pid=99") is None
+    assert engine_pid_from("LIFECYCLE close=window-gone pids=[1, 2]") is None
+    assert engine_pid_from("LIFECYCLE teardown-kill pids=[7] rescan=False") is None
+    assert engine_pid_from("BROWSER_STARTED") is None

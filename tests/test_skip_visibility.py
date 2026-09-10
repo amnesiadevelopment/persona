@@ -941,3 +941,94 @@ class TestACustomImportorskipReasonIsStillPoliced:
             assert cap is not None and cap.name == "engine", (
                 f"{reason!r} did not classify as the engine capability"
             )
+
+    def test_every_engine_guard_in_this_repo_writes_a_reason_that_classifies(self):
+        """THE SWEEP, NOT ONE MORE EXAMPLE — because the failure recurred.
+
+        The tests above prove the MECHANISM polices a custom reason. They
+        cannot see a guard in some other file whose wording quietly misses the
+        pattern, and that is exactly what happened twice:
+
+        * PS-371 found `test_engine_driver_platform_support.py`'s macOS fence
+          unclassified, and widened the table to a stem to fix it;
+        * PS-353 then wrote "the PINNED engine driver is not installed" in
+          `tests/test_app_egress.py` — ONE WORD off that new stem — and six
+          egress tests, three of them security-relevant routing assertions,
+          declined silently while the summary printed "ok engine: no test
+          declined to run".
+
+        A per-site example cannot catch the third occurrence. This walks the
+        AST of every test module, finds each `pytest.importorskip` whose
+        MODULE is an engine package, and requires the reason it writes to
+        classify as `engine`. A guard is in scope because of what it GUARDS,
+        so a new file gets this for free and nobody has to remember.
+
+        ⛔ SCOPED TO THE ENGINE ON PURPOSE, and the scope is the honest part.
+        Some reasons in this repo legitimately classify as nothing — the
+        `PyYAML` guards name no capability because none is declared for them,
+        and inventing one to make a sweep pass would be the reverse defect.
+        The claim here is narrow and true: where a capability EXISTS and is
+        DECLARED in CI, a guard for it must be reachable by it.
+        """
+        import ast
+
+        engine_modules = ("invisible_playwright", "invisible_core")
+        repo_tests = Path(persona_conftest.__file__).parent / "tests"
+        unclassified: list[str] = []
+        checked = 0
+
+        for path in sorted(repo_tests.rglob("test_*.py")):
+            try:
+                tree = ast.parse(path.read_text(encoding="utf-8"))
+            except (SyntaxError, UnicodeDecodeError):  # pragma: no cover
+                continue
+            for node in ast.walk(tree):
+                if not (
+                    isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "importorskip"
+                ):
+                    continue
+                if not (node.args and isinstance(node.args[0], ast.Constant)):
+                    continue
+                module = node.args[0].value
+                if not isinstance(module, str):
+                    continue
+                if not any(module.split(".")[0] == m for m in engine_modules):
+                    continue
+                reason = next(
+                    (
+                        kw.value.value
+                        for kw in node.keywords
+                        if kw.arg == "reason"
+                        and isinstance(kw.value, ast.Constant)
+                        and isinstance(kw.value.value, str)
+                    ),
+                    None,
+                )
+                # No `reason=` at all is SAFE: importorskip writes its own
+                # wording, which is the first pattern in the table.
+                if reason is None:
+                    continue
+                checked += 1
+                cap = persona_conftest.capability_for_skip(reason)
+                if cap is None or cap.name != "engine":
+                    unclassified.append(
+                        f"{path.relative_to(repo_tests.parent)}:{node.lineno} "
+                        f"guards {module!r} with reason {reason!r} -> "
+                        f"{cap.name if cap else None}"
+                    )
+
+        assert checked, (
+            "this sweep found NO engine importorskip with a custom reason to "
+            "check, which means it is asserting nothing — re-point it before "
+            "trusting a green"
+        )
+        assert not unclassified, (
+            "an engine guard writes a skip reason the 'engine' capability "
+            "cannot classify, so on a runner that DECLARES engine these tests "
+            "decline silently and the summary reports 'no test declined to "
+            "run'. Carry the stem 'the engine driver is not installed' in the "
+            "reason, or drop `reason=` and let importorskip write its own:\n  "
+            + "\n  ".join(unclassified)
+        )

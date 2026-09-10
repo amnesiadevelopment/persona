@@ -19,12 +19,33 @@ from .session_registry import (
     default_registry,
     liveness_of,
     make_record,
+    make_record_for_pid,
     terminate_record,
 )
 
 logger = get_logger("browser.launcher")
 
 _CLOSE_REASON = re.compile(r"LIFECYCLE close=(\S+)")
+
+# THE THREAD ARM'S ENGINE PIDS, AS THE ENGINE ITSELF REPORTS THEM (PS-353).
+#
+# `_thread_close_watch` (invisible_launch.py) resolves the profile's real
+# firefox processes a second or two after launch and announces them on the same
+# pipe every other LIFECYCLE line travels on:
+#
+#     LIFECYCLE watch-pids pids=[1234, 5678]
+#
+# That line is the ONLY moment a durable record is possible for this arm. At
+# spawn there is no child process at all — the session runs on a THREAD of
+# persona, so `InvisibleProcess` honestly reports `pid = 0` — and by teardown a
+# record is worthless to a guard whose whole job is to survive a restart.
+#
+# MATCHED, NEVER RESTATED: this pattern reads a string invisible_launch.py
+# emits, exactly as `_CLOSE_REASON` and the mTLS markers above do. The singular
+# fork-path form (`watch-pid pid=N`) is deliberately NOT matched — that arm
+# already records a real pid at spawn, so there is nothing pending for a line to
+# complete, and a branch that can never fire is worse than no branch.
+_WATCH_PIDS = re.compile(r"LIFECYCLE watch-pids pids=\[([0-9,\s]*)\]")
 
 # The Firefox mTLS CA import SOFT-FAILS by design: the launch proceeds with the
 # certificate untrusted and the engine announces the outcome once on stdout.
@@ -57,6 +78,36 @@ def cert_trust_status_from(msg: str) -> str | None:
         detail = msg[len(_MTLS_IMPORT_FAILED):].strip()
         return f"NOT TRUSTED: {detail}" if detail else "NOT TRUSTED"
     return None
+
+
+def engine_pid_from(msg: str) -> "int | None":
+    """The engine pid a ``LIFECYCLE watch-pids`` line announces, else None.
+
+    Returns the LOWEST pid of the set, deterministically, and one pid rather
+    than the set — because a :class:`SessionRecord` names one process, and the
+    honest choice among the profile's firefox processes is the one most likely
+    to be the parent. Firefox forks its content/GPU/socket children after the
+    parent, so on both platforms the parent is the lower number in practice;
+    where it is not, the record still names a REAL process of THIS profile,
+    which is what a liveness probe needs. A wrong-but-real pid of this session
+    degrades the guard's precision, never its safety: the probe answers about a
+    process that dies with the session.
+
+    Returns None for every other line, so a caller can tell "not a watch-pids
+    line" from a line that carried no usable pid.
+    """
+    m = _WATCH_PIDS.search(msg)
+    if m is None:
+        return None
+    pids = []
+    for part in m.group(1).split(","):
+        part = part.strip()
+        if part.isdigit():
+            with contextlib.suppress(ValueError):
+                pids.append(int(part))
+    pids = [p for p in pids if p > 0]
+    return min(pids) if pids else None
+
 
 # Close reasons that need no extra diagnostics in the log: the user ended the
 # session (stop/X-close), the browser exited on its own and said so, or the
@@ -339,6 +390,28 @@ class BrowserLauncher:
         # CLEAN precisely because the measuring code silently answered
         # "nothing there".
         self._indeterminate: dict[str, SessionRecord] = {}
+        # PS-353 — SESSIONS WHOSE DURABLE RECORD COULD NOT BE WRITTEN AT SPAWN,
+        # mapped to the engine name they launched under. Populated ONLY by the
+        # in-process (thread) launch arm, where `InvisibleProcess` honestly
+        # reports `pid = 0` because the session runs on a thread of persona
+        # rather than as a child (`needs_fork_launch()` is `IS_LINUX`, so this
+        # is the Windows/macOS Firefox arm).
+        #
+        # A name sits here until `_monitor_process` sees the engine's own
+        # `LIFECYCLE watch-pids` line and completes the record from a REAL
+        # firefox pid of this profile — the only honest moment, since at spawn
+        # there is no process and at teardown a durable record is worthless.
+        # Popped when it completes, and dropped by `_forget_session_facts` like
+        # every other per-session fact, so a session that ends before its pids
+        # ever resolve leaves nothing behind to complete later.
+        #
+        # ⚠️ IT REFUSES NOTHING AND IS READ BY NO GUARD. A pending name is a
+        # session THIS run owns and already tracks in `_active_sessions`; this
+        # dict exists so the DURABLE record can be repaired, never so a launch
+        # can be blocked on one. Reading it as a survivor would refuse a launch
+        # on strictly less evidence than a record — the lockout direction the
+        # registry's whole design forbids.
+        self._pending_record: dict[str, str] = {}
         atexit.register(self.shutdown_all)
 
     def set_launch_record_hook(
@@ -641,10 +714,44 @@ class BrowserLauncher:
                 # failed" and calls on_stop WHILE THE BROWSER IS ALREADY
                 # SPAWNED AND REGISTERED. A registry write that cannot happen
                 # must cost us the guard, never the session.
+                #
+                # PS-353 — AND THE ONE FAILURE THAT WAS NOT EVEN A FAILURE.
+                # `make_record` returns None for a handle with no probeable pid,
+                # which is exactly what the Firefox THREAD arm presents on a
+                # Windows/macOS host (`needs_fork_launch()` is `IS_LINUX`, so
+                # `InvisibleProcess` runs the session on a thread of persona and
+                # honestly reports `pid = 0`). That used to be written verbatim,
+                # discarded by the reader, and then physically erased from the
+                # file by the next `record()` — a no-op nothing could report,
+                # because this suppress() catches only raises and a silent
+                # discard raises nothing.
+                #
+                # It is now SAID, and — where the engine can tell us — REPAIRED:
+                # the profile is parked as `_pending_record`, and the monitor
+                # completes it from the engine's own `LIFECYCLE watch-pids`
+                # line, which names the profile's real firefox processes a
+                # second or two later. That line is the only honest moment: at
+                # spawn there is no process, and at teardown a durable record is
+                # worthless.
                 with contextlib.suppress(Exception):
-                    self._registry.record(
-                        make_record(profile.name, proc, engine_name)
-                    )
+                    rec = make_record(profile.name, proc, engine_name)
+                    if rec is None:
+                        with self._lock:
+                            self._pending_record[profile.name] = engine_name
+                        log_callback(
+                            f"{profile.name}: this platform runs the session "
+                            f"in-process, so no launch handle pid is available "
+                            f"yet — the restart guard is pending the engine's "
+                            f"own process report."
+                        )
+                        logger.warning(
+                            "No durable running-session record yet for %s: the "
+                            "launch handle reports no probeable pid (the "
+                            "in-process engine arm). Awaiting the engine's "
+                            "process report to complete it.", profile.name,
+                        )
+                    else:
+                        self._registry.record(rec)
 
             if aborted:
                 # A stop/delete arrived while we were spawning. Terminate the
@@ -1278,6 +1385,13 @@ class BrowserLauncher:
         # rather than a deletion, so it fails in the safe direction; it is
         # dropped anyway because "safe direction" is not the same as correct.
         self._session_build.pop(profile_name, None)
+        # PS-353: a session that ended before its engine ever reported its pids
+        # has nothing left to complete. Left behind, a later `watch-pids` line
+        # from a DIFFERENT launch of the same profile would write a durable
+        # record on behalf of a session that is over — asserting a running
+        # browser after the fact, which is the stale-record shape this module
+        # spends its whole design avoiding.
+        self._pending_record.pop(profile_name, None)
         # AND THE PERSISTED MIRROR. Dropped HERE, in the shared helper, rather
         # than at the six call sites: the whole reason this helper exists is
         # that a per-session fact added without visiting every teardown site
@@ -1307,6 +1421,7 @@ class BrowserLauncher:
         self._session_started_at.clear()
         self._session_cdp_open.clear()
         self._session_build.clear()  # PS-221 — see the per-session twin above
+        self._pending_record.clear()  # PS-353 — see the per-session twin above
         # AND THE PERSISTED MIRROR — BUT ONLY FOR WHAT WE KILLED.
         #
         # This used to call registry.forget_all(), on the reasoning that
@@ -1363,6 +1478,63 @@ class BrowserLauncher:
                 m = _CLOSE_REASON.search(msg)
                 if m:
                     close_reason[0] = m.group(1)
+                # PS-353 — COMPLETE A DURABLE RECORD THE LAUNCH COULD NOT WRITE.
+                #
+                # The in-process (thread) engine arm has no child process at
+                # spawn, so `make_record` correctly declined to build a record
+                # and `start_thread` parked the name in `_pending_record`. The
+                # engine's close-watch resolves the profile's REAL firefox
+                # processes a moment later and announces them here; that is the
+                # first — and, for a guard that must survive a restart, the
+                # only — honest moment to write one down.
+                #
+                # GATED ON THE PENDING SET, so the fork/Popen arm is untouched:
+                # it recorded a real pid at spawn and is not in the dict, and a
+                # `watch-pids` line from it therefore changes nothing. Popped
+                # BEFORE the write so a second `watch-pids` line (the watch
+                # re-resolves and re-announces on a pid change) cannot rewrite
+                # the record and reset its create time against a different
+                # process.
+                #
+                # Its failure is contained here for the same reason the spawn
+                # site's is: this loop is the session's only reader of the
+                # engine pipe, and an exception escaping it would leave a live
+                # browser unmonitored and unreaped. Losing the record costs the
+                # guard; losing the monitor costs the session.
+                pid = engine_pid_from(msg)
+                if pid is not None:
+                    with self._lock:
+                        pending_engine = self._pending_record.pop(name, None)
+                    if pending_engine is not None:
+                        try:
+                            rec = make_record_for_pid(name, pid, pending_engine)
+                            # ⛔ THE `and record(...)` IS THE GATE, NOT A TIDY
+                            # CHAIN. This INFO is the sentence an operator
+                            # reads as the OUTCOME, so it may only print when
+                            # a row is genuinely on disk. `record()` answers
+                            # False for both ways that fails — an
+                            # unrepresentable pid and an unwritable file — and
+                            # it warns in each, which is why there is no
+                            # `else` here: a second line would duplicate the
+                            # registry's own, and saying nothing beside its
+                            # warning is already the honest outcome. Before
+                            # `record()` reported its no-op, this line printed
+                            # directly beneath the warning that the guard
+                            # would NOT survive a restart (PS-353 audit).
+                            if rec is not None and self._registry.record(rec):
+                                logger.info(
+                                    "Durable running-session record for %s "
+                                    "completed from the engine's own process "
+                                    "report (pid %s); the restart guard now "
+                                    "covers this session.", name, pid,
+                                )
+                        except Exception:
+                            logger.exception(
+                                "Could not complete the durable running-session "
+                                "record for %s from pid %s; the launch guard "
+                                "will not survive a restart for this session.",
+                                name, pid,
+                            )
                 if msg == "BROWSER_STARTED":
                     log_callback("Browser started!")
                     logger.info("Browser started for profile: %s", name)
