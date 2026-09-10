@@ -103,7 +103,7 @@ console.log(JSON.stringify({ result: out }));
 #     the patch ever delegates a resolution query it does not understand, the
 #     host's scale leaks into the answer and the test SEES it.
 _STUBS = """
-globalThis.devicePixelRatio = 1.5;
+globalThis.devicePixelRatio = __HOST_SCALE__;
 globalThis.innerWidth = 1280; globalThis.innerHeight = 577;
 globalThis.outerWidth = 1280; globalThis.outerHeight = 680;
 globalThis.screen = { width: 1280, height: 720, availWidth: 1280,
@@ -128,11 +128,20 @@ globalThis.MediaQueryList = MediaQueryList;
 // forms is not an oracle; it is a mirror.
 //
 // So this one implements MQ4 properly: a tokenizer with CSS's function-token
-// rule, a recursive-descent grammar over `not`/`and`/`or`/nesting, and
-// THREE-VALUED (Kleene) logic — all of it measured against stock Chromium
-// 152.0.7977.82 first (the four-way `(bogus: 1)` table in device_ext.py is the
-// derivation). Its resolution answers come from the HOST's 1.5, so any query
-// the patch delegates instead of parsing leaks a visible wrong answer.
+// rule AND its comment rule, a recursive-descent grammar over
+// `not`/`and`/`or`/nesting, and THREE-VALUED (Kleene) logic — all of it
+// measured against stock Chromium 152.0.7977.82 first (the four-way
+// `(bogus: 1)` table in device_ext.py is the derivation). Its resolution
+// answers come from the HOST's 1.5, so any query the patch delegates instead
+// of parsing leaks a visible wrong answer.
+//
+// ⛔ AND ITS VOCABULARY MUST NOT SHARE THE PARSER'S BLIND SPOTS — that is a
+// SHARPER rule than "must be big enough". An audit found `(resolution: 1dppx)
+// /*c*/` leaking on the real engine while this suite stayed green, because the
+// stub had no comment rule EITHER: it declined in lockstep with the patch and
+// agreed by construction. A stub that mirrors the implementation's omission
+// cannot see it. Comments and the `<type> and not (…)` form are therefore
+// implemented HERE from the engine's measured behaviour, not from the patch's.
 globalThis.__K = { T: 1, F: 0, U: -1 };
 // ⛔ THE HOST DPR IS CAPTURED HERE, BEFORE THE PATCH RUNS, AND THAT IS
 // LOAD-BEARING. `device_ext` redefines `globalThis.devicePixelRatio` to the
@@ -145,17 +154,36 @@ globalThis.__HOST_DPR = globalThis.devicePixelRatio;
 globalThis.__engine3 = function (q) {
   var K = globalThis.__K;
   var src = String(q);
-  var open = 0, i;
-  for (i = 0; i < src.length; i++) {
-    if (src.charAt(i) === '(') open++; else if (src.charAt(i) === ')') open--;
-  }
+  // A comment is whitespace, so parens inside one do not count.
+  var pre = [], open = 0, i;
+  (function () {
+    var a = 0, N = src.length, b;
+    while (a < N) {
+      if (src.charAt(a) === '/' && src.charAt(a + 1) === '*') {
+        b = src.indexOf('*/', a + 2); a = b < 0 ? N : b + 2; continue;
+      }
+      if (src.charAt(a) === '(') open++;
+      else if (src.charAt(a) === ')') open--;
+      a++;
+    }
+  })();
   while (open-- > 0) src += ')';
   var toks = [], n = src.length, j, c;
   i = 0;
   while (i < n) {
     c = src.charAt(i);
+    if (c === '/' && src.charAt(i + 1) === '*') {
+      j = src.indexOf('*/', i + 2); j = j < 0 ? n : j + 2;
+      if (toks.length && toks[toks.length - 1].t === 'ws' &&
+          toks[toks.length - 1].e === i) { toks[toks.length - 1].e = j; }
+      else { toks.push({ t: 'ws', s: i, e: j }); }
+      i = j; continue;
+    }
     if (/\\s/.test(c)) { j = i; while (j < n && /\\s/.test(src.charAt(j))) j++;
-      toks.push({ t: 'ws', s: i, e: j }); i = j; continue; }
+      if (toks.length && toks[toks.length - 1].t === 'ws' &&
+          toks[toks.length - 1].e === i) { toks[toks.length - 1].e = j; }
+      else { toks.push({ t: 'ws', s: i, e: j }); }
+      i = j; continue; }
     if (c === '(' || c === ')' || c === ',') { toks.push({ t: c, s: i, e: i + 1 }); i++; continue; }
     if (/[a-zA-Z_-]/.test(c)) {
       j = i; while (j < n && /[a-zA-Z0-9_-]/.test(src.charAt(j))) j++;
@@ -184,7 +212,8 @@ globalThis.__engine3 = function (q) {
   // The stand-in's ONLY real facts. Resolution comes from the HOST's dpr, so a
   // delegated resolution query answers 1.5x and the leak is visible.
   var feat = function (text) {
-    var s2 = String(text).trim(), m2;
+    // A comment is a SEPARATOR here too — see the same note in device_ext.py.
+    var s2 = String(text).replace(/\\/\\*[\\s\\S]*?(?:\\*\\/|$)/g, ' ').trim(), m2;
     m2 = s2.match(/^min-width\\s*:\\s*([0-9.]+)px$/i); if (m2) return 1280 >= +m2[1] ? K.T : K.F;
     m2 = s2.match(/^max-width\\s*:\\s*([0-9.]+)px$/i); if (m2) return 1280 <= +m2[1] ? K.T : K.F;
     m2 = s2.match(/^width\\s*:\\s*([0-9.]+)px$/i); if (m2) return 1280 === +m2[1] ? K.T : K.F;
@@ -232,7 +261,7 @@ globalThis.__engine3 = function (q) {
     q2 = feat(innerSrc);
     return q2;
   };
-  cond = function (d, stop) {
+  cond = function (d, stop, noOr) {
     if (d > 32) return null;
     sk();
     var v, r, op = null;
@@ -243,6 +272,7 @@ globalThis.__engine3 = function (q) {
       sk();
       if (stop !== undefined && st.p >= stop) break;
       var isAnd = kw('and'), isOr = kw('or');
+      if (isOr && noOr) return null;
       if (!isAnd && !isOr) break;
       if (op && ((isAnd && op !== 'and') || (isOr && op !== 'or'))) return null;
       op = isAnd ? 'and' : 'or';
@@ -263,11 +293,14 @@ globalThis.__engine3 = function (q) {
     if (t && t.t === 'ident' && t.v !== 'and' && t.v !== 'or' && t.v !== 'not' && st.p < hi) {
       v = (t.v === 'screen' || t.v === 'all') ? K.T : K.F;
       st.p++;
-      for (;;) {
-        sk();
-        if (st.p >= hi || !kw('and')) break;
+      // `<media-type> and <media-condition-without-or>` — measured on the
+      // engine: `screen and not (X)` is VALID and `screen and (a) or (b)` is
+      // not. Routing the tail through `cond` rather than straight to `inP` is
+      // what lets the `not` be seen at all.
+      sk();
+      if (st.p < hi && kw('and')) {
         st.p++;
-        r = inP(0);
+        r = cond(0, hi, true);
         if (r === null) return K.F;
         v = kAnd(v, r);
       }
@@ -305,8 +338,14 @@ globalThis.document = { documentElement: {}, addEventListener: function () {} };
 
 
 def _ask(tmp_path, queries, *, os_type="windows", resolution=(1920, 1080),
-         tag="a", mutate=None, extra_probe=""):
-    """Ask a realm carrying the built extension for each query's `matches`."""
+         tag="a", mutate=None, extra_probe="", host_scale=1.5):
+    """Ask a realm carrying the built extension for each query's `matches`.
+
+    ``host_scale`` is the realm's OWN ``devicePixelRatio`` — the scale of the
+    machine persona is pretending not to be on. The profile pins its own DPR
+    independently, so an answer that MOVES when this moves is the host's real
+    scale leaking; see ``test_the_answer_does_not_depend_on_the_host_scale``.
+    """
     node = shutil.which("node")
     if not node:
         pytest.skip("node not available")
@@ -323,9 +362,10 @@ def _ask(tmp_path, queries, *, os_type="windows", resolution=(1920, 1080),
         "qs.forEach(function (q) { o[q] = matchMedia(q).matches; });"
         "%s JSON.stringify(o)" % (json.dumps(list(queries)), extra_probe)
     )
+    stubs = _STUBS.replace("__HOST_SCALE__", repr(float(host_scale)))
     (work / "harness.js").write_text(_HARNESS, encoding="utf-8")
     (work / "cfg.json").write_text(
-        json.dumps({"stubs": _STUBS, "scripts": [str(script)], "probe": probe}),
+        json.dumps({"stubs": stubs, "scripts": [str(script)], "probe": probe}),
         encoding="utf-8",
     )
     out = subprocess.run(
@@ -999,3 +1039,330 @@ def test_a_query_naming_no_resolution_is_answered_by_the_engine_alone(tmp_path):
         "ALONE — the patch must be invisible on it. These differ:\n"
         + "\n".join(f"    engine={e!s:5} persona={p!s:5}  {q}" for q, e, p in bad)
     )
+
+
+# ---------------------------------------------------------------------------
+# ⭐⭐ THE HOST-INVARIANCE ARM — a PROPERTY, not a list of spellings.
+#
+# Every arm above this point tests a spelling. Four audit rounds each found the
+# next spelling out: `or`, then `)and `, then nested `(not (…))`, then
+# `<type> and not (…)` and a `/*comment*/`. Enumerating spellings is a losing
+# game because the grammar is infinite.
+#
+# ⭐ THIS ARM TESTS THE INVARIANT INSTEAD, AND IT NEEDS NO ORACLE, NO
+# EXPECTATIONS AND NO ENGINE MODEL:
+#
+#     the profile PINS its DPR, so persona's answer to ANY query must be
+#     IDENTICAL on every host — an answer that MOVES when the host's real
+#     scale moves IS the host's scale leaking, by definition.
+#
+# That is the definition of the defect rather than a proxy for it. It cannot go
+# stale against the engine, it cannot be defeated by a stub that shares the
+# parser's blind spots (the failure that kept two of the audit's findings
+# green), and it catches the whole class at once instead of one form at a time.
+# ---------------------------------------------------------------------------
+
+# ⛔ THE GENERATOR MUST INCLUDE FORMS THE PARSER DOES NOT UNDERSTAND. A query
+# this layer declines is exactly where a leak lives, so the wrappers below are
+# deliberately wider than the grammar the patch claims — comments, function
+# tokens, unclosed parens, mixed operators, `calc()`.
+_HOST_SENSITIVE = [
+    "(resolution: 1dppx)",
+    "(resolution: 96dpi)",
+    "(resolution: 1x)",
+    "(resolution: 37.795dpcm)",
+    "(resolution: 1.5dppx)",
+    "(resolution: 144dpi)",
+    "(min-resolution: 1dppx)",
+    "(max-resolution: 1dppx)",
+    "(min-resolution: 1.5dppx)",
+    "(-webkit-device-pixel-ratio: 1)",
+    "(-webkit-device-pixel-ratio: 1.5)",
+    "(-webkit-min-device-pixel-ratio: 1.5)",
+    "(resolution >= 1.5dppx)",
+    "(resolution <= 1dppx)",
+    "(resolution: calc(96dpi))",
+    "(resolution)",
+]
+
+_WRAPPERS = [
+    "%s",
+    "not %s",
+    "(not %s)",
+    "(not (not %s))",
+    "((%s))",
+    "screen and %s",
+    "screen and not %s",
+    "all and not %s",
+    "only screen and %s",
+    "only screen and not %s",
+    "not screen and %s",
+    "not all and %s",
+    "print and %s",
+    "print and not %s",
+    "%s and (min-width: 1px)",
+    "%s and (min-width: 999999px)",
+    "%sand (min-width: 1px)",
+    "%s or (max-width: 1px)",
+    "(max-width: 1px) or %s",
+    "%s, (max-width: 1px)",
+    "(max-width: 1px), %s",
+    "%s/*c*/",
+    "/*c*/%s",
+    "%s /* x */ and (min-width: 1px)",
+    "screen/**/and/**/not/**/%s",
+    "screen and not/**/%s",
+    "not(%s)",
+    "screen and (%s)",
+    "screen and ((%s) or (max-width: 1px))",
+    "%s and (max-width: 1px) or (min-width: 1px)",
+    "%s and",
+    "%s and (min-width: 1px",
+]
+
+
+def _host_invariance_queries():
+    out = []
+    for q in _HOST_SENSITIVE:
+        for w in _WRAPPERS:
+            out.append(w % q)
+    return sorted(set(out))
+
+
+def test_the_answer_does_not_depend_on_the_host_scale(tmp_path):
+    """⛔ THE DEFINITION OF THE LEAK, ASSERTED DIRECTLY.
+
+    The SAME profile (seed 12345, 1920x1080, windows — DPR pinned to 1) is
+    built into two realms whose own `devicePixelRatio` differs: 1.0 and 1.5.
+    Every query is asked in both. Any query whose answer DIFFERS has told the
+    page something about the machine, which is the entire thing this layer
+    exists to prevent.
+
+    ⭐ NO ORACLE, NO EXPECTED VALUES, NO ENGINE MODEL. This arm never says what
+    any answer should be — only that it must not depend on the host. It would
+    have caught every defect four rounds of audit found, including the two the
+    stand-in engine was structurally unable to see because it shared the
+    parser's own blind spots.
+
+    ⚠️ AND IT IS DELIBERATELY ASKED ABOUT FORMS THE PARSER DECLINES. Declining
+    is the SAFE action for a feature this code does not own — but it is not
+    safe for one it does, because a declined query naming a resolution feature
+    is handed to the engine, which answers it from the REAL host scale. So the
+    generator includes comments, function tokens, unclosed parens and mixed
+    operators on purpose: the leak lives precisely where the grammar stops.
+    """
+    queries = _host_invariance_queries()
+    lo = _ask(tmp_path, queries, tag="hostlo", host_scale=1.0)
+    hi = _ask(tmp_path, queries, tag="hosthi", host_scale=1.5)
+    bad = [(q, lo[q], hi[q]) for q in queries if lo[q] != hi[q]]
+    assert not bad, (
+        "the profile PINS devicePixelRatio, so persona's answer cannot depend "
+        "on the host's real scale — each row below answered differently on a "
+        "host at 1.0 and a host at 1.5, which IS the host's scale leaking:\n"
+        + "\n".join(f"    host1.0={a!s:5} host1.5={b!s:5}  {q}" for q, a, b in bad)
+    )
+
+
+def test_the_host_invariance_arm_can_actually_fail(tmp_path):
+    """⭐ THE POSITIVE CONTROL FOR THE ARM ABOVE.
+
+    An invariance assertion is the easiest kind of test to write vacuously: if
+    the patch answered nothing at all, every query would delegate identically…
+    except that it would NOT, because delegation is exactly what reads the host
+    scale. This proves the arm is live by DISABLING the resolution evaluator
+    (`_feat` always declines), which forces every resolution query to the
+    engine — and requires the invariance assertion to go RED.
+    """
+    disable = lambda s: s.replace(
+        "var _feat = function (body) {",
+        "var _feat = function (body) { if (1) return null;",
+    )
+    queries = _host_invariance_queries()
+    lo = _ask(tmp_path, queries, tag="ctllo", host_scale=1.0, mutate=disable)
+    hi = _ask(tmp_path, queries, tag="ctlhi", host_scale=1.5, mutate=disable)
+    assert any(lo[q] != hi[q] for q in queries), (
+        "with the resolution evaluator disabled EVERY resolution query is "
+        "delegated to the engine, which answers from the host's real scale — "
+        "so the two hosts MUST disagree somewhere. They did not, which means "
+        "test_the_answer_does_not_depend_on_the_host_scale cannot fail and is "
+        "proving nothing."
+    )
+
+
+# ---------------------------------------------------------------------------
+# ⛔ A CSS COMMENT IS WHITESPACE. Adding one cannot change the answer.
+# ---------------------------------------------------------------------------
+
+
+def test_a_comment_does_not_change_the_answer(tmp_path):
+    """⛔ `mm(Q)` AND `mm(Q + " /*c*/")` ARE THE SAME QUESTION.
+
+    Measured on stock Chromium 152.0.7977.82: a comment is legal anywhere
+    whitespace is, and all of `(resolution: 1dppx)/*c*/`, `/*c*/(resolution:
+    1dppx)` and `(resolution: 1dppx) /* x */ and (min-width: 1px)` answer
+    exactly as the comment-free form does.
+
+    Before the tokenizer had a comment rule, `/` and `*` fell to the `other`
+    branch, every production refused the stream and the query was DECLINED —
+    handing a query that NAMES a resolution feature straight to the engine,
+    which answered it from the REAL host dpr. So this is not a syntax nicety:
+    the disagreement itself was a two-line probe, and its answer was the host's
+    scale.
+
+    ⭐ AGAIN NO ORACLE — the law is asserted, never the value.
+    """
+    forms = list(_SPELLINGS) + [
+        "screen and (resolution: 1dppx)",
+        "screen and not (resolution: 1dppx)",
+        "(resolution: 1dppx) and (min-width: 1px)",
+        "(min-width: 1px)",
+        "not (resolution: 1dppx)",
+    ]
+    queries = []
+    for q in forms:
+        queries += [q, q + "/*c*/", "/*c*/" + q, q + " /* x */"]
+    got = _ask(tmp_path, sorted(set(queries)), tag="comment")
+    bad = [
+        (q, got[q], got[q + "/*c*/"], got["/*c*/" + q], got[q + " /* x */"])
+        for q in forms
+        if not (got[q] == got[q + "/*c*/"] == got["/*c*/" + q] == got[q + " /* x */"])
+    ]
+    assert not bad, (
+        "a CSS comment is whitespace — adding one cannot change the answer. "
+        "These did:\n"
+        + "\n".join(
+            f"    bare={a!s:5} trail={b!s:5} lead={c!s:5} spaced={d!s:5}  {q}"
+            for q, a, b, c, d in bad
+        )
+    )
+
+
+def test_a_comment_separates_tokens_and_never_joins_them(tmp_path):
+    """⛔ THE OTHER HALF OF THE COMMENT RULE, AND THE REASON IT IS A `ws` TOKEN
+    RATHER THAN A SKIP.
+
+    Measured on the engine — a comment acts as a separator, exactly like a
+    space, and never glues two identifiers together:
+
+        (resolution: /**/1dppx)    TRUE      comment between value tokens
+        (resolution: 1/**/dppx)    unknown   NOT joined into `1dppx`
+        (res/**/olution: 1dppx)    unknown   NOT joined into a name
+        screen and not/**/(…)      TRUE      `not` is still a keyword
+        screen and not(…)          unknown   `not(` is a function token
+
+    A tokenizer that DROPPED comments would make row 4 read as row 5 and answer
+    the opposite of the engine, so the two must be distinguished.
+    """
+    got = _ask(tmp_path, [
+        "(resolution: /**/1dppx)", "(resolution: 1/**/dppx)",
+        "(res/**/olution: 1dppx)",
+        "screen and not/**/(resolution: 2dppx)",
+        "screen and not(resolution: 2dppx)",
+        "screen/**/and (resolution: 1dppx)",
+        "/* ( */(min-width: 1px)",
+    ], tag="commentsep")
+    assert got["(resolution: /**/1dppx)"] is True, (
+        "a comment between the colon and the value is whitespace; the query is "
+        "still `(resolution: 1dppx)` and the pinned DPR is 1"
+    )
+    assert got["(resolution: 1/**/dppx)"] is False, (
+        "a comment must NOT be glued out of existence — `1/**/dppx` is not the "
+        "dimension `1dppx`, and the engine answers unknown (false)"
+    )
+    assert got["(res/**/olution: 1dppx)"] is False, (
+        "a comment inside an identifier does not join it back together"
+    )
+    assert got["screen and not/**/(resolution: 2dppx)"] is True, (
+        "`not` followed by a comment is still the KEYWORD `not`, so this is "
+        "`not (resolution: 2dppx)` and the pinned DPR of 1 is not 2"
+    )
+    assert got["screen and not(resolution: 2dppx)"] is False, (
+        "`not(` with NOTHING between them is a single function token, which "
+        "the engine treats as general-enclosed and answers unknown"
+    )
+    assert got["screen/**/and (resolution: 1dppx)"] is True
+    assert got["/* ( */(min-width: 1px)"] is True, (
+        "a paren inside a COMMENT is not a paren — the unclosed-paren prescan "
+        "must count tokens, not characters, or it appends a stray `)` and "
+        "declines a perfectly balanced query"
+    )
+
+
+# ---------------------------------------------------------------------------
+# ⛔ `<media-type> and not (…)` — the third spelling of the ⭐⭐ STRONGER CLASS.
+# ---------------------------------------------------------------------------
+
+
+def test_a_media_type_conjoined_with_a_negation_honours_the_negation(tmp_path):
+    """⛔ `screen and Q` AND `screen and not Q` CANNOT BOTH BE TRUE.
+
+    MQ4 lets a media type be conjoined with a full
+    <media-condition-without-or>, so `screen and not (resolution: 1dppx)` is a
+    VALID query — measured on the engine, which serializes it back verbatim
+    rather than as `not all`.
+
+    The parser's media-type arm used to call `_inP` directly, which requires an
+    open paren, so the cursor landing on `not` returned null and the whole
+    query was declined — leaving the ENGINE's answer, drawn from the REAL host
+    dpr. That produced the ticket's own ⭐⭐ class a third time: Q and NOT-Q
+    both answering TRUE.
+
+    ⭐ NO ORACLE: non-contradiction is asserted, never a value.
+    """
+    types = ["screen", "all", "only screen", "only all", "print"]
+    queries = []
+    for t in types:
+        for q in _SPELLINGS:
+            queries += [f"{t} and {q}", f"{t} and not {q}"]
+    got = _ask(tmp_path, sorted(set(queries)), tag="typenot")
+    bad = [
+        (t, q, got[f"{t} and {q}"])
+        for t in types for q in _SPELLINGS
+        if got[f"{t} and {q}"] and got[f"{t} and not {q}"]
+    ]
+    assert not bad, (
+        "`T and Q` and `T and not Q` are contradictory and cannot both be "
+        "TRUE — a page answering both has identified itself to a script that "
+        "knows nothing about screens:\n"
+        + "\n".join(f"    both TRUE:  {t} and [not] {q}" for t, q, _ in bad)
+    )
+    # ⭐ AND THE ARM MUST NOT BE VACUOUS. `print` is false in this realm, so
+    # both of its forms are legitimately false; the `screen` rows must not be.
+    assert got["screen and (resolution: 1dppx)"] is True, (
+        "premise check: the pinned DPR is 1 in a screen realm, so this must be "
+        "true — if it is false the contradiction test above proves nothing"
+    )
+    assert got["screen and not (resolution: 1dppx)"] is False
+
+
+def test_a_media_type_arm_still_rejects_what_the_engine_rejects(tmp_path):
+    """⛔ WIDENING THE MEDIA-TYPE ARM MUST NOT ACCEPT MORE THAN MQ4 DOES.
+
+    Only <media-condition-WITHOUT-OR> may follow `<media-type> and`, and a
+    `not` group may not be conjoined further. Both measured on the engine,
+    which serializes each of these as `not all` — the invalid marker:
+
+        screen and (min-width:1px) or (max-width:1px)          INVALID
+        screen and not (min-width:999999px) and (max-width:9999px)  INVALID
+        screen and not not (min-width:1px)                     INVALID
+
+    An invalid query is FALSE on any DPR, so these must answer false — and
+    critically must answer false on EVERY host, which the invariance arm above
+    covers for the resolution spellings.
+    """
+    got = _ask(tmp_path, [
+        "screen and (min-width: 1px) or (max-width: 1px)",
+        "screen and not (min-width: 999999px) and (max-width: 9999px)",
+        "screen and not (resolution: 2dppx) and (min-width: 1px)",
+        "screen and not not (min-width: 1px)",
+        "screen and not (min-width: 999999px)",
+        "screen and (min-width: 1px) and (max-width: 9999px)",
+    ], tag="typerej")
+    assert got["screen and (min-width: 1px) or (max-width: 1px)"] is False
+    assert got["screen and not (min-width: 999999px) and (max-width: 9999px)"] is False
+    assert got["screen and not (resolution: 2dppx) and (min-width: 1px)"] is False
+    assert got["screen and not not (min-width: 1px)"] is False
+    # …while the two VALID forms still answer true, so the rejections above are
+    # not simply a broken arm refusing everything.
+    assert got["screen and not (min-width: 999999px)"] is True
+    assert got["screen and (min-width: 1px) and (max-width: 9999px)"] is True

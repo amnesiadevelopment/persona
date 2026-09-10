@@ -811,13 +811,56 @@ __SCREEN_LEAF_CLOAK__
         // Every token keeps absolute [s,e) offsets so a sub-expression can be
         // handed to the real matchMedia as its ORIGINAL TEXT rather than as
         // something this layer reassembled.
+        //
+        // ⛔ A CSS COMMENT IS EXACTLY WHITESPACE, AND OMITTING IT WAS A LEAK
+        // RATHER THAN A COSMETIC GAP. With no `/* … */` rule the `/` and `*`
+        // fell to the `other` branch, every production refused the stream, the
+        // query was DECLINED — and declining a query that NAMES a resolution
+        // feature hands it to the engine, which answers it from the REAL host
+        // dpr. So `mm(Q)` and `mm(Q + "/**/")` disagreed, and the disagreement
+        // handed over the host's scale: a two-line probe needing no baseline.
+        //
+        // Measured on stock Chromium 152.0.7977.82 — a comment SEPARATES
+        // tokens exactly as whitespace does and never JOINS them, which is why
+        // it is emitted as a `ws` token rather than skipped:
+        //
+        //   (resolution: 1dppx)/*c*/       TRUE   ser `(resolution: 1dppx)`
+        //   (resolution: /**/1dppx)        TRUE   comment between value tokens
+        //   (resolution: 1/**/dppx)        unknown  <- NOT joined into `1dppx`
+        //   (res/**/olution: 1dppx)        unknown  <- NOT joined into a name
+        //   screen/**/and (min-width:1px)  TRUE   separates like a space
+        //   screen and not/**/(…)          TRUE   so `not` stays a keyword
+        //   screen and not(…)              unknown  (a function token)
+        //   (resolution: 1dppx/*x          TRUE   an unclosed comment runs to EOF
+        //
+        // ⭐ EMITTING IT AS `ws` IS WHAT MAKES THE LAST TWO ROWS AGREE. `_kw`
+        // asks whether the NEXT token is whitespace, so a comment after `not`
+        // keeps it a keyword — while `not(` remains a single function token.
+        // Skipping the comment entirely would make `not/**/(x)` read as `not(`
+        // and answer the opposite of the engine.
         var _tok = function (s) {
           var out = [], i = 0, n = s.length, j, c;
           while (i < n) {
             c = s.charAt(i);
+            if (c === '/' && s.charAt(i + 1) === '*') {
+              j = s.indexOf('*/', i + 2);
+              // Unterminated: Chromium runs it to end-of-input rather than
+              // rejecting the query — measured above.
+              j = j < 0 ? n : j + 2;
+              if (out.length && out[out.length - 1].t === 'ws' &&
+                  out[out.length - 1].e === i) { out[out.length - 1].e = j; }
+              else { out.push({ t: 'ws', s: i, e: j }); }
+              i = j; continue;
+            }
             if (/\s/.test(c)) {
               j = i; while (j < n && /\s/.test(s.charAt(j))) j++;
-              out.push({ t: 'ws', s: i, e: j }); i = j; continue;
+              // Fold adjacent whitespace and comments into ONE `ws` token so
+              // `_kw`'s "next token is whitespace" test cannot be split by a
+              // comment sitting between two spaces.
+              if (out.length && out[out.length - 1].t === 'ws' &&
+                  out[out.length - 1].e === i) { out[out.length - 1].e = j; }
+              else { out.push({ t: 'ws', s: i, e: j }); }
+              i = j; continue;
             }
             if (c === '(' || c === ')' || c === ',') {
               out.push({ t: c, s: i, e: i + 1 }); i++; continue;
@@ -939,7 +982,15 @@ __SCREEN_LEAF_CLOAK__
         // code owns the answer; null for "not ours" — and null is what sends
         // the ORIGINAL text to the engine untouched.
         var _feat = function (body) {
-          var text = String(body).trim();
+          // ⛔ A COMMENT BECOMES A SPACE HERE, NOT NOTHING. The tokenizer
+          // already treats `/* … */` as whitespace, but these matchers run on
+          // the raw inner TEXT, so the comment has to be neutralised again —
+          // and it must be neutralised as a SEPARATOR. Measured:
+          //     (resolution: /**/1dppx)  TRUE     -> `resolution:  1dppx`
+          //     (resolution: 1/**/dppx)  unknown  -> `1 dppx`, not `1dppx`
+          // Deleting it instead of spacing it would glue `1` to `dppx` and
+          // answer TRUE where the engine answers unknown.
+          var text = String(body).replace(/\/\*[\s\S]*?(?:\*\/|$)/g, ' ').trim();
           if (!text) return null;
           var mine = RESWORD.test(text), m, info, val, lo, hi;
           // Boolean form: `(resolution)`. Measured TRUE (the pinned dpr is
@@ -1059,7 +1110,11 @@ __SCREEN_LEAF_CLOAK__
         // anything after a `not` group — both measured false on the engine:
         //     (a) and (b) or (c)              false
         //     not (max-width: 1px) and (min-width: 1px)   false
-        _cond = function (st, depth) {
+        // `noOr` restricts this to MQ4's <media-condition-without-or>, which is
+        // the ONLY thing that may follow `<media-type> and` — measured:
+        //     screen and (a) and (b)          valid
+        //     screen and (a) or  (b)          INVALID  (serializes `not all`)
+        _cond = function (st, depth, noOr) {
           if (depth > 32) return null;
           _sk(st);
           var v, r, op = null;
@@ -1073,6 +1128,7 @@ __SCREEN_LEAF_CLOAK__
           for (;;) {
             _sk(st);
             var isAnd = _kw(st, 'and'), isOr = _kw(st, 'or');
+            if (isOr && noOr) return null;
             if (!isAnd && !isOr) break;
             if (op && ((isAnd && op !== 'and') || (isOr && op !== 'or'))) return null;
             op = isAnd ? 'and' : 'or';
@@ -1083,16 +1139,23 @@ __SCREEN_LEAF_CLOAK__
           }
           return v;
         };
-        // One media query: `not? only? <type> (and <in-parens>)*` | `<condition>`
+        // One media query: `not? only? <type> (and <condition-without-or>)?`
+        //                | `<condition>`
         var _query = function (src) {
           var s = String(src);
           // Chromium tolerates an unclosed feature — `(resolution: 96dpi`
           // parses and answers true. Balance it so the same input reaches this
           // parser as a feature rather than falling through and leaking.
-          var open = 0, k;
-          for (k = 0; k < s.length; k++) {
-            if (s.charAt(k) === '(') open++;
-            else if (s.charAt(k) === ')') open--;
+          //
+          // ⛔ COUNTED OVER THE TOKEN STREAM, NOT THE RAW TEXT. A paren inside
+          // a COMMENT is not a paren — `/* ( */(min-width:1px)` is a balanced
+          // query on the engine, and counting characters made it look short one
+          // `)`, appended a stray closer and declined the query. Same class as
+          // the comment gap itself: a leak one spelling over.
+          var pre = _tok(s), open = 0, k;
+          for (k = 0; k < pre.length; k++) {
+            if (pre[k].t === '(' || pre[k].t === 'func') open++;
+            else if (pre[k].t === ')') open--;
           }
           while (open-- > 0) s += ')';
           var st = new _P(_tok(s), s);
@@ -1106,11 +1169,24 @@ __SCREEN_LEAF_CLOAK__
             v = _askType(tk.v);
             if (v === null) return null;
             st.p++;
-            for (;;) {
-              _sk(st);
-              if (!_kw(st, 'and')) break;
+            _sk(st);
+            if (_kw(st, 'and')) {
               st.p++;
-              r = _inP(st, 0);
+              // ⛔ THE WHOLE TAIL IS ONE <media-condition-without-or>, AND
+              // ROUTING IT THROUGH `_cond` IS THE FIX. This used to call
+              // `_inP` directly in a loop, so `screen and not (…)` handed
+              // `_inP` a cursor sitting on the `not` ident — `_inP` requires
+              // `(`, returned null, and the whole query was DECLINED. Declining
+              // is the safe action for a feature this code does not own; it is
+              // NOT safe for one it does, because the declined query names a
+              // resolution feature the profile is pinning, so "degrade to the
+              // engine's honest answer" degrades to the HOST's honest answer.
+              // Measured before the fix, profile pinned to dpr 1:
+              //     screen and (resolution: 1dppx)       TRUE
+              //     screen and not (resolution: 1dppx)   TRUE   <- Q and NOT-Q
+              // and that second row read false/true/true across hosts 1/1.5/2 —
+              // tracking the host's real scale, which is the number being hidden.
+              r = _cond(st, 0, true);
               if (r === null) return null;
               v = _kAnd(v, r);
             }
