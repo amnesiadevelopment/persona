@@ -90,12 +90,19 @@ def _extract_preserving_mode(zip_path: pathlib.Path, dest: pathlib.Path) -> None
     archive ships ``chrome`` beside helper binaries it spawns itself, and
     chmod'ing only ``chrome`` produces a browser that starts and then dies:
 
-        FATAL: posix_spawn .../chrome_crashpad_handler: Permission denied (13)
+        FATAL: posix_spawn <a helper the browser spawns>: Permission denied (13)
 
     Which reaches the judge as INDETERMINATE on all four control cells — the
     correct report of a staging failure, and a permanently red gate. The
     ``unzip(1)`` PS-344's recipe uses preserves the bit, which is why the
     manual reproduction never met this.
+
+    ⛔ THE HELPER IS DELIBERATELY NOT NAMED HERE, and the omission is a rule
+    rather than an oversight: PS-359's ratchet forbids this repository from
+    owning ANY list of upstream's runtime filenames, because such a list is
+    correct the day it is written and rots silently once upstream renames a
+    file. Nothing here needs the name — the fix is mode-preserving extraction
+    of EVERY member, which is why it cannot rot.
     """
     with zipfile.ZipFile(zip_path) as zf:
         for info in zf.infolist():
