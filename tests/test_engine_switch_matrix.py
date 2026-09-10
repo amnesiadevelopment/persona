@@ -365,6 +365,35 @@ MATRIX = {
         "resolve from, because one machine reporting three answers is itself "
         "the tell.",
     ),
+    "fingerprint-device-memory": (
+        COVERED,
+        "⭐ ADDED BY THE PIXELSCAN PORT'S SLICE 2 (PS-392), and it is the only "
+        "row here whose consumer had to be BUILT rather than found. 005 did "
+        "not merely lack a read site for deviceMemory — it hardcoded "
+        "`return 8;`, so the engine answered 8 for every profile and no seed "
+        "could move it. The switch read replaces that constant, on the "
+        "018-timezone model, and is passed unconditionally. "
+        "⛔ IT IS ALSO A JS DELETION, and that half is what makes it "
+        "measurable: device_ext.py declared navigator.deviceMemory in BOTH "
+        "the page realm and the worker-realm twin inside applyHwPatch, and "
+        "both were deleted in the same change. Moving a spoof into the engine "
+        "while leaving the getter changes nothing a checker can see — both "
+        "authors stay live — and a native value in the page beside a stale JS "
+        "override in the worker is the exact disagreement checkers look for. "
+        "⚠️ THE VALUE IS SPEC-BOUNDED AND THE CAP IS NOT A DISGUISE. The "
+        "Device Memory API reports RAM rounded DOWN to a power of two and "
+        "clamped to [0.25, 8], so an 8 GB and a 16 GB machine BOTH report 8. "
+        "persona's pool RAM axis is {8, 16}, so every profile legitimately "
+        "reports 8 — measured over 5000 seeds. That is NOT lost entropy to be "
+        "'restored': a per-seed value would contradict the profile's own "
+        "claimed RAM and publish a figure no capped browser produces. The "
+        "launcher passes an already-legal value AND the patch re-clamps, so "
+        "no path can publish an illegal one. "
+        "⚠️ MOBILE TAKES ITS DEVICE PRESET'S VALUE, not the desktop pool's — "
+        "the argv list is built outside the mobile/desktop branch, and an "
+        "iPhone reporting desktop RAM in the ServiceWorker realm while its own "
+        "JS says 4 would be the same realm disagreement one lane over.",
+    ),
     "timezone": (
         COVERED,
         "⚠️ THE NAMING TRAP, and the reason this matrix carries a REGISTERED "
@@ -654,10 +683,12 @@ def test_the_declaration_parse_excludes_ungoogled_context_constants():
     assert any(
         "kFingerprintingCanvasImageDataNoise" in line for line in context_declarations
     )
-    assert len(declared) == 12, (
-        f"000 declares {len(declared)} switches, not 12. If that is a real "
+    assert len(declared) == 13, (
+        f"000 declares {len(declared)} switches, not 13. If that is a real "
         "change, test_the_matrix_covers_every_declared_switch names which one "
-        "moved and this count follows it — update both together."
+        "moved and this count follows it — update both together.\n"
+        "⭐ WENT 12 -> 13 AT PS-392: fingerprint-device-memory was added so "
+        "deviceMemory could move off its JS descriptor into the engine."
     )
 
 
@@ -809,9 +840,15 @@ def test_a_context_only_patch_is_not_counted_as_a_consumer():
 def test_the_passed_column_is_read_off_a_real_launch(monkeypatch, tmp_path):
     # ⭐ THE PASSED COLUMN, and the reason it is argv rather than a grep.
     #
-    # Six switches, exactly. The negative half of this assertion is the
+    # Seven switches, exactly. The negative half of this assertion is the
     # load-bearing one — and it is trustworthy ONLY because the positive half
     # is in the same set comparison, taken from the same launch.
+    #
+    # ⭐ WENT SIX -> SEVEN AT PS-392: fingerprint-device-memory. Note this
+    # column is read off a REAL launch's argv, so it is the assertion that
+    # actually proves the switch is passed rather than merely declared — the
+    # distinction that matters here, because persona ships four switches that
+    # are declared and propagated and read by nothing.
     #
     # ⛔ THE TRAP THIS AVOIDS, stated because a future reader WILL be tempted to
     # simplify this into a grep: `grep -rl -- "--disable-spoofing" src/` matches
@@ -827,6 +864,7 @@ def test_the_passed_column_is_read_off_a_real_launch(monkeypatch, tmp_path):
         "fingerprint-platform",
         "fingerprint-brand",
         "fingerprint-brand-version",
+        "fingerprint-device-memory",
         "fingerprint-hardware-concurrency",
         "timezone",
     }, (
@@ -914,6 +952,7 @@ def test_the_split_is_reproduced_as_data(monkeypatch, tmp_path):
             "fingerprint",
             "fingerprint-brand",
             "fingerprint-brand-version",
+            "fingerprint-device-memory",
             "fingerprint-hardware-concurrency",
             "fingerprint-platform",
             "timezone",
@@ -940,12 +979,13 @@ def test_the_split_is_reproduced_as_data(monkeypatch, tmp_path):
         "leaving it means somebody wrote the C++ read-side and its cell should "
         "no longer read COVERED_ELSEWHERE."
     )
-    # The three buckets partition the twelve — no row may fall through, and a
+    # The three buckets partition the THIRTEEN — no row may fall through, and a
     # row counted twice would let the arithmetic look right while a switch went
-    # unexamined.
+    # unexamined. Went 12 -> 13 at PS-392 (fingerprint-device-memory, which
+    # enters the fully_wired bucket: declared, consumed by 005, passed).
     assert (
         len(fully_wired) + len(consumed_not_passed) + len(declared_not_consumed)
-    ) == len(declared) == 12
+    ) == len(declared) == 13
 
     # ⛔ A PASSED SWITCH THAT NOBODY CONSUMES IS THE WORST CELL IN THE TABLE and
     # must never appear silently: it is a flag the engine accepts and discards

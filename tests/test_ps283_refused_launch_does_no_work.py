@@ -427,6 +427,22 @@ def _normalise(argv, profile_dir, data_dir):
 #: So do NOT read this line as "persona always passes 8" and do not copy it as
 #: an expected value anywhere else — ``test_ps354_service_worker_cores.py``
 #: pins the resolver against the real emitted ``device.js`` for many seeds.
+#:
+#: ⭐ AMENDED A SECOND TIME, BY PS-392 (pixelscan port, slice 2) — recorded here
+#: for the same reason: ``--fingerprint-device-memory=<n>`` was ADDED to all
+#: three arms. Also a real, intended change to what is launched, and the mirror
+#: of the PS-354 amendment above: it moves ``navigator.deviceMemory`` off a JS
+#: descriptor (the surface pixelscan detects) and onto an engine switch, which
+#: additionally reaches the ServiceWorker realm no JS author can enter. The
+#: patch it feeds previously hardcoded ``return 8;``, so the engine answered
+#: the same value for every profile whatever its seed.
+#:
+#: ⚠️ AND THE ``8.0`` HERE IS SPEC-CAPPED, NOT THIS PROFILE'S RAM. Unlike the
+#: cores line above, this value is the SAME for every profile persona can
+#: generate today — the Device Memory API rounds RAM down to a power of two and
+#: clamps at 8, and the pool's RAM axis is {8, 16}, so both rungs report 8.
+#: That is correct rather than a lost variation; a mobile profile legitimately
+#: launches with 4.0 from its device preset. Do NOT "fix" this to vary.
 _PRISTINE_ARGV = {
     "linux": [
         "<ENGINE>",
@@ -437,6 +453,7 @@ _PRISTINE_ARGV = {
         "--fingerprint-brand=Chrome",
         "--fingerprint-brand-version=152.0.7977.75",
         "--fingerprint-hardware-concurrency=8",
+        "--fingerprint-device-memory=8.0",
         "--lang=de-DE",
         "--accept-lang=de-DE,de",
         (
@@ -488,6 +505,7 @@ _PRISTINE_ARGV = {
         "--fingerprint-brand=Chrome",
         "--fingerprint-brand-version=152.0.7977.75",
         "--fingerprint-hardware-concurrency=8",
+        "--fingerprint-device-memory=8.0",
         "--lang=de-DE",
         "--accept-lang=de-DE,de",
         (
@@ -527,6 +545,7 @@ _PRISTINE_ARGV = {
         "--fingerprint-brand=Chrome",
         "--fingerprint-brand-version=152.0.7977.75",
         "--fingerprint-hardware-concurrency=8",
+        "--fingerprint-device-memory=8.0",
         "--lang=de-DE",
         "--accept-lang=de-DE,de",
         (
