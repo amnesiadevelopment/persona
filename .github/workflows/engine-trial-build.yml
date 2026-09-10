@@ -419,6 +419,33 @@ jobs:
       - name: Salvage the previous dispatch's evidence, then zero record/
         run: persona/scripts/ps289_journal.sh salvage
 
+      # ── PS-359: ZERO OUR OWN STAGING ROOT, BEFORE ANYTHING CAN FAIL ────────
+      # `package-out/` sits in $GITHUB_WORKSPACE beside `record/`, outside both
+      # checkouts, for exactly the reason spelled out above: `actions/checkout`
+      # never reaches it and a self-hosted runner does not wipe `_work` between
+      # runs. The salvage step above zeroes `record/` and ONLY `record/`.
+      #
+      # ⚠️ THE PACKAGING STEP CANNOT BE THE ONLY PLACE THIS HAPPENS. Packaging
+      # is gated on `steps.compile.outcome == 'success'`, correctly — a tree
+      # that did not compile has nothing to package. The binary upload below is
+      # `if: always()` and its path names `package-out/<arm>/`. So on a dispatch
+      # whose COMPILE FAILED, packaging never runs, nothing is removed, and the
+      # upload ships the PREVIOUS dispatch's AppImage under THIS run's artifact
+      # name — beside a manifest stating the tree did not compile.
+      # `if-no-files-found: ignore` does not help: files are found.
+      #
+      # That upload used to be two files nobody could launch; since PS-359 it is
+      # THE RUNNABLE ENGINE, and PS-344 and PS-345 are queued to measure through
+      # it. A measurement taken against a silently-substituted binary from
+      # another tag is the same PS-192 shape this file cites just above — a
+      # confident reading from an instrument nobody re-zeroed — and it is worse
+      # than the ICU error, because the ICU error is loud.
+      #
+      # Placed HERE: after the persona checkout that makes the script reachable,
+      # and before every step that can fail.
+      - name: Zero the packaging staging root (PS-359)
+        run: persona/scripts/ps359_package.sh reset
+
       - name: Check out ungoogled-chromium-portablelinux
         uses: actions/checkout@v4
         with:
@@ -607,6 +634,47 @@ jobs:
           UNGOOGLED_TAG: ${{ inputs.ungoogled_tag }}
           NINJA_JOBS: ${{ inputs.ninja_jobs }}
 
+      # ── PS-359: MAKE THE ARTIFACT SOMETHING SOMEBODY ELSE CAN RUN ───────────
+      # Until this step existed, the binary upload below shipped two files out
+      # of a runtime tree. Launched by anyone who had not built it, the binary
+      # died with `Invalid file descriptor to ICU data received` and rc=133,
+      # which reaches our harness as "persona's chromium exited before opening
+      # a debug port" — a message that reads like a broken compile and is not
+      # one. PS-301 hit precisely that and worked around it by hand-staging the
+      # binary into a foreign, version-skewed resource tree.
+      #
+      # THE REMEDY IS UPSTREAM'S OWN PACKAGER, NOT A FILE LIST OF OURS. A list
+      # of upstream's runtime files copied into this repository is a second
+      # inventory of somebody else's build output: correct the day it is
+      # written, and silently wrong the first time upstream changes theirs. The
+      # script called here invokes `package/docker-package.sh` at the tag being
+      # built and owns no file names at all.
+      #
+      # ⚠️ `package/docker-package.sh`, NEVER `scripts/package.sh` DIRECTLY.
+      # The inner script needs tools that exist only in upstream's separate
+      # packager image; called directly it dies AFTER the multi-hour compile.
+      #
+      # `steps.compile.outcome == 'success'` — a tree that did not compile has
+      # nothing to package, and this must never mask a compile result.
+      #
+      # `continue-on-error: true` for the same reason the compile steps carry
+      # it: so the evidence below is still collected and uploaded, and the
+      # failure is re-raised at the end as ITS OWN outcome. A packaging failure
+      # is a THIRD result, distinct from a prepare failure and a compile
+      # failure — the workflow's whole design is that distinguishable outcomes
+      # stay distinguishable, and "compiled fine, packaging failed" is not a
+      # re-labelled second one. Building upstream's packager image reaches the
+      # network unauthenticated, so a rate limit there must not be reported as
+      # a build failure.
+      - name: Package the compiled tree with upstream's own packager
+        id: package
+        if: steps.compile.outcome == 'success'
+        continue-on-error: true
+        run: persona/scripts/ps359_package.sh unmodified
+        env:
+          UCPL_DIR: ucpl
+          UNGOOGLED_TAG: ${{ inputs.ungoogled_tag }}
+
       - name: Write the manifest
         if: always()
         run: persona/scripts/ps218_manifest.sh unmodified
@@ -616,6 +684,11 @@ jobs:
           NINJA_JOBS: ${{ inputs.ninja_jobs }}
           PREPARE_RESULT: ${{ steps.prepare.outcome }}
           COMPILE_RESULT: ${{ steps.compile.outcome }}
+          # PS-359 — the third result. A compiled tree whose artifact cannot be
+          # launched is the defect this workflow shipped for months, so whether
+          # packaging ran and whether it succeeded are stated rather than left
+          # to be inferred from the presence of an artifact.
+          PACKAGE_RESULT: ${{ steps.package.outcome }}
           # PS-307 — a reused tree changes what the prepare wall-clock MEANS, and
           # that figure is one of this workflow's deliverables. A reader must be
           # able to tell a cold prepare from a warm one without opening the log.
@@ -636,25 +709,74 @@ jobs:
 
       # The binary is uploaded separately: it is large, and a reader who only
       # wants to know WHETHER it compiled should not have to download it.
+      #
+      # ── PS-359: THIS NOW SHIPS THE PACKAGED TREE ────────────────────────────
+      # It used to name two paths out of `out/Default` — the executables and
+      # nothing else. That artifact could not be launched by anyone who had not
+      # built it (see the packaging step above), so the thing this step exists
+      # to hand a reader did not work when they tried to use it.
+      #
+      # `package-out/unmodified/` holds what upstream's packager produced,
+      # staged under a `ps218-unmodified-` prefix. THE PREFIX IS THE POINT: both
+      # arms build the same ungoogled tag and upstream derives its filename from
+      # that tag alone, so both emit an identically-named file. A reader who
+      # downloads both artifacts would otherwise hold two files with the same
+      # name and no way to tell the patched one from the control — exactly the
+      # confusion PS-244's artifact-name provenance rules exist to prevent.
+      #
+      # `chromedriver` is kept ALONGSIDE it, deliberately. Upstream's packager
+      # includes it in the tarball and the AppImage, but our harness drives a
+      # chromedriver as a separate executable, and making a reader unpack an
+      # AppImage to reach one would be a regression in usability for the tooling
+      # this artifact exists to serve.
+      #
+      # ⛔ NOTHING HERE IS PUBLISHED, and the name is deliberately NOT the
+      # release name. `personium-…` belongs to RELEASING.md and to PS-319. This
+      # is an artifact attached to a run, exactly as before.
+      #
+      # `if-no-files-found: ignore` is unchanged and still correct: on a run
+      # whose compile failed there is no binary AND no package, and that is a
+      # reported result rather than an upload problem.
       - name: Upload the binary (unmodified, only if it exists)
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: ps218-unmodified-binary-${{ inputs.ungoogled_tag }}
           path: |
-            ucpl/build/src/out/Default/chrome
+            package-out/unmodified/
             ucpl/build/src/out/Default/chromedriver
           if-no-files-found: ignore
+          # Unchanged at 7 days. The packaged tree is LARGER than the two loose
+          # files it replaces — a self-contained Chromium runtime carries the
+          # resources, locales and graphics libraries the executables need — and
+          # the measured figure is recorded on the ticket rather than estimated
+          # here. Seven days is the window in which someone acts on a trial
+          # build; the RECORD upload above keeps 30 days and is what a reader
+          # needs after that.
           retention-days: 7
 
       # Re-raise AFTER the evidence is safely uploaded. `continue-on-error`
       # above collects the diagnostics; this makes the job's verdict honest.
+      #
+      # PS-359 — THREE OUTCOMES, NOT TWO, AND THE ORDER IS DELIBERATE. A
+      # packaging failure is reported LAST and separately, because it means
+      # something completely different from the other two: the tree compiled.
+      # Folding it into the compile message would re-label a third outcome as
+      # the second one, and this workflow exists to keep distinguishable
+      # outcomes distinguishable.
       - name: Re-raise a failure now that the evidence is collected
-        if: steps.prepare.outcome == 'failure' || steps.compile.outcome == 'failure'
+        if: steps.prepare.outcome == 'failure' || steps.compile.outcome == 'failure' || steps.package.outcome == 'failure'
         run: |
-          echo "::error::UNMODIFIED tree did not build (prepare=${{ steps.prepare.outcome }}, compile=${{ steps.compile.outcome }})."
-          echo "::error::Per PS-218 this is a finding about the BUILD ENVIRONMENT and says NOTHING about our 16 patches."
-          echo "::error::The patched build is intentionally skipped — attributing a patched failure without a working control is exactly the error this ticket exists to correct."
+          if [ "${{ steps.prepare.outcome }}" = "failure" ] || [ "${{ steps.compile.outcome }}" = "failure" ]; then
+            echo "::error::UNMODIFIED tree did not build (prepare=${{ steps.prepare.outcome }}, compile=${{ steps.compile.outcome }})."
+            echo "::error::Per PS-218 this is a finding about the BUILD ENVIRONMENT and says NOTHING about our 16 patches."
+            echo "::error::The patched build is intentionally skipped — attributing a patched failure without a working control is exactly the error this ticket exists to correct."
+            exit 1
+          fi
+          echo "::error::PS-359: the UNMODIFIED tree COMPILED, and PACKAGING failed. These are different results and this one is NOT a build failure."
+          echo "::error::PS-359: the compiled tree is intact. What failed is turning it into an artifact somebody else can launch."
+          echo "::error::PS-359: building upstream's packager image reaches the network UNAUTHENTICATED (it queries the GitHub releases API for its AppImage tool), so a rate limit or a network blip lands here and is an infrastructure condition, not a defect in this repository."
+          echo "::error::PS-359: see record/package-unmodified.txt and record/package-unmodified.log. Do NOT respond by hand-rolling a file list — that is the second inventory this ticket exists to avoid."
           exit 1
 
   # ───────────────────────────────────────────────────────────────────────────
@@ -773,6 +895,36 @@ jobs:
       # what it recovers under `record/salvaged/` and never at the top level.
       - name: Salvage the previous dispatch's evidence, then zero record/
         run: persona/scripts/ps289_journal.sh salvage
+
+      # ── PS-359: ZERO OUR OWN STAGING ROOT, BEFORE ANYTHING CAN FAIL ────────
+      # `package-out/` sits in $GITHUB_WORKSPACE beside `record/`, outside both
+      # checkouts — so `actions/checkout` never reaches it and a self-hosted
+      # runner does not wipe `_work` between runs. The salvage step above zeroes
+      # `record/` and ONLY `record/`; nothing else zeroes anything here.
+      #
+      # ⚠️ THE PACKAGING STEP CANNOT BE THE ONLY PLACE THIS HAPPENS, and that is
+      # why this is a separate step and not two lines inside that script's
+      # packaging path. Packaging is gated on `steps.compile.outcome ==
+      # 'success'`, correctly — a tree that did not compile has nothing to
+      # package. The binary upload below is `if: always()` and its path names
+      # `package-out/<arm>/`. So on a dispatch whose COMPILE FAILED, packaging
+      # never runs, nothing is removed, and the upload ships the PREVIOUS
+      # dispatch's AppImage under THIS run's artifact name, beside a manifest
+      # stating the tree did not compile. `if-no-files-found: ignore` does not
+      # help: files are found.
+      #
+      # This matters more since this ticket than it would have before. That
+      # upload used to be two files nobody could launch; it is now THE RUNNABLE
+      # ENGINE, and PS-344 and PS-345 are queued to measure through it. A
+      # measurement taken against a silently-substituted binary from another tag
+      # is the PS-192 shape cited above — a confident reading from an instrument
+      # nobody re-zeroed — and it is worse than the ICU error, because the ICU
+      # error is loud.
+      #
+      # Placed HERE: after the persona checkout that makes the script reachable,
+      # and before every step that can fail.
+      - name: Zero the packaging staging root (PS-359)
+        run: persona/scripts/ps359_package.sh reset
 
       - name: Check out ungoogled-chromium-portablelinux
         uses: actions/checkout@v4
@@ -1036,6 +1188,30 @@ jobs:
           CONTROL_DIR: control
           UNGOOGLED_TAG: ${{ inputs.ungoogled_tag }}
 
+      # ── PS-359: MAKE THE ARTIFACT SOMETHING SOMEBODY ELSE CAN RUN ───────────
+      # See the identical step in the control job for the full reasoning. In
+      # short: two files out of a runtime tree cannot be launched by anyone who
+      # did not build them, and the remedy is upstream's own packager rather
+      # than a file list of ours that would rot the moment theirs changes.
+      #
+      # THIS ARM IS THE ONE THAT MATTERS MOST. The patched binary is what
+      # PS-301 had to hand-stage into a foreign, version-skewed resource tree in
+      # order to measure anything at all, and what PS-344 and PS-345 are queued
+      # to read through. A self-contained artifact here is what removes that
+      # skew from every future measurement.
+      #
+      # Runs after the compile and after the attribution steps, so a packaging
+      # failure can never delay or displace the attribution result — that is the
+      # number PS-218 exists to produce and it must not wait on packaging.
+      - name: Package the compiled tree with upstream's own packager
+        id: package
+        if: steps.compile.outcome == 'success'
+        continue-on-error: true
+        run: persona/scripts/ps359_package.sh patched
+        env:
+          UCPL_DIR: ucpl
+          UNGOOGLED_TAG: ${{ inputs.ungoogled_tag }}
+
       - name: Write the manifest
         if: always()
         run: persona/scripts/ps218_manifest.sh patched
@@ -1045,6 +1221,10 @@ jobs:
           NINJA_JOBS: ${{ inputs.ninja_jobs }}
           PREPARE_RESULT: ${{ steps.prepare.outcome }}
           COMPILE_RESULT: ${{ steps.compile.outcome }}
+          # PS-359 — the third result: whether the compiled tree became an
+          # artifact anyone can launch. Stated rather than inferred from the
+          # presence of a file.
+          PACKAGE_RESULT: ${{ steps.package.outcome }}
           # PS-307 — a reused tree changes what the prepare wall-clock MEANS.
           TREE_REUSED: ${{ steps.tree.outputs.reused }}
           # PS-307 — the manifest's "16 fingerprint patches" row is a CLAIM about
@@ -1072,19 +1252,31 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
+      # ── PS-359: THIS NOW SHIPS THE PACKAGED TREE ────────────────────────────
+      # See the control job's upload for the full reasoning. The `ps218-patched-`
+      # prefix inside `package-out/patched/` is what makes this artifact
+      # distinguishable from the control's once BOTH have been downloaded:
+      # upstream names its output from the ungoogled tag alone, and both arms
+      # build the same tag, so without the prefix a reader holds two files with
+      # the same name and no way to tell the subject from the control.
+      #
+      # ⛔ NOT a publication name. `personium-…` is RELEASING.md's and PS-319's.
       - name: Upload the binary (patched, only if it exists)
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: ps218-patched-binary-${{ inputs.ungoogled_tag }}
           path: |
-            ucpl/build/src/out/Default/chrome
+            package-out/patched/
             ucpl/build/src/out/Default/chromedriver
           if-no-files-found: ignore
           retention-days: 7
 
+      # PS-359 — THREE OUTCOMES, NOT TWO. A packaging failure is reported last
+      # and separately because it means the tree COMPILED; folding it into the
+      # compile message would re-label a third outcome as the second one.
       - name: Re-raise a failure now that the evidence is collected
-        if: steps.prepare.outcome == 'failure' || steps.verify_patches.outcome == 'failure' || steps.compile.outcome == 'failure'
+        if: steps.prepare.outcome == 'failure' || steps.verify_patches.outcome == 'failure' || steps.compile.outcome == 'failure' || steps.package.outcome == 'failure'
         run: |
           if [ "${{ steps.verify_patches.outcome }}" = "failure" ]; then
             echo "::error::PS-307: the tree does NOT carry our full fingerprint patch layer, so nothing was compiled from it."
@@ -1092,7 +1284,14 @@ jobs:
             echo "::error::PS-307: see record/patch-presence-patched.txt for which patches were missing and which evidence failed. The tree has NOT been sealed, so the next dispatch rebuilds it."
             exit 1
           fi
-          echo "::error::PATCHED tree did not build (prepare=${{ steps.prepare.outcome }}, compile=${{ steps.compile.outcome }})."
-          echo "::error::The unmodified control DID build, so this failure is attributable to our 16 patches. See record/attribution.txt for the per-patch breakdown."
-          echo "::error::Per PS-218 this is a SUCCESSFUL OUTCOME for the ticket: it is the number the ticket exists to produce. Do NOT drop a patch to make this go green."
+          if [ "${{ steps.prepare.outcome }}" = "failure" ] || [ "${{ steps.compile.outcome }}" = "failure" ]; then
+            echo "::error::PATCHED tree did not build (prepare=${{ steps.prepare.outcome }}, compile=${{ steps.compile.outcome }})."
+            echo "::error::The unmodified control DID build, so this failure is attributable to our 16 patches. See record/attribution.txt for the per-patch breakdown."
+            echo "::error::Per PS-218 this is a SUCCESSFUL OUTCOME for the ticket: it is the number the ticket exists to produce. Do NOT drop a patch to make this go green."
+            exit 1
+          fi
+          echo "::error::PS-359: the PATCHED tree COMPILED and the attribution result stands. What failed is PACKAGING, which is a different result and is NOT a build failure."
+          echo "::error::PS-359: do not read this as a finding about our 16 patches — the compile succeeded and record/attribution.txt is unaffected."
+          echo "::error::PS-359: building upstream's packager image reaches the network UNAUTHENTICATED (it queries the GitHub releases API for its AppImage tool), so a rate limit or a network blip lands here and is an infrastructure condition, not a defect in this repository."
+          echo "::error::PS-359: see record/package-patched.txt and record/package-patched.log. Do NOT respond by hand-rolling a file list — that is the second inventory this ticket exists to avoid."
           exit 1

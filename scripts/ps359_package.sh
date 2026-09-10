@@ -1,0 +1,596 @@
+#!/bin/bash
+# PS-359 — TURN THE COMPILED TREE INTO SOMETHING SOMEBODY ELSE CAN RUN.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# THE DEFECT THIS CLOSES
+# ─────────────────────────────────────────────────────────────────────────────
+# `engine-trial-build.yml` uploaded exactly two paths per arm — the `chrome` and
+# `chromedriver` executables out of `out/Default`. Those are two files out of a
+# RUNTIME TREE. Launched on any machine that did not build them, the binary dies
+# immediately:
+#
+#     ERROR:base/i18n/icu_util.cc:232] Invalid file descriptor to ICU data received.
+#     rc=133
+#
+# and that surfaces through our harness as "persona's chromium exited before
+# opening a debug port" — a message that reads like a broken compile and is not
+# one. PS-301 hit exactly this (`readings/ps301-2026-09-05/REPORT.md` §2.2), and
+# resolved it by hand-staging the binary into a foreign, VERSION-SKEWED
+# Chrome-for-Testing resource tree. It recorded the skew honestly and recorded
+# the real fix as a finding it was not in scope to make. This script is that fix.
+#
+# ⚠️ THIS FAILURE MODE IS THE REASON THE SCRIPT EXISTS, SO READ IT ONCE MORE:
+# a green build whose output does not run. Every check below is aimed at that
+# one shape — the packaging step that is observed to produce a FILE and was
+# never observed to produce a RUNNABLE one.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# WE DO NOT OWN A FILE LIST, AND THAT IS THE CENTRAL DESIGN CONSTRAINT
+# ─────────────────────────────────────────────────────────────────────────────
+# The obvious repair is to widen the workflow's `path:` block with the runtime
+# files the binary needs. DO NOT DO THAT, and do not "improve" this script into
+# it later. A list of upstream's runtime files copied into our repository is a
+# SECOND INVENTORY of somebody else's build output. It is correct on the day it
+# is written and silently rots the first time upstream adds, renames or drops a
+# file — and it rots INVISIBLY, because the symptom is the same ICU-shaped death
+# on a machine that is not ours, months after the change that caused it.
+#
+# Upstream already ships the packaging step. It is a direct sibling of the build
+# script we ALREADY drive (`scripts/build.sh`, via `scripts/docker-build.sh`, in
+# ps218_build.sh). This script calls it and does nothing else about which files
+# a Chromium runtime tree contains — that question is upstream's to answer, and
+# their answer travels with their tag.
+#
+# So: no file names here, none in the workflow, none in the tests. A reviewer
+# who greps our tree for any of upstream's runtime resource file names must find
+# nothing. That absence IS the feature.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# WHY `package/docker-package.sh` AND NEVER `scripts/package.sh` DIRECTLY
+# ─────────────────────────────────────────────────────────────────────────────
+# `scripts/package.sh` CANNOT run in the builder image. It pipes its tarball
+# through `pv`, and it builds the AppImage with `appimagetool`. Neither is in
+# `chromium-builder:trixie-slim`; both are installed only by upstream's separate
+# `docker/package.Dockerfile`. Calling `package.sh` directly looks simpler, and
+# it dies at `pv` AFTER a multi-hour compile — the most expensive possible
+# moment to discover a missing dependency.
+#
+# `package/docker-package.sh` is the containerised driver: it builds that
+# packager image and then runs `package.sh` INSIDE it. That is the entry point,
+# and the indirection is load-bearing rather than ceremonial.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# WHAT THIS SCRIPT ADDS AROUND THAT CALL, AND WHY EACH PART IS HERE
+# ─────────────────────────────────────────────────────────────────────────────
+# 1. IT DESTROYS ANY PRE-EXISTING RELEASE DIRECTORY FIRST.
+#
+#    Upstream writes into `build/release`, which lives inside `build/` — the
+#    untracked tree the ucpl checkout deliberately PRESERVES between dispatches
+#    (`clean: false`, PS-307). Upstream's own cleanup removes its two scratch
+#    directories and LEAVES the release directory behind. So a previous
+#    dispatch's output is sitting there when this runs, and an output directory
+#    whose contents predate the run reporting them is the exact stale-evidence
+#    shape PS-244 and PS-307 both refuse.
+#
+#    Verifying freshness by timestamp would be the weaker answer. This removes
+#    the directory outright and records an inventory of what was removed, so
+#    everything present afterwards is THIS RUN'S BY CONSTRUCTION rather than by
+#    inspection. Nothing is silently destroyed: the inventory is in the record.
+#
+# 1b. AND IT ZEROES OUR OWN STAGING ROOT — `reset`, WHICH IS A SEPARATE MODE
+#    BECAUSE IT MUST RUN ON DISPATCHES WHERE PACKAGING NEVER HAPPENS AT ALL.
+#
+#    `package-out/` is OURS, and it lives in $GITHUB_WORKSPACE — outside both
+#    checkouts, exactly where `record/` lives and for the same reason nobody
+#    cleans it: `actions/checkout` never touches it and a self-hosted runner
+#    does not wipe `_work` between runs. Point 1 above protects UPSTREAM's
+#    directory and stops at its edge; this protects ours, and the argument is
+#    verbatim the same one — an input from a previous run is VERIFIED, not
+#    trusted (PS-244, PS-307), and removing beats verifying.
+#
+#    ⚠️ THE REMOVAL CANNOT LIVE ONLY ON THE PACKAGING PATH, and that is the
+#    whole reason `reset` is a mode of its own rather than two lines further
+#    down this file. The packaging step is gated on `steps.compile.outcome ==
+#    'success'` — correctly — while the binary upload is `if: always()` and
+#    names `package-out/<tree>/`. So on a dispatch whose COMPILE FAILED,
+#    packaging never runs, nothing here executes, and the upload ships the
+#    PREVIOUS dispatch's AppImage under THIS run's artifact name, beside a
+#    manifest that says the tree did not compile. `if-no-files-found: ignore`
+#    cannot help: files are found. A removal inside the packaging path is
+#    necessary and NOT sufficient, so `reset` is invoked unconditionally, early
+#    in the job, before any step that could fail.
+#
+#    It removes the ROOT, not one arm's directory, so an arm renamed in a later
+#    edit cannot orphan a directory that still matches the upload's path.
+#
+#    ⛔ IT DOES NOT COUPLE THE REMOVAL TO THE INVENTORY, and the asymmetry with
+#    point 1 is deliberate rather than an oversight. There, the bytes are
+#    upstream's packager output and may be the only surviving copy of a
+#    previous dispatch's artifact, so destroying them unread is the worse
+#    outcome and an unreadable inventory REFUSES the removal. Here the bytes
+#    are a COPY we made of that same output, wholly derived and of no
+#    evidentiary value — and the failure mode inverts with them: refusing to
+#    remove would SHIP a foreign browser under this run's name, to be measured
+#    through by PS-344 and PS-345. When those two priorities conflict, the
+#    removal wins. The inventory is still recorded, as a record of what went.
+#
+# 2. IT PROVES THE SUBMODULE INIT IS A NO-OP INSTEAD OF ASSUMING IT.
+#
+#    `docker-package.sh` runs `git submodule update --init --recursive` if it
+#    finds the `ungoogled-chromium` directory empty. Our checkout already uses
+#    `submodules: recursive`, so it should never fire — but "should" is not a
+#    measurement, and a submodule update reaching the network mid-package is
+#    worth knowing about rather than assuming away. The state is read and
+#    recorded BEFORE the call, so the record says which branch was taken.
+#
+# 3. IT NAMES THE ARM IN OUR OWN LAYER, WITHOUT TOUCHING UPSTREAM'S NAMING.
+#
+#    Upstream derives the artifact name from the ungoogled tag alone, with the
+#    application name hardcoded. Both of our arms build the SAME tag, so both
+#    emit a file with the SAME name. The GitHub artifact names differ, but a
+#    reader who downloads both ends up with two identically-named files and no
+#    way to tell the patched one from the control — the precise confusion
+#    PS-244's artifact-name provenance rules exist to prevent.
+#
+#    Solved HERE, in our staging layer: each produced file is copied into
+#    `package-out/<tree>/` under a `ps218-<tree>-` prefix, matching the existing
+#    artifact-name convention in this workflow. Upstream's script is not edited
+#    and upstream's own name is preserved inside the prefix, so provenance is
+#    still legible.
+#
+#    ⛔ THIS IS NOT, AND MUST NOT BECOME, THE PUBLICATION NAME. The
+#    `personium-…` name belongs to RELEASING.md and to PS-319. Renaming toward
+#    it here is how "make it runnable" turns into "make it publishable", which
+#    is a different ticket with a different owner.
+#
+# 4. IT WRITES A PROVENANCE SIDECAR AND A VERDICT FILE.
+#
+#    Same posture as ps218_build.sh's `.provenance` stamps: a file that is
+#    present is not thereby a file from this run. Every staged artifact is
+#    recorded with its size and sha256 next to the run and tag that produced it.
+#
+# ⚠️ NOTHING HERE PUBLISHES ANYTHING. No release is created, no tag is moved, no
+# ref is written, and the workflow's token holds no write scope with which to do
+# any of those. This produces an artifact attached to a run, and stops.
+set -euo pipefail
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PORTABILITY — THE TOOLS BELOW ARE RESOLVED, NEVER ASSUMED
+# ─────────────────────────────────────────────────────────────────────────────
+# This script runs for real on a Linux self-hosted runner, and it is EXECUTED by
+# `tests/test_ps359_packaged_artifact.py` on all three merge-gate platforms. The
+# first draft used four GNU-only constructs — `stat -c`, `sha256sum`,
+# `find -printf` and `date -Is` — and `tests (macos-latest)` went red: BSD `stat`
+# has no `-c`, so under `set -euo pipefail` the script aborted at rc=1 and every
+# assertion about its behaviour became a report of a dead shell.
+#
+# ⛔ THE FIX IS NOT TO SKIP THE SUITE OFF-LINUX. `tests/posix_shell.py` exists
+# because a script under test that never executes makes every assertion about it
+# vacuous on that platform; skipping restores exactly that blindness. The four
+# call sites are resolved instead, so the tests keep running everywhere and keep
+# meaning something.
+#
+# The guarded idiom is already in a sibling script in this directory
+# (`ps218_build.sh:281`), and the digest ladder is already in another
+# (`ps218_host_id.sh:86-96`). Nothing here is invented.
+
+# ISO-8601 UTC, on any `date`. GNU has `-Is`; BSD `date` has no `-I` at all, and
+# an explicit format string is understood by both — so this is the portable form
+# rather than a fallback for one.
+now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+
+# Size of one file, in bytes.
+#
+# GNU coreutils spells this `stat -c %s`; BSD/macOS spells it `stat -f %z`. The
+# `wc -c` tail is POSIX and works where neither `stat` does — it costs a read of
+# the file, which against a multi-hour package step is nothing, and it means
+# this can never be the line that kills the script.
+file_bytes() {
+  stat -c %s "$1" 2>/dev/null \
+    || stat -f %z "$1" 2>/dev/null \
+    || wc -c < "$1" 2>/dev/null | tr -d ' '
+}
+
+# SHA-256 of one file, as bare hex.
+#
+# Same three-tool ladder `ps218_host_id.sh` resolves, and for the same reason:
+# `sha256sum` is GNU coreutils and is ABSENT on macOS, which ships `shasum`.
+# All three compute the same digest over the same bytes, so a record written on
+# one platform still compares equal to one read on another.
+#
+# THEIR OUTPUT FORMATS DIFFER, which is the trap:
+#     sha256sum       -> "<64 hex>  <file>"
+#     shasum -a 256   -> "<64 hex>  <file>"
+#     openssl dgst    -> "SHA2-256(<file>)= <64 hex>"
+# `cut -d' ' -f1` is right for the first two and silently WRONG for the third.
+# Extracting the hex run by pattern is format-independent.
+#
+# A host with none of the three records `unavailable` rather than aborting: the
+# digest is provenance ABOUT the artifact, not the artifact, and the record then
+# says so in the field itself instead of pretending to a value it does not have.
+file_sha256() {
+  local out="" hex=""
+  if command -v sha256sum >/dev/null 2>&1; then
+    out="$(sha256sum "$1" 2>/dev/null)" || true
+  elif command -v shasum >/dev/null 2>&1; then
+    out="$(shasum -a 256 "$1" 2>/dev/null)" || true
+  elif command -v openssl >/dev/null 2>&1; then
+    out="$(openssl dgst -sha256 "$1" 2>/dev/null)" || true
+  else
+    printf '%s' "unavailable (no sha256sum, shasum or openssl on this host)"
+    return 0
+  fi
+  hex="$(printf '%s' "$out" | grep -oE '[0-9a-f]{64}' | head -1)" || true
+  if [ -n "$hex" ]; then printf '%s' "$hex"; else printf '%s' "unavailable"; fi
+}
+
+# One line per entry of a directory: type, size, name — the columns GNU
+# `find -printf '%y %10s %f'` produces, assembled from portable parts.
+#
+# ⚠️ THE ORIGINAL GUARD HERE WAS WORSE THAN A CRASH, which is why this one is
+# built rather than tolerated. `find -printf` is GNU-only, and it was written
+# with `2>/dev/null || true`, so off-GNU the inventory silently produced NOTHING
+# WHILE THE REMOVAL BELOW STILL HAPPENED. "Nothing is destroyed unread" quietly
+# stopped being true, invisibly, on exactly the platform nobody was watching.
+# The caller now COUNTS the result against the directory and refuses to remove
+# anything it could not read.
+inventory_dir() {
+  local entry kind bytes
+  find "$1" -maxdepth 1 -mindepth 1 2>/dev/null | sort | while IFS= read -r entry; do
+    if [ -d "$entry" ]; then
+      kind="d"; bytes="-"
+    else
+      kind="f"; bytes="$(file_bytes "$entry" 2>/dev/null || echo '?')"
+    fi
+    printf '    %s %10s  %s\n' "$kind" "$bytes" "$(basename "$entry")"
+  done
+}
+
+count_entries() {
+  find "$1" -maxdepth 1 -mindepth 1 2>/dev/null | wc -l | tr -d ' '
+}
+
+TREE="${1:?usage: ps359_package.sh <reset|unmodified|patched>}"
+
+STAGE_ROOT="$(pwd)/package-out"
+
+# ── `reset` — ZERO OUR OWN STAGING ROOT, UNCONDITIONALLY, EARLY ──────────────
+# Invoked once per job BEFORE anything that can fail, and deliberately NOT part
+# of the packaging path.
+#
+# THE FAILURE THIS CLOSES, IN THE THREE FACTS THAT PRODUCE IT:
+#
+#   1. `package-out/` lives in $GITHUB_WORKSPACE, outside both checkouts.
+#      Nothing wipes it: `actions/checkout` never reaches it, a self-hosted
+#      runner does not wipe `_work` between runs, and the one thing that DOES
+#      zero this root — `ps289_journal.sh salvage` — zeroes `record/` alone.
+#   2. Packaging is gated on `steps.compile.outcome == 'success'`, which is
+#      correct: a tree that did not compile has nothing to package.
+#   3. The binary upload is `if: always()` and its path names this directory.
+#
+# Put together: a dispatch whose COMPILE FAILED runs no packaging, so nothing
+# removes anything, and the upload ships the PREVIOUS dispatch's AppImage under
+# THIS run's artifact name — beside a manifest that says the tree did not
+# compile. `if-no-files-found: ignore` cannot save it, because files ARE found.
+# The same mechanism at a different tag ships a foreign browser beside a
+# provenance sidecar that counts only the artifacts this run staged.
+#
+# ⚠️ WHY THAT MATTERS MORE NOW THAN IT WOULD HAVE BEFORE. Until this ticket the
+# binary upload was two files nobody could launch. It is now THE RUNNABLE
+# ENGINE, and PS-344 and PS-345 are queued to measure THROUGH it. A masking
+# measurement taken against a silently-substituted binary from another tag is
+# the PS-192 shape this workflow cites at `:415-417` — a confident reading from
+# an instrument nobody re-zeroed — and it is strictly worse than the ICU error
+# this ticket closes, because the ICU error is LOUD and this one is not.
+#
+# THE ROOT, NOT ONE ARM. Removing `package-out/<tree>/` would leave a directory
+# named by an earlier spelling of an arm still sitting under a `path:` that
+# names the root's child — an orphan that still uploads. Removing the root
+# cannot orphan anything.
+#
+# SAFE ACROSS THE TWO JOBS: `patched` declares `needs: unmodified`, so the
+# control job's own upload has already completed before this can run in the
+# subject job. On a `trees=patched` dispatch the control job is skipped and
+# there is nothing of its to lose.
+if [ "$TREE" = "reset" ]; then
+  echo "# PS-359 — zeroing our staging root before anything can fail"
+  echo "root: ${STAGE_ROOT}"
+  if [ -d "$STAGE_ROOT" ]; then
+    echo "state: PRESENT before this run — from a previous dispatch. Inventory:"
+    # Recorded for a reader, NOT coupled to the removal. Unlike upstream's
+    # release directory, everything here is a COPY WE MADE of output that was
+    # inventoried, hashed and uploaded when it was staged — no bytes are unique
+    # to this directory. And the two priorities point opposite ways: refusing to
+    # remove an unreadable staging root would SHIP a foreign browser under this
+    # run's name. When they conflict, the removal wins.
+    find "$STAGE_ROOT" -maxdepth 2 -mindepth 1 2>/dev/null | sort | sed 's/^/    /' || true
+    rm -rf "$STAGE_ROOT"
+    echo "removed: yes — anything under this root afterwards is THIS run's by construction, not by inspection"
+  else
+    echo "state: absent — nothing carried over from a previous dispatch"
+  fi
+  exit 0
+fi
+
+UCPL_DIR="${UCPL_DIR:?UCPL_DIR must point at the ungoogled-chromium-portablelinux checkout}"
+UNGOOGLED_TAG="${UNGOOGLED_TAG:-unknown}"
+
+case "$TREE" in
+  unmodified|patched) ;;
+  *) echo "unknown tree: $TREE (expected reset|unmodified|patched)" >&2; exit 2 ;;
+esac
+
+REC="$(pwd)/record"
+STAGE="${STAGE_ROOT}/${TREE}"
+mkdir -p "$REC"
+
+REPORT="${REC}/package-${TREE}.txt"
+LOG="${REC}/package-${TREE}.log"
+
+# Resolved to an absolute path BEFORE any `cd`, for the same reason
+# ps218_build.sh resolves its journal path early.
+UCPL_ABS="$(cd "$UCPL_DIR" && pwd)"
+
+DRIVER="${UCPL_ABS}/package/docker-package.sh"
+RELEASE_DIR="${UCPL_ABS}/build/release"
+SUBMODULE_DIR="${UCPL_ABS}/ungoogled-chromium"
+
+{
+  echo "# PS-359 — packaging the compiled tree with UPSTREAM'S OWN packager"
+  echo "# tree:      ${TREE}"
+  echo "# tag:       ${UNGOOGLED_TAG}"
+  echo "# run:       ${GITHUB_RUN_ID:-local} (attempt ${GITHUB_RUN_ATTEMPT:-1})"
+  echo "# recorded:  $(now_iso)"
+  echo "#"
+  echo "# No list of runtime files appears in this repository. Which files a"
+  echo "# Chromium runtime tree needs is upstream's question, answered by"
+  echo "# upstream's own script at the tag we build, so it can never drift out"
+  echo "# of step with the tree it describes."
+  echo
+} > "$REPORT"
+
+say() { echo "$@" | tee -a "$REPORT"; }
+
+# ── the driver must exist ────────────────────────────────────────────────────
+# Checked by hand rather than left to `set -e` on the invocation, because the
+# two failures are different findings: "upstream moved its packaging entry
+# point at this tag" is a fact about the tag, and it must not read like a
+# packaging crash.
+if [ ! -f "$DRIVER" ]; then
+  say "verdict:          FAILED — upstream's packaging driver is not present at this tag"
+  say "expected driver:  ${DRIVER}"
+  say ""
+  say "This is a statement about the TAG, not about the build. The compiled tree"
+  say "is untouched and is still on disk. Do NOT respond by hand-rolling a file"
+  say "list: find where upstream moved its packaging entry point, and call that."
+  exit 1
+fi
+say "driver:           ${DRIVER}"
+
+# ── HAZARD 4: destroy any release directory left by an earlier dispatch ──────
+# `build/` survives between dispatches by design, upstream's cleanup leaves
+# `release/` behind, and stale output presented as this run's is the failure
+# both PS-244 and PS-307 are built to refuse. Removing beats verifying: what is
+# there afterwards is this run's because nothing else could have put it there.
+say ""
+say "## Pre-existing release directory (PS-307 preserves \`build/\` between dispatches)"
+if [ -d "$RELEASE_DIR" ]; then
+  # ⚠️ READ FIRST, AND ONLY REMOVE WHAT WAS READ.
+  #
+  # The inventory is recorded BEFORE removal so nothing is destroyed unread —
+  # that is hazard 4's whole promise, and the first draft broke it invisibly.
+  # `find -printf` is GNU-only and was guarded with `|| true`, so off-GNU the
+  # inventory came back EMPTY while the `rm -rf` below still ran: the removal
+  # kept working and the reading silently stopped. A guard that turns a loud
+  # failure into a quiet loss of evidence is worse than the failure.
+  #
+  # So the two are now COUPLED: the entries are counted independently of the
+  # inventory that describes them, and a mismatch REFUSES the removal rather
+  # than proceeding blind. The stale directory is left exactly where it is for
+  # a human to look at, which is strictly better than deleting it unread.
+  stale_count="$(count_entries "$RELEASE_DIR")"
+  stale_listing="$(inventory_dir "$RELEASE_DIR")"
+  if [ -n "$stale_listing" ]; then
+    listed_count="$(printf '%s\n' "$stale_listing" | wc -l | tr -d ' ')"
+  else
+    listed_count=0
+  fi
+
+  say "state:            PRESENT before this run — inventory recorded, then REMOVED"
+  say "entries:          ${stale_count} (inventory lines: ${listed_count})"
+  printf '%s\n' "$stale_listing" >> "$REPORT"
+
+  if [ "$listed_count" -ne "$stale_count" ]; then
+    say ""
+    say "verdict:          FAILED — the stale release directory could not be fully read"
+    say ""
+    say "⚠️ NOTHING WAS REMOVED. Hazard 4's promise is that a previous dispatch's"
+    say "   output is INVENTORIED before it is destroyed. ${stale_count} entries are"
+    say "   present and ${listed_count} could be described, so removing the directory"
+    say "   now would destroy evidence unread — which is the posture PS-244 and"
+    say "   PS-307 both refuse. The directory is left in place: read it by hand,"
+    say "   then re-dispatch."
+    exit 1
+  fi
+
+  rm -rf "$RELEASE_DIR"
+  say "removed:          yes — anything below is THIS run's by construction, not by inspection"
+else
+  say "state:            absent — this is a cold package"
+fi
+
+# ── HAZARD 5: is upstream's submodule init going to fire? ────────────────────
+# The driver runs `git submodule update --init --recursive` only when it finds
+# this directory empty. Our checkout uses `submodules: recursive`, so it should
+# not — recorded rather than assumed, because a submodule update reaching the
+# network in the middle of packaging is worth seeing.
+say ""
+say "## Upstream's conditional submodule init"
+if [ -n "$(ls -A "$SUBMODULE_DIR" 2>/dev/null || true)" ]; then
+  say "submodule dir:    POPULATED ($(count_entries "$SUBMODULE_DIR") entries)"
+  say "consequence:      upstream's \`git submodule update --init --recursive\` is a NO-OP"
+  say "                  — the workflow's own \`submodules: recursive\` checkout already did it"
+else
+  say "submodule dir:    EMPTY"
+  say "consequence:      upstream WILL run \`git submodule update --init --recursive\`,"
+  say "                  which reaches the network. The checkout's \`submodules: recursive\`"
+  say "                  did not take effect — worth investigating rather than ignoring."
+fi
+
+# ── run upstream's packager ──────────────────────────────────────────────────
+# `cd` to the ucpl root first: the driver's `docker buildx build … .` uses the
+# CURRENT directory as its build context, so where this is invoked from matters.
+say ""
+say "## Invoking upstream's packager"
+say "command:          package/docker-package.sh   (NOT scripts/package.sh — see the header)"
+
+pkg_start="$(date +%s)"
+set +e
+( cd "$UCPL_ABS" && bash "$DRIVER" ) 2>&1 | tee "$LOG"
+rc=${PIPESTATUS[0]}
+set -e
+pkg_end="$(date +%s)"
+elapsed=$((pkg_end - pkg_start))
+
+say "elapsed:          $((elapsed / 60))m $((elapsed % 60))s"
+say "exit code:        ${rc}"
+
+if [ "$rc" -ne 0 ]; then
+  say ""
+  say "verdict:          FAILED — packaging did not complete"
+  say ""
+  say "⚠️ THIS IS A PACKAGING FAILURE, NOT A COMPILE FAILURE. The tree compiled;"
+  say "   what failed is turning it into a runnable artifact. Read the two apart"
+  say "   before concluding anything about the patch layer."
+  say ""
+  say "The most likely cause is NOT the build. Upstream's packager image is built"
+  say "fresh here, and building it reaches the network UNAUTHENTICATED: it queries"
+  say "the GitHub releases API for its AppImage tool and then downloads it. On a"
+  say "self-hosted runner that is an unauthenticated API call subject to rate"
+  say "limiting, and a rate limit is an infrastructure condition, not a defect in"
+  say "this repository. Check \`package-${TREE}.log\` for where it stopped before"
+  say "attributing this anywhere near the compile."
+  exit 1
+fi
+
+# ── what did it actually produce? ────────────────────────────────────────────
+# Read from DISK. An exit code says what a script claimed; the files say what
+# exists — the same rule ps218_build.sh applies to the chrome binary, and the
+# rule that matters most here, because "it produced a file" is the very claim
+# this ticket refuses to accept on its own.
+if [ ! -d "$RELEASE_DIR" ]; then
+  say ""
+  say "verdict:          FAILED — packaging reported success and produced no output directory"
+  say "Trust the filesystem over the exit code."
+  exit 1
+fi
+
+# ── OUR OWN STAGING DIRECTORY, ZEROED AT THE POINT OF CREATION ──────────────
+# The `reset` mode above already removed this root at the top of the job, and
+# this is the SECOND removal rather than the only one. That is deliberate: the
+# early reset is what covers the dispatches where packaging never runs at all
+# (a failed compile), and this one is what makes the guarantee local to the
+# code that depends on it — a future edit that moves, reorders or drops the
+# reset step cannot silently reintroduce a stale artifact here.
+#
+# It is the same argument this script already makes about upstream's release
+# directory, applied to our own: what is present afterwards is THIS RUN'S BY
+# CONSTRUCTION rather than by inspection.
+rm -rf "$STAGE"
+mkdir -p "$STAGE"
+
+say ""
+say "## Produced artifacts, staged with THIS ARM's provenance in the name"
+say ""
+say "Upstream derives its artifact name from the ungoogled tag alone, so BOTH"
+say "arms emit an identically-named file. The GitHub artifact names differ, but a"
+say "reader who downloads both would hold two files with the same name and no way"
+say "to tell the patched one from the control. The prefix below is applied in OUR"
+say "staging layer; upstream's script and upstream's own name are untouched."
+say ""
+
+staged=0
+total_bytes=0
+appimage_name=""
+appimage_bytes=0
+
+# `-maxdepth 1 -type f`: upstream's own cleanup removes its scratch directories,
+# so the release directory holds the finished artifacts and nothing else. Any
+# directory left there is deliberately NOT staged — it would be an unfinished
+# intermediate, and shipping one as a deliverable is the shape of failure this
+# whole script is written against.
+while IFS= read -r src; do
+  base="$(basename "$src")"
+  dest="${STAGE}/ps218-${TREE}-${base}"
+  cp -p "$src" "$dest"
+  bytes="$(file_bytes "$dest")"
+  sha="$(file_sha256 "$dest")"
+  staged=$((staged + 1))
+  total_bytes=$((total_bytes + bytes))
+  say "  ${base}"
+  say "      staged as:  ps218-${TREE}-${base}"
+  say "      bytes:      ${bytes}  ($(awk -v b="$bytes" 'BEGIN{printf "%.1f", b/1048576}') MiB)"
+  say "      sha256:     ${sha}"
+  # Recorded for the launch falsification: it is the single-file runnable, and
+  # the criterion this ticket refuses to waive is that it LAUNCHES, not that it
+  # exists.
+  case "$base" in
+    *.AppImage)
+      appimage_name="ps218-${TREE}-${base}"
+      appimage_bytes="$bytes"
+      ;;
+  esac
+done < <(find "$RELEASE_DIR" -maxdepth 1 -type f | sort)
+
+if [ "$staged" -eq 0 ]; then
+  say ""
+  say "verdict:          FAILED — the packager exited 0 and staged nothing"
+  say "Trust the filesystem over the exit code."
+  exit 1
+fi
+
+# ── provenance sidecar ───────────────────────────────────────────────────────
+# Same reason ps218_build.sh stamps its logs: `build/` survives between
+# dispatches on a self-hosted runner, so a file that is PRESENT is not thereby a
+# file from THIS run. The removal above makes that true by construction; this
+# makes it legible to a reader holding only the downloaded artifact.
+{
+  echo "tree=${TREE}"
+  echo "ungoogled_tag=${UNGOOGLED_TAG}"
+  echo "github_run_id=${GITHUB_RUN_ID:-local}"
+  echo "github_run_attempt=${GITHUB_RUN_ATTEMPT:-1}"
+  echo "packaged_by=upstream package/docker-package.sh at tag ${UNGOOGLED_TAG}"
+  echo "packaged_at=$(now_iso)"
+  echo "artifact_count=${staged}"
+  echo "total_bytes=${total_bytes}"
+} > "${STAGE}/PROVENANCE.txt"
+
+say ""
+say "artifacts staged: ${staged}"
+say "total bytes:      ${total_bytes}  ($(awk -v b="$total_bytes" 'BEGIN{printf "%.1f", b/1048576}') MiB)"
+say ""
+say "verdict:          PACKAGED"
+say ""
+say "⚠️ WHAT THIS DOES AND DOES NOT ESTABLISH"
+say ""
+say "  DOES: upstream's packager ran to completion and produced the files above,"
+say "        from the tree this job compiled, with no file list of ours involved."
+say ""
+say "  DOES NOT: that the artifact LAUNCHES. A packaging step observed only to"
+say "        produce a file is not known to produce a runnable one, and the ICU"
+say "        failure this ticket exists to close is exactly the shape of a green"
+say "        step whose output does not run. That is settled by launching it and"
+say "        reading a page through it, on a machine that did not build it."
+
+if [ -n "${GITHUB_OUTPUT:-}" ] && [ "${GITHUB_OUTPUT}" != "/dev/null" ]; then
+  {
+    echo "packaged=true"
+    echo "artifact_count=${staged}"
+    echo "total_bytes=${total_bytes}"
+    echo "appimage=${appimage_name}"
+    echo "appimage_bytes=${appimage_bytes}"
+  } >> "$GITHUB_OUTPUT"
+fi
+
+echo "package report -> ${REPORT}"
+echo "staged artifacts -> ${STAGE}"
