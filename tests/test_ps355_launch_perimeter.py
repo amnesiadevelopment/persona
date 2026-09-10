@@ -42,6 +42,8 @@ needs a display to check a parser would simply be skipped everywhere it matters.
 
 from __future__ import annotations
 
+import ast
+
 import pytest
 
 from src.services.verify import launch_perimeter as LP
@@ -158,13 +160,30 @@ def test_detected_false_cannot_be_used_to_excuse_a_site_silently() -> None:
     assert any("detected=False" in p for p in problems), problems
 
 
-def test_the_three_platform_gaps_are_recorded_as_decided_exceptions() -> None:
+def test_the_thread_path_gaps_are_recorded_as_decided_exceptions() -> None:
     """AC2, and the entries that invent nothing.
 
     Each reason is lifted from a comment already at that site, and each carries
     the two things that comment carries: the process-global-state argument, and
     the counterpart that IS covered everywhere (the chromium seam's ``Popen``
     kwargs). ⛔ This RECORDS them; nothing here closes or weakens them.
+
+    ⭐ WAS THREE, IS FOUR (PS-360). The fourth is the Wayland app_id
+    (``MOZ_APP_REMOTINGNAME``), which shipped WITHOUT the ``not in_thread``
+    term its three siblings carried and was guarded to match. Growing this
+    census is the correct outcome of that ticket, not a side effect: a
+    process-global mutation moved from "silently wrong on the thread path" to
+    "a recorded absence", which is precisely the state this inventory exists
+    to hold.
+
+    ⚠️ THE FOURTH ENTRY'S ``platforms`` DIFFERS AND MUST, so the assertion
+    below is per-entry rather than uniform. The first three are guarded on
+    ``not in_thread and IS_LINUX`` AND are only reachable as absences off
+    Linux, so ("windows", "macos") describes them. The fourth carries the same
+    guard but its absence is reachable on LINUX too, because
+    ``in_process=True`` forces the thread arm there (verify/baseline.py's
+    recorder). Asserting ("windows", "macos") for it would re-state the exact
+    reading error PS-360 was raised to correct.
     """
     gaps = {
         a.site: a
@@ -172,37 +191,126 @@ def test_the_three_platform_gaps_are_recorded_as_decided_exceptions() -> None:
         if a.site.startswith("src/services/browser/invisible_launch.py:")
         and a.disposition == LP.DISPOSITION_EXCEPTION
     }
-    expected = {
+    windows_macos_only = {
         "src/services/browser/invisible_launch.py:_apply_child_cwd",
         "src/services/browser/invisible_launch.py:_pin_tmpdir_here",
         "src/services/browser/invisible_launch.py:scrub_current_process_environ",
     }
-    assert set(gaps) == expected
+    every_platform = {
+        "src/services/browser/invisible_launch.py:_remoting_name",
+    }
+    assert set(gaps) == windows_macos_only | every_platform
 
     for site, artifact in gaps.items():
-        assert artifact.platforms == ("windows", "macos"), site
         assert "recorded absence" in artifact.reason, site
         assert "Popen" in artifact.reason, site
+        if site in windows_macos_only:
+            assert artifact.platforms == ("windows", "macos"), site
+        else:
+            assert artifact.platforms == LP.ALL_PLATFORMS, site
 
 
-def test_the_three_platform_gaps_still_carry_their_guards_in_the_source() -> None:
+def test_the_thread_path_gaps_still_carry_their_guards_in_the_source() -> None:
     """The inventory records an absence; this pins that the absence is real.
 
     If someone "closed" a gap by widening its guard, the entry above would be
     describing a tree that no longer exists — a decided exception recorded
     against a decision that was reversed. ⛔ Out of scope for PS-355 is CLOSING
     these; this is what makes that boundary observable rather than trusted.
+
+    ⭐ THE COUNT WENT 3 -> 4 WITH PS-360, in the opposite direction from the
+    one this test was written to catch. It guards against a guard being
+    REMOVED; a guard being ADDED to a fifth mutation that never had one is the
+    inventory gaining an entry, which the test above pins. Both numbers are
+    asserted here rather than one, so neither direction is silent.
+
+    ⛔ The two counts are DIFFERENT SHAPES and are not interchangeable — the
+    bare ``if not in_thread:`` guard on ``start_own_session`` carries no
+    platform term at all, so a single total would blur three facts into one.
+    See tests/test_browser_process_global_guards.py, which derives the whole
+    set by AST rather than counting substrings.
+
+    ⚠️ THE SECOND COUNT IS NOW DERIVED, NOT COUNTED. It used to be
+    ``text.count("not in_thread") == 8``, a plain substring tally that included
+    the one occurrence sitting inside a COMMENT — so rewording a comment fired
+    a tripwire whose message talks about guards moving. The total is read off
+    the AST instead: every ``if``/``while`` test and every assigned expression
+    inside ``_child``/``_launch_and_watch`` whose source mentions ``in_thread``.
+    That counts CODE and only code, so prose is free to change and a guard is
+    not.
     """
-    source = (
-        SCAN.repo_root() + "/src/services/browser/invisible_launch.py"
-    )
+    source = SCAN.repo_root() + "/src/services/browser/invisible_launch.py"
     with open(source, encoding="utf-8") as fh:
         text = fh.read()
-    assert text.count("not in_thread and _platform.IS_LINUX") == 3, (
-        "one of the three fork-path guards has moved or been widened. PS-355 "
+    assert text.count("not in_thread and _platform.IS_LINUX") == 4, (
+        "a fork-path guard has moved, been widened, or been added without "
+        "the inventory entry that records the absence it creates. PS-355 "
         "RECORDS these gaps; it does not close them, and an inventory entry "
         "describing a guard that is gone is worse than no entry."
     )
+
+    tree = ast.parse(text)
+    _rows = []
+    for fn in ast.walk(tree):
+        if not (
+            isinstance(fn, ast.FunctionDef)
+            and fn.name in ("_child", "_launch_and_watch")
+        ):
+            continue
+        for node in ast.walk(fn):
+            if isinstance(node, (ast.If, ast.While)):
+                expr = node.test
+            elif isinstance(node, ast.Assign):
+                expr = node.value
+            else:
+                continue
+            if any(
+                isinstance(n, ast.Name) and n.id == "in_thread"
+                for n in ast.walk(expr)
+            ):
+                _rows.append((node.lineno, ast.unparse(expr), expr))
+    in_thread_expressions = [(ln, src) for ln, src, _e in _rows]
+
+    assert len(in_thread_expressions) == 9, (
+        "the number of CODE expressions reading `in_thread` in the launch "
+        "child changed. Every one of them is a fork/thread split, and a new "
+        "one is an absence on the thread path that needs an inventory entry "
+        "or a reason it needs none:\n"
+        + "\n".join(f"  line {ln}  {src}" for ln, src in in_thread_expressions)
+    )
+    # ⭐ NINE, WHICH IS NOT THE OLD SUBSTRING TALLY OF EIGHT AND SHOULD NOT BE.
+    # The old count was `text.count("not in_thread")`, so it (a) INCLUDED one
+    # occurrence in a comment and (b) EXCLUDED the POSITIVE-form reads
+    # (`if in_thread:`) that pick the thread arm's own behaviour — the worker
+    # enter seam and the thread close-watch. Both directions of the split are
+    # code, both are thread-path facts, and only one of them was being
+    # counted. Split by shape so a change says WHICH kind moved.
+    #
+    # ⚠️ Split on the TREE, not on the unparsed text: `ast.unparse` renders the
+    # third guard as `name and (not in_thread) and _platform.IS_LINUX`, so a
+    # substring split re-introduces exactly the code-vs-prose confusion this
+    # rewrite removed. A guard is "fork-only" iff `in_thread` appears under a
+    # `not`.
+    def _reads_in_thread_negated(expr) -> bool:
+        for node in ast.walk(expr):
+            if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+                if any(
+                    isinstance(n, ast.Name) and n.id == "in_thread"
+                    for n in ast.walk(node.operand)
+                ):
+                    return True
+        return False
+
+    negative = [(ln, s) for ln, s, e in _rows if _reads_in_thread_negated(e)]
+    positive = [(ln, s) for ln, s, e in _rows if not _reads_in_thread_negated(e)]
+    # SEVEN fork-only guards (`not in_thread`, in three shapes — the bare `if`,
+    # the `and IS_LINUX` form, and the computed booleans) and TWO thread-arm
+    # branches (`if in_thread:` — the worker enter seam at the launch, and the
+    # thread close-watch). Only FOUR of the seven are the perimeter entries the
+    # test above censuses; the other three guard state this inventory does not
+    # track. Both numbers are asserted so neither direction is silent.
+    assert len(negative) == 7, f"the fork-only guards changed: {negative}"
+    assert len(positive) == 2, f"the thread-arm branches changed: {positive}"
 
 
 # --- the scanner discriminates ----------------------------------------------

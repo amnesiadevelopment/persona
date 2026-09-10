@@ -1,0 +1,1048 @@
+"""PS-360 — the two launch-child functions EXACTLY AS THEY SHIPPED BEFORE
+the guard was added, extracted verbatim from
+`360c4881fcf8145340f6fdf998c00be41eb97681:src/services/browser/invisible_launch.py`.
+
+THIS IS EVIDENCE, NOT CODE. It is never imported and never executed — it
+is parsed by `ast` in tests/test_browser_process_global_guards.py so the
+gate's strongest falsification (run it against the REAL historical defect,
+not a planted one) can RUN rather than skip.
+
+⚠️ It exists because CI's `actions/checkout` is SHALLOW: `git show <sha>`
+cannot reach that blob on any CI leg, so the falsification skipped on
+every platform, permanently. A test that never runs is the absence of a
+message (tests/KNOWN_SKIPS.md), and this was the one test whose whole
+claim is "the gate would have caught the bug it was written for".
+
+⛔ DO NOT EDIT, REFORMAT OR LINT THIS FILE. Its value is that it is the
+historical bytes. The `.txt` extension keeps every collector, linter and
+import machine away from it; the line numbers below are its OWN, not
+invisible_launch.py's.
+
+Provenance is verified at read time — the test asserts the extracted text
+matches the blob when git CAN reach it, so a doctored fixture is caught on
+any full clone (including every developer machine).
+"""
+
+def _child(cfg: dict, write_fd: int, stop_event=None) -> None:
+    """Open a single visible Firefox window via invisible_playwright and keep it
+    alive until the user closes the window or the parent asks to stop.
+
+    Runs as a forked PROCESS on Linux and as a THREAD on Windows/macOS (where
+    re-exec via sys.executable can't work: sys.executable is the flet launcher,
+    not a python interpreter). When `stop_event` is given we're in a thread:
+    don't install a SIGTERM handler (only valid on the main thread) and never
+    os._exit (that would kill the whole app) — return instead and honour the
+    event for STOP.
+
+    Readiness and closure are reported on the pipe (BROWSER_STARTED /
+    BROWSER_CLOSED) so the launcher can treat this like the chromium Popen.
+    """
+    in_thread = stop_event is not None
+
+    # PS-192: the FORKED child becomes its own session leader, so the Firefox
+    # process tree it is about to spawn is a GROUP the parent can tear down in
+    # one signal. `start_new_session=True` is a Popen kwarg and this path is a
+    # multiprocessing fork, so the child reaches the same state itself.
+    #
+    # ⚠️ FORK PATH ONLY, and the guard is load-bearing — the same shape as the
+    # os.chdir guard below, for the same reason. A session is PROCESS-global
+    # state: on Windows/macOS this body runs as a THREAD of the manager
+    # process, where setsid would move persona's OWN session rather than a
+    # child's. The platform gap is a recorded absence, not a silent failure.
+    if not in_thread:
+        from .process_group import start_own_session
+
+        start_own_session()
+
+    # The browser child's working directory comes from env_policy, the same one
+    # authority the chromium seam uses. Before that existed this seam set
+    # NOTHING — no cwd=, no chdir — so the child simply inherited whatever
+    # directory persona itself was sitting in, while its chromium sibling got a
+    # pinned one. That needs no fault to diverge: src/main.py:_ensure_valid_cwd
+    # returns early whenever getcwd() works, so persona's cwd is normally just
+    # wherever the operator started it from.
+    #
+    # READ HERE, APPLIED BELOW — the two halves are split on purpose, because
+    # they have opposite constraints:
+    #
+    #   READ BEFORE THE SCRUB. The chromium seam computes this value from the
+    #   PARENT's environment (it scrubs a COPY, so its own os.environ is never
+    #   touched), and expanduser("~") reads HOME. Taking the value before this
+    #   child scrubs its own environ is what makes the two seams agree BY
+    #   CONSTRUCTION rather than contingently on HOME never joining a scrub
+    #   list.
+    #
+    #   APPLIED AFTER THE PIPE IS OPEN. os.chdir RAISES if the directory is
+    #   unreachable (an unmounted home — the fault case _ensure_valid_cwd
+    #   exists for). Done up here that exception would kill this child before
+    #   `out` exists, and the parent would see a bare EOF with no
+    #   BROWSER_STARTED and no BROWSER_CLOSED: a launch that dies without
+    #   saying anything. This seam previously set nothing and inherited a
+    #   directory that by construction worked, so this failure mode is NEW —
+    #   pinning a directory is what introduces it. It is not given a fallback
+    #   chain, because falling back means choosing a second directory and that
+    #   is a product decision held elsewhere (see browser_child_cwd); it is
+    #   made AUDIBLE instead. The chromium seam's asymmetry is real but benign:
+    #   Popen(cwd=) raises in the PARENT, where spawn_browser's caller sees it.
+    #
+    # FORK PATH ONLY, and the guard is the whole point — the same guard, for a
+    # sharper version of the same hazard. When `stop_event` is set we are a
+    # THREAD of the manager process (Windows/macOS, where re-exec can't work),
+    # and a working directory is process-global state exactly like os.environ:
+    # os.chdir there would move persona's OWN cwd and every concurrently-open
+    # profile's. That is strictly worse than the divergence being fixed, so the
+    # platform gap is a recorded absence rather than a guarantee that silently
+    # doesn't hold. The chromium launcher, which passes cwd= to Popen and so
+    # sets it in the child only, is pinned on all platforms.
+    _apply_child_cwd = not in_thread and _platform.IS_LINUX
+    _child_cwd = browser_child_cwd() if _apply_child_cwd else None
+
+    # The child's SCRATCH directory, pinned inside the profile so a crash
+    # cannot strand engine temp files where delete_profile, the trash and
+    # wipe_all_profiles can never reach them. Same authority the chromium seam
+    # uses; see env_policy.browser_child_tmpdir for the perimeter argument.
+    #
+    # The source is the PROFILE DATA DIR, which the parent puts in cfg under
+    # its own key — NOT cfg["profile_dir"], which is the engine's inner
+    # .invisible-profile one level down. Deriving it from that would pin the
+    # two seams one level apart: still inside the perimeter, but the property
+    # under test is that both engines agree on ONE path.
+    #
+    # APPLIED BELOW, NOT HERE, for the same reason as the working directory:
+    # this creates the directory, and makedirs RAISES on an unwritable profile
+    # dir. Done up here that exception would kill the child before `out`
+    # exists and the parent would read a bare EOF — a launch that dies without
+    # saying anything. Unlike the cwd, the VALUE needs no pre-scrub read: it
+    # comes from cfg rather than from HOME, so the environ scrub below cannot
+    # move it.
+    #
+    # FORK PATH ONLY, the same guard as the environ scrub and for the same
+    # hazard, one notch sharper. On Windows/macOS this `_child` is a THREAD of
+    # the manager process, where os.environ IS persona's own: pinning TMPDIR
+    # there would move persona's temp dir and EVERY concurrently-open
+    # profile's — pointing them all at one profile's scratch directory, which
+    # is worse than leaving them in /tmp. That platform gap is a recorded
+    # absence, not a guarantee that silently doesn't hold. The chromium
+    # launcher, which hands Popen an env= copy, is pinned on all platforms.
+    # TWO SEPARATE QUESTIONS, kept apart on purpose. Whether this platform pins
+    # at all is the deliberate, recorded absence above. Whether cfg actually
+    # carried the directory is a MALFORMED-INPUT question with the opposite
+    # answer — folding it into the same boolean would let a missing key wear
+    # the platform gap's clothes and launch unpinned in silence, which is the
+    # one outcome this ticket exists to prevent. Checked where it can be said
+    # out loud, below.
+    _pin_tmpdir_here = not in_thread and _platform.IS_LINUX
+    _child_tmp_root = cfg.get("profile_data_dir") or ""
+
+    # The browser executes untrusted remote code, so it inherits none of the
+    # operator's identity — above all SSH_AUTH_SOCK, which is a live handle onto
+    # their ssh-agent rather than a passive label. Done in this child's own
+    # environment: forks have separate memory, so this doesn't race with other
+    # profiles' children (the same reasoning as MOZ_APP_REMOTINGNAME below).
+    #
+    # FORK PATH ONLY, and the guard is the whole point. When `stop_event` is set
+    # we are a THREAD of the manager process (Windows/macOS, where re-exec can't
+    # work) and there is no separate environment to scrub: mutating os.environ
+    # there would strip persona's OWN environment and every other concurrently
+    # open profile's. That platform gap is a recorded absence, not a guarantee
+    # that silently doesn't hold. The chromium launcher, which passes an env=
+    # copy to Popen, is scrubbed on all platforms.
+    if not in_thread and _platform.IS_LINUX:
+        scrub_current_process_environ()
+
+    # PS-211: the WRITE end of the child->parent status pipe. `os.fdopen`
+    # defaults to TEXT mode, so without an encoding it encodes under the
+    # locale codec — cp1252 on Windows. emit() carries LAUNCH_FAILED lines
+    # built from profile paths and engine error strings, so a non-ASCII byte
+    # genuinely reaches this stream.
+    #
+    # ⚠️ PAIRED INVARIANT — this is the single WRITE end of a pipe with TWO
+    # read ends, both `self.stdout = os.fdopen(r, ...)` in
+    # `InvisibleProcess.__init__`: the fork arm (Linux) and the thread arm
+    # (Windows/macOS, where re-exec can't work). All three previously named
+    # nothing and therefore AGREED (same process, same locale). Pinning ONE
+    # end would convert that agreement into a disagreement and CREATE the
+    # defect this ticket removes. All three must be changed together and must
+    # name the SAME codec; they do.
+    out = os.fdopen(write_fd, "w", buffering=1, encoding="utf-8", errors="replace")
+
+    def emit(msg: str) -> None:
+        try:
+            out.write(msg + "\n")
+            out.flush()
+        except Exception:
+            pass
+
+    def _finish() -> None:
+        """End the child: a forked process must os._exit so it doesn't return
+        into the parent's code; a thread must close the pipe's write end so the
+        parent's reader sees EOF (readline would otherwise block until the fd
+        happens to be garbage-collected), then just return."""
+        try:
+            out.flush()
+        except Exception:
+            pass
+        if not in_thread:
+            os._exit(0)
+        try:
+            out.close()
+        except Exception:
+            pass
+
+    # The other half of the scratch-directory split above: the value came from
+    # cfg, and the directory is CREATED here, now that `out` exists and a
+    # failure can be said out loud. makedirs raises if the profile dir is
+    # unwritable; up above that would have killed the child before the pipe
+    # existed and the parent would have read a bare EOF.
+    #
+    # Ordered BEFORE the chdir deliberately: a failure to pin scratch is the
+    # perimeter guarantee failing, and continuing would hand the engine the
+    # host's shared temp dir — the exact residue being closed. Reported and
+    # ended the same way, rather than launched anyway.
+    if _pin_tmpdir_here:
+        # A cfg with no profile_data_dir reaches the SAME outcome as a failed
+        # makedirs — the engine runs on the host's shared temp dir — so it is
+        # refused the same way rather than launched in silence. It is a caller
+        # bug, not a platform gap: `_child_main` builds cfg from an unvalidated
+        # PERSONA_INVISIBLE_CFG blob, so the next caller that omits the key
+        # must hear about it instead of quietly losing the perimeter.
+        if not _child_tmp_root:
+            emit(
+                "LAUNCH_FAILED: browser scratch directory: cfg has no "
+                "'profile_data_dir', so the child's scratch could not be "
+                "pinned inside the profile"
+            )
+            emit("BROWSER_CLOSED")
+            _finish()
+            return
+        try:
+            _pinned_tmp = pin_current_process_tmpdir(_child_tmp_root)
+        except OSError as e:
+            emit(f"LAUNCH_FAILED: browser scratch directory in {_child_tmp_root!r}: {e}")
+            emit("BROWSER_CLOSED")
+            _finish()
+            return
+        logger.info("firefox child scratch pinned at %s", _pinned_tmp)
+
+    # The other half of the working-directory split above: the value was read
+    # before the environ scrub, and it is applied HERE, now that `out` exists
+    # and a failure can be said out loud. Reported on the pipe the same way an
+    # engine import error is, so the parent's monitor treats it as a failed
+    # launch instead of a silent EOF — then ends the child, because continuing
+    # would leave it standing in persona's own directory, which is the exact
+    # divergence being closed.
+    if _apply_child_cwd:
+        try:
+            chdir_current_process(_child_cwd)
+        except OSError as e:
+            emit(f"LAUNCH_FAILED: browser working directory {_child_cwd!r}: {e}")
+            emit("BROWSER_CLOSED")
+            _finish()
+            return
+
+    profile_dir = cfg.get("profile_dir", "")
+    _launch_and_watch(cfg, profile_dir, emit, _finish, stop_event, in_thread)
+
+
+def _launch_and_watch(cfg, profile_dir, emit, _finish, stop_event, in_thread):
+    """Run one profile's whole browser session: seed the profile, launch the
+    engine, report readiness, watch for the close, tear down.
+
+    Launches of the SAME profile are serialized only through the SETUP+ENTER
+    phase (see _profile_launch_lock): that's where #150's race lives — a
+    relaunch clicked while the previous launch was still in its headless
+    bookmark init or the kill/settle of an abandoned enter attempt ran
+    concurrently, and the predecessor's cleanup shot down the successor's
+    just-launching Firefox. Once the browser is up (BROWSER_STARTED) the lock
+    is RELEASED, so the long close-watch never blocks a legitimate relaunch —
+    holding it through the whole session made a relaunch wait on the previous
+    session's (slow) close and time out (#154). The acquire is cancellable so a
+    STOP while a predecessor winds down can't block this thread forever (#141)."""
+    import threading
+    import time
+
+    launch_lock = _profile_launch_lock(profile_dir)
+    while not launch_lock.acquire(timeout=0.5):
+        if stop_event is not None and stop_event.is_set():
+            emit("LAUNCH_CANCELLED")
+            emit("BROWSER_CLOSED")
+            _finish()
+            return
+    _lock_released = False
+
+    def _release_lock():
+        nonlocal _lock_released
+        if not _lock_released:
+            _lock_released = True
+            try:
+                launch_lock.release()
+            except RuntimeError:
+                pass
+
+    # A killed Firefox leaves lock/.parentlock in the profile; a stale lock makes
+    # the next launch think the profile is already running. persona only spawns
+    # this child when it knows the profile isn't running, so any lock here is
+    # stale — clear it before launching.
+    for fname in ("lock", ".parentlock"):
+        try:
+            os.remove(os.path.join(profile_dir, fname))
+        except OSError:
+            pass
+
+    # The engine build may have moved since this profile last opened (auto-update
+    # or a persona release that bumps the pinned build). The stealth engine's
+    # prefs.js is not forward-compatible: a firefox-18-seeded profile SIGSEGVs
+    # firefox-19 on startup. Drop the stale prefs.js (Firefox regenerates it; all
+    # user data is in the sqlite/db files) before any seeding writes to it. The
+    # engine dir is the profile's LastPlatformDir — see the compatibility.ini check.
+    # Resolution failure is FAIL-OPEN (returns "" and the migration no-ops) but
+    # no longer SILENT — see _resolve_engine_dir_for_migration.
+    #
+    # cfg is passed because the migration's re-seed of the startup-decided prefs
+    # is proxy-GATED: a proxied profile's anti-leak pins must be back in prefs.js
+    # before Firefox starts, and a direct profile must stay unpinned (PS-295).
+    _engine_dir = _resolve_engine_dir_for_migration(emit)
+    for _line in _migrate_profile_for_engine_build(profile_dir, _engine_dir, cfg):
+        emit(_line)
+
+    # Deterministic per-profile seed so the same profile keeps a stable
+    # fingerprint across launches AND app restarts.
+    seed = _resolve_seed(cfg)
+
+    # Seed the profile's bookmarks into places.sqlite before the engine opens
+    # the visible window, so the first real window already shows them. The
+    # first time a profile with bookmarks is opened this does a one-time
+    # HEADLESS engine init (a real Firefox start, tens of seconds) — it must
+    # run here in the child, never on the thread constructing the handle,
+    # which on a UI launch is the Flet session thread and would freeze the app.
+    # A seed that didn't land after its bounded retries is reported, not
+    # swallowed (#202) — but never blocks the launch itself.
+    # MUST be installed BEFORE the bookmark warm-up below, not just before the
+    # visible launch. The warm-up hands the engine a proxy, and the engine's
+    # __enter__ calls prepare_session_geo(timezone, proxy) BEFORE it forks
+    # Firefox. The egress-IP discovery in there is gated on the proxy being set
+    # and sits ABOVE the concrete-IANA early return, so timezone="UTC" prevents
+    # the RAISE but NOT the round-trips: ~12.5s on a cold/dead circuit. The
+    # warm-up's own wedge detector waits `enter_timeout` (8.0s) for a Firefox
+    # PROCESS to appear and, finding none (the geo lookup runs before the fork),
+    # treats a perfectly healthy enter as a wedged driver — kill + retry, three
+    # times, ending in BOOKMARK_SEED_FAILED for every proxied bookmarked
+    # profile. That is #207/#208 coming back through a different door.
+    #
+    # Unconditional (rather than the old `if cfg.get("timezone")`) because the
+    # warm-up hardcodes timezone="UTC" regardless of what cfg carries, so it
+    # needs the shortcircuit even for a cfg with no timezone of its own. Safe:
+    # the patch only short-circuits a CONCRETE zone and falls through to the
+    # engine's real resolver for "auto"/empty. Idempotent — the closure binds
+    # the pristine core function as a default arg, so re-installing can't
+    # recurse.
+    _install_geo_shortcircuit()
+
+    # ONE construction of the proxy dict for this launch, built here because
+    # the bookmark warm-up below needs it too — it starts a REAL Firefox on this
+    # profile's own directory and fingerprint seed, so it must reach the network
+    # over the same proxy the visible launch does, never on the operator's real
+    # address. The visible launch reuses this exact value further down.
+    #
+    # PS-217: a proxy URL this code cannot fully read REFUSES THE LAUNCH rather
+    # than continuing with the credentials dropped. `_proxy_dict` used to fall
+    # through to `{"server": <raw url>}` for any scheme but the literal
+    # `socks5://`, so an authenticated proxy was handed a connection with no
+    # auth, refused it, and the user saw a page that would not load — with no
+    # error anywhere saying why.
+    #
+    # REPORTED ON THE PIPE, not raised. This call site is NOT inside the try
+    # that wraps the engine import below, so an escaping exception would kill
+    # the child before the parent reads anything: a launch that dies without
+    # saying anything, which is the exact failure mode this file warns about
+    # where `out` is opened. LAUNCH_FAILED + BROWSER_CLOSED + _finish() is the
+    # established shape for a refusal here (see the invisible_playwright import
+    # below), and the lock must be released because it is already held.
+    #
+    # FAIL-CLOSED is the correct direction: the alternative to refusing is a
+    # window that reaches the network on the operator's real address for a
+    # profile whose entire purpose is that this cannot happen. The message
+    # carries no URL — it carries the credential.
+    try:
+        proxy = _proxy_dict(cfg.get("proxy_url", ""))
+    except ProxyUrlUnparseable as e:
+        _release_lock()
+        emit(
+            f"LAUNCH_FAILED: this profile's proxy could not be understood ({e}). "
+            "Refusing to launch rather than connect without its credentials."
+        )
+        emit("BROWSER_CLOSED")
+        _finish()  # close the pipe so the monitor's reader unblocks (no fd leak)
+        return
+    if not _seed_firefox_bookmarks(
+        profile_dir, cfg.get("bookmarks", []), seed, stop_event, log=emit,
+        proxy=proxy, proxy_declared=bool(cfg.get("proxy_url")),
+    ) and cfg.get("bookmarks"):
+        emit("BOOKMARK_SEED_FAILED: opening without the profile's bookmarks")
+    # The headless init above persists the engine's window-hiding pref into
+    # prefs.js; left there, THIS launch's window comes up DWM-cloaked —
+    # running but invisible (#142). Must run after the seeding, before the
+    # launch.
+    _scrub_headless_cloak_prefs(profile_dir)
+    # A zoom rule in the profile's userChrome.css skews the page render (#206,
+    # see _scrub_chrome_zoom_css). Removed before the launch so the first
+    # window paints clean.
+    _scrub_chrome_zoom_css(profile_dir)
+    # Switch the profile's chrome to the built-in dark theme. The headless init
+    # above created extensions.json (the AddonManager's active-theme source of
+    # truth); flip it to dark so the titlebar/tab strip aren't light (#152).
+    # No-op when no init ran (no extensions.json yet).
+    _activate_dark_theme(profile_dir)
+    # Decided BEFORE Firefox starts (a running session rewrites the store):
+    # with a saved session Firefox restores the user's tabs into the window;
+    # without one the launch navigates the lone blank tab to the start page.
+    restoring = _has_saved_session(profile_dir)
+    # Pin DuckDuckGo as the default search engine for every Firefox profile.
+    _ensure_firefox_policies()
+
+    # When an mTLS certificate is assigned, trust the terminator's CA in this
+    # profile's cert9.db so Firefox accepts the terminator's leaf for the admin
+    # host. Only this profile, only the terminator's own CA.
+    _ca = cfg.get("mtls_ca_path")
+    if _ca:
+        if _import_mtls_ca(profile_dir, _ca):
+            emit("MTLS_CA_TRUSTED")
+        elif _certutil_path() is None and not _platform.IS_MACOS:
+            # Firefox certificate trust needs certutil, bundled for Linux and
+            # Windows. macOS is coming in a follow-up. Chromium certificates work
+            # on every OS, so say so plainly instead of failing with a cryptic
+            # TLS error on the admin site.
+            emit(
+                "MTLS_UNSUPPORTED: Firefox certificates aren't available on "
+                f"this OS yet (use the {engine_display_name()} engine for this "
+                "profile)"
+            )
+        else:
+            emit("MTLS_CA_IMPORT_FAILED: opening without certificate trust")
+
+    # A DBus-valid, per-profile-unique remoting name so multiple profiles open
+    # at once (see _remoting_name). It doubles as the Wayland app_id for the
+    # taskbar icon. Set in this child's own environment — forks have separate
+    # memory, so this doesn't race with other profiles' children.
+    name = cfg.get("profile_name", "")
+    if name and _platform.IS_LINUX:
+        os.environ["MOZ_APP_REMOTINGNAME"] = _remoting_name(name)
+
+    try:
+        from invisible_playwright import InvisiblePlaywright
+    except Exception as e:
+        _release_lock()
+        emit(f"LAUNCH_FAILED: invisible_playwright import error: {e}")
+        emit("BROWSER_CLOSED")
+        _finish()  # close the pipe so the monitor's reader unblocks (no fd leak)
+        return
+
+    # NOTE: the geo shortcircuit that used to be installed here (conditionally,
+    # on `cfg.get("timezone")`) now runs unconditionally further up, before the
+    # bookmark warm-up — the warm-up needs it too, and needs it regardless of
+    # cfg's timezone. See the comment there. Installing it again here would be
+    # harmless (it is idempotent) but says something false: that the visible
+    # launch is the first thing that needs it.
+
+    # `proxy` was built once above (the bookmark warm-up needed the same value);
+    # reuse it here rather than constructing a second dict from the same url.
+    kwargs = {"seed": seed, "headless": False, "extra_prefs": _profile_prefs(cfg)}
+    # When a downloaded build newer than the package's pinned one is active,
+    # point the engine at it — its own ensure_binary() only knows the pinned
+    # build. None → the engine resolves as usual.
+    _binary = _binary_path_override()
+    if _binary:
+        kwargs["binary_path"] = _binary
+    # Decouple the spoofed screen (the chosen resolution the fingerprint
+    # reports) from the physical window (native, user-sized — the chromium
+    # model). Overlaid on the context kwargs below, AFTER the engine's own, so
+    # a 4K pick reports 4K in JS while the window behaves like a normal
+    # browser. None when the profile uses Auto (engine's own screen/sizing).
+    _res_overrides = None
+    res = cfg.get("resolution")
+    if res:
+        w, h = int(res[0]), int(res[1])
+        _res_overrides = _context_overrides_for(w, h)
+        # Render at the HOST's display scale (layout.css.devPixelsPerPx = host
+        # dpr) so the browser chrome AND page content are drawn at a readable
+        # size on a HiDPI display, scaled together by the engine — no content
+        # zoom, so nothing overflows its layout boxes. On this engine that one
+        # pref moves the render scale, window.devicePixelRatio AND the CSS
+        # resolution media queries TOGETHER (live-proven on the engine: at 1.5,
+        # devicePixelRatio=1.5, matchMedia('(resolution:1.5dppx)') and
+        # '(resolution:144dpi)' true, '(resolution:1dppx)' false). screen.* stays
+        # the chosen resolution in CSS px, so a scanner reads an honest scaled
+        # HiDPI monitor — screen 2560 at dpr 1.5, physical 2560*1.5 — a coherent
+        # device, NOT the #187 "4K tell" (which was screen*dpr with an unrelated
+        # chosen res). Only zoom.stealth.screen.width/height are read by xul.dll
+        # for JS screen.*; screen.dpr in the pin is not read for devicePixelRatio,
+        # so it's kept equal to the render dpr purely for coherence.
+        dpr = _system_dpr()
+        # With no_viewport Firefox owns the window size; seed a fresh profile's
+        # first window so it doesn't open at Firefox's own default. Cap it to the
+        # spoofed screen so the CSS innerWidth/Height (physical / dpr) never
+        # exceed screen.* — a window wider than its own screen is impossible for a
+        # real browser (#216).
+        _seed_window_size(profile_dir, screen=(w, h), dpr=dpr)
+        # Firefox has NO --width/--height CLI flags (those are chromium's); a
+        # patched-Firefox launch that received them treated the leftover as a URL
+        # and opened a bogus "0.0.9.51" page. Size comes ONLY from the profile's
+        # xulstore.json (seeded above), never from extra_args.
+        emit(f"HIDPI_DEBUG chosen={w}x{h} window=capped dpr={dpr}")
+        kwargs["pin"] = {
+            "screen.width": w,
+            "screen.height": h,
+            "screen.avail_width": w,
+            "screen.avail_height": h - 40,
+            "screen.dpr": dpr,
+        }
+        kwargs["extra_prefs"]["layout.css.devPixelsPerPx"] = str(dpr)
+        # The FIRST paint uses the value already in prefs.js — the user.js
+        # override only kicks in a beat later, and the headless places init
+        # leaves the SAMPLED profile's dpr there. A mismatch between the prefs.js
+        # value at first paint and the user.js value applied just after flips the
+        # window scale mid-open (the initial skew). Carry the same value in
+        # prefs.js before Firefox starts so there's no flip.
+        _upsert_prefs_js(
+            profile_dir, {"layout.css.devPixelsPerPx": str(dpr)}
+        )
+    else:
+        # Auto (no chosen resolution): the resolution branch above never runs, so
+        # a sampled profile's leftover devPixelsPerPx would still be in prefs.js
+        # and open the first window at the SAMPLED scale, not the host's. Scrub it
+        # so Firefox uses its own host-derived scale.
+        _scrub_prefs_js(profile_dir, ("layout.css.devPixelsPerPx",))
+    if proxy:
+        kwargs["proxy"] = proxy
+        # Firefox owns its own proxy sockets (playwright's native proxy), so the
+        # bridge's SO_KEEPALIVE can't cover them. Turn on Firefox's TCP keepalive
+        # so a silent half-open proxy circuit (Tor wedges: socket open, no bytes,
+        # no EOF) is detected and dropped instead of leaving a long-lived stream
+        # — a Sheets collab websocket — hung on "Working" (#184). idle_time is in
+        # seconds; the default is off for content sockets over a proxy.
+        kwargs["extra_prefs"]["network.tcp.keepalive.enabled"] = True
+        kwargs["extra_prefs"]["network.tcp.keepalive.idle_time"] = 30
+        kwargs["extra_prefs"]["network.tcp.keepalive.retry_interval"] = 10
+        kwargs["extra_prefs"]["network.tcp.keepalive.probe_count"] = 4
+    # A profile with no explicit locale must still present a consistent one, or
+    # firefox-17 leaves the header/JS/Intl at the host OS locale (uk-UA on a
+    # Ukrainian host) — a masking tell. Default an unset locale to en-US so the
+    # Accept-Language header, navigator.language, and Intl all agree.
+    locale = cfg.get("locale") or "en-US"
+    timezone = cfg.get("timezone", "")
+    kwargs["locale"] = locale
+    if timezone:
+        kwargs["timezone"] = timezone
+    extra_args: list = []
+    if name and _platform.IS_LINUX:
+        # --name sets the X11 instance (the WM_CLASS labwc matches for the icon);
+        # MOZ_APP_REMOTINGNAME (set above) is the Wayland app_id. Keep both so
+        # the taskbar icon matches the .desktop StartupWMClass on either backend.
+        extra_args.append(f"--name={_remoting_name(name)}")
+    if profile_dir:
+        # MUST stay the LAST argument. Playwright hardcodes an "about:blank"
+        # positional URL after our args on every persistent-context launch;
+        # a positional URL reaches the first window as an nsIArray, which can
+        # never equal nsIBrowserHandler.defaultArgs — so SessionStore keeps
+        # the cmdline tab and APPENDS the restored ones: an extra blank tab
+        # on every relaunch (#148). A trailing -new-window consumes the
+        # "about:blank" as its own parameter instead: same single window, but
+        # opened through the string path where the URL equals defaultArgs
+        # (startup.page=0), so a restored session fully overwrites it.
+        extra_args.append("-new-window")
+    if extra_args:
+        kwargs["extra_args"] = extra_args
+    if profile_dir:
+        kwargs["profile_dir"] = profile_dir
+
+    # Show the bookmarks toolbar on the FIRST window when the profile has
+    # bookmarks to show. After _seed_window_size (so a seeded main-window size is
+    # preserved) and before the engine starts, since Firefox reads the toolbar's
+    # collapsed state from xulstore.json as it builds the window (#242).
+    if cfg.get("bookmarks"):
+        _show_bookmarks_toolbar(profile_dir)
+
+    # Decouple window size from the spoofed screen. The engine builds both the
+    # context `viewport` (window) and `screen` (fingerprint) from one p.screen
+    # value; overlay our own so the window stays native while the screen
+    # reports the chosen resolution. The overlay is a per-launch subclass (see
+    # _with_context_overrides — patching the engine class races on the thread
+    # path), and only when a resolution was chosen (Auto keeps the engine's own
+    # sizing).
+    if _res_overrides is not None:
+        InvisiblePlaywright = _with_context_overrides(
+            InvisiblePlaywright, _res_overrides
+        )
+
+    # Launch with a bounded timeout and retries. A launch can stall inside
+    # launch_persistent_context: over Tor on Firefox's startup remote-settings
+    # fetch, and — the #137 wedge — on a proxied FRESH profile whose initial
+    # window is torn down mid-attach ("half-destroyed webProgress"). Cap each
+    # attempt; on overrun kill this profile's Firefox and retry. On the thread
+    # path the enter runs on an abandonable worker thread (killing the browser
+    # does NOT make the blocked sync call raise there); the fork path kills the
+    # launching Firefox so the blocked __enter__ raises and the thread unwinds.
+    #
+    # The per-attempt bound MUST clear the slowest legitimate launch, or it
+    # kills a launch that was about to succeed and every retry repeats the
+    # kill — the #154 regression: a proxied launch (a cold proxy circuit, and a
+    # relaunch that restores a session referencing proxied tabs) routinely
+    # takes far longer than the 25s that a fast local launch needs, so all
+    # attempts overran and the launch reported LAUNCH_FAILED. The engine itself
+    # bounds launch_persistent_context at 180s (a true wedge raises there), so a
+    # proxied launch gets a per-attempt budget just past that — a genuinely
+    # wedged launch still fails and retries, but a merely-slow one completes.
+    per_try = 190 if proxy else 45
+    attempts = 2 if proxy else 3
+    session = None
+    inv = ctx = None
+    enter_err: dict = {}
+    if in_thread:
+        session = _enter_on_worker(
+            InvisiblePlaywright, kwargs, profile_dir,
+            attempts=attempts, per_try=per_try, stop_event=stop_event,
+            err_out=enter_err,
+        )
+        if session is not None:
+            inv, ctx = session.inv, session.ctx
+    else:
+        inv, ctx = _enter_with_timeout(
+            InvisiblePlaywright, kwargs, profile_dir,
+            attempts=attempts, per_try=per_try, err_out=enter_err,
+        )
+    if ctx is None:
+        _release_lock()
+        if stop_event is not None and stop_event.is_set():
+            emit("LAUNCH_CANCELLED")
+        elif enter_err.get("err"):
+            # The enter RAISED — report the real reason (e.g. an engine/driver
+            # version mismatch), not a blanket timeout (#405).
+            emit(f"LAUNCH_FAILED: {enter_err['err']}")
+        else:
+            emit("LAUNCH_FAILED: launch timed out")
+        emit("BROWSER_CLOSED")
+        _finish()
+        return
+
+    # Thread-affine ctx calls must run on the worker that created ctx (the
+    # thread path) — route them through the session; the fork path uses ctx
+    # directly on this thread.
+    def on_ctx(fn):
+        if session is not None:
+            return session.run_on_worker(fn)
+        try:
+            return fn()
+        except Exception:
+            return None
+
+    # NO TITLE PREFIX (PS-30). This used to prefix every tab/window title with
+    # the profile name so the taskbar button identified the persona. That wrote
+    # the operator's own profile label into document.title in every page, where
+    # any script lifted it with one regex — and since the label is the crc32
+    # PREIMAGE of `Profile.fingerprint_seed`, reading it recovered the whole
+    # presented machine. Invariant #0 does not weigh that against taskbar
+    # legibility. Profile identity is carried host-side instead, by the app_id
+    # (MOZ_APP_REMOTINGNAME above / --class on Chromium) matched against the
+    # .desktop StartupWMClass — a surface no page can read.
+    #
+    # Deliberately no replacement tag: a page that clears its title must read
+    # back empty, so ANY title mutation (even an opaque per-profile token) keeps
+    # the observer-rewrites-my-title tell that announced the masking regardless
+    # of what the label said.
+
+    # --- the one delivery point for every per-profile init-script spoof ------
+    #
+    # PS-78. `add_init_script` reaches only documents created AFTER it is
+    # registered, and on a RESTORE launch Firefox has already rebuilt the
+    # session's tabs by the time `__enter__` returns. So an init script alone
+    # covers a FIRST launch and misses every restored tab.
+    #
+    # MEASURED, not reasoned, on this tree before the fix (three launches of one
+    # profile over one data dir, every reading taken from inside the page):
+    #
+    #                            launch 1 (fresh)  launch 2+ (restore)
+    #   Intl.DateTimeFormat("de-DE")
+    #     .resolvedOptions().locale   en-US            de-DE   <- override ABSENT
+    #   outerWidth - innerWidth       14               640     <- override ABSENT
+    #   outerWidth                    1166             1920 == screen.width
+    #
+    # Both overrides were present on the fresh launch and ABSENT on every
+    # restore. That is not a flicker: it is a permanent loss from launch 2
+    # onward, and since restart is the ordinary way a profile is used, the
+    # LEAKING state was the steady one and the correct one the transient.
+    #
+    # The two vectors are read through a signature only the override can
+    # produce, deliberately. This host has only the C/POSIX locales and a
+    # proxy-less profile is forced to en-US, so `navigator.language` reads
+    # "en-US" whether it is spoofed OR leaking — the obvious probe would have
+    # reported a confident false "no drift". `resolvedOptions().locale` for a
+    # REQUESTED locale is a direct read of the override's presence instead.
+    #
+    # WORSE THAN THE AUDIO CASE PS-73 CURED. Audio was linkability — two
+    # profiles reading alike. These are HOST leaks: the declared locale is the
+    # vector that must follow the proxy's geography, and this project refuses a
+    # launch outright rather than present the host zone. A restored tab quietly
+    # reporting the host locale defeats that refusal after the fact. And
+    # `outerWidth` reporting the spoofed SCREEN width is precisely the
+    # inner<outer==screen mismatch `_outer_size_override_script` exists to
+    # remove — so the vector was not merely unspoofed, it presented the exact
+    # tell the override was written against.
+    #
+    # ONE registry rather than a per-vector patch. The alternative is a fourth
+    # bespoke fix beside PS-73's `_apply_audio_to_open_tabs`, and that is how
+    # the FIFTH vector gets missed: the next spoof added here inherits the hole
+    # silently, because nothing about `add_init_script` announces it. Every
+    # spoof goes in through `_install_spoof`, which registers it for new
+    # documents and replays it into the tabs that already exist.
+    _spoof_scripts: list[tuple[str, str]] = []
+
+    def _install_spoof(label: str, js: str) -> None:
+        """Register one MAIN-world spoof for BOTH the new-document path and the
+        already-open tabs. The only supported way to add a spoof to this engine.
+        """
+        if not js:
+            return
+        _spoof_scripts.append((label, js))
+        on_ctx(lambda: ctx.add_init_script(js))
+
+    def _apply_spoofs_to_open_tabs():
+        """Replay every registered spoof into the tabs that ALREADY EXIST.
+
+        Nothing is navigated. A restore launch must NOT reload pages[0] — that
+        is the user's restored tab, and reloading it to apply a spoof would
+        clobber the session this engine goes to some length to preserve (the
+        constraint PS-73 encoded and the reason this is an `evaluate`, not a
+        `reload`). `evaluate` runs the same source in the live realm.
+
+        Every script here is idempotent by construction: each installs
+        value-pinning accessors or guards on its own realm marker, so a tab that
+        DID get the init script is unaffected by a second application.
+        """
+        for pg in list(ctx.pages):
+            for label, js in _spoof_scripts:
+                try:
+                    pg.evaluate(js)
+                except Exception as exc:
+                    # A tab without a browsingContext (the fx-19 dead default
+                    # tab) raises on any eval. Nothing to patch there; the next
+                    # document in it comes from the init script.
+                    #
+                    # BREADCRUMB, deliberately not a re-raise. The swallow is
+                    # correct for that known case, but its SYMPTOM when it fires
+                    # for any OTHER reason is a silently unspoofed tab — which
+                    # is precisely the defect this block exists to fix, and the
+                    # hardest kind to notice (nothing fails; a vector just reads
+                    # the host value). So the reason is always recorded, and the
+                    # known case is separated from the unknown one at the log
+                    # level rather than flattened into a silent `continue`.
+                    if "browsingContext" in str(exc):
+                        logger.debug(
+                            "%s spoof skipped for a context-less tab "
+                            "(expected, fx-19 dead default tab): %s", label, exc,
+                        )
+                    else:
+                        logger.warning(
+                            "%s spoof FAILED on an open tab for an unexpected "
+                            "reason - that tab keeps the HOST value and leaks: "
+                            "%s", label, exc,
+                        )
+                    continue
+
+    # Keep outerWidth/outerHeight tied to the real window (inner + chrome) so a
+    # small window on a big spoofed screen doesn't leak the screen size through
+    # outerWidth (an inner<outer==screen mismatch a scanner can flag). Only when
+    # a resolution was chosen — Auto opens the window at the engine's own screen,
+    # where outer already agrees.
+    if _res_overrides is not None:
+        _install_spoof("outer-size", _outer_size_override_script())
+
+    # firefox-17 leaks the host OS locale through navigator.language even when the
+    # Accept-Language header is the intended locale (the header follows
+    # intl.accept_languages, navigator.language does not on this build). Pin the JS
+    # getters to the same locale the header carries so a scanner sees one
+    # consistent language, not a header/JS mismatch (masking). Live-proven: without
+    # this a US-proxy profile on a Ukrainian host reported navigator.language=uk-UA
+    # while the header was en-US.
+    # Mirror the effective locale (en-US when the profile leaves it unset) so the
+    # override always runs — an unset-locale profile otherwise kept the host Intl.
+    _lang = cfg.get("locale") or "en-US"
+    _install_spoof("locale", _language_override_script(_lang))
+
+    # PS-78: the per-seed WebGL readPixels perturbation, which until now was
+    # CHROMIUM-ONLY and in fact UNREACHABLE on this engine — `spawn_browser`
+    # returns on the Firefox arm ~150 lines before the extension list carrying
+    # it is assembled, so `build_webgl_extension` was never called for a Firefox
+    # profile.
+    #
+    # The engine spoofs the WebGL vendor/renderer/parameter STRINGS per seed,
+    # but on a GPU-less host the actual rendering is identical everywhere, so
+    # `gl.readPixels` collides across profiles and links them. On Firefox the
+    # strings were spoofed and the pixels were not — the sharper of the two
+    # failures, because a profile that CLAIMS a distinct GPU while RENDERING the
+    # shared one is self-contradictory in a way a plain missing spoof is not.
+    # The GPU-less host is the permanent condition (PS-10), not a temporary one.
+    #
+    # Installed through the same registry as the two above, so it gets restored-
+    # tab coverage in the same breath rather than inheriting the hole the
+    # registry exists to close.
+    #
+    # UNCONDITIONAL, and deliberately so. This read `if seed is not None:` until
+    # a review pointed out the guard can never fail: `_resolve_seed` (:2251)
+    # returns `int(cfg["seed"])` or a hash of the profile name, so it always
+    # yields an int. The guard therefore looked like it was protecting a
+    # seedless profile while protecting nothing — and a WebGL spoof that
+    # silently skips is precisely the failure this ticket exists to fix, so the
+    # honest form is no guard at all.
+    _install_spoof("webgl", firefox_webgl_init_script(seed))
+
+    # PS-73: the per-seed audio perturbation, which until now was CHROMIUM-ONLY.
+    # spawn_browser returns on the Firefox arm ~100 lines before the extension
+    # list is assembled, so build_audio_extension was never called for a Firefox
+    # profile and nothing else fed audio variance to this engine. Measured
+    # consequence: audio.digest read 35.749972 on four profiles with four
+    # DISTINCT seeds — identical to 6dp, which on a continuous vector is not
+    # coincidence but the perturbation never being applied.
+    #
+    # audio.digest is the ONLY probe the inventory grades INDEPENDENT
+    # (probes.py:365). Every other seed-derived vector is POOLED — drawn from a
+    # finite set, so two profiles colliding on one proves nothing. Without this
+    # Firefox had the pooled vectors and not the continuous one, leaving mutual
+    # unlinkability with no vector on which agreement is PROOF of linkage.
+    #
+    # An init script, not a copied extension directory: this engine has no MV3
+    # unpacked-extension mechanism, and this is the same route the two overrides
+    # directly above already take. Identical text to Chromium's apart from the
+    # native-cloak seam, so a Firefox and a Chromium profile sharing a seed
+    # perturb identically — and Chromium's own emitted script is unchanged.
+    #
+    # PS-302: through the registry, not beside it. This used to call
+    # `ctx.add_init_script` directly and then carry its OWN replay loop, which
+    # made it the one spoof in this engine that bypassed `_install_spoof` — the
+    # exact "fourth bespoke fix" the registry comment above names by name, and
+    # the nearest precedent a future spoof author would have copied.
+    #
+    # The bespoke replay it replaces was not defensive. MEASURED, not reasoned:
+    # with only the init script, one profile read audio.digest 35.749988 on its
+    # first launch and 35.749972 (the UNPERTURBED value) after a restart —
+    # `add_init_script` reaches only documents created AFTER it is registered,
+    # and on a RESTORE launch Firefox has already rebuilt the session's tabs by
+    # the time `__enter__` returns. That coverage is preserved here by the
+    # registry's own replay (`_apply_spoofs_to_open_tabs`, invoked BELOW this
+    # line — see the ordering note there), which does the same thing for every
+    # registered spoof: `evaluate` into the live realm, never a reload, because
+    # a restore launch must NOT touch pages[0]. The patch is idempotent
+    # (applyAudioPatch returns early on a realm it already covered), so a tab
+    # that DID get the init script is unaffected.
+    _install_spoof("audio", firefox_audio_init_script(seed))
+
+    # PS-330: THERE IS DELIBERATELY NO `_install_spoof("device", ...)` HERE,
+    # and this comment is that decision's record rather than its absence.
+    #
+    # Chromium's `device_ext.py` installs a five-entry mediaDevices roster with
+    # `deviceId`/`groupId` derived per profile from the seed. Firefox installs
+    # nothing, and until this ticket no reason for that was written down — the
+    # masking matrix recorded the cell as an UNKNOWN for exactly that reason.
+    #
+    # MEASURED, not reasoned, on a real headful launch through this launch path
+    # (`readings/ps330-2026-09-07/`, engine firefox-20 / FF 151.0, three
+    # profiles with three distinct seeds, on a secure loopback origin):
+    #
+    #   * every profile received the SAME list — one `audioinput` and one
+    #     `videoinput`, on a host with NO /dev/snd and NO /dev/video* at all.
+    #     So the roster is NOT the host's device list; there is no host fact
+    #     here for a spoof to displace.
+    #   * `deviceId` and `groupId` came back as the EMPTY STRING on every
+    #     device of every profile. They are not per-profile identifiers, so
+    #     they carry no cross-profile linkage to break.
+    #   * that is not a pre-permission placeholder waiting to fill in: a third
+    #     launch with camera and microphone permission GRANTED (a test-side
+    #     pref overlay, never shipped) reported `permissions.query` state
+    #     `granted` for both and still received the same two devices with the
+    #     same empty ids.
+    #   * `Function.prototype.toString` on `enumerateDevices` renders
+    #     `[native code]`.
+    #
+    # So the engine already answers with something synthetic and constant, and
+    # shipping a JS override in front of it would be a NET LOSS under
+    # Invariant #0: it would replace a native-rendering method with one a
+    # detector can see, to change a value that leaks nothing. The matrix cell
+    # is `not_covered_recorded` on this reading, and
+    # `test_the_recorded_device_absence_is_still_an_absence` guards it from
+    # THREE sides — the source the builders emit, the `_install_spoof`
+    # registry, and this function's own AST-unparsed code, which is the only
+    # one of the three that can see an override concatenated INLINE here into
+    # an already-registered label's payload — so a device spoof appearing here
+    # turns that suite red rather than silently contradicting this paragraph.
+    #
+    # ⚠️ ONE LEG OF THAT READING IS UNMEASURED AND MUST NOT BE INFERRED: no
+    # host with REAL audio/video devices exists in this fleet, so "the roster
+    # would still be 1+1 on a machine that has four microphones" is NOT
+    # established. What is established is the direction that matters here — a
+    # host with no devices is told it has two — and if a reading on a
+    # device-carrying host ever shows the roster tracking that host, this is a
+    # host-fact leak and the decision above must be revisited.
+
+    # ORDER IS LOAD-BEARING (PS-302). `_apply_spoofs_to_open_tabs` reads
+    # `_spoof_scripts` at CALL time and runs exactly ONCE, so every spoof must
+    # be registered ABOVE this line or it silently loses already-open-tab
+    # coverage — present on a first launch, absent on every restore, nothing
+    # raised and nothing logged. Register new spoofs above; do not move this up.
+    on_ctx(_apply_spoofs_to_open_tabs)
+
+    # The persistent context already opened ONE window: with a saved session
+    # Firefox restored the user's tabs into it (the trailing -new-window arg
+    # plus startup.page=0 let the restore fully own the window — no extra
+    # blank tab, #148); on a first launch it holds a single about:blank tab,
+    # navigated to the start page below. Don't open a second page — new_page()
+    # opens a whole new WINDOW in this Firefox, which is the "two windows, one
+    # flashes and dies" bug. The single window is enough; the user drives it
+    # from there.
+
+    # The window is on screen the moment __enter__ returns, so report ready now.
+    emit("BROWSER_STARTED")
+
+    # firefox-19's restored/cmdline first tab can come up WITHOUT a
+    # browsingContext: driving it raises "can't access property 'loadURI',
+    # browsingContext is undefined" (live-proven on the fx-19 build — the
+    # default ctx.pages[0] is unusable while a fresh ctx.new_page() works
+    # fully). _live_page returns the first tab that actually has a context,
+    # opening one if the existing tabs are all context-less, so navigation and
+    # eval never hit the dead default tab.
+    def _live_page():
+        pages = list(ctx.pages)
+        for pg in pages:
+            try:
+                # A page with a browsingContext answers a trivial eval; the dead
+                # default tab raises here without navigating anything.
+                pg.evaluate("0")
+                return pg
+            except Exception:
+                continue
+        return ctx.new_page()
+
+    # Publish an eval hook so the MCP browser tools can drive this FF session
+    # (FF has no CDP). Runs JS on the live page through on_ctx, which marshals
+    # onto the worker that owns the thread-affine ctx. Bounded so a wedged page
+    # can't hang the MCP request forever.
+    def _ff_eval(expr: str):
+        def _do():
+            page = _live_page()
+            if page is None:
+                return None
+            return page.evaluate(expr)
+        return on_ctx(_do)
+
+    def _ff_goto(url: str):
+        def _do():
+            page = _live_page()
+            page.goto(url, wait_until="commit", timeout=30000)
+            return {"url": page.url}
+        return on_ctx(_do)
+
+    if name:
+        register_ff_eval(name, {"eval": _ff_eval, "goto": _ff_goto})
+
+    # The browser is up: the #150 launch race is over. Release the per-profile
+    # lock so a later relaunch of this profile isn't blocked by this session's
+    # (potentially slow) close-watch and teardown below (#154). The end-of-
+    # session kill targets only THIS session's tracked pids (never a fresh
+    # profile-dir rescan), so it can't shoot down a relaunch's Firefox.
+    _release_lock()
+
+    # Windows opens the engine's window BEHIND persona (the launch runs in
+    # persona's own process, which holds the foreground), so the user only
+    # sees the stop button and no browser. Chromium raises its own window;
+    # match that. Off this thread so the close-watch starts immediately.
+    if _platform.IS_WINDOWS:
+        threading.Thread(
+            target=_raise_profile_window, args=(profile_dir,), daemon=True
+        ).start()
+
+    # First-ever launch of the profile (nothing to restore): the window came
+    # up on the swallowed cmdline's lone about:blank tab — show the chosen
+    # start page instead. Never on a restore launch: pages[0] is then a
+    # RESTORED tab and navigating it would clobber the user's session.
+    # wait_until="commit" + a cap so a stalled proxy can't hold this thread
+    # (the close-watch below) for long; on timeout the tab just stays blank.
+    if not restoring:
+        _start = kwargs["extra_prefs"].get("browser.startup.homepage")
+        if _start:
+            def _open_start_page():
+                # _live_page skips a context-less fx-19 default tab (which would
+                # raise browsingContext-undefined) and navigates a usable one.
+                _live_page().goto(_start, wait_until="commit", timeout=15000)
+            on_ctx(_open_start_page)
+
+    # Set by stop_gracefully when a STOP tears the browser down; the
+    # platform close-watches below poll it between liveness checks.
+    closed = threading.Event()
+
+    def stop_gracefully() -> None:
+        """On STOP (parent terminate) close the context so Firefox removes its
+        own lock before exit; a hard kill would leave a stale lock and block the
+        next launch. The teardown is thread-affine, so it runs on the worker
+        that created ctx (thread path) or directly (fork path)."""
+        try:
+            if session is not None:
+                session.teardown()
+            elif inv is not None:
+                inv.__exit__(None, None, None)
+        except Exception:
+            pass
+        closed.set()
+
+    # A forked process is told to STOP with SIGTERM (only settable on the main
+    # thread). In the Windows/macOS thread path there's no signal; the parent
+    # sets stop_event, which we poll in the wait loop below.
+    if not in_thread:
+        import signal
+
+        signal.signal(signal.SIGTERM, lambda *a: stop_gracefully())
+
+    # Closure watch. The Windows/macOS thread path watches the profile's
+    # visible window and processes (see _thread_close_watch); the Linux fork
+    # path watches the Firefox pid (see _fork_close_watch). Neither can use
+    # ctx.pages: the ctx lives on the launch worker thread, so the sync API
+    # never delivers close events to a poll made from this thread.
+    # Diagnostic lifecycle log (#169): a Firefox profile sometimes died with no
+    # trace in the Activity Log. Emit WHY the close-watch decided closed, and
+    # every teardown/kill with its reason, so a silent death is traceable. These
+    # lines reach the activity log via the launcher's log_callback.
+    tracked_pids = None
+    if in_thread:
+        tracked_pids = _thread_close_watch(
+            profile_dir, closed, stop_event, stop_gracefully, log=emit
+        )
+    else:
+        tracked_pids = _fork_close_watch(profile_dir, closed, log=emit)
+
+    # Tear down so Firefox actually exits and releases its lock, then report.
+    # (On a STOP the close-watch already called stop_gracefully, which tears
+    # the session down; a second teardown is a harmless no-op.)
+    try:
+        if session is not None:
+            session.teardown()
+        elif inv is not None:
+            inv.__exit__(None, None, None)
+    except Exception:
+        pass
+    # __exit__ is a polite Playwright teardown; a persistent-context
+    # multi-process Firefox routinely survives it (parent + GPU/content/socket
+    # children stayed alive after an X-close), holding the profile lock and
+    # piling up across launches. Kill whatever still belongs to THIS session.
+    # Kill ONLY the tracked pids (+ their process trees), never a fresh
+    # profile-dir rescan: the launch lock was released at BROWSER_STARTED, so a
+    # relaunch of this profile may already be starting, and a fresh rescan would
+    # match — and kill — the relaunch's Firefox (the #150 race, re-armed by the
+    # early lock release). The tracked parent's tree covers its own children.
+    # When the watch never resolved a pid (a dead launch, tracked_pids falsy),
+    # fall back to a rescan — there's no live session to protect a relaunch from.
+    unregister_ff_eval(cfg.get("profile_name", ""))
+    emit(f"LIFECYCLE teardown-kill pids={sorted(tracked_pids or ())} "
+         f"rescan={not tracked_pids}")
+    _kill_profile_firefox(
+        profile_dir, tracked_pids, rescan=not tracked_pids
+    )
+    emit("BROWSER_CLOSED")
+    _finish()
+    return
