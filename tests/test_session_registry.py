@@ -290,3 +290,168 @@ def test_records_round_trip_through_json(tmp_path):
     assert back.pgid == 1234
     assert back.engine == "firefox"
     assert back.create_time == pytest.approx(rec.create_time)
+
+
+# --------------------------------------------------------------------------
+# PS-353 — a handle the persistence format CANNOT represent.
+#
+# `InvisibleProcess` runs the Firefox session on a THREAD of persona wherever
+# `needs_fork_launch()` is false (a WINDOWS or macOS host), so the handle
+# honestly reports `pid = 0`. `make_record` used to store that verbatim and
+# `from_json`'s `pid <= 0` guard dropped it on the way back in — a write that
+# was a no-op, with no path on which the writer could report it.
+# --------------------------------------------------------------------------
+
+
+class _ThreadArmHandle:
+    """The shape `InvisibleProcess` presents on its non-fork arm: no pid."""
+
+    pid = 0
+
+
+def test_make_record_refuses_a_handle_with_no_probeable_pid():
+    """The seam, closed at the writer.
+
+    `None` is the honest answer for a handle whose identity cannot be written
+    down. Returning a record would produce a row the reader discards — and, at
+    the next `record()` of any profile, ERASES — so the caller could never learn
+    its write had not happened.
+    """
+    from src.services.browser.session_registry import make_record
+
+    assert make_record("ff-thread", _ThreadArmHandle(), "firefox") is None
+
+
+def test_make_record_still_builds_a_record_for_a_real_handle():
+    """THE CONTROL. Without it the test above reads as "make_record returns
+    None", rather than locating the refusal at the one shape that has no pid."""
+    from src.services.browser.session_registry import make_record
+
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        rec = make_record("cr-fork", proc, "chromium")
+        assert rec is not None and rec.pid == proc.pid
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+def test_recording_an_unprobeable_row_is_refused_rather_than_lost(tmp_path):
+    """A SILENT NO-OP IS WORSE THAN A REFUSAL, and this is why.
+
+    Such a row does not merely fail to load: `record()` rebuilds the file from
+    `_load_locked()`, which applies the `pid <= 0` guard on the way in, so the
+    NEXT record() of ANY profile physically rewrites the file without it. A
+    post-mortem reader of the registry would not even find the entry that
+    explains the missing guard.
+
+    So the write is refused and says so — and the control proves the file, the
+    writer and the reader all work.
+    """
+    reg = SessionRegistry(str(tmp_path / "s.json"))
+    subject = _record(profile="ff-thread", pid=0, create_time=None,
+                      engine="firefox")
+    control = _record(profile="cr-fork", engine="chromium")
+
+    assert reg.record(subject) is False, "an unwritable row must be reported"
+    assert reg.record(control) is True
+
+    assert [r.profile for r in reg.load()] == ["cr-fork"], (
+        "the control must survive in the same file, or this test says nothing "
+        "about WHERE the loss happens"
+    )
+    assert "ff-thread" not in (tmp_path / "s.json").read_text(encoding="utf-8"), (
+        "the refused row must never reach the file at all"
+    )
+
+
+def test_make_record_for_pid_records_a_pid_the_handle_never_carried(tmp_path):
+    """THE REPAIR PATH's own unit.
+
+    A thread-arm session has no pid on its handle but its browser IS a real set
+    of OS processes, which the engine's close-watch resolves and announces. This
+    is what turns one of those pids into a record a probe can ask about.
+
+    `pgid` is None by construction here and that is correct, not an omission:
+    `_child` calls `start_own_session()` only on the FORK arm, so the thread
+    arm's engine sits in PERSONA'S OWN group — recording that number would aim a
+    later group teardown at persona itself.
+    """
+    from src.services.browser.session_registry import make_record_for_pid
+
+    rec = make_record_for_pid("ff-thread", os.getpid(), "firefox")
+
+    assert rec is not None
+    assert rec.pid == os.getpid()
+    assert rec.pgid is None
+    assert rec.engine == "firefox"
+    assert liveness_of(rec) is Liveness.ALIVE, (
+        "a record built this way must be probeable — that is its whole point"
+    )
+    assert make_record_for_pid("ff-thread", 0, "firefox") is None
+
+
+def test_record_reports_a_write_that_did_not_happen(tmp_path):
+    """A WRITE THE FILESYSTEM REFUSED IS A NO-OP, AND `record()` MUST SAY SO.
+
+    This is the OTHER way a row fails to stick, and it is the one the pid
+    guard above cannot see: the record is perfectly representable, the guard
+    passes, and `_save_locked` then cannot write the file at all.
+
+    ⛔ THE FAILURE IS STILL SWALLOWED, AND THAT IS DELIBERATE — an unwritable
+    registry must never cost the user a session, which is this module's whole
+    fail-open direction. What must NOT also be swallowed is the FACT. Before
+    PS-353's audit, `record()` returned True here regardless, so
+    `launcher.py`'s monitor logged "the restart guard now covers this session"
+    on the line after the registry warned that it would not — a writer whose
+    success signal could not express its own no-op, which is the very defect
+    class this ticket was filed on, reproduced in the API added to fix it.
+
+    ⭐ THE CONTROL IS LOAD-BEARING. Without it a False here would be satisfied
+    by a `record()` that had simply stopped working; with it, the refusal is
+    located precisely at the unwritable path, and the same record on a
+    writable one is kept and reloads.
+    """
+    blocker = tmp_path / "notadir"
+    blocker.write_text(
+        "I am a file, so nothing can live underneath me", encoding="utf-8"
+    )
+
+    unwritable = SessionRegistry(str(blocker / "s.json"))
+    subject = _record(profile="ff-thread", engine="firefox")
+
+    assert unwritable.record(subject) is False, (
+        "record() answered True for a write _save_locked could not perform — "
+        "a caller gating a 'the guard now covers this session' claim on this "
+        "value would announce a guard that does not exist"
+    )
+    assert unwritable.load() == [], "nothing can have been written"
+
+    writable = SessionRegistry(str(tmp_path / "s.json"))
+    assert writable.record(subject) is True, (
+        "the control must be kept, or this test says nothing about WHERE the "
+        "refusal comes from"
+    )
+    assert [r.profile for r in writable.load()] == ["ff-thread"]
+
+
+def test_a_registry_that_cannot_be_written_still_refuses_no_launch(tmp_path):
+    """FAIL-OPEN SURVIVES THE NEW RETURN VALUE.
+
+    Reporting the no-op must not become ENFORCING it. An unwritable registry
+    is the least informed state there is, and this module's header is explicit
+    that a false "already running" is worse than the double launch it set out
+    to prevent — so a False from `record()` is a statement about the GUARD,
+    never a veto over the session.
+    """
+    blocker = tmp_path / "notadir"
+    blocker.write_text("x", encoding="utf-8")
+    reg = SessionRegistry(str(blocker / "s.json"))
+
+    reg.record(_record(profile="ff-thread", engine="firefox"))
+
+    assert reg.load() == []
+    assert reg.live_records() == ([], []), (
+        "an unwritable registry must yield no ALIVE record, so nothing it "
+        "holds can justify refusing a launch"
+    )
