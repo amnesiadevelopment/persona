@@ -1,0 +1,578 @@
+name: engine-continuity
+
+# Does a profile read the SAME engine-authored WebGL identity after an engine
+# change as it did before?
+#
+# WHY THIS JOB EXISTS (PS-375, wiring PS-341's instrument).
+#
+# PS-4's first claim is that *an update cannot change the identity*, and its own
+# sentence for what good looks like: "A profile's observable fingerprint is the
+# same after an engine change as before it, and where it cannot be — because
+# upstream genuinely moved a surface — that is a DECISION SOMEONE MADE, RECORDED
+# AGAINST A VERSION, not a side effect nobody noticed."
+#
+# PS-341 measured that a Chromium build change DOES move a vector a page reads.
+# Same seed, same profile directory, everything else bit-identical — screen,
+# dpr, platform, hardwareConcurrency, deviceMemory, maxTouchPoints, timezone,
+# languages, colorDepth and the full canvas toDataURL() all held — and the WebGL
+# vendor/renderer pair moved for 8 SEEDS OF 8, with the two builds' card pools
+# not intersecting at all (152 answers NVIDIA RTX parts, 148 answers Intel
+# integrated parts). The engine's whole GPU table was replaced between builds.
+#
+# ⭐ AND THEN NOTHING CALLED IT. Measured, not inferred, at the commit this was
+# written on: `git grep -l "ps341" -- .github/` returned ZERO, while four
+# positive controls in the identical probe shape fired (engine_gpu_variance 1,
+# engine_gate 4, behaviour_cli 4, ps307_verify 1). 1,411 lines of instrument
+# across six scripts/ps341_*.py files, with no caller. So the FACT was recorded
+# and the RECURRENCE was unwatched: when the next `personium-` tag ships, the
+# only comparison available is against a committed transcript of a previous
+# binary. PS-341's own 18 live tests re-read that transcript by design
+# (tests/KNOWN_SKIPS.md documents it, correctly, as a cost decision) and are
+# therefore structurally unable to observe a NEW build.
+#
+# WHAT MAKES THAT URGENT RATHER THAN TIDY. `src/ui/app.py` `_check_engines_
+# periodic()` polls the Chromium engine HOURLY, unattended, no spinner, and
+# fetches an acceptable build. `src/services/engine/policy.py` ships
+# `KNOWN_BAD_VERSIONS = frozenset()` and NO ceiling. A new engine therefore
+# reaches operators within the hour with no human in the loop, and until this
+# workflow nothing compared its identity output against the previous build's.
+#
+# ---------------------------------------------------------------------------
+# ⭐⭐ THE POSTURE: THIS REPORTS, IT DOES NOT REFUSE — AND WHY
+# ---------------------------------------------------------------------------
+# A move here is NOT a defect this project can fix, and a gate that failed on it
+# would be red on every engine bump forever.
+#
+# The value is ENGINE-AUTHORED on the `windows` arm:
+# `gpu_ext.ENGINE_AUTHORED_IDENTITY_ARMS == frozenset({"windows"})`, so persona's
+# GPU layer deliberately stands down there and the pair a page reads comes from
+# a table compiled INTO THE ENGINE BINARY. The observed `0x00009A49` is not in
+# persona's own `WIN_GPUS` pool at all. No profile migration can change it —
+# rewriting a profile directory cannot rewrite a table inside someone else's
+# binary — which is why PS-341's recorded disposition is "recorded, NOT fixed".
+#
+# This project has written down what an always-red gate costs, twice, in the two
+# files this one sits beside:
+#
+#   src/services/verify/engine_gate.py:27  and  engine-gpu-variance.yml
+#     "A gate that is always red is a gate people learn to ignore, which is
+#      worse than no gate."
+#
+# So a measured move is NEWS: the job stays GREEN and FILES AN ISSUE naming the
+# two tags it compared, which is precisely the "decision someone made, recorded
+# against a version" PS-4 asks for. Reading and closing that issue IS the
+# decision. `chromium-upstream-watch.yml` is the in-tree precedent for this
+# posture and for the file-or-comment issue mechanism, and it is reused here
+# rather than reinvented — including its rule that a NON-defect outcome still
+# gets filed, because suppressing news because it is not a defect would put us
+# back where we started.
+#
+# ⚠️ A REPORTING POSTURE DOES NOT MEAN THIS JOB CANNOT FAIL. The line is drawn
+# in exactly one place and it is `engine-gpu-variance.yml`'s discipline:
+# "we failed to look" must never wear the colour of "we looked and it was fine".
+#
+#     THE PAIR MOVED               -> report, green (exit 0)
+#     THE MEASUREMENT DID NOT HAPPEN -> fail (exit 2 / 3 / 4)
+#
+# The full status table, with the reasoning for each, is in
+# .github/scripts/ps341_continuity_verdict.py. The exit codes:
+#
+#   0  held                     every scored seed read the same pair, over a
+#                               COMPLETE sample. No news.
+#   0  moved                    a MEASURED move. News, filed against the tag
+#                               pair. Not a defect this gate can fix.
+#   0  no_predecessor           fewer than two engine releases are published,
+#                               so no predecessor EXISTS. A definitive answer
+#                               from a SUCCESSFUL read of the tag list — not a
+#                               failure to look. THIS IS THE LIVE STATE OF THE
+#                               REPOSITORY TODAY (one `personium-` tag), which
+#                               is exactly why it is green: shipping it red
+#                               would ship an always-red gate from run one.
+#   2  unmeasured               seeds went unreadable, or nothing scored. NOT
+#                               a pass.
+#   2  record_inconsistent      the reading contradicts itself (its summary
+#                               disagrees with its rows, an instrument flag
+#                               disagrees with its own values, or both legs
+#                               staged the same bytes). NOT a pass.
+#   3  predecessor_unreachable  a predecessor EXISTS and its release could not
+#                               be resolved — yanked, deleted, or no asset for
+#                               this OS. We were supposed to be able to compare
+#                               and could not. Named, never substituted:
+#                               `fetch_release_full`'s own docstring says "a
+#                               rollback that silently installs something else
+#                               is worse than one that refuses."
+#   3  build_unreachable        THE SAME FAILURE ON THE OTHER LEG: an engine
+#                               release we needed (usually build N) is published
+#                               and would not resolve to an asset. Its own
+#                               status, because calling it `discovery_failed`
+#                               would deny reading a tag list this run PRINTED,
+#                               and calling it `predecessor_unreachable` would
+#                               name the wrong build to whoever reads the issue
+#                               (and file it as `N vs N`). Same exit code as its
+#                               sibling — an automation branching on the code
+#                               should treat them identically — while the STATUS
+#                               says which build to go and look at.
+#   5  staging_failed           a release RESOLVED and the download or its
+#                               digest check failed. One step past
+#                               `build_unreachable`, and its own code so "we
+#                               could not reach it" and "we could not fetch it"
+#                               are distinguishable without reading prose. It
+#                               exists because the alternative was an escaping
+#                               exception: right colour, NO step output, NO
+#                               issue, NO artifact — silent red on the one step
+#                               whose failure is least surprising, since a
+#                               download is this job's entire cost.
+#   4  refused_by_policy        persona itself refuses this build. Measuring a
+#                               build persona will not install is the wrong
+#                               question and this job does not re-litigate the
+#                               refusal.
+#
+# ⚠️ EXIT 1 IS RESERVED AND UNSPENT, deliberately. Across this repository's
+# gates a 1 means A FINDING — we looked and it is a defect to fix. Under the
+# posture above no outcome of THIS comparison is such a defect, so allocating 1
+# would assert a repair that does not exist.
+#
+# ---------------------------------------------------------------------------
+# WHY THIS IS A SEPARATE JOB AND NOT A STEP IN ONE OF THE FOUR EXISTING ENGINE
+# WORKFLOWS — ALL FOUR ADDRESSED, EACH READ RATHER THAN ASSUMED
+# ---------------------------------------------------------------------------
+#   * NOT `engine-autoupdate.yml`. It is FIREFOX-ONLY: `git grep -ci
+#     "chromium\|personium"` over it returns ZERO, `engine-baseline.txt` is
+#     `firefox-20`, and both provisioning steps import
+#     `src.services.engine.firefox`. A Chromium release passes through it
+#     untouched, so wiring this in would build a gate that can never fire on the
+#     event it exists to catch.
+#
+#   * NOT `engine-gpu-variance.yml`, even though it reads THE SAME VECTOR daily
+#     on the same unpinned artifact. It measures the WRONG AXIS for this
+#     question: it asks whether different profiles get different GPUs ACROSS
+#     SEEDS WITHIN ONE BUILD. This asks whether ONE SEED reads the same pair
+#     ACROSS TWO BUILDS. Both of PS-341's pools varied perfectly well by seed;
+#     they simply had no member in common. ⭐ A 148 -> 152 swap that replaces
+#     the ENTIRE table therefore scores a CLEAN PASS on that job BY
+#     CONSTRUCTION — the metric cannot see it. Folding them together would also
+#     give one job two unrelated failure modes and put this one's two-download
+#     bill on a cheap daily reading.
+#
+#   * NOT `engine_gate` (`src/services/verify/engine_gate.py`). It STRUCTURALLY
+#     CANNOT run on Chromium unattended: `baseline.py:494` `_record_on_chromium`
+#     REFUSES `fresh=True` and only ever attaches to an already-running session,
+#     "because launching one would mean opening an unauthenticated CDP control
+#     channel, which isolation forbids." ⛔ That refusal is a SECURITY DECISION
+#     (PS-237) and is not softened here or anywhere — it is precisely why PS-341
+#     built a separate probe rather than extending the gate, and why this
+#     workflow calls that probe.
+#
+#   * NOT `chromium-upstream-watch.yml`. It asks a DIFFERENT QUESTION about a
+#     DIFFERENT BINARY: it looks UPSTREAM at ungoogled-chromium and asks whether
+#     our 16 patches still apply to something WE HAVE NOT BUILT AND NOBODY HAS
+#     RECEIVED. `git grep -in "webgl\|unmasked\|renderer"` over it returns zero
+#     substantive hits. This is about the binary users DID receive, and about a
+#     vector that workflow never reads. Opposite ends of the pipeline.
+#
+#   * NOT `ci.yml`. A moved identity is not caused by our pull requests — it is
+#     caused by UPSTREAM PUBLISHING. A PR trigger is the wrong EVENT, and
+#     `ci.yml`'s tests job is a 6-instance matrix, so a step appended there
+#     would pay ~400 MB of downloads and sixteen headful launches SIX TIMES PER
+#     PULL REQUEST to re-measure two builds nobody changed.
+#
+#   * NOT `published-engine-verdict.yml` (PS-370, landing in parallel). That
+#     job asks whether the patches FUNCTION in one binary, against a STOCK
+#     Chrome-for-Testing control, WITHIN one release. This asks whether the
+#     identity MOVED between TWO OF OUR OWN releases. Different control,
+#     different question. The scaffolding conventions are deliberately shared
+#     (tag resolution through `updater`, the Xvfb + driver provisioning block,
+#     selftest-before-download ordering) so the two cannot drift apart.
+#
+# ---------------------------------------------------------------------------
+# CADENCE AND COST — THE CHOICE, AND WHY
+# ---------------------------------------------------------------------------
+# MEASURED SHAPE: `scripts/ps341_gpu_seeds.SEEDS` is 8 seeds, read on BOTH
+# builds = 16 HEADFUL launches, plus TWO engine downloads (the published Linux
+# AppImage measured 202,193,400 bytes on PS-361's live `gh release view`).
+# The calibration point is `engine-gpu-variance.yml`: 45 minutes for 15 launches
+# and ONE 188 MB download. So: ~16/15 of its launch cost plus a second transfer.
+# 60 minutes, for that reason.
+#
+# ⭐ WEEKLY, NOT DAILY, AND THE REASON IS THE EVENT RATE RATHER THAN THE PRICE.
+# The measured object is A PAIR OF PUBLISHED ENGINE RELEASES, and engine tags
+# are infrequent — `personium-152.0.7977.75` is the ONLY one published as this
+# was written. Re-measuring an unchanged pair daily buys nothing at ~400 MB and
+# 16 launches a day. The daily neighbour is daily for a different reason: it
+# samples a POPULATION for a statistical property, where more readings are worth
+# something. Here, until a new tag lands, every run reads the same two binaries
+# and must return the same answer.
+#
+# ⚠️ WHAT WEEKLY COSTS, STATED RATHER THAN GLOSSED: a move can go unrecorded for
+# up to seven days after a release, while the operator's app installs that
+# release within the hour. That gap is REAL and is not closed here. It is
+# bounded by the release-day dispatch arm below, which is the gesture for a
+# human who has just published an engine tag. And because the response to a
+# report is a HUMAN reading it, a shorter cadence would only shorten the
+# machine's half of a wait whose other half is human.
+#
+# ---------------------------------------------------------------------------
+# WHAT THIS COVERS AND WHAT IT DOES NOT — STATED, NOT IMPLIED
+# ---------------------------------------------------------------------------
+# ⛔ THE `windows` ARM, ON LINUX x86_64 HOSTS ONLY. `read_pair`'s
+# `platform="windows"` default is the DECLARED profile OS — the arm on which
+# `ENGINE_AUTHORED_IDENTITY_ARMS` makes the engine the sole author, which is why
+# it is the arm that moved. The HOST is `ubuntu-24.04`, because that is where
+# the Linux AppImage runs and where `xvfb` exists. macOS and Windows HOSTS are
+# UNMEASURED here, and PS-341's own EVIDENCE.md explicitly flags macos as an
+# unmeasured cell whose contrast is argued FROM MECHANISM, NOT READ. ⛔ A green
+# or a report here says NOTHING about them and must not be presented as
+# cross-arm coverage.
+#
+# ⛔ THIS DETECTS AND RECORDS; IT DOES NOT PREVENT. Blocking an unattended
+# install on a 16-launch measurement of a build that is not installed yet is
+# circular (you cannot read a binary you have not installed) and would wedge the
+# app. And under the posture above there is nothing to block: the move is not a
+# bad build, it is a different build.
+#
+# NOT a claim about LINKABILITY. Two profiles on the SAME build still differ —
+# that is `engine-gpu-variance.yml`'s question and it is unaffected. What moves
+# is one profile against ITS OWN PAST. Whether a site can link a profile across
+# an engine update via this pair is UNMEASURED and is not claimed anywhere here.
+#
+# NOT an Invariant #0 host-fact leak. The value is engine-authored and
+# plausible; no real GPU escapes. This is Level-2 continuity plus a coverage
+# gap, and the GPU vocabulary must not be allowed to drift it upward.
+
+on:
+  schedule:
+    # Weekly, Mondays at 08:40 UTC. After the 06:00 engine-autoupdate slot, the
+    # 06:40 engine-gpu-variance slot, the 07:20 chromium-upstream-watch slot and
+    # the 08:10 published-engine-verdict slot, so the five do not contend for a
+    # runner. Nothing here depends on any of them. See the cadence block above
+    # for why this is weekly and two of them are daily.
+    - cron: "40 8 * * 1"
+  # THE RELEASE-DAY ARM, and the FALSIFICATION arm. A human who has just
+  # published an engine tag runs this rather than waiting up to a week — and
+  # naming BOTH versions is how the wiring is proven to report a move on a real
+  # build change (e.g. 152.0.7977.75 against 148.0.7778.215, the pair PS-341
+  # measured) rather than only ever being observed on whatever is newest.
+  workflow_dispatch:
+    inputs:
+      new_version:
+        description: >-
+          Measure THIS version as build N instead of whatever is newest
+          (e.g. 152.0.7977.75). FOR A MANUAL RE-READ — the scheduled run is
+          deliberately unpinned.
+        required: false
+        type: string
+      old_version:
+        description: >-
+          Compare against THIS version as build N−1 instead of N's published
+          predecessor (e.g. 148.0.7778.215). The falsification path.
+        required: false
+        type: string
+  # THE PR ARM, DELIBERATELY NARROW: the judge, the runner, the probe it
+  # imports, and this venue. A change to any of those is the change most likely
+  # to break the gate and the one a weekly cron would notice up to seven days
+  # late. Everything else waits for the cron rather than paying ~400 MB per PR.
+  #
+  # ⚠️ THE FILTER IS A COST CONTROL, NOT A COMPLETENESS CLAIM. The reading goes
+  # through the whole chromium launch path, so a change under
+  # `src/services/engine/` can move it and will NOT trigger this arm. The cron
+  # covers that gap.
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "scripts/ps341_gpu_seeds.py"
+      - ".github/scripts/ps341_continuity_verdict.py"
+      - ".github/scripts/ps341_run_continuity.py"
+      - ".github/workflows/engine-continuity.yml"
+      - "tests/test_ps375_engine_continuity_gate.py"
+
+permissions:
+  contents: read      # reads the tree and the public engine releases only
+  issues: write       # the report is filed as an issue; that is the only write
+
+concurrency:
+  group: engine-continuity-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  continuity:
+    name: engine continuity — did the identity move between two of our releases?
+    # LINUX ONLY, and stated rather than implied. See the coverage block above.
+    runs-on: ubuntu-24.04
+    # 16 headful launches at ~2s settle each plus TWO ~200 MB downloads.
+    # `engine-gpu-variance.yml` budgets 45 for 15 launches and ONE 188 MB
+    # download; 60 leaves headroom for the second transfer and a slow upstream
+    # without letting a genuinely wedged launch hang for hours. A timeout
+    # produces no reading, which the verdict classifies as UNMEASURED — never as
+    # a pass.
+    timeout-minutes: 60
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: "3.13"
+
+      # INSTALL BEFORE THE SELF-TEST, OR THE SELF-TEST IS THE THING THAT FAILS.
+      # `actions/setup-python` gives a CLEAN interpreter — no pytest, no PyYAML.
+      # PyYAML is named EXPLICITLY: the workflow-shape tests below parse THIS
+      # FILE, and PyYAML is in neither requirements.txt, requirements-dev.txt nor
+      # pyproject.toml. `chromium-upstream-watch.yml` records the same trap, and
+      # `published-engine-verdict.yml` records the measured cost of missing it
+      # (its first run reported "34 passed, 6 SKIPPED" — the six that assert the
+      # job cannot be hollowed out were inert in the job they guard). `-ra`, so
+      # any future skip is NAMED in the log rather than being a number.
+      - name: Install the self-test's dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install --prefer-binary -r requirements-dev.txt PyYAML
+
+      # PROVE THE VERDICT CAN STILL WITHHOLD A PASS, BEFORE SPENDING 400 MB.
+      #
+      # This runs FIRST and needs no engine, no display and no network. The live
+      # reading below can only ever demonstrate the outcome today's two builds
+      # happen to produce, and an outcome only ever observed one way is not
+      # coverage — this project's own recorded standard.
+      #
+      # It drives synthesised readings (all-moved, none-moved, all-unreadable, a
+      # dark old leg, a truncated sample with and without a move, empty pairs on
+      # both legs, an instrument whose flag contradicts its own values, a summary
+      # that disagrees with its rows, and each of the four non-measurement
+      # outcomes) through the SAME classify -> exit_code_for path the live run
+      # gates on, and asserts each lands on the status AND the exit code it must.
+      #
+      # ⭐ THE DARK-LEG CASE IS THE NON-WAIVABLE ONE. PS-341's own first probe
+      # read both builds with `--headless=new --dump-dom` and reported 8 of 8
+      # moved — "a clean, confident, and COMPLETELY FALSE result" — because the
+      # old build returned NO READING AT ALL and "no reading" compares unequal.
+      # THE INSTRUMENT, NOT THE ENGINE, PRODUCED THE 8/8. The selftest asserts
+      # an unreadable leg lands in `seeds_unreadable` and is EXCLUDED from the
+      # moved/same tally, so that cannot recur through this wiring.
+      #
+      # Placed before provisioning on purpose, exactly as
+      # `engine-gpu-variance.yml` places its own: if the judgement is broken,
+      # two 200 MB downloads to produce a meaningless verdict are wasted, and
+      # the answer the job reported would be the wrong answer.
+      - name: Prove the verdict can still withhold a pass
+        run: |
+          python3 .github/scripts/ps341_continuity_verdict.py selftest
+          python -m pytest tests/test_ps375_engine_continuity_gate.py -q -ra
+
+      # THE FALSIFICATION ARM, ON REAL DATA, AND IT COSTS NOTHING.
+      #
+      # PS-341's committed reading is of two GENUINELY DIFFERENT builds
+      # (152.0.7977.75 vs 148.0.7778.215, three-axis positive control: the
+      # version record, the binary sha256 AND the running page's userAgent major
+      # all moved). Driving it through this exact judge must report `moved`. A
+      # gate whose reporting outcome has never been observed on a real build
+      # change is not known to report one.
+      #
+      # ⛔ This does NOT re-take PS-341's reading — `readings/ps341-2026-09-07/`
+      # is read as-is and is never written.
+      - name: Report a move on a REAL build change (PS-341's committed reading)
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/ps341_continuity_verdict.py verdict \
+            readings/ps341-2026-09-07/gpu_seeds.json \
+            --new-version 152.0.7977.75 --old-version 148.0.7778.215 \
+            --report-json /tmp/ps375/falsification.json
+          python3 - <<'PY'
+          import json
+          v = json.load(open("/tmp/ps375/falsification.json"))["verdict"]
+          assert v["status"] == "moved", v["status"]
+          assert v["moved"] == 8 and v["same"] == 0, v
+          assert v["seeds_unreadable"] == 0, v
+          print("falsification arm: reported %s on %d/%d seeds, as it must."
+                % (v["status"], v["moved"], v["seeds_scored"]))
+          PY
+
+      - name: Provision a display and the engine driver
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb
+          pip install --prefer-binary -r requirements.txt
+          # The driver + the core it must ship with, at the pins THIS TREE
+          # carries. Read out of pyproject because that is the only file that
+          # declares invisible_core at all — requirements.txt does not, so
+          # nothing else installs it. Same approach engine-gpu-variance.yml,
+          # engine-autoupdate.yml and published-engine-verdict.yml use.
+          pin="$(python -c "import re,pathlib; print(re.search(r'invisible_playwright @ git\+[^\"]+', pathlib.Path('pyproject.toml').read_text()).group(0))")"
+          core="$(python -c "import re,pathlib; print(re.search(r'invisible_core==[0-9][0-9.]*', pathlib.Path('pyproject.toml').read_text()).group(0))")"
+          echo "driver: $pin"
+          echo "core  : $core"
+          pip install "$pin"
+          pip install "$core"
+
+      # THE READING AND THE VERDICT.
+      #
+      # ⚠️ UNPINNED ON THE N SIDE, resolved the way the operator's app resolves
+      # it: `fetch_latest_checked`, which applies `policy.check` so a build
+      # persona already refuses is NOT measured. `engine-gpu-variance.yml`'s
+      # recorded reasoning applies verbatim — the RISK IS WHATEVER THE NEWEST
+      # PUBLISHED RELEASE IS, which is exactly what a pin hides. BOTH tags are
+      # ECHOED into the report and the step outputs, so a run always names the
+      # builds it compared.
+      #
+      # NOT `continue-on-error` on the verdict itself, NOT `|| true`, and no `if`
+      # branching on the code: the script's own exit code decides this job's
+      # colour, in one place. `continue-on-error` is set ONLY so the report is
+      # filed and the artifact uploaded even on a non-green reading — the
+      # verdict is then re-asserted by the final step, which is
+      # `chromium-upstream-watch.yml`'s shape and is reused for its reason.
+      #
+      # ⚠️ Dispatch inputs travel through the ENVIRONMENT, never interpolated
+      # into the command line: a `${{ inputs.* }}` expanded straight into a
+      # `run:` block is substituted before bash ever sees it, so a dispatch box
+      # becomes shell source text.
+      - name: Read both builds and verdict the comparison
+        id: read
+        continue-on-error: true
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+          NEW_VERSION: ${{ inputs.new_version }}
+          OLD_VERSION: ${{ inputs.old_version }}
+        run: |
+          set -euo pipefail
+          args=()
+          if [ -n "${NEW_VERSION:-}" ]; then args+=(--new-version "$NEW_VERSION"); fi
+          if [ -n "${OLD_VERSION:-}" ]; then args+=(--old-version "$OLD_VERSION"); fi
+          xvfb-run -a python3 .github/scripts/ps341_run_continuity.py \
+            "${args[@]}" \
+            --work /tmp/ps375 \
+            --reading-json /tmp/ps375/gpu_seeds.json \
+            --report-json /tmp/ps375/verdict.json \
+            --report-md /tmp/ps375/report.md \
+            --github-output "$GITHUB_OUTPUT"
+
+      # The reading is the whole evidence base for the decision the report asks
+      # a human to make, and it lives on a runner about to be destroyed.
+      # `always()`, because a `moved` run is GREEN and is exactly the run worth
+      # keeping.
+      - name: Keep the reading
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: engine-continuity-reading
+          path: |
+            /tmp/ps375/gpu_seeds.json
+            /tmp/ps375/verdict.json
+            /tmp/ps375/report.md
+          if-no-files-found: warn
+
+      - name: Put the report in the job summary
+        if: always()
+        run: cat /tmp/ps375/report.md >> "$GITHUB_STEP_SUMMARY" || true
+
+      # THE REPORT IS THE DELIVERABLE — PS-4 asks for a DECISION RECORDED
+      # AGAINST A VERSION, and a green workflow run in an Actions tab nobody is
+      # subscribed to is not that. So every reportable outcome is FILED AS AN
+      # ISSUE, which notifies watchers, appears in the issue list, and can be
+      # closed by a human AS THE DECISION IT REPRESENTS.
+      #
+      # ⭐ `moved` FILES EVEN THOUGH THE RUN IS GREEN. That is the entire point
+      # of this workflow: a move is news to be recorded, not a build to refuse.
+      # `held` and `no_predecessor` deliberately do NOT file — "the identity
+      # held" and "there is still only one release" are not news, and filing
+      # them weekly forever would train the reader to ignore the ones that are.
+      #
+      # The title carries both versions AND the status, so re-running does not
+      # file the same news twice, while the same pair moving from `unmeasured`
+      # to `moved` DOES get its own record rather than quietly editing away the
+      # fact that we once could not measure it.
+      - name: File or update the report issue
+        if: steps.read.outputs.report == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TITLE: ${{ steps.read.outputs.title }}
+        run: |
+          set -euo pipefail
+          # Exact-title match in jq against the fetched list rather than through
+          # `gh issue list --search`, which is fuzzy and eventually-consistent:
+          # a near-miss there would file a duplicate every run. The title is a
+          # jq ARGUMENT (--arg), so quoting inside it cannot break the filter.
+          existing="$(gh issue list --state open --limit 100 --json number,title \
+            | jq -r --arg t "$TITLE" 'map(select(.title == $t)) | .[0].number // empty')"
+          if [ -n "$existing" ]; then
+            echo "same news already filed as #$existing — commenting rather than duplicating"
+            gh issue comment "$existing" --body-file /tmp/ps375/report.md
+          else
+            gh issue create --title "$TITLE" --body-file /tmp/ps375/report.md
+          fi
+
+      # THE JOB'S OWN COLOUR, decided in ONE place and from the status only.
+      #
+      # `continue-on-error` above exists so the report is always filed and the
+      # artifact always uploaded — NOT to swallow the verdict. This step
+      # re-asserts it, so the run is green for `held`, `moved` and
+      # `no_predecessor`, and red for everything else.
+      #
+      # ⚠️ UNMEASURED FAILS THIS JOB, exactly as exit 2 fails
+      # engine-gpu-variance.yml and chromium-upstream-watch.yml. "We failed to
+      # look" must never wear the colour of "we looked and it was fine".
+      # ⚠️ AND AN ABSENT STATUS FAILS TOO: a step that produced no output at all
+      # established nothing, and the default for an answer we do not recognise
+      # is never a pass.
+      - name: Report the verdict
+        env:
+          STATUS: ${{ steps.read.outputs.status }}
+          GREEN: ${{ steps.read.outputs.green }}
+          NEW: ${{ steps.read.outputs.new_version }}
+          OLD: ${{ steps.read.outputs.old_version }}
+          MOVED: ${{ steps.read.outputs.moved }}
+          SCORED: ${{ steps.read.outputs.seeds_scored }}
+          UNREADABLE: ${{ steps.read.outputs.seeds_unreadable }}
+        run: |
+          echo "status=${STATUS:-<none>} green=${GREEN:-false} N=${NEW:-<none>} N-1=${OLD:-<none>} moved=${MOVED:-?}/${SCORED:-?} unreadable=${UNREADABLE:-?}"
+          if [ "${GREEN:-false}" = "true" ]; then
+            case "${STATUS:-}" in
+              moved)
+                echo "::notice::Engine ${NEW} moved the WebGL identity on ${MOVED}/${SCORED} seeds against ${OLD}. Recorded as an issue — this is news, not a defect this gate can fix."
+                ;;
+              held)
+                echo "engine continuity: the identity HELD across ${OLD} -> ${NEW}."
+                ;;
+              no_predecessor)
+                echo "engine continuity: ${NEW} has no published predecessor, so there is nothing to compare yet. Read the job summary for which case this is — no second release exists at all (the scheduled path), or a dispatched version that is the oldest published one."
+                ;;
+            esac
+            exit 0
+          fi
+          case "${STATUS:-}" in
+            unmeasured)
+              echo "::error::NOTHING WAS ESTABLISHED comparing ${NEW:-<N>} against ${OLD:-<N-1>} (${UNREADABLE:-?} seeds unreadable). This is NOT a pass and must not be read as continuity. An unreadable leg is EXCLUDED from the tally rather than counted as a difference — check the step log for whether the display or an engine failed to come up."
+              ;;
+            record_inconsistent)
+              echo "::error::THE READING CONTRADICTS ITSELF and nothing is concluded from it. Either its summary disagrees with its rows, an instrument flag disagrees with its own values, or both legs staged the SAME bytes (which would report a confident 'held' for a comparison that never happened). Read the uploaded artifact."
+              ;;
+            predecessor_unreachable)
+              echo "::error::Engine ${OLD:-<N-1>} is published but its release could not be obtained — yanked, deleted, or no asset for this OS. NOTHING was compared and NOTHING was substituted for it. This is not a finding about the engine; the comparison could not be set up."
+              ;;
+            build_unreachable)
+              echo "::error::Engine ${NEW:-<the build>} is published but its release could not be obtained — yanked, deleted, no asset for this OS, or a transient API failure. The published TAG LIST was read successfully; it is this one release that would not resolve, which is why this is neither discovery_failed nor predecessor_unreachable. NOTHING was compared. Usually transient — re-dispatch before reading anything into it."
+              ;;
+            staging_failed)
+              echo "::error::Engine ${NEW:-<the build>} resolved to an asset and could NOT be staged — the download or its digest check failed. Check the step log for the downloader's own message: a digest mismatch is a different problem from a truncated transfer, and this job does not guess which. NOTHING was compared."
+              ;;
+            discovery_failed)
+              echo "::error::Could not read the published engine tag list, so we do not know which builds exist. NOTHING WAS MEASURED. Usually transient — re-dispatch before reading anything into it."
+              ;;
+            refused_by_policy)
+              echo "::error::persona itself refuses engine ${NEW:-<the tag>} (KNOWN_BAD_VERSIONS, or an operator ceiling), so it was not measured. The refusal is CORRECT and this job does not re-litigate it. Expect this after someone blocklists a bad tag; it clears when a newer release supersedes it."
+              ;;
+            *)
+              echo "::error::the read step produced no status at all — treat this as UNMEASURED, never as a pass."
+              ;;
+          esac
+          cat <<EOF
+          ⛔ DO NOT "fix" a red run by pinning the engine, by adding a '|| true',
+          by letting an unmeasured run pass, or by relaxing the unreadable-leg
+          exclusion. Each of those turns this back into a gate reporting a
+          verdict it has not earned, which is the defect this venue exists to
+          close — and the exclusion in particular is what stops PS-341's own
+          "clean, confident, and COMPLETELY FALSE" 8/8 from recurring here.
+          EOF
+          exit 1
