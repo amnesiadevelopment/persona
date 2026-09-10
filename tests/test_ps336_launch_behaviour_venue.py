@@ -84,12 +84,20 @@ SANDBOX_STEP_NAME = "Let the chromium sandbox start"
 #: WHOLE-CHECK because 2 of its 5 must-differ pairs collide on the shipped
 #: firefox engine. Those two are now `behaviour.KNOWN_POSITIONS`, excluded
 #: per-pair and reported, so the other three gate.
+#:
+#: `no-process-survives-a-degraded-session` JOINED AT PS-388 — the sibling of
+#: the survivor check, differing only in that its subject is SIGSTOPped between
+#: the settle and the teardown, so the product's own `terminate()` is measured
+#: against a session that CANNOT ANSWER. It needed no venue work (same engine,
+#: same display, same scratch home) and it is in this floor from its first
+#: commit rather than arriving as an omission to be retired later.
 EXPECTED = (
     "restart-continuity",
     "two-profile-unlinkability",
     "benign-edit-stability",
     "trash-restore-and-wipe",
     "no-process-survives-a-closed-session",
+    "no-process-survives-a-degraded-session",
 )
 
 #: The launch-backed checks deliberately NOT in the lane — NONE since PS-383.

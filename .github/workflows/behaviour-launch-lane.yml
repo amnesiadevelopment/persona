@@ -53,8 +53,30 @@ name: behaviour-launch-lane
 #                                     settles at 10 members within ~7s in
 #                                     practice, so ~30s typical / ~3min worst
 #
-# So the lane's WORST case is roughly 114s + 3min + ~45s of downloads ≈ 7 min,
-# and its typical case under 4. THE 45-MINUTE BUDGET STILL HOLDS with a wide
+# ⭐ AND SINCE PS-388 THERE IS A SIXTH CHECK — `no-process-survives-a-degraded-
+# session`, the same launch on the same engine with a SIGSTOP between the
+# settle and the teardown. It needs NO new provisioning (same engine, same
+# display, same scratch home), and its cost is priced on exactly its sibling's
+# terms because it IS its sibling's sequence:
+#
+#     no-process-survives-a-degraded-session
+#                                     2 more wrapper launches, same 90s bound
+#                                     each, so ~30s typical / ~3min worst —
+#                                     PLUS the wedge's own cost, which is the
+#                                     one figure that is NOT its sibling's:
+#                                     `terminate()` on a SIGSTOPped tree
+#                                     returns in the FULL handle timeout (10s)
+#                                     rather than ~0s, because SIGTERM to a
+#                                     stopped process is QUEUED and the wait()
+#                                     between the SIGTERM and the SIGKILL
+#                                     blocks. Measured on a real POSIX tree in
+#                                     a container: healthy 0.00s, wedged
+#                                     10.00s (readings/ps388-2026-09-10/). So
+#                                     +20s over its sibling in the typical
+#                                     case, twice, once per arm.
+#
+# So the lane's WORST case is roughly 114s + 6min + ~45s of downloads ≈ 10 min,
+# and its typical case under 5. THE 45-MINUTE BUDGET STILL HOLDS with a wide
 # margin and is deliberately not reduced — it exists to stop a genuinely wedged
 # launch hanging for hours, not to track the measured time. ⚠️ The comment on
 # `timeout-minutes` itself carries this same arithmetic; if one is repriced the
