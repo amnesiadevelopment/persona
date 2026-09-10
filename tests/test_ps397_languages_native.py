@@ -63,6 +63,13 @@ this file was fenced only ONCE and that was measurably not enough.
     them apart. It derives the product's extension set BY AST FROM
     `spawn_browser` ITSELF, so the coverage property is checked rather than
     asserted.
+  * ⭐ AND THAT ORACLE IS ITSELF FENCED, because round 2 shipped it with a
+    coverage claim that held for one syntax out of several. It can only NAME a
+    directory written as a literal at the call site, so it now COUNTS the
+    builder calls and REFUSES the ones it cannot read;
+    `test_the_coverage_oracle_refuses_a_builder_it_cannot_name` proves the
+    refusal fires and records the one shape it still cannot reach (a helper
+    wrapper, which is not a `build_*_extension` call at all).
 
 ⚠️ AND THE BOUND THAT REMAINS, STATED. This file scans the mobile extension's
 BYTES, but every arm of the live reading in `readings/ps397-2026-09-10/` ran a
@@ -98,29 +105,71 @@ PROP = "languages"
 # ---------------------------------------------------------------------------
 
 
-def _product_extension_dirs_from_source() -> "set[str]":
+def _product_extension_dirs_from_source(source: "str | None" = None) -> "set[str]":
     """The `.persona-*-ext` directory names `spawn_browser` ITSELF builds.
 
-    ⛔ DERIVED BY AST FROM THE SHIPPING FUNCTION, not listed here. This is the
-    fence's own completeness oracle: `_build_layer` below must cover every name
-    this returns, so adding a 14th `build_*_extension` call to `spawn_browser`
-    turns this file RED until the new extension is scanned — which is exactly
-    the property the previous revision of this docstring CLAIMED and did not
-    have.
+    ⛔ DERIVED BY AST FROM THE SHIPPING FUNCTION, not listed here. WHAT THE
+    MECHANISM ACTUALLY DOES, STATED PRECISELY, because the previous TWO
+    revisions of this docstring each claimed a property the code did not have:
 
-    ⚠️ Why an AST walk and not a grep or a hand list. The names are string
-    literals in the call, so a hand list is a second copy that drifts silently
-    (the failure this whole port keeps hitting), and a grep over the file would
-    also pick up the `--load-extension` join and the profile-dir cleanup paths.
-    The walk is scoped to `spawn_browser`'s own body, so it answers precisely
-    "what does the launcher build".
+      1. It finds EVERY `build_*_extension(...)` call in `spawn_browser`'s own
+         body and COUNTS them. That census is exact — a call is a call.
+      2. For each call it reads the `.persona-*` string literals written
+         INSIDE the call node, and takes those as the directory that call
+         builds.
+      3. ⭐ WHEN A CALL CARRIES NO SUCH LITERAL IT RAISES rather than skipping
+         the call. That is the whole point of step 1 existing separately from
+         step 2: the walk can only NAME a directory that is written as a
+         literal at the call site, and it must not silently return a short
+         list when it meets a shape it cannot read.
+
+    ⚠️ SO THE COVERAGE PROPERTY IS "FINDABLE", NOT "OMNISCIENT". Round 2 of
+    this file claimed that adding a 14th builder turns the file red, and that
+    was true for exactly one syntax. Measured, five shapes of a real, loaded
+    14th builder:
+
+        build_future_extension(os.path.join(p, ".persona-future-ext"))  RED
+        build_future_extension(os.path.join(p, f".persona-future-ext")) RED
+        _d = ".persona-future-ext"; build_future_extension(...)         GREEN
+        build_future_extension(os.path.join(p, FUTURE_DIR))             GREEN
+        _build_future(profile_dir)                                      GREEN
+
+    The three green ones are an unscanned, product-loaded extension with the
+    fence reporting clean. Teaching the walk more shapes is an arms race lost
+    silently — every shape not yet taught reads as "no extension". Counting
+    the calls and REFUSING on an unreadable one converts all three into a red
+    test that names the builder, so the failure mode is a loud "this oracle
+    cannot see that call" instead of a confident false clean.
+
+    ⚠️ The helper-wrapped shape (`_build_future(profile_dir)`) is still not a
+    `build_*_extension` call by name, so it is not counted at all — the
+    refusal cannot reach a call it never matched. That bound is real and is
+    recorded in EVIDENCE.md; what the refusal buys is the two shapes where the
+    call IS matched and its directory is not readable.
+
+    ⚠️ Why an AST walk and not a grep or a hand list. A hand list is a second
+    copy that drifts silently (the failure this whole port keeps hitting), and
+    a grep over the file would also pick up the `--load-extension` join and the
+    profile-dir cleanup paths. The walk is scoped to `spawn_browser`'s own
+    body, so it answers precisely "what does the launcher build".
+
+    ⭐ This is the same discipline `persona_locale_argv` uses in the flag
+    harness: read the real expression, and RAISE when it cannot be read rather
+    than substituting a plausible literal.
+
+    `source` exists ONLY so the refusal itself can be tested against a synthetic
+    `spawn_browser` without editing the shipping file. Default (None) reads the
+    product source, which is what every real caller does.
     """
     tree = ast.parse(
-        (REPO / "src" / "services" / "browser" / "process.py").read_text(
+        source
+        if source is not None
+        else (REPO / "src" / "services" / "browser" / "process.py").read_text(
             encoding="utf-8"
         )
     )
     names: "set[str]" = set()
+    calls = 0
     for node in ast.walk(tree):
         if not (isinstance(node, ast.FunctionDef) and node.name == "spawn_browser"):
             continue
@@ -132,13 +181,30 @@ def _product_extension_dirs_from_source() -> "set[str]":
                 continue
             if not (fn.id.startswith("build_") and fn.id.endswith("_extension")):
                 continue
-            for lit in ast.walk(call):
-                if (
-                    isinstance(lit, ast.Constant)
-                    and isinstance(lit.value, str)
-                    and lit.value.startswith(".persona-")
-                ):
-                    names.add(lit.value)
+            calls += 1
+            lits = {
+                lit.value
+                for lit in ast.walk(call)
+                if isinstance(lit, ast.Constant)
+                and isinstance(lit.value, str)
+                and lit.value.startswith(".persona-")
+            }
+            if not lits:
+                raise RuntimeError(
+                    f"call #{calls} in `spawn_browser` is `{fn.id}(...)`, and "
+                    "the extension directory it builds is NOT a string literal "
+                    "at the call site (it is a variable, a module constant, or "
+                    "computed) — so this AST oracle CANNOT NAME IT, and a name "
+                    "it cannot produce is an extension this file's coverage "
+                    "assertion would silently skip.\n\n"
+                    "⛔ Do NOT delete this refusal to make the suite green. "
+                    "Either write the directory as a literal at the call site, "
+                    "or point `_build_layer` at the new extension explicitly "
+                    "and teach this oracle to read that call. The failure this "
+                    "guards is a product-loaded extension that no test ever "
+                    "scans for a `navigator.languages` override."
+                )
+            names |= lits
     return names
 
 
@@ -336,6 +402,79 @@ def test_the_scan_covers_every_extension_spawn_browser_builds(tmp_path):
         "(.persona-mobile-ext) writes to `G.navigator`, the worker-realm shape "
         "this port's ticket names as its recurring trap. Add it to "
         "`_build_layer` rather than narrowing this assertion."
+    )
+
+
+def test_the_coverage_oracle_refuses_a_builder_it_cannot_name():
+    """⭐ THE ORACLE'S OWN FENCE — round 2's blocking defect, pinned.
+
+    Round 2 shipped this oracle with the claim that a 14th `build_*_extension`
+    call turns the file red. Measured on a real, importable, product-loaded
+    14th builder, that held for TWO syntaxes and silently failed for THREE:
+    a local variable, a module constant and a helper wrapper each left the
+    suite at 13 passed with an unscanned extension live.
+
+    The fix is not to teach the walk more syntaxes — a matcher taught N shapes
+    is silently green on shape N+1, which is the identical failure one level
+    up. It is to COUNT the calls and REFUSE the ones whose directory cannot be
+    read. This asserts that refusal fires, because an oracle whose only value
+    is "it will catch the next one" and which is never shown catching anything
+    is exactly the dead instrument this file's other fences exist to rule out.
+
+    ⚠️ Note what is asserted and what is NOT. The two unreadable-directory
+    shapes (variable, module constant) are MATCHED as calls and refused by
+    name. The helper-wrapped shape (`_build_future(profile_dir)`) is not a
+    `build_*_extension` call at all, so the refusal never reaches it — the
+    third case in the table is asserted here as a KNOWN BOUND, not as a catch,
+    so nobody reads this test as a completeness claim it does not make.
+    """
+    readable = (
+        "def spawn_browser():\n"
+        "    build_native_extension(os.path.join(p, '.persona-native-ext'))\n"
+        "    build_locale_extension(os.path.join(p, f'.persona-locale-ext'))\n"
+    )
+    assert _product_extension_dirs_from_source(readable) == {
+        ".persona-native-ext",
+        ".persona-locale-ext",
+    }, "the oracle stopped reading literal call sites — every result below is void"
+
+    for shape, src in (
+        (
+            "local variable",
+            "def spawn_browser():\n"
+            "    build_native_extension(os.path.join(p, '.persona-native-ext'))\n"
+            "    _d = '.persona-future-ext'\n"
+            "    build_future_extension(os.path.join(p, _d))\n",
+        ),
+        (
+            "module constant",
+            "def spawn_browser():\n"
+            "    build_native_extension(os.path.join(p, '.persona-native-ext'))\n"
+            "    build_future_extension(os.path.join(p, FUTURE_DIR))\n",
+        ),
+    ):
+        with pytest.raises(RuntimeError) as excinfo:
+            _product_extension_dirs_from_source(src)
+        assert "build_future_extension" in str(excinfo.value), (
+            f"the {shape} shape was refused, but the refusal does not NAME the "
+            "builder — an unnamed refusal is not actionable, and the next "
+            "author will delete it rather than fix the call site"
+        )
+
+    # ⚠️ THE STATED BOUND, asserted so it cannot quietly become an assumed
+    # catch. A helper wrapper is not a `build_*_extension` call, so it is never
+    # counted and never refused: the oracle returns the readable names and says
+    # nothing about the hidden builder. `_build_layer`'s own coverage assertion
+    # is what must be updated by hand in that case.
+    wrapped = (
+        "def spawn_browser():\n"
+        "    build_native_extension(os.path.join(p, '.persona-native-ext'))\n"
+        "    _build_future(profile_dir)\n"
+    )
+    assert _product_extension_dirs_from_source(wrapped) == {".persona-native-ext"}, (
+        "the helper-wrapped shape started being seen — that is an improvement, "
+        "but this test and the docstring both record it as a BOUND; update "
+        "both rather than leaving a stale bound on record"
     )
 
 
