@@ -13,6 +13,32 @@ python3 scripts/ps343_verify_release_provenance.py --assets DIR # check local fi
 python3 scripts/ps343_verify_release_provenance.py --lint-only  # record only
 ```
 
+## The quantifier in that first sentence, and what evaluates it
+
+*"For every Personium engine we have **published**"* is a claim about the
+PUBLISHED set, and the verifier above cannot evaluate it: `load_records()` globs
+this directory and `main()` iterates that list, so the RECORD SET is its
+denominator. A published release with no record is not red there — it is
+**absent from the question**.
+
+`.github/scripts/ps343_release_audit.py` is the half that asks it. It reconciles
+`updater.engine_versions_newest_first()` — the same enumerator the operator's
+app uses, so there is no second place that knows the tag prefix — against
+`personium-*.json` in this directory, and reports a published release with no
+record as a **named, red row**. It runs daily from
+`.github/workflows/engine-release-provenance-audit.yml`.
+
+| exit | meaning |
+|---|---|
+| `0` | every published release has a record here |
+| `1` | a published release has **no** record — named |
+| `2` | the published set **could not be established** (network, rate limit, an empty answer). NOT "every release is recorded" |
+
+⚠️ Two questions, deliberately kept apart. The audit asks whether a record
+**exists**; the verifier asks whether it **agrees with the bytes**. A green
+audit says nothing about a record's contents, and a green verifier says nothing
+about a release nobody wrote a record for.
+
 ---
 
 ## Why these live in git and not in a CI artifact

@@ -1,0 +1,401 @@
+name: engine-release-provenance-audit
+
+# Does every PUBLISHED engine release have a provenance record in this repo?
+#
+# WHY THIS JOB EXISTS (PS-385, wiring PS-343's territory sentence).
+# PS-343 built the record format, the verifier and the suite, and all three are
+# good. What none of them asked is whether every published release HAS a record.
+# Measured at the commit this was written on, not inferred:
+#
+#   * `scripts/ps343_verify_release_provenance.py` `load_records()` GLOBS
+#     `engine/releases/personium-*.json` and `main()` iterates that list. The
+#     RECORD SET is the denominator, so a published release with no record is
+#     not red — it is ABSENT FROM THE QUESTION. The only `gh` call in the whole
+#     942-line verifier is a DOWNLOAD keyed by a tag it already holds
+#     (`record.get("tag")`), so the tool can only ever ask about releases it was
+#     already told about.
+#   * `tests/test_ps343_release_provenance.py` asserted the territory with a
+#     COMPILE-TIME LITERAL. "One hardcoded release has a record" and "every
+#     published release has a record" are two different claims, and only the
+#     second is the sentence `engine/releases/README.md` opens with.
+#   * `git grep -l "ps343" -- .github/` returned ZERO, while four positive
+#     controls in the same probe shape fired (ps299_rebase_probe 2,
+#     ps307_verify_patches_in_tree 1, ps372_firefox_major_watch 1, ps359_package
+#     1) and a negative control returned 0. A sweep of 283 remote branches keyed
+#     on the FIX rather than the file: 0/283, against a control of 23/283. No
+#     in-flight branch was already doing this.
+#
+# ⭐ WHAT MAKES THAT URGENT RATHER THAN TIDY, and it is not a live defect.
+# There is NO gap today: one published release, one record, and the PS-343 suite
+# is green. What is missing is the DETECTION. Writing the record is a MANUAL
+# CHECKLIST LINE in `RELEASING.md` ("Then write the release's provenance record
+# into engine/releases/ and run the verifier"), the engine builds happen OUTSIDE
+# this repository by hand, and nothing anywhere evaluates the quantifier. The
+# next release is already visible: upstream ungoogled publishes
+# 152.0.7977.82-1, our pin is 152.0.7977.75-1, and the chromium-upstream-watch
+# issue saying our patches apply cleanly to it is open. The moment that
+# publishes, the record is a box a human must remember to tick.
+#
+# ---------------------------------------------------------------------------
+# WHY THIS IS A SEPARATE JOB AND NOT A STEP IN AN EXISTING WORKFLOW
+# ---------------------------------------------------------------------------
+# Each existing gate was read at the commit this was written on rather than
+# assumed. The pattern is the same one every time: RIGHT OBJECT + WRONG
+# QUESTION, or RIGHT QUESTION + WRONG OBJECT.
+#
+#   * NOT `chromium-upstream-watch.yml` (daily 07:20). It looks UPSTREAM at
+#     ungoogled-chromium and asks whether our 16 patches still APPLY there — a
+#     binary nobody has received. This asks about what has already SHIPPED.
+#     Opposite ends of the pipeline, and folding them together would give one
+#     job two unrelated failure modes so a red would no longer say which.
+#
+#   * NOT `engine-gpu-variance.yml` (daily 06:40). It reads the PUBLISHED
+#     release — the right object — but asks whether the GPU identity varies BY
+#     SEED within one build. It never opens a provenance record, and a release
+#     with no record at all would pass it perfectly green. It also pays 45
+#     minutes and a 188 MB download; appending a two-read set difference to it
+#     would couple this cheap reading to that expensive one.
+#
+#   * NOT `engine-autoupdate.yml` (daily 06:00). Firefox only — `engine-
+#     baseline.txt` is `firefox-20` and both provisioning steps import
+#     `src.services.engine.firefox`. Wiring a Chromium-engine question into a
+#     Firefox bump builds a gate that cannot fire on the event it exists to
+#     catch.
+#
+#   * NOT `engine-trial-build.yml`. `workflow_dispatch:` only, and it builds a
+#     TRIAL artifact — the very thing `engine/releases/README.md` says a release
+#     record is not a substitute for ("it describes a trial CI run, not the
+#     shipped release", in a CI artifact with 30-day retention).
+#
+#   * NOT `published-engine-verdict.yml` (weekly, PS-370). Closest neighbour and
+#     still a different question: it asks whether the patches FUNCTION in the
+#     shipped binary, at a denominator of ONE release (the newest), and pays 12
+#     headed launches and two ~200 MB downloads to ask it. This asks whether a
+#     published release is ACCOUNTABLE AT ALL, at a denominator of THE WHOLE
+#     PUBLISHED SET. A release with a perfect functional verdict and no
+#     provenance record passes that job and fails this one, which is exactly the
+#     distinction worth keeping in two jobs.
+#
+#   * NOT `ci.yml`. A release publishing is not caused by our pull requests, so
+#     a PR trigger is the wrong EVENT for the risk. The PR arm below is narrow
+#     and deliberate — see its own comment.
+#
+# ---------------------------------------------------------------------------
+# CADENCE AND COST — THE CHOICE, AND WHY IT IS DIFFERENT FROM ITS NEIGHBOURS
+# ---------------------------------------------------------------------------
+# ⭐ THE COST ASYMMETRY IS THE WHOLE REASON THIS CAN BE DAILY. The reconciliation
+# is ONE api.github.com call (`git/matching-refs/tags/personium-`) and ONE
+# directory listing, then a set difference. NO engine download, NO browser, NO
+# build, NO display server. Measured locally: the whole run — selftest, live
+# reconciliation and falsification arm — completes in under two seconds.
+#
+# That is a materially different budget from the neighbours and it is stated
+# rather than copied: `engine-gpu-variance.yml` budgets 45 minutes and 188 MB,
+# `published-engine-verdict.yml` budgets 60 minutes and ~400 MB, and both are
+# priced for a measurement that touches a binary. This touches none.
+#
+# DAILY, at 08:40 UTC. After engine-autoupdate (06:00), engine-gpu-variance
+# (06:40), behaviour-launch-lane and chromium-upstream-watch (07:20),
+# firefox-major-watch (08:20) and published-engine-verdict (Mondays 08:10), so
+# the schedules do not contend for a runner. Nothing here depends on any of
+# them.
+#
+# ⭐ DAILY RATHER THAN WEEKLY, AND THE REASON IS THE REMEDY'S SHAPE. The
+# neighbour that reads a published engine is weekly because re-measuring an
+# unchanged binary buys nothing. This is not re-measuring a binary — it is
+# asking whether a HUMAN CHECKLIST STEP was completed, and the window in which
+# that is cheap to fix is the window right after the release, while the person
+# who cut it still remembers what they built. At a cost of one API call there is
+# no argument for making that window seven days wide.
+#
+# ⚠️ WHAT DAILY DOES NOT BUY, STATED RATHER THAN GLOSSED: detection can still lag
+# a release by up to 24 hours, and `app.py`'s `_check_engines_periodic()` polls
+# HOURLY. So an operator can receive an engine whose provenance is unrecorded
+# before this job says so. ⛔ THAT IS A DETECTION GAP THIS JOB DOES NOT CLOSE
+# AND DOES NOT CLAIM TO. This gate is about ACCOUNTABILITY — can we say what we
+# shipped — not about installation safety, which is `policy.KNOWN_BAD_VERSIONS`'
+# territory and is not touched here.
+#
+# ⛔ THIS DOES NOT PREVENT, IT DETECTS AND REPORTS. The remedy for a red run is
+# a person writing the record (`engine/releases/README.md`, "Adding a record for
+# a new release"), which no automation can do — ⛔ and MUST NOT: PS-343's own
+# trap is that "a plausible-looking manifest assembled from assumptions is
+# exactly the thing this roadmap exists to stop being downstream of". A job that
+# auto-generated the missing record would manufacture the evidence it exists to
+# demand. So the posture is `chromium-upstream-watch.yml`'s: file or update an
+# issue by EXACT-TITLE match, and let the job's own colour carry the verdict.
+#
+# ---------------------------------------------------------------------------
+# ⭐⭐ THE `[]` READING, STATED HERE AS WELL AS IN THE SCRIPT
+# ---------------------------------------------------------------------------
+# `updater.engine_versions_newest_first()` returns `[]` BOTH on failure AND on a
+# repository with no engine tag, and its docstring tells its caller to read that
+# as "nothing published", never as "GitHub is unreachable".
+#
+# ⛔ THIS GATE READS `[]` AS `CANNOT_ENUMERATE` — EXIT 2, RED, NEVER QUIET.
+#
+# That is the opposite reading from the operator's update path, and both are
+# correct because the two callers have opposite safe defaults. For the updater,
+# the safe action on an empty answer is to install nothing. For this gate, the
+# safe action is the reverse: reading `[]` as "zero published releases, so zero
+# unrecorded ones, green" would turn every rate limit into a permanent silent
+# pass — which is the precise shape of unwiredness this job exists to remove.
+#
+# ⛔ AND `engine_versions_newest_first`'s CONTRACT IS NOT TOUCHED. The
+# reinterpretation lives at the CALL SITE, in `enumerate_published()`, with the
+# reasoning beside it. The operator's hourly update path is byte-unchanged.
+#
+# ---------------------------------------------------------------------------
+# WHAT THIS COVERS AND WHAT IT DOES NOT — STATED, NOT IMPLIED
+# ---------------------------------------------------------------------------
+# It asks ONE question: does a record EXIST for each published tag. It does NOT
+# open the record, does NOT check its contents, does NOT download an asset and
+# does NOT re-derive a version — all of which is
+# `scripts/ps343_verify_release_provenance.py`'s job and is deliberately left
+# there. A green here means "every published release is accounted for by a file
+# that exists"; whether that file AGREES WITH THE BYTES is the verifier's
+# separate answer, and this job makes no claim about it.
+#
+# A record with no matching published tag (a yanked release, or one written
+# ahead of publication) is NOTED and scored at nothing. The quantifier being
+# evaluated is `engine/releases/README.md`'s own — every published release has a
+# record — which says nothing about the converse.
+
+on:
+  schedule:
+    # Daily 08:40 UTC. See the cadence block above for the slot and the reason.
+    - cron: "40 8 * * *"
+
+  # THE RELEASE-DAY ARM. A human who has just published an engine tag runs this
+  # rather than waiting up to a day, and it is also how a red run is re-read
+  # once the record is written.
+  workflow_dispatch:
+    inputs:
+      inject_published:
+        description: >-
+          THE FALSIFICATION PATH. Add this tag to the published set as if
+          upstream had published it (e.g. personium-152.0.7977.82) and the run
+          must go RED naming it. It can only ever ADD to the set, so it cannot
+          turn a red into a green — it exists so the RED arm is observable on a
+          real run and not only in the selftest. Leave blank for the normal
+          audit.
+        required: false
+        default: ""
+
+  # THE PR ARM, DELIBERATELY NARROW: the judgement, its tests and this venue.
+  # A change to any of those is the change most likely to break the gate and the
+  # one a daily cron would notice up to a day late. Everything else waits for
+  # the cron.
+  #
+  # ⚠️ THE FILTER IS A COST CONTROL, NOT A COMPLETENESS CLAIM. The audit reads
+  # through `src/services/engine/updater.py`, so a change there can move this
+  # reading and will NOT trigger this arm. That gap is covered by the cron.
+  pull_request:
+    branches:
+      - main
+    paths:
+      - ".github/scripts/ps343_release_audit.py"
+      - ".github/workflows/engine-release-provenance-audit.yml"
+      - "tests/test_ps385_release_provenance_audit.py"
+      - "engine/releases/**"
+
+permissions:
+  contents: read
+  issues: write      # the report is filed as an issue; that is the only write
+
+concurrency:
+  group: engine-release-provenance-audit-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    name: is every published engine release accounted for? (gating)
+    runs-on: ubuntu-24.04
+    # One API call, one directory listing and a set difference. The local run
+    # completes in under two seconds; 10 leaves room for a slow runner and a
+    # slow api.github.com without letting a hung request sit for an hour.
+    timeout-minutes: 10
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: "3.13"
+
+      # PROVE THE JUDGEMENT CAN STILL GO RED, BEFORE ANY NETWORK CALL.
+      #
+      # This runs FIRST and touches nothing outside this repository. The live
+      # reconciliation below can only ever demonstrate the outcome today's
+      # published set happens to produce — which is QUIET, because there is one
+      # release and it has a record — and a check only ever observed passing is
+      # not coverage. This project has recorded that exact shape three times:
+      # the PS-299 rebase probe printing "81/81 hunks, 0 rejects, ✅" AGAINST AN
+      # EMPTY DIRECTORY; `ps301_repro.sh`, which had no non-zero exit path at
+      # all and exited 0 on both arms; and PS-341's `--dump-dom` reading "8 of 8
+      # moved", a clean, confident and completely false result produced by the
+      # instrument rather than the engine.
+      #
+      # So this drives synthesised published/record pairs — all-recorded, one
+      # unrecorded, every-one unrecorded, an empty published list, a raised
+      # enumeration, an orphan record, and the bare-version/tag seam — through
+      # the SAME `classify()` path the live run gates on, and asserts each lands
+      # on the exit code AND the NAMED tags it must.
+      #
+      # Placed before the network call on purpose, exactly as
+      # `engine-gpu-variance.yml` places its selftest: if the judgement is
+      # broken, a live reading that produced a green would be meaningless, and
+      # the red this job would report would be the wrong red.
+      - name: Prove the judgement still goes red
+        run: python3 .github/scripts/ps343_release_audit.py --selftest
+
+      # THE SAME JUDGEMENT DRIVEN FROM THE OUTSIDE. The selftest above proves
+      # `classify()` discriminates; these prove the WIRING does — that the
+      # script's CLI, its exit codes, its GITHUB_OUTPUT contract and this
+      # workflow's own shape carry that judgement rather than quietly
+      # short-circuiting it. `python3 -m pytest` needs no project dependencies:
+      # the suite drives the audit and reads this file's YAML, and nothing else.
+      - name: Prove the wiring carries the judgement
+        run: |
+          python3 -m pip install --upgrade pip
+          # PyYAML explicitly, and NOT incidentally: the workflow-shape tests in
+          # this suite parse THIS FILE through `pytest.importorskip("yaml")`, and
+          # requirements.txt is deliberately never installed in this job. Without
+          # this line the tests that assert this job cannot be hollowed out would
+          # be inert in the job they guard. `-ra` so any future skip is NAMED in
+          # the log rather than being a number.
+          pip install --prefer-binary pytest PyYAML
+          python3 -m pytest tests/test_ps385_release_provenance_audit.py -q -ra
+
+      # THE LIVE RECONCILIATION. This is the point of the job: the published set
+      # is whatever `git/matching-refs/tags/personium-` answers, NOT a pin and
+      # NOT the record glob. The tags are ECHOED so a red run NAMES the release
+      # whose record is missing; the remedy is writing that record and it is
+      # impossible if the run does not print the tag.
+      #
+      # `continue-on-error` so the report is filed and the artifact uploaded
+      # even on a red reading — the verdict is re-asserted in its own step
+      # below, exactly as `chromium-upstream-watch.yml` does it.
+      - name: Reconcile the published set against the records
+        id: audit
+        continue-on-error: true
+        run: |
+          # The optional injection is assembled as an ARRAY rather than
+          # interpolated into the command line, so an empty input contributes no
+          # argument at all instead of an empty string the parser would have to
+          # interpret. The value reaches the runner through `env` and never
+          # through `${{ }}` inside the script body, so a hostile input cannot
+          # become shell.
+          args=(--out /tmp/ps385/audit.json --markdown /tmp/ps385/audit.md)
+          if [ -n "${INJECT:-}" ]; then
+            args+=(--inject-published "$INJECT")
+          fi
+          python3 .github/scripts/ps343_release_audit.py "${args[@]}"
+        env:
+          INJECT: ${{ github.event.inputs.inject_published }}
+
+      # ⭐ THE FALSIFICATION ARM, ON EVERY RUN AND NON-WAIVABLE.
+      #
+      # The live step above is expected to be QUIET forever — one release, one
+      # record — so on its own this job would be a gate that has only ever been
+      # seen to pass. This injects a published tag that has no record into the
+      # SAME code path, against the REAL record directory, and REQUIRES exit 1
+      # AND requires the injected tag to be NAMED in the output.
+      #
+      # ⚠️ THE EXIT CODE ALONE IS NOT ENOUGH and this step asserts both: a gate
+      # that returned 1 for some unrelated reason would satisfy an exit-code
+      # check while naming nothing, and "the gate can fire" is not "the gate
+      # fires about the right thing".
+      #
+      # ⛔ AND THE QUIET ARM IS THE OTHER HALF: a gate that flagged EVERY release
+      # would satisfy this arm perfectly. The live step above is that arm — it
+      # runs against the same real record directory with nothing injected and
+      # must be QUIET. Only the two together show the gate DISCRIMINATES.
+      - name: Prove the gate names an unrecorded release (falsification)
+        run: |
+          set +e
+          out="$(python3 .github/scripts/ps343_release_audit.py \
+                   --inject-published personium-999.0.0.0 2>&1)"
+          code=$?
+          set -e
+          echo "$out"
+          if [ "$code" -ne 1 ]; then
+            echo "::error::THE FALSIFICATION ARM DID NOT GO RED. A published release with no provenance record must exit 1 (UNRECORDED_RELEASE); this run exited ${code}. Nothing this job reported about the real published set can be trusted — the instrument, not the release set, is what was measured."
+            exit 1
+          fi
+          if ! printf '%s' "$out" | grep -q "personium-999.0.0.0"; then
+            echo "::error::THE FALSIFICATION ARM WENT RED WITHOUT NAMING THE RELEASE. Exit 1 with no tag in the output is a gate that can fire and cannot say about what — the remedy for a red run is writing that release's record, which is impossible if the run does not print it."
+            exit 1
+          fi
+          echo "falsification arm: exit 1 and personium-999.0.0.0 named ✅"
+
+      - name: Keep the reading
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: release-provenance-audit
+          path: /tmp/ps385/
+          if-no-files-found: warn
+          retention-days: 30
+
+      # THE REPORT. Filed for red readings only — a QUIET run is the expected
+      # state every single day and filing it would bury the one that matters.
+      # That is a deliberate divergence from `chromium-upstream-watch.yml`,
+      # which reports clean readings too because a NEWER upstream tag our
+      # patches apply to is itself news. "Every release still has a record" is
+      # not news; it is Tuesday.
+      - name: File or update the report issue
+        if: steps.audit.outputs.report == 'true' && github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TITLE: ${{ steps.audit.outputs.title }}
+        run: |
+          set -euo pipefail
+          # Exact-title match, done in jq against the fetched list rather than
+          # by trusting the search index: `gh issue list --search` is fuzzy and
+          # eventually-consistent, so a near-miss there would file a duplicate
+          # every single day. The title is passed as a jq ARGUMENT (--arg), so
+          # quoting inside it cannot break the filter.
+          existing="$(gh issue list --state open --limit 100 --json number,title \
+            | jq -r --arg t "$TITLE" 'map(select(.title == $t)) | .[0].number // empty')"
+          if [ -n "$existing" ]; then
+            echo "same news already filed as #$existing — commenting rather than duplicating"
+            gh issue comment "$existing" --body-file /tmp/ps385/audit.md
+          else
+            gh issue create --title "$TITLE" --body-file /tmp/ps385/audit.md
+          fi
+
+      # THE JOB'S OWN COLOUR, decided in one place and from the outcome only.
+      #
+      # ⚠️ CANNOT_ENUMERATE FAILS THIS JOB, exactly as exit 2 fails
+      # `engine-gpu-variance.yml` and `chromium-upstream-watch.yml`. "We failed
+      # to look" must never wear the colour of "we looked and it was fine" — and
+      # on THIS job that discipline is load-bearing rather than stylistic,
+      # because the failure mode being guarded against is a gate that reports
+      # green while measuring nothing.
+      - name: Report the verdict
+        env:
+          OUTCOME: ${{ steps.audit.outputs.outcome }}
+          UNRECORDED: ${{ steps.audit.outputs.unrecorded }}
+          GREEN: ${{ steps.audit.outputs.green }}
+        run: |
+          echo "outcome=${OUTCOME:-<none>} green=${GREEN:-false} unrecorded=${UNRECORDED:-<none>}"
+          if [ "${GREEN:-false}" = "true" ]; then
+            echo "release provenance audit: every published engine release has a record"
+            exit 0
+          fi
+          case "${OUTCOME:-}" in
+            UNRECORDED_RELEASE)
+              echo "::error::PUBLISHED ENGINE RELEASE WITH NO PROVENANCE RECORD: ${UNRECORDED}. We cannot say which base, which Chromium version or which patch set produced a browser we have shipped. The remedy is to WRITE the record — see engine/releases/README.md 'Adding a record for a new release' — and then run scripts/ps343_verify_release_provenance.py --download against the published assets (exit 0 is the bar). Do NOT write a record for a release you cannot account for."
+              ;;
+            CANNOT_ENUMERATE)
+              echo "::error::THE PUBLISHED ENGINE SET COULD NOT BE ESTABLISHED. NOTHING WAS MEASURED — this is NOT 'every release has a record'. Whether a published release is unaccounted for is UNKNOWN on this run. Re-run .github/scripts/ps343_release_audit.py by hand and read the log; an empty answer from git/matching-refs is read as unestablished here on purpose, see the script's module docstring."
+              ;;
+            *)
+              echo "::error::the audit reported an outcome this workflow does not know how to read: '${OUTCOME:-<empty>}'. Treating it as a failure rather than guessing."
+              ;;
+          esac
+          exit 1
