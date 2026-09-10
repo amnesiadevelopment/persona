@@ -112,7 +112,10 @@ them, and the regression fence that borrowed the same harness inherited the same
 hole — a worker-realm `G.navigator` override planted in `mobile_ext` was NOT
 seen. `tests/test_ps397_languages_native.py` now scans the product's own set and
 derives its completeness oracle BY AST from `spawn_browser`, so the coverage
-claim is checked rather than asserted. See §6 bound 6.
+claim is checked rather than asserted. See §6 bound 6 — and §6 bound 8 for
+exactly how far that oracle's forward-looking claim reaches, since the first
+version of it held for only two of the five ways a call site can name a
+directory.
 
 Result — the **only** locale-family hits in the entire built layer:
 
@@ -357,6 +360,33 @@ nothing observable.** That is the cost the ticket asks to avoid.
 7. **`search_ext` is scanned but emits no `.js`** — it is a manifest-only
    settings override. It is in the scanned set anyway, because "it cannot carry
    an override" is precisely the reasoning that was wrong about `mobile_ext`.
+8. ⚠️ **The AST coverage oracle is FINDABLE, not OMNISCIENT — and this is the
+   bound behind the §1 census's forward-looking claim.** Round 2 of the
+   regression fence asserted that a 14th `build_*_extension` call added to
+   `spawn_browser` turns the file red. Measured on a real, importable,
+   product-loaded 14th builder, that held for **two of five** call syntaxes:
+
+   | how the directory is written at the call site | oracle |
+   |---|---|
+   | inline literal `".persona-future-ext"` | names it → RED |
+   | f-string literal `f".persona-future-ext"` | names it → RED |
+   | local variable `_d = ".persona-future-ext"` | ⛔ **REFUSES** (was: silent) |
+   | module constant `FUTURE_DIR` | ⛔ **REFUSES** (was: silent) |
+   | helper wrapper `_build_future(profile_dir)` | ⚠️ **still invisible** |
+
+   The fix taken was **not** to teach the walk more syntaxes — a matcher taught
+   N shapes is silently green on shape N+1, which is the same failure one level
+   up. The oracle now **counts** the `build_*_extension` calls and **raises**,
+   naming the builder, on any call whose directory it cannot read. The three
+   previously-silent shapes become two loud refusals plus one stated bound.
+
+   ⛔ **The remaining bound is the helper wrapper**: `_build_future(...)` is not
+   a `build_*_extension` call at all, so it is never counted and the refusal
+   never reaches it. An extension introduced that way is loaded by the product
+   and scanned by nothing, with the fence green. It is asserted as a bound in
+   `test_the_coverage_oracle_refuses_a_builder_it_cannot_name` so it cannot
+   quietly become an assumed catch — if a builder is ever added behind a
+   wrapper, `_build_layer` must be pointed at it **by hand**.
 
 ---
 
