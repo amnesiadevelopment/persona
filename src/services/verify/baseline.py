@@ -287,6 +287,30 @@ BASELINE_ARTIFACT = os.path.join(
 # launch of a fresh profile dir can do a one-time headless init.
 LAUNCH_TIMEOUT_S = 240.0
 
+# How long to wait for the eval hook AFTER the session has already reported
+# BROWSER_STARTED. A SECOND, MUCH SMALLER BUDGET, and the size is the argument.
+#
+# `_launch_and_watch` emits BROWSER_STARTED the moment the window is on screen
+# and registers the hook afterwards; between the two it only defines three
+# closures (`_live_page`, `_ff_eval`, `_ff_goto`) and does no I/O. So the gap
+# this budget covers is closure-definition time — sub-millisecond — not work.
+# It is a real gap rather than a theoretical one because `in_process=True` puts
+# the session on a THREAD of this interpreter and `emit`'s flush is a write()
+# that releases the GIL, handing the reader the interpreter mid-gap.
+#
+# 5s is ~2% of LAUNCH_TIMEOUT_S and four orders of magnitude larger than the
+# gap it exists to absorb — deliberately over-provisioned against a loaded CI
+# runner, and still small enough that a session which publishes NOTHING is
+# refused in seconds rather than minutes. It is NOT sized for slow work,
+# because there is no work here to be slow: a hook that has not appeared in 5s
+# is not late, it is absent. Widening it would only delay a true refusal, which
+# `_await_started`'s docstring already explains is the outcome to avoid.
+HOOK_PUBLISH_TIMEOUT_S = 5.0
+
+# Poll interval while waiting for the hook. Fine enough that the ordinary case
+# (hook already there, or a few microseconds away) costs essentially nothing.
+HOOK_POLL_INTERVAL_S = 0.02
+
 
 class BaselineUnavailable(RuntimeError):
     """The baseline could not be recorded, with an actionable reason.
@@ -513,6 +537,85 @@ def _await_started(proc: Any, timeout: float) -> None:
             )
 
 
+def _await_ff_eval_hook(
+    proc: Any,
+    name: str,
+    timeout: float | None = None,
+) -> dict | None:
+    """Wait, BOUNDED, for a started session to publish its firefox eval hook.
+
+    Returns the hook, or ``None`` when the budget is spent or the session is
+    already dead. Returning ``None`` rather than raising is deliberate: the
+    caller owns the refusal, so the message that names the profile stays at the
+    one site that has always produced it and cannot drift.
+
+    WHY A WAIT EXISTS AT ALL. ``_launch_and_watch`` announces readiness
+    (``emit("BROWSER_STARTED")``) BEFORE it publishes the hook
+    (``register_ff_eval``); in between it only defines three closures.
+    ``_await_started`` returns on the announcement, so a reader can legally
+    arrive inside that gap. With ``in_process=True`` the session is a THREAD of
+    this interpreter and the registry a plain dict, so the two are threads of
+    one process and ``emit``'s flush — a ``write()`` — releases the GIL exactly
+    there. A single unretried read therefore converts a LATE hook into a
+    refusal, and on the behaviour lane one such refusal reddens all 16 launches
+    as ``CANNOT_RUN``. Four other harnesses in this tree (``readings/
+    ps349-.../subject.py``, ``scripts/ps350_stealth_control.py``,
+    ``scripts/ps330_ff_devices_reading.py``, ``scripts/ps175_cycles.py``) each
+    learned this by hand; the production recorder was the one that never did.
+
+    ⛔ THE REFUSAL IS NOT SOFTENED, ONLY DELAYED. A session that publishes NO
+    hook still reaches the caller's ``BaselineUnavailable`` — this returns
+    ``None`` for exactly that case. Trading an over-firing gate for a silent
+    one would be strictly worse than the defect being fixed.
+
+    ⚠️ BOUNDED, because ``_await_started``'s docstring already argues the case
+    one call higher and it is not re-litigated here: while we are parked the
+    ``finally: _teardown(...)`` never runs, the session leaks and the registry
+    keeps a stale entry; and in CI a hang burns the job's wall clock and is
+    misdiagnosed as flaky infrastructure, where a failure is a red build
+    somebody reads. See ``HOOK_PUBLISH_TIMEOUT_S`` for why that number.
+
+    ``proc.poll()`` IS USED, and this is the explicit decision the ticket asks
+    for. It is implemented on both arms (``None`` while the session lives, an
+    exit code once it does not), so it distinguishes "not yet" from "never":
+    a session that has already ENDED can never publish a hook, and waiting the
+    remaining budget on a corpse would delay a true refusal for no reading.
+    It is consulted only AFTER a hook lookup, so a session that publishes and
+    exits immediately is still read rather than lost to a race with itself.
+    A ``proc`` that cannot answer (no ``poll``, or one that raises — test
+    doubles, and any future handle) is treated as ALIVE: an unknown liveness
+    must not shorten the budget, because that would re-create the very
+    single-read refusal this function exists to remove.
+    """
+    from ..browser import invisible_launch as il
+
+    # Resolved at CALL time, not bound as a default: the module constant is the
+    # single home of the number, so shortening it (a test, or a future caller)
+    # must not require knowing that a default argument froze it at import.
+    if timeout is None:
+        timeout = HOOK_PUBLISH_TIMEOUT_S
+
+    deadline = time.monotonic() + timeout
+    while True:
+        # Looked up through the module, not a bound name, so the registry is
+        # re-read on every pass — the point of the loop.
+        hook = il.get_ff_eval(name)
+        if hook and callable(hook.get("eval")):
+            return hook
+
+        try:
+            ended = proc.poll() is not None
+        except Exception:
+            ended = False
+        if ended:
+            # "Never", not "not yet". Refuse now; the caller says why.
+            return None
+
+        if time.monotonic() >= deadline:
+            return None
+        time.sleep(HOOK_POLL_INTERVAL_S)
+
+
 def _teardown(proc: Any, name: str) -> None:
     """Stop the session and drop its eval hook, never raising.
 
@@ -692,7 +795,6 @@ def _record_on_firefox(
     recorder.
     """
     from ...core.config import DATA_DIR
-    from ..browser.invisible_launch import get_ff_eval
     from ..browser.process import spawn_browser
 
     # Immediately before the launch, so the refusal and the thing it refuses
@@ -712,7 +814,11 @@ def _record_on_firefox(
     proc = spawn_browser(profile, in_process=True)
     try:
         _await_started(proc, timeout)
-        hook = get_ff_eval(profile.name)
+        # NOT a single read: BROWSER_STARTED is announced before the hook is
+        # published, so the one-shot read turned a LATE hook into a refusal.
+        # The refusal below is unchanged and still fires for a session that
+        # publishes none — see `_await_ff_eval_hook`.
+        hook = _await_ff_eval_hook(proc, profile.name)
         if not hook or not callable(hook.get("eval")):
             raise BaselineUnavailable(
                 f"the session for {profile.name!r} started but published no "

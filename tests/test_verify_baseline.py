@@ -1075,6 +1075,238 @@ def test_the_firefox_arm_still_launches_in_process_and_reads_its_hook(
     assert torn_down == [bl.BASELINE_PROFILE_NAME]
 
 
+# --- PS-398: a LATE hook is not a missing hook ------------------------------
+#
+# `_launch_and_watch` emits BROWSER_STARTED (the window is on screen) and
+# registers the eval hook AFTERWARDS. `_await_started` returns on the
+# announcement, so the recorder could arrive in the gap and refuse a session
+# that was about to publish. These two tests are a FALSIFICATION PAIR and must
+# be read together: the QUIET arm proves the wait does something, the RED arm
+# proves the refusal it waits inside of still fires. Either alone passes
+# against a change that is wrong in the opposite direction.
+
+
+class _FakeSession:
+    """A launched session handle, shaped like the part of InvisibleProcess the
+    recorder touches: `poll()` answering None while alive, an exit code once
+    not. `InvisibleProcess.poll` has exactly this contract on BOTH arms."""
+
+    def __init__(self, alive=True):
+        self._alive = alive
+
+    def die(self):
+        self._alive = False
+
+    def poll(self):
+        return None if self._alive else 0
+
+
+def _late_hook(appears_on_call, session=None, hook=None):
+    """A `get_ff_eval` that answers None until the Nth call, then the hook.
+
+    THIS IS THE WHOLE POINT OF THE QUIET ARM, so it is worth saying what it
+    must NOT be: a fixture that registers the hook before the reader ever looks
+    reproduces nothing and passes against a no-op change. `appears_on_call=3`
+    means the first two lookups genuinely miss — which is exactly what the
+    single unretried read on HEAD does, and why this test is red there.
+    """
+    calls = {"n": 0}
+    hook = hook or {"eval": lambda expr: {"v": "FF"}}
+
+    def _get(name):
+        calls["n"] += 1
+        if calls["n"] < appears_on_call:
+            return None
+        return hook
+
+    return _get, calls
+
+
+def _firefox_arm_scaffold(monkeypatch, tmp_path, proc):
+    """Everything the firefox arm needs stubbed EXCEPT the hook lookup — that
+    is the thing under test. Mirrors
+    `test_the_firefox_arm_still_launches_in_process_and_reads_its_hook`,
+    including the DATA_DIR redirect that keeps the pin off a real profile."""
+    from src.services.verify import baseline as bl
+
+    monkeypatch.setattr("src.core.config.DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(bl, "_require_display", lambda: None)
+    monkeypatch.setattr(bl, "_await_started", lambda proc, timeout: None)
+    monkeypatch.setattr(bl, "_teardown", lambda proc, name: None)
+    monkeypatch.setattr(
+        "src.services.browser.process.spawn_browser",
+        lambda profile, in_process=False: proc,
+    )
+    return bl
+
+
+def test_a_hook_published_AFTER_readiness_is_recorded_not_refused(
+    monkeypatch, tmp_path
+):
+    """QUIET ARM. The session is alive and publishes its hook a few lookups
+    after `_await_started` returns — the real ordering, where BROWSER_STARTED
+    precedes `register_ff_eval` by three closure definitions.
+
+    ⚠️ THIS TEST IS RED AGAINST HEAD, and that is its job. The pre-fix reader
+    calls `get_ff_eval` exactly once, gets the None this fixture serves on call
+    1, and raises BaselineUnavailable — so a no-op change cannot pass it. Run
+    both ways before trusting it; the red arm below passes on HEAD unchanged.
+    """
+    session = _FakeSession(alive=True)
+    bl = _firefox_arm_scaffold(monkeypatch, tmp_path, session)
+
+    get_ff_eval, calls = _late_hook(appears_on_call=3)
+    monkeypatch.setattr(
+        "src.services.browser.invisible_launch.get_ff_eval", get_ff_eval
+    )
+
+    snap = bl.record_snapshot(fresh=False, realms=("window",))
+
+    # A real reading came back through the late hook — not an empty document
+    # and not a refusal.
+    assert snap["probes"]["window"]["navigator.userAgent"]["value"] == "FF"
+    assert bl.count_errors(snap) == 0
+    # And it genuinely had to WAIT: a single read would have seen the None.
+    assert calls["n"] >= 3, (
+        "the fixture must have been polled more than once, or this test is "
+        f"passing without exercising the wait (calls={calls['n']})"
+    )
+
+
+def test_a_session_that_NEVER_publishes_a_hook_is_still_refused(
+    monkeypatch, tmp_path
+):
+    """RED ARM. The guard must survive the wait.
+
+    A wait that swallows a real failure trades an over-firing gate for a silent
+    one, which is strictly worse than the flake it fixes. A session that
+    publishes nothing must still raise, and the message must still name the
+    profile so the refusal stays actionable.
+
+    ⚠️ THIS ARM DELIBERATELY PATCHES NOTHING AND PAYS THE FULL BUDGET, so it
+    is byte-runnable against HEAD as well as against the fix and PASSES BOTH
+    WAYS. That is the point: it is the control, not the demonstration. The
+    demonstration is the QUIET arm above, which is red on HEAD. Shortening this
+    one by monkeypatching the new constant would make it un-runnable against
+    HEAD and quietly turn the control into part of the change it controls.
+    """
+    session = _FakeSession(alive=True)
+    bl = _firefox_arm_scaffold(monkeypatch, tmp_path, session)
+
+    monkeypatch.setattr(
+        "src.services.browser.invisible_launch.get_ff_eval", lambda name: None
+    )
+
+    with pytest.raises(bl.BaselineUnavailable) as exc:
+        bl.record_snapshot(fresh=False, realms=("window",))
+
+    msg = str(exc.value)
+    assert "published no eval hook" in msg
+    assert bl.BASELINE_PROFILE_NAME in msg, (
+        "the refusal must still say WHICH profile could not be read"
+    )
+
+
+def test_a_hook_shaped_object_with_no_callable_eval_is_still_refused(
+    monkeypatch, tmp_path
+):
+    """The other half of the guard, which the wait must not erode either: a
+    registry entry that exists but carries no callable `eval` is not a hook.
+    Waiting for one must not accept a truthy dict as satisfaction.
+
+    Shortened via the new constant, so unlike the red arm above this one is a
+    fix-side test rather than a both-ways control — the red arm carries that
+    duty and pays the full budget to keep it.
+    """
+    session = _FakeSession(alive=True)
+    bl = _firefox_arm_scaffold(monkeypatch, tmp_path, session)
+
+    monkeypatch.setattr(
+        "src.services.browser.invisible_launch.get_ff_eval",
+        lambda name: {"goto": lambda url: None},  # no "eval"
+    )
+    monkeypatch.setattr(bl, "HOOK_PUBLISH_TIMEOUT_S", 0.1)
+
+    with pytest.raises(bl.BaselineUnavailable) as exc:
+        bl.record_snapshot(fresh=False, realms=("window",))
+
+    assert "published no eval hook" in str(exc.value)
+
+
+def test_a_DEAD_session_is_refused_immediately_rather_than_after_the_budget(
+    monkeypatch, tmp_path
+):
+    """"Not yet" and "never" are different, and `proc.poll()` tells them apart.
+
+    A session that has already ended can never publish a hook, so waiting the
+    remaining budget on it delays a true refusal for no possible reading. The
+    budget is set far above the measured elapsed time here, so this fails if
+    the poll check is dropped and the wait falls back to burning the clock.
+    """
+    session = _FakeSession(alive=False)
+    bl = _firefox_arm_scaffold(monkeypatch, tmp_path, session)
+
+    monkeypatch.setattr(
+        "src.services.browser.invisible_launch.get_ff_eval", lambda name: None
+    )
+    monkeypatch.setattr(bl, "HOOK_PUBLISH_TIMEOUT_S", 30.0)
+
+    started = time.monotonic()
+    with pytest.raises(bl.BaselineUnavailable):
+        bl.record_snapshot(fresh=False, realms=("window",))
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 5.0, (
+        "a session known to be dead must be refused on the liveness answer, "
+        f"not after the {30.0}s budget (took {elapsed:.1f}s)"
+    )
+
+
+def test_the_wait_is_BOUNDED_and_the_bound_is_small_next_to_the_launch_budget(
+    monkeypatch,
+):
+    """The hazard `_await_started`'s docstring names, one call lower.
+
+    While the recorder is parked, `record_snapshot`'s `finally: _teardown(...)`
+    does not run: the session leaks and the registry keeps a stale entry, and
+    on the in_process path the only stop signal is `proc.terminate()`, which is
+    unreachable from inside a blocking wait. In CI a hang burns the job's wall
+    clock and is misdiagnosed as flaky infrastructure, while a failure is a red
+    build somebody reads. So the number is pinned, not merely commented.
+    """
+    from src.services.verify import baseline as bl
+
+    assert bl.HOOK_PUBLISH_TIMEOUT_S > 0, "a zero budget is the pre-fix defect"
+    assert bl.HOOK_PUBLISH_TIMEOUT_S <= 0.1 * bl.LAUNCH_TIMEOUT_S, (
+        "the gap being covered is closure-definition time, not work — a hook "
+        "that has not appeared in seconds is absent, not late"
+    )
+
+
+def test_an_unknown_liveness_does_not_shorten_the_wait(monkeypatch, tmp_path):
+    """A handle that cannot answer `poll()` must be treated as ALIVE.
+
+    Reading an unknown liveness as "ended" would refuse on the first lookup —
+    which is the pre-fix single read wearing a different name, and would make
+    every test double in this suite (a bare `object()`) silently un-waited.
+    """
+    from src.services.verify import baseline as bl
+
+    class _Mute:
+        def poll(self):
+            raise RuntimeError("this handle cannot answer")
+
+    get_ff_eval, calls = _late_hook(appears_on_call=3)
+    monkeypatch.setattr(
+        "src.services.browser.invisible_launch.get_ff_eval", get_ff_eval
+    )
+
+    hook = bl._await_ff_eval_hook(_Mute(), "any-profile", timeout=2.0)
+
+    assert hook is not None and callable(hook.get("eval"))
+    assert calls["n"] >= 3
+
+
 # --- the trap: an unreachable arm is never a pass (AC4) ---------------------
 
 
