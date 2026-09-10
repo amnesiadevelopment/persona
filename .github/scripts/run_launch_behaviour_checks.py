@@ -398,13 +398,20 @@ MODULE_FILE = REPO_ROOT.joinpath(*MODULE.split(".")).with_suffix(".py")
 #: so a rename or a retirement fails loudly here instead of silently shrinking
 #: the lane.
 #:
-#: ⭐⭐ FIVE SINCE PS-383, AND THE OMISSION SET IS NOW EMPTY — every
-#: `needs_launch=True` check in the registry is selected and required.
+#: ⭐⭐ FIVE SINCE PS-383, AND SIX SINCE PS-388 — the omission set is EMPTY and
+#: every `needs_launch=True` check in the registry is selected and required.
 #: `no-process-survives-a-closed-session` is a CHROMIUM launch and this lane now
 #: provisions chromium, so the last omission — which was never about the check
 #: and always about the venue — is closed. Its entry is deleted from
 #: `DOCUMENTED_OMISSIONS` in the same change, as the header's standing
 #: instruction required.
+#:
+#: ⭐ `no-process-survives-a-degraded-session` (PS-388) IS THE SIXTH, and it
+#: needs NO new venue work: it is the same chromium engine, the same display
+#: and the same scratch home as its sibling, differing only in that its subject
+#: is SIGSTOPped between the settle and the teardown. It joins BOTH constants
+#: in its own change, and it is deliberately NOT a DOCUMENTED_OMISSION — a new
+#: check selected but not required is the shape this file's header forbids.
 #:
 #: ⛔ AN EMPTY OMISSION SET IS THE STRICTEST STATE, NOT A LOOPHOLE, and the
 #: direction is what matters: the floor is `lane - DOCUMENTED_OMISSIONS`, so
@@ -424,6 +431,7 @@ SELECTED_CHECKS = (
     "benign-edit-stability",
     "trash-restore-and-wipe",
     "no-process-survives-a-closed-session",
+    "no-process-survives-a-degraded-session",
 )
 
 COMMAND = [
@@ -473,6 +481,7 @@ EXPECTED_CHECKS = (
     "benign-edit-stability",
     "trash-restore-and-wipe",
     "no-process-survives-a-closed-session",
+    "no-process-survives-a-degraded-session",
 )
 
 #: Recorded so a reader of a red run knows what the lane costs and can tell a
@@ -500,16 +509,34 @@ EXPECTED_CHECKS = (
 #: ~7s, per `_STABLE_SAMPLES`' own note) is ~30s. So the lane's ceiling is
 #: roughly 114s + 3min + two downloads ≈ 7 min against a 45-minute budget.
 #:
+#: ⭐ PS-388 ADDS A SIXTH CHECK — `no-process-survives-a-degraded-session` — and
+#: it needs NO new provisioning: same engine, same display, same scratch home,
+#: differing only in the SIGSTOP between the settle and the teardown. It costs
+#: two more wrapper launches on the same 90s bound (~30s typical, ~3min worst),
+#: plus the wedge's own overhead, which is the one figure that is not its
+#: sibling's: `terminate()` on a SIGSTOPped tree returns in the FULL handle
+#: timeout (10s) rather than ~0s, because SIGTERM to a stopped process is
+#: QUEUED and the wait() between the SIGTERM and the SIGKILL blocks. Measured
+#: on a real POSIX tree in a container: healthy 0.00s, wedged 10.00s
+#: (`readings/ps388-2026-09-10/`). So the ceiling moves to roughly
+#: 114s + 6min + two downloads ≈ 10 min, still against the same 45-minute
+#: budget with a wide margin.
+#:
 #: ⛔ THE CHROMIUM FIGURE IS A DOWNLOAD MEASUREMENT, NOT A LAUNCH ONE: the
 #: container that took it cannot launch chromium at all (no unprivileged user
 #: namespaces — the engine exits FATAL "No usable sandbox!" ~3s in), which is a
-#: fact about that sandbox and not about the runner. See the workflow header for
-#: the CI-side figures.
+#: fact about that sandbox and not about the runner. ⚠️ THE SAME BOUND GOVERNS
+#: PS-388's 10.00s: it was measured on a `sleep` tree rather than on a chromium
+#: wrapper. The queued-SIGTERM mechanism is a kernel fact independent of the
+#: engine, but the wall-clock a chromium tree produces is the runner's to
+#: report. See the workflow header for the CI-side figures.
 _MEASURED_NOTE = (
     "measured on one linux host at n=1: the four firefox checks run in ~114s "
     "over 16 browser launches, plus ~10s to fetch the firefox engine; the "
-    "chromium survivor check adds two wrapper launches bounded at 90s each "
-    "and a ~200 MB engine download"
+    "two chromium survivor checks add four wrapper launches bounded at 90s "
+    "each and a ~200 MB engine download, and the DEGRADED one pays the full "
+    "handle timeout in each teardown because SIGTERM to a stopped process is "
+    "queued"
 )
 
 #: THE SCRATCH-HOME PREFIX, AND ITS LENGTH IS A CORRECTNESS PROPERTY.
