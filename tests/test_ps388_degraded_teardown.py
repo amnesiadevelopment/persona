@@ -408,6 +408,7 @@ def test_the_undo_does_not_reuse_the_sweeps_group_guard_as_its_own_gate() -> Non
     )
 
 
+@POSIX_ONLY
 def test_the_undo_is_safe_against_our_own_group() -> None:
     """A SIGCONT to our own group is harmless, and this proves it in situ.
 
@@ -416,9 +417,87 @@ def test_the_undo_is_safe_against_our_own_group() -> None:
     hazard `signallable_group` guards is a SIGKILL hazard; every member of our
     own group is running by construction (we are executing), so a SIGCONT to it
     is a no-op at the kernel level rather than a danger.
+
+    ⚠️ POSIX-ONLY, AND THE MARKER IS LOAD-BEARING RATHER THAN TIDINESS:
+    `os.getpgrp` does not exist on Windows, so without it this test raises
+    `AttributeError` in its FIRST line — which is a fact about the test's own
+    fixture and not about the undo. Measured: the marker was dropped when this
+    test replaced its predecessor and `tests (windows-latest, main)` went red
+    on exactly that, while every POSIX shard stayed green.
     """
     behaviour_checks._resume_group(os.getpgrp())  # must not raise, must not stop us
     assert True  # reaching this line IS the assertion: we are still running
+
+
+def test_every_test_touching_a_posix_api_carries_the_posix_marker() -> None:
+    """⛔ THE MARKER IS A CORRECTNESS PROPERTY OF THIS FILE, NOT HOUSEKEEPING.
+
+    Half the tests here drive REAL process groups and half only read source
+    text, and the two look identical in a listing — both mention `SIGSTOP`,
+    because one signals with it and the other searches for the word. Get the
+    split wrong in the portable direction and the file is merely over-skipped;
+    get it wrong in the other and a POSIX-only API is CALLED on Windows, where
+    it does not exist.
+
+    ⚠️ MEASURED, NOT ANTICIPATED. `test_the_undo_is_safe_against_our_own_group`
+    replaced a predecessor and did not inherit its marker, so
+    `tests (windows-latest, main)` went red on `AttributeError: module 'os' has
+    no attribute 'getpgrp'` — in the test's FIRST line, a fact about the
+    fixture and not about the undo — while every POSIX shard stayed green. A
+    single-platform red that no local run can reproduce is exactly the kind
+    this file should be able to catch itself.
+
+    So the rule is checked on the AST rather than on the text: a test is
+    required to carry the marker only when it CALLS one of these APIs. A test
+    that merely names one in a string is portable and must stay unmarked,
+    which is why a grep cannot express this.
+    """
+    import ast
+
+    posix_calls = {
+        "os.killpg",
+        "os.getpgrp",
+        "os.getpgid",
+        "os.kill",
+        "os.fork",
+        "behaviour_checks._resume_group",
+        "behaviour_checks._stop_group_or_refuse",
+        "behaviour_checks._sweep_group",
+        "_spawn_stopped_group",
+        "_status",
+    }
+
+    tree = ast.parse(inspect.getsource(sys.modules[__name__]))
+    offenders: "list[tuple[str, list[str]]]" = []
+    for node in tree.body:
+        if not isinstance(node, ast.FunctionDef) or not node.name.startswith("test_"):
+            continue
+        marked = any(
+            getattr(dec, "id", None) == "POSIX_ONLY" for dec in node.decorator_list
+        )
+        if marked:
+            continue
+        statements = node.body
+        if (
+            statements
+            and isinstance(statements[0], ast.Expr)
+            and isinstance(statements[0].value, ast.Constant)
+        ):
+            statements = statements[1:]
+        called = set()
+        for statement in statements:
+            for sub in ast.walk(statement):
+                if isinstance(sub, ast.Call):
+                    called.add(ast.unparse(sub.func))
+        hits = sorted(called & posix_calls)
+        if hits:
+            offenders.append((node.name, hits))
+
+    assert not offenders, (
+        "these tests CALL a POSIX-only API without @POSIX_ONLY, so they raise "
+        "AttributeError on Windows rather than skipping — a red that says "
+        f"nothing about the code under test: {offenders}"
+    )
 
 
 # --- the falsification is the SHIPPED shape ---------------------------------
