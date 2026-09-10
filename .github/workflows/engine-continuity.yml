@@ -101,6 +101,27 @@ name: engine-continuity
 #                               `fetch_release_full`'s own docstring says "a
 #                               rollback that silently installs something else
 #                               is worse than one that refuses."
+#   3  build_unreachable        THE SAME FAILURE ON THE OTHER LEG: an engine
+#                               release we needed (usually build N) is published
+#                               and would not resolve to an asset. Its own
+#                               status, because calling it `discovery_failed`
+#                               would deny reading a tag list this run PRINTED,
+#                               and calling it `predecessor_unreachable` would
+#                               name the wrong build to whoever reads the issue
+#                               (and file it as `N vs N`). Same exit code as its
+#                               sibling — an automation branching on the code
+#                               should treat them identically — while the STATUS
+#                               says which build to go and look at.
+#   5  staging_failed           a release RESOLVED and the download or its
+#                               digest check failed. One step past
+#                               `build_unreachable`, and its own code so "we
+#                               could not reach it" and "we could not fetch it"
+#                               are distinguishable without reading prose. It
+#                               exists because the alternative was an escaping
+#                               exception: right colour, NO step output, NO
+#                               issue, NO artifact — silent red on the one step
+#                               whose failure is least surprising, since a
+#                               download is this job's entire cost.
 #   4  refused_by_policy        persona itself refuses this build. Measuring a
 #                               build persona will not install is the wrong
 #                               question and this job does not re-litigate the
@@ -529,6 +550,12 @@ jobs:
               ;;
             predecessor_unreachable)
               echo "::error::Engine ${OLD:-<N-1>} is published but its release could not be obtained — yanked, deleted, or no asset for this OS. NOTHING was compared and NOTHING was substituted for it. This is not a finding about the engine; the comparison could not be set up."
+              ;;
+            build_unreachable)
+              echo "::error::Engine ${NEW:-<the build>} is published but its release could not be obtained — yanked, deleted, no asset for this OS, or a transient API failure. The published TAG LIST was read successfully; it is this one release that would not resolve, which is why this is neither discovery_failed nor predecessor_unreachable. NOTHING was compared. Usually transient — re-dispatch before reading anything into it."
+              ;;
+            staging_failed)
+              echo "::error::Engine ${NEW:-<the build>} resolved to an asset and could NOT be staged — the download or its digest check failed. Check the step log for the downloader's own message: a digest mismatch is a different problem from a truncated transfer, and this job does not guess which. NOTHING was compared."
               ;;
             discovery_failed)
               echo "::error::Could not read the published engine tag list, so we do not know which builds exist. NOTHING WAS MEASURED. Usually transient — re-dispatch before reading anything into it."

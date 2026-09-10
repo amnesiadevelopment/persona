@@ -775,3 +775,422 @@ def test_this_workflow_is_not_triggered_by_a_push():
     on = wf[True] if True in wf else wf["on"]
     assert "push" not in on
     assert "schedule" in on and "workflow_dispatch" in on
+
+
+# ── THE ROUTING LAYER: WHICH NON-MEASUREMENT OUTCOME APPLIES ─────────────────
+#
+# ⛔ THIS SECTION EXISTS BECAUSE ITS ABSENCE SHIPPED THREE WRONG ANSWERS.
+#
+# Every test above this line that mentions the runner reads its SOURCE TEXT.
+# That is the right tool for "the probe is imported, not forked" and "the
+# headless venue is not substituted" — properties of the file. It is the wrong
+# tool for `resolve()` and `run()`, which DECIDE WHICH OF THE NON-MEASUREMENT
+# OUTCOMES APPLIES, and which no test executed at all. The selftest's cases
+# exercise `classify` plus the `*_result()` CONSTRUCTORS; nothing exercised the
+# code that chooses between them, so the routing layer sat in exactly the state
+# this module's own header condemns: a judgement whose failing outcomes have
+# never been observed.
+#
+# Driven here with a stubbed `updater`, because the three decisions that were
+# wrong are each two lines to falsify:
+#
+#   1. an unresolvable build N reported `discovery_failed` — AFTER the run had
+#      successfully read AND PRINTED the published tag list,
+#   2. the manual arm filed `N vs N` and blamed the predecessor for build N's
+#      failure, and
+#   3. a failed download RAISED, so the report — this job's deliverable — was
+#      never written at all.
+#
+# NO NETWORK: only `fetch_latest_checked`, `fetch_release_full` and
+# `engine_versions_newest_first` are replaced. `is_newer`, `version_from_tag`
+# and `parse_version` stay REAL, because the ordering and the prefix rules are
+# part of what is under test.
+
+NEWEST = "152.0.7977.75"
+PREVIOUS = "148.0.7778.215"
+
+
+@pytest.fixture(scope="module")
+def runner():
+    return load(RUNNER, "ps341_run_continuity")
+
+
+@pytest.fixture
+def fake_updater(monkeypatch):
+    """The real `updater` with ONLY its three network calls replaced."""
+    from src.services.engine import updater as real
+
+    state = {
+        "published": [NEWEST, PREVIOUS],
+        # version -> (version, url, digest); a missing key answers ('','',''),
+        # which is `fetch_release_full`'s own contract for a yanked release.
+        "releases": {
+            NEWEST: (NEWEST, "https://example.invalid/new.AppImage", "sha256:aa"),
+            PREVIOUS: (PREVIOUS, "https://example.invalid/old.AppImage", "sha256:bb"),
+        },
+        "latest": None,          # None -> derived from `releases`
+    }
+
+    def engine_versions_newest_first(timeout=20):
+        return list(state["published"])
+
+    def fetch_release_full(tag, timeout=20):
+        # The real function accepts a prefixed tag and answers bare, so the stub
+        # must too — the prefix-normalisation test below rests on it.
+        return state["releases"].get(real.version_from_tag(tag), ("", "", ""))
+
+    def fetch_latest_checked(timeout=20):
+        if state["latest"] is not None:
+            return state["latest"]
+        newest = state["published"][0] if state["published"] else ""
+        v, url, digest = state["releases"].get(newest, ("", "", ""))
+        return newest, url, digest, "ok", ""
+
+    monkeypatch.setattr(real, "engine_versions_newest_first",
+                        engine_versions_newest_first)
+    monkeypatch.setattr(real, "fetch_release_full", fetch_release_full)
+    monkeypatch.setattr(real, "fetch_latest_checked", fetch_latest_checked)
+    return state
+
+
+def test_a_healthy_scheduled_run_resolves_both_builds(runner, v, fake_updater):
+    """The positive control for this whole section. Without it, every test
+    below could pass because `resolve` refuses everything."""
+    plan, result = runner.resolve(v)
+    assert result is None
+    assert plan["new_version"] == NEWEST
+    assert plan["old_version"] == PREVIOUS
+    assert plan["new_url"] and plan["old_url"]
+    assert plan["new_url"] != plan["old_url"]
+
+
+def test_an_unresolvable_build_n_does_not_deny_the_tag_list_it_just_read(
+        runner, v, fake_updater, capsys):
+    """FINDING 1. `fetch_latest_checked` can answer a version with NO url — a
+    transient API failure, or a release with no asset for this OS, both of which
+    happen to a weekly unattended job.
+
+    That used to route to `discovery_failed`, whose defined meaning is *"We
+    could not even ask which engine versions are published"* — on a run that had
+    just asked, been answered, and PRINTED the answer. The report was false
+    about the one fact the run established.
+    """
+    fake_updater["latest"] = (NEWEST, "", "", "ok", "")
+    plan, result = runner.resolve(v)
+    printed = capsys.readouterr().out
+
+    assert plan is None
+    assert NEWEST in printed, "the run reads and prints the tag list first"
+    assert result["status"] != v.DISCOVERY_FAILED, (
+        "the tag list WAS read — saying otherwise contradicts this run's own "
+        "output two lines earlier"
+    )
+    assert result["status"] == v.BUILD_UNREACHABLE
+    assert result["new_version"] == NEWEST
+    body = v.render_report(result)
+    assert "could not be resolved" in body
+    assert not v.is_green(result["status"])
+
+
+def test_a_blank_version_is_never_rendered_as_a_quoted_empty_string(
+        runner, v, fake_updater):
+    """FINDING 1, sub-case. On a genuine network blip the version comes back
+    empty too, and the old message INTERPOLATED it: `the newest engine release
+    '' could not be resolved to an asset for this OS.` — a quoted empty version
+    in a filed issue.
+
+    ⚠️ Asserted against the INTERPOLATION, not against the two characters. The
+    message legitimately quotes `fetch_release_full`'s literal `('','','')`
+    contract — naming the API answer is what makes the error diagnosable — so a
+    blanket "no empty quotes anywhere" test would fail on the documentation of
+    the very thing that went wrong.
+    """
+    fake_updater["latest"] = ("", "", "", "ok", "")
+    plan, result = runner.resolve(v)
+    assert plan is None
+    assert "release '' " not in result["error"]
+    assert "build N ('')" not in result["error"]
+    assert "could not be named" in result["error"], (
+        "an unnameable version must SAY it is unnameable rather than render as "
+        "an empty pair of quotes"
+    )
+    assert result["new_version"] is None
+    # And it must not reach the issue title as an empty name either.
+    assert "engine  " not in v.issue_title(result)
+    assert v.render_report(result)
+
+
+def test_the_manual_arm_never_files_a_comparison_of_a_version_with_itself(
+        runner, v, fake_updater):
+    """FINDING 2. A dispatched build N whose release will not resolve used to
+    return `predecessor_unreachable_result(n_ver, n_ver)` — naming build N's
+    failure as the PREDECESSOR's, asserting the predecessor was unobtainable
+    when it was never asked for, and rendering an issue titled `X vs X`.
+
+    The issue title is the dedup key, so that also filed the wrong record.
+    """
+    fake_updater["releases"].pop(NEWEST)
+    plan, result = runner.resolve(v, new_version=NEWEST)
+
+    assert plan is None
+    assert result["status"] != v.PREDECESSOR_UNREACHABLE, (
+        "what failed is build N; blaming the predecessor points the reader at "
+        "the wrong build"
+    )
+    assert result["status"] == v.BUILD_UNREACHABLE
+    assert result["new_version"] == NEWEST
+    assert result["old_version"] is None
+    title = v.issue_title(result)
+    assert "%s vs %s" % (NEWEST, NEWEST) not in title
+    assert " vs " not in title, title
+
+
+def test_both_arms_name_one_real_world_event_the_same_way(
+        runner, v, fake_updater):
+    """FINDING 1 + 2 together, and the reason they are one defect. The SAME
+    event — a published version whose asset will not resolve — produced
+    `discovery_failed` on the scheduled arm and `predecessor_unreachable` on the
+    manual one. Two statuses, two exit codes and two issue titles for one
+    cause."""
+    fake_updater["releases"].pop(NEWEST)
+    fake_updater["latest"] = (NEWEST, "", "", "ok", "")
+
+    _, scheduled = runner.resolve(v)
+    _, manual = runner.resolve(v, new_version=NEWEST)
+
+    assert scheduled["status"] == manual["status"]
+    assert v.exit_code_for(scheduled["status"]) == v.exit_code_for(manual["status"])
+    assert v.issue_title(scheduled) == v.issue_title(manual), (
+        "the title is the dedup key: disagreeing arms file two records for one "
+        "cause"
+    )
+
+
+def test_an_unreachable_predecessor_is_still_its_own_outcome(
+        runner, v, fake_updater):
+    """The control for the two tests above: widening build N's failure to its
+    own status must NOT have collapsed the predecessor's, which is a different
+    build and a different thing for a human to go and look at."""
+    fake_updater["releases"].pop(PREVIOUS)
+    plan, result = runner.resolve(v)
+
+    assert plan is None
+    assert result["status"] == v.PREDECESSOR_UNREACHABLE
+    assert result["new_version"] == NEWEST
+    assert result["old_version"] == PREVIOUS
+    assert PREVIOUS in result["error"]
+
+
+def test_a_single_published_release_is_no_predecessor_not_a_failure(
+        runner, v, fake_updater):
+    fake_updater["published"] = [NEWEST]
+    plan, result = runner.resolve(v)
+    assert plan is None
+    assert result["status"] == v.NO_PREDECESSOR
+    assert v.is_green(result["status"])
+
+
+def test_an_empty_tag_list_is_discovery_failed(runner, v, fake_updater):
+    """`discovery_failed` still has its OWN event, and this is it: the list
+    itself came back empty, so we genuinely could not ask."""
+    fake_updater["published"] = []
+    plan, result = runner.resolve(v)
+    assert plan is None
+    assert result["status"] == v.DISCOVERY_FAILED
+    assert not v.is_green(result["status"])
+
+
+def test_a_build_persona_refuses_is_not_measured(runner, v, fake_updater):
+    fake_updater["latest"] = (NEWEST, "", "", "known_bad", "blocklisted")
+    plan, result = runner.resolve(v)
+    assert plan is None
+    assert result["status"] == v.REFUSED_BY_POLICY
+    assert v.exit_code_for(result["status"]) == v.EXIT_REFUSED_BY_POLICY
+
+
+def test_dispatching_the_oldest_version_says_so_rather_than_miscounting(
+        runner, v, fake_updater):
+    """FINDING 5. Dispatching the OLDEST published version correctly returns
+    `no_predecessor` — but it used to render the scheduled path's headline,
+    "Only one engine release is published", over a body that then counted TWO.
+    The status was right; the sentence was a scheduled-path assumption leaking
+    into the manual path."""
+    plan, result = runner.resolve(v, new_version=PREVIOUS)
+    assert plan is None
+    assert result["status"] == v.NO_PREDECESSOR
+
+    body = v.render_report(result)
+    assert "Only one engine release is published" not in body
+    assert "only one" not in body.lower()
+    assert PREVIOUS in body and NEWEST in body
+    # And the scheduled case must still say the thing that IS true there.
+    fake_updater["published"] = [NEWEST]
+    _, alone = runner.resolve(v)
+    assert "no predecessor build in existence" in v.render_report(alone)
+
+
+def test_a_dispatched_published_tag_is_normalised_before_it_is_echoed(
+        runner, v, fake_updater):
+    """FINDING 4. `fetch_release_full` deliberately ACCEPTS a `personium-`
+    prefixed tag — a human pasting the published tag into the dispatch box is a
+    supported gesture — and hands back the bare version.
+
+    `version_from_tag`'s docstring is explicit that the prefix must not travel
+    past that boundary, so echoing the REQUESTED string put a prefixed version
+    into the report and the issue title while every other surface in the
+    repository speaks bare ones.
+    """
+    plan, result = runner.resolve(v, new_version="personium-" + NEWEST)
+    assert result is None
+    assert plan["new_version"] == NEWEST, plan["new_version"]
+    assert not plan["new_version"].startswith("personium-")
+    assert plan["old_version"] == PREVIOUS
+    # And the prefix must not survive into what a human reads either.
+    moved = v.classify({"rows": [row(s, NVIDIA, INTEL) for s in SEEDS]})
+    moved["new_version"], moved["old_version"] = plan["new_version"], plan["old_version"]
+    assert "personium-" not in v.issue_title(moved)
+
+
+def test_a_prefixed_predecessor_is_normalised_too(runner, v, fake_updater):
+    plan, result = runner.resolve(
+        v, new_version=NEWEST, old_version="personium-" + PREVIOUS)
+    assert result is None
+    assert plan["old_version"] == PREVIOUS
+
+
+# ── FINDING 3: A FAILED DOWNLOAD MUST PRODUCE THE REPORT, NOT A TRACEBACK ────
+
+
+class _Args:
+    def __init__(self, tmp_path, **kw):
+        self.work = str(tmp_path / "work")
+        self.new_version = ""
+        self.old_version = ""
+        self.reading_json = ""
+        self.report_json = str(tmp_path / "verdict.json")
+        self.report_md = str(tmp_path / "report.md")
+        self.github_output = str(tmp_path / "gh_output")
+        for k, val in kw.items():
+            setattr(self, k, val)
+
+
+def test_a_failed_download_still_writes_the_report_and_the_step_outputs(
+        runner, v, fake_updater, monkeypatch, tmp_path):
+    """FINDING 3, and it is the sharpest of the three because the run's COLOUR
+    was already right — which is exactly why nobody would notice.
+
+    `stage_build` raised on a refused or failed `download_engine` and `run()`
+    wrapped neither call, so a digest mismatch, a mid-run yank, a truncated
+    transfer or a full disk produced: no step output, no report, no issue, no
+    artifact. The job went red and SILENT, in an Actions tab this project has
+    already recorded that nobody receives — the outcome the runner's own
+    docstring forbids in its own words, on the one step whose failure is least
+    surprising, since a download is this job's entire cost.
+    """
+    def refuse(version, url, digest, engine_dir):
+        raise runner.StagingError("download_engine refused or failed for %s" % version)
+
+    monkeypatch.setattr(runner, "stage_build", refuse)
+    args = _Args(tmp_path)
+
+    code = runner.run(args)                       # ⛔ must NOT raise
+
+    assert code == v.EXIT_STAGING_FAILED
+    assert code != 0
+    report = Path(args.report_md)
+    assert report.exists(), "the report is this job's deliverable"
+    body = report.read_text(encoding="utf-8")
+    assert "not a pass" in body.lower()
+    assert NEWEST in body
+
+    outputs = Path(args.github_output).read_text(encoding="utf-8")
+    assert "status=staging_failed" in outputs
+    assert "green=false" in outputs
+    assert "report=true" in outputs, (
+        "a cause that stops us measuring must still reach a human"
+    )
+    assert json.loads(Path(args.report_json).read_text(encoding="utf-8"))
+
+
+def test_the_failing_leg_is_named_rather_than_guessed(
+        runner, v, fake_updater, monkeypatch, tmp_path):
+    """A staging failure on the PREDECESSOR must not read as build N's."""
+    calls = []
+
+    def fail_second(version, url, digest, engine_dir):
+        calls.append(version)
+        if len(calls) == 1:
+            return {"binary": "/tmp/new", "size": 1, "sha256": "a" * 64}
+        raise runner.StagingError("truncated transfer")
+
+    monkeypatch.setattr(runner, "stage_build", fail_second)
+    args = _Args(tmp_path)
+    code = runner.run(args)
+
+    assert code == v.EXIT_STAGING_FAILED
+    result = json.loads(Path(args.report_json).read_text(encoding="utf-8"))["verdict"]
+    assert result["unreachable_leg"] == "N−1"
+    assert result["new_version"] == PREVIOUS, (
+        "the report must name the build that actually failed"
+    )
+    assert "truncated transfer" in result["error"]
+
+
+def test_a_resolution_failure_also_reaches_emit_rather_than_raising(
+        runner, v, fake_updater, tmp_path):
+    """The property the three findings share, asserted end to end: EVERY
+    non-measurement outcome produces a report, outputs and an exit code."""
+    fake_updater["releases"].pop(NEWEST)
+    args = _Args(tmp_path)
+    code = runner.run(args)
+    assert code == v.EXIT_UNREACHABLE
+    assert Path(args.report_md).exists()
+    assert "status=build_unreachable" in Path(args.github_output).read_text(
+        encoding="utf-8")
+
+
+def test_two_identical_binaries_are_refused_rather_than_reported_as_continuity(
+        runner, v, fake_updater, monkeypatch, tmp_path):
+    """The sha256 positive control, driven through `run()` rather than read.
+
+    Two legs on the SAME bytes compare perfectly equal for every seed and would
+    report a confident `held` for a comparison that never happened — the mirror
+    image of the false 8/8, and the one whose output looks like good news."""
+    def same_bytes(version, url, digest, engine_dir):
+        return {"binary": "/tmp/engine", "size": 1, "sha256": "c" * 64}
+
+    monkeypatch.setattr(runner, "stage_build", same_bytes)
+    args = _Args(tmp_path)
+    code = runner.run(args)
+
+    assert code == v.EXIT_UNMEASURED
+    result = json.loads(Path(args.report_json).read_text(encoding="utf-8"))["verdict"]
+    assert result["status"] == v.RECORD_INCONSISTENT
+    assert not v.is_green(result["status"])
+
+
+def test_every_result_resolve_can_return_carries_a_known_status(runner, v, fake_updater):
+    """A status the exit table does not know lands on EXIT_UNMEASURED — which is
+    the correct default, and would silently downgrade a `staging_failed` or a
+    `build_unreachable` into "we did not look". So every result this routing
+    layer can produce is checked to be in the table by name."""
+    seen = set()
+    for setup in (
+        lambda: fake_updater.update(published=[]),
+        lambda: fake_updater.update(published=[NEWEST]),
+        lambda: fake_updater.update(latest=(NEWEST, "", "", "known_bad", "x")),
+        lambda: fake_updater.update(latest=(NEWEST, "", "", "ok", "")),
+        lambda: fake_updater["releases"].pop(PREVIOUS, None),
+    ):
+        fake_updater.update(published=[NEWEST, PREVIOUS], latest=None)
+        fake_updater["releases"] = {
+            NEWEST: (NEWEST, "https://example.invalid/new.AppImage", "sha256:aa"),
+            PREVIOUS: (PREVIOUS, "https://example.invalid/old.AppImage", "sha256:bb"),
+        }
+        setup()
+        _, result = runner.resolve(v)
+        if result is None:
+            continue
+        seen.add(result["status"])
+        assert result["status"] in v.EXIT_FOR_STATUS, result["status"]
+    assert len(seen) >= 4, seen

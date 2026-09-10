@@ -118,6 +118,15 @@ def _sha256(path: pathlib.Path) -> str:
 
 # ── staging, in a child so each build gets its own ENGINE_DIR ────────────────
 
+
+class StagingError(RuntimeError):
+    """A resolved build could not be downloaded or installed.
+
+    Its own class rather than a bare ``RuntimeError`` so :func:`run` can catch
+    exactly this and turn it into a RESULT — see :func:`stage_build`.
+    """
+
+
 _STAGE_CHILD = r'''
 import json, os, sys
 sys.path.insert(0, %(repo)r)
@@ -142,6 +151,15 @@ def stage_build(version: str, url: str, digest: str, engine_dir: pathlib.Path) -
     A child process, because ``updater.ENGINE_BINARY`` is bound at import from
     ``PERSONA_ENGINE_DIR`` — see the module header for what a single import
     would silently do to the second leg.
+
+    ⛔ RAISES ``StagingError`` RATHER THAN ``RuntimeError``, and the caller
+    CATCHES it, because a raise is not a report. This used to let the exception
+    escape ``run()``: the job went red with the right colour and wrote NO step
+    output, filed NO issue and uploaded NO artifact — the silent red this
+    module's own docstring forbids, on the one step whose failure is least
+    surprising (a download is the entire cost of this job, and a digest
+    mismatch, a mid-run yank, a truncated transfer or a full disk all land
+    here).
     """
     engine_dir.mkdir(parents=True, exist_ok=True)
     env = dict(os.environ)
@@ -149,18 +167,26 @@ def stage_build(version: str, url: str, digest: str, engine_dir: pathlib.Path) -
     # The AppImage runtime consumes this itself; the runner may have no FUSE.
     env["APPIMAGE_EXTRACT_AND_RUN"] = "1"
     _log("staging engine %s -> %s" % (version, engine_dir))
-    proc = subprocess.run(
-        [sys.executable, "-c", _STAGE_CHILD % {"repo": str(REPO)},
-         url, digest or "", version],
-        env=env, capture_output=True, text=True,
-    )
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-c", _STAGE_CHILD % {"repo": str(REPO)},
+             url, digest or "", version],
+            env=env, capture_output=True, text=True,
+        )
+    except Exception as exc:               # noqa: BLE001 — the report IS the deliverable
+        raise StagingError("could not launch the staging child: %s" % exc) from exc
     sys.stderr.write(proc.stderr)
     if proc.returncode != 0:
-        raise RuntimeError("could not stage engine %s: %s"
-                           % (version, proc.stderr.strip().splitlines()[-1:]))
-    info = json.loads(proc.stdout.strip().splitlines()[-1])
-    binary = pathlib.Path(info["binary"])
-    info["sha256"] = _sha256(binary)
+        detail = (proc.stderr.strip().splitlines() or ["no output"])[-1]
+        raise StagingError(detail)
+    try:
+        info = json.loads(proc.stdout.strip().splitlines()[-1])
+        binary = pathlib.Path(info["binary"])
+        info["sha256"] = _sha256(binary)
+    except Exception as exc:               # noqa: BLE001 — same reason
+        raise StagingError(
+            "the staging child reported success but its output could not be "
+            "read (%s)" % exc) from exc
     _log("staged %s: %s (%d bytes, sha256 %s)"
          % (version, binary, info["size"], info["sha256"][:16]))
     return info
@@ -206,6 +232,19 @@ def resolve(verdict, new_version: str = "", old_version: str = "",
     # into whatever the next network call happened to return, which is how a
     # settled fact gets reported as an outage. It is also the cheap order: on a
     # repository with one engine tag this returns before spending a request.
+    # ⚠️ A DISPATCHED VERSION IS NORMALISED BEFORE IT IS USED FOR ANYTHING.
+    # `fetch_release_full` accepts a `personium-`-prefixed value, so a human can
+    # legitimately paste the published TAG into the dispatch box — but
+    # `version_from_tag`'s docstring is explicit that the prefix must not travel
+    # past the updater's boundary, and every other surface in this repository
+    # speaks bare versions. Normalising here (rather than only at the fetch)
+    # means the predecessor decision, the report and the issue title all speak
+    # the same vocabulary as the published tag list they are compared against.
+    if new_version:
+        new_version = updater.version_from_tag(new_version)
+    if old_version:
+        old_version = updater.version_from_tag(old_version)
+
     candidate = new_version or published[0]
     older = [v for v in published if updater.is_newer(candidate, v)]
     if not old_version and not older:
@@ -215,10 +254,23 @@ def resolve(verdict, new_version: str = "", old_version: str = "",
         # The manual re-read path. Resolved through the SAME by-tag fetch the
         # scheduled path uses for N−1, so a hand run exercises this wiring
         # rather than a parallel one.
-        n_ver = new_version
-        n_v, n_url, n_digest = updater.fetch_release_full(n_ver, timeout=timeout)
+        n_v, n_url, n_digest = updater.fetch_release_full(new_version, timeout=timeout)
         if not n_url:
-            return None, verdict.predecessor_unreachable_result(n_ver, n_ver)
+            # ⛔ NOT `predecessor_unreachable`. What failed is build **N**, and
+            # naming it as the predecessor points the human at the wrong build
+            # and renders `N vs N` in the issue title — a comparison of a
+            # version against itself, for a predecessor that was never asked
+            # for. It is not `discovery_failed` either: the tag list was read
+            # successfully and PRINTED two lines above.
+            return None, verdict.build_unreachable_result(
+                new_version, leg="N")
+        # ⚠️ The CANONICAL version, not the requested string. `fetch_release_full`
+        # accepts a `personium-`-prefixed value and hands back the bare one, and
+        # `version_from_tag`'s docstring is explicit that the prefix must not
+        # travel past that boundary — echoing the dispatch input verbatim would
+        # put a prefixed version in the report and the issue title while every
+        # other surface in this repository speaks bare versions.
+        n_ver = n_v or new_version
     else:
         # ⚠️ UNPINNED, and through the GOVERNED fetch. `fetch_latest_checked`
         # applies `policy.check`, so a build already on the known-bad list is
@@ -228,9 +280,15 @@ def resolve(verdict, new_version: str = "", old_version: str = "",
         if pol != "ok":
             return None, verdict.refused_by_policy_result(n_ver, pol, msg)
         if not n_url:
-            return None, verdict.discovery_failed_result(
-                "the newest engine release %r could not be resolved to an asset "
-                "for this OS." % n_ver)
+            # ⛔ SAME EVENT, SAME STATUS AS THE MANUAL ARM ABOVE. This used to
+            # report `discovery_failed` — "we could not even ask which engine
+            # versions are published" — on a run that had just printed the
+            # published list, making the filed issue false about the one fact
+            # the run did establish. The two arms must not name one event two
+            # ways: the issue title is the dedup key, so disagreeing arms also
+            # file two records for one cause.
+            return None, verdict.build_unreachable_result(
+                n_ver, leg="N")
         # The governed fetch resolves the newest tag itself. If that disagrees
         # with the list the predecessor decision was taken from, re-take it —
         # never carry a predecessor chosen for a different N.
@@ -242,14 +300,15 @@ def resolve(verdict, new_version: str = "", old_version: str = "",
     # Build N−1 is the next version DOWN from N in the published list, so the
     # comparison is between two of OUR OWN releases and in the direction an
     # operator actually travels (N−1 -> N).
-    o_ver = old_version or older[0]
+    o_requested = old_version or older[0]
 
-    o_v, o_url, o_digest = updater.fetch_release_full(o_ver, timeout=timeout)
+    o_v, o_url, o_digest = updater.fetch_release_full(o_requested, timeout=timeout)
     if not o_url:
         # ⛔ NAMED, not substituted. `fetch_release_full`'s own docstring:
         # "a rollback that silently installs something else is worse than one
         # that refuses."
-        return None, verdict.predecessor_unreachable_result(n_ver, o_ver)
+        return None, verdict.predecessor_unreachable_result(n_ver, o_requested)
+    o_ver = o_v or o_requested        # canonical, for the same reason as n_ver
 
     return {
         "new_version": n_ver, "new_url": n_url, "new_digest": n_digest,
@@ -297,10 +356,27 @@ def run(args) -> int:
         _log("no comparison was made: %s" % result["status"])
         return verdict.emit(result, None, args)
 
-    new_info = stage_build(plan["new_version"], plan["new_url"],
-                           plan["new_digest"], work / "engine-new")
-    old_info = stage_build(plan["old_version"], plan["old_url"],
-                           plan["old_digest"], work / "engine-old")
+    # ⛔ STAGING FAILURES PRODUCE A RESULT, NEVER A TRACEBACK. This is the one
+    # step whose failure is least surprising — a download IS this job's whole
+    # cost — and an escaping exception writes no step output, files no issue and
+    # uploads no artifact, leaving the run red and silent in an Actions tab this
+    # project has already recorded that nobody receives. `resolve()` above
+    # honours that rule for every path it owns; these two calls sit downstream
+    # of it and must honour it too.
+    staged = {}
+    for leg, key, engine_dir in (("N", "new", work / "engine-new"),
+                                 ("N−1", "old", work / "engine-old")):
+        try:
+            staged[key] = stage_build(
+                plan["%s_version" % key], plan["%s_url" % key],
+                plan["%s_digest" % key], engine_dir)
+        except StagingError as exc:
+            _log("could not stage build %s: %s" % (leg, exc))
+            return verdict.emit(
+                verdict.staging_failed_result(
+                    plan["%s_version" % key], leg, str(exc)),
+                None, args)
+    new_info, old_info = staged["new"], staged["old"]
 
     # THE POSITIVE CONTROL, and it is not decoration. Two legs pointing at the
     # same bytes compare perfectly equal and report a confident `held` for a
