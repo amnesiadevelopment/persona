@@ -205,7 +205,8 @@ own evidence instead of closing it.
      ``tests/test_config_home.py`` and already used by the PS-301/PS-344
      launch readings for exactly this — set to a directory OUTSIDE the scratch
      home, so the engine survives the per-run home while the profile store
-     does not. ⚠️ THE FIREFOX ARM HID THIS FOR THREE CHECKS: it resolves
+     does not. ⚠️ THE FIREFOX ARM HID THIS FOR EVERY OTHER CHECK IN THE LANE:
+     it resolves
      through ``~/.cache/invisible-playwright``, which is not under
      ``PERSONA_HOME`` at all, so this lane has never had an engine that could
      be relocated by its own scratch home until now.
