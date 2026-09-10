@@ -405,7 +405,9 @@ def test_record_reports_a_write_that_did_not_happen(tmp_path):
     writable one is kept and reloads.
     """
     blocker = tmp_path / "notadir"
-    blocker.write_text("I am a file, so nothing can live underneath me")
+    blocker.write_text(
+        "I am a file, so nothing can live underneath me", encoding="utf-8"
+    )
 
     unwritable = SessionRegistry(str(blocker / "s.json"))
     subject = _record(profile="ff-thread", engine="firefox")
@@ -435,7 +437,7 @@ def test_a_registry_that_cannot_be_written_still_refuses_no_launch(tmp_path):
     never a veto over the session.
     """
     blocker = tmp_path / "notadir"
-    blocker.write_text("x")
+    blocker.write_text("x", encoding="utf-8")
     reg = SessionRegistry(str(blocker / "s.json"))
 
     reg.record(_record(profile="ff-thread", engine="firefox"))
