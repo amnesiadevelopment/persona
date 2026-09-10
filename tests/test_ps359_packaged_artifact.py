@@ -642,6 +642,193 @@ def test_each_arm_stages_into_its_own_directory(tmp_path, tree):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# OUR OWN STAGING ROOT IS AN INPUT FROM A PREVIOUS RUN TOO
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# THE DEFECT THESE PIN, in the three facts that produce it:
+#
+#   1. `package-out/` lives in $GITHUB_WORKSPACE, outside both checkouts, in
+#      exactly the place the workflow itself says nothing cleans: "a self-hosted
+#      runner does not wipe _work between runs". The one thing that zeroes that
+#      root — `ps289_journal.sh salvage` — zeroes `record/` and only `record/`.
+#   2. Packaging is gated on `steps.compile.outcome == 'success'`.
+#   3. The binary upload is `if: always()` and its path names this directory.
+#
+# So a dispatch whose COMPILE FAILED runs no packaging, removes nothing, and
+# ships the PREVIOUS dispatch's AppImage under this run's artifact name beside a
+# manifest saying the tree did not compile. `if-no-files-found: ignore` cannot
+# help — files are found.
+#
+# ⚠️ EVERY OTHER TEST IN THIS FILE READS `package-out/` ONLY AFTER THE RUN.
+# That is precisely why the suite was green against a defect reproducible in
+# three lines: a directory that is never populated BEFORE a run can never be
+# observed to survive one. These plant first.
+
+
+def test_a_stale_artifact_in_our_staging_directory_cannot_ship_as_this_runs(tmp_path):
+    """The reviewer's case (a): a foreign tag ships, and the sidecar disagrees.
+
+    Upstream's release directory is protected by the removal further up this
+    script; that protection stops at upstream's edge and did not extend to ours.
+    A previous dispatch at a DIFFERENT tag leaves a differently-named file, so
+    the copy that survives sits beside this run's output and is uploaded with
+    it — while `PROVENANCE.txt` counts only what this run staged, and therefore
+    contradicts the directory it describes.
+    """
+    ws = _fixture_tree(tmp_path, GOOD_STUB)
+    stage = ws / "package-out" / "patched"
+    stage.mkdir(parents=True)
+    stale = stage / "ps218-patched-ungoogled-chromium-999.9.9-1-x86_64.AppImage"
+    stale.write_text("A BROWSER FROM A PREVIOUS DISPATCH\n", encoding="utf-8")
+
+    result = _run_package(ws)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    staged = sorted(p.name for p in stage.iterdir())
+    assert not stale.exists(), (
+        "a previous dispatch's artifact survived into this run's upload "
+        f"directory: {staged}. Everything under this directory must be THIS "
+        "run's by construction, not by inspection."
+    )
+
+    # And the sidecar must describe the directory that ships, exactly.
+    provenance = (stage / "PROVENANCE.txt").read_text(encoding="utf-8")
+    assert "artifact_count=2" in provenance, provenance
+    assert len([n for n in staged if n != "PROVENANCE.txt"]) == 2, staged
+
+
+def test_a_stale_artifact_with_this_runs_name_is_also_removed(tmp_path):
+    """The reviewer's case (b): the same tag, where the leftover is INVISIBLE.
+
+    Case (a) is at least legible — a reader who looks sees a version that does
+    not belong. When the previous dispatch built the SAME tag, a leftover file
+    it produced and this run did not (a `.zsync`, a format upstream dropped)
+    carries this run's exact name pattern and nothing tips the reader off. A
+    removal is the only thing that catches this; no inspection would.
+    """
+    ws = _fixture_tree(tmp_path, GOOD_STUB)
+    stage = ws / "package-out" / "patched"
+    stage.mkdir(parents=True)
+    invisible = stage / (
+        "ps218-patched-ungoogled-chromium-152.0.7977.75-1-x86_64.AppImage.zsync"
+    )
+    invisible.write_text("LEFTOVER FROM A PREVIOUS DISPATCH AT THE SAME TAG\n",
+                         encoding="utf-8")
+
+    result = _run_package(ws)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    assert not invisible.exists(), (
+        "a leftover carrying this run's own name pattern survived — the case no "
+        "amount of reading the directory would have caught"
+    )
+
+
+def test_a_dispatch_that_never_packages_still_zeroes_the_staging_root(tmp_path):
+    """The reviewer's case (c), and the sharp one: a FAILED COMPILE ships a browser.
+
+    This is why the removal cannot live only inside the packaging path. On a
+    dispatch whose compile failed, `ps359_package.sh <arm>` is never invoked at
+    all — the workflow's `if: steps.compile.outcome == 'success'` sees to that,
+    correctly — so any removal inside it is unreachable. The `if: always()`
+    upload then ships the previous dispatch's AppImage under this run's name.
+
+    `reset` is the separate, unconditional mode that closes it, and this test
+    drives that mode directly: nothing here packages anything.
+    """
+    ws = _fixture_tree(tmp_path, GOOD_STUB)
+    for arm in ARMS:
+        stage = ws / "package-out" / arm
+        stage.mkdir(parents=True)
+        (stage / f"ps218-{arm}-ungoogled-chromium-999.9.9-1-x86_64.AppImage").write_text(
+            "A BROWSER FROM A PREVIOUS DISPATCH\n", encoding="utf-8"
+        )
+
+    result = _run_package(ws, "reset")
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    assert not (ws / "package-out").exists(), (
+        "the staging ROOT must be gone after a reset. It is removed at the root "
+        "rather than per-arm so an arm renamed in a later edit cannot orphan a "
+        "directory that still matches the upload's path."
+    )
+
+    # Nothing is destroyed unannounced: the reset says what it removed.
+    assert "999.9.9" in result.stdout, (
+        "the reset must report what it removed — a silent removal is a different "
+        f"posture from this workflow's. Got: {result.stdout!r}"
+    )
+
+
+def test_the_reset_is_a_no_op_on_a_cold_runner(tmp_path):
+    """The positive control for the two tests above.
+
+    A `reset` that failed, or that reported a removal on an empty runner, would
+    make the assertions above unreadable — the first dispatch on a fresh machine
+    is the common case and must be quiet and green.
+    """
+    ws = _fixture_tree(tmp_path, GOOD_STUB)
+    result = _run_package(ws, "reset")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "absent" in result.stdout, result.stdout
+    assert "removed: yes" not in result.stdout, result.stdout
+
+
+def test_the_reset_runs_before_anything_that_can_fail_in_both_arms(workflow):
+    """The wiring, without which the script's `reset` mode is dead code.
+
+    Two properties, and the ORDER is the one that matters: the reset must be
+    unconditional (no `if:`), and it must sit ahead of every step whose failure
+    would skip it — the prepare, the compile, and the packaging step itself.
+    A reset placed after the compile is a reset that does not run on precisely
+    the dispatch it exists for.
+    """
+    for job in ARMS:
+        steps = _steps(workflow, job)
+        names = [s.get("name", "") for s in steps]
+
+        reset_at = next(
+            (i for i, n in enumerate(names) if "Zero the packaging staging root" in n),
+            None,
+        )
+        assert reset_at is not None, (
+            f"job {job!r} has no staging-root reset step, so a previous "
+            f"dispatch's artifact can ship under this run's name"
+        )
+
+        step = steps[reset_at]
+        assert "ps359_package.sh reset" in step["run"], step["run"]
+        assert "if" not in step, (
+            "the reset must be UNCONDITIONAL. Gating it on anything reintroduces "
+            f"the defect on whichever dispatch the gate excludes. Found: {step.get('if')!r}"
+        )
+
+        for later in ("Apply patches", "Compile", "Package the compiled tree"):
+            at = next((i for i, n in enumerate(names) if later in n), None)
+            assert at is not None and at > reset_at, (
+                f"in job {job!r} the reset must precede {later!r} — a reset that "
+                "runs after a step that can fail does not run at all on the "
+                "dispatch that needs it"
+            )
+
+
+def test_the_staging_removal_is_also_local_to_the_code_that_relies_on_it():
+    """Defence in depth: the packaging path zeroes its own directory too.
+
+    The workflow-level reset is what covers a dispatch that never packages. This
+    is what keeps the guarantee LOCAL — a later edit that moves, reorders or
+    drops that step cannot silently reintroduce a stale artifact at the point
+    where files are staged.
+    """
+    body = PACKAGE_SCRIPT.read_text(encoding="utf-8")
+    assert 'rm -rf "$STAGE"\nmkdir -p "$STAGE"' in body, (
+        "the staging directory must be removed at the point of creation, not "
+        "merely created — `mkdir -p` over a populated directory keeps whatever "
+        "was in it"
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # PORTABILITY — the script must RUN on every platform that executes it
 # ─────────────────────────────────────────────────────────────────────────────
 #
