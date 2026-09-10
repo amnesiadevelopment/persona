@@ -411,3 +411,72 @@ def test_a_mobile_profile_is_launched_with_its_PRESETS_memory_not_the_desktop_po
     assert spec_device_memory(iphones[0].device_memory) == 4.0, (
         "an iPhone profile would report 8 GB natively while its own JS says 4"
     )
+
+
+# ---------------------------------------------------------------------------
+# 6. THE EXPECTED READING, stated so the liaison can FALSIFY it on the host.
+# ---------------------------------------------------------------------------
+
+
+#: The exact figures quoted in the PR for the liaison's host measurement, so the
+#: prose and the code cannot drift. If this table changes, the PR's claim is
+#: stale and must be restated before he measures against it.
+EXPECTED_HOST_READING = {
+    111: {"cores": 8, "device_memory": 8.0},
+    4242: {"cores": 6, "device_memory": 8.0},
+}
+
+
+@pytest.mark.parametrize("seed", sorted(EXPECTED_HOST_READING))
+def test_the_reading_quoted_to_the_liaison_is_what_the_code_resolves(seed):
+    """⭐ THE FALSIFIABLE CLAIM, pinned so the PR cannot quote a stale number.
+
+    The ticket requires the exact expected reading to be stated BEFORE pushing,
+    so the host measurement can try to REFUTE it rather than confirm it. A
+    figure typed into a PR body is exactly the kind of claim that goes stale
+    silently, so it is asserted here against the real resolvers.
+
+    ⛔ THIS IS NOT A CLAIM THAT THE ENGINE RETURNS THESE VALUES. No engine was
+    built and no browser launched. It pins what persona PASSES; what the built
+    engine REPORTS is the measurement being invited.
+    """
+    from src.services.browser.device_ext import hardware_concurrency_for
+
+    expected = EXPECTED_HOST_READING[seed]
+    assert hardware_concurrency_for(seed, 0) == expected["cores"]
+    assert device_memory_for(seed, 0) == expected["device_memory"]
+
+
+def test_two_different_seeds_DIVERGE_on_the_hardware_pair():
+    """⚠️ THE TICKET'S AC #2, ANSWERED HONESTLY RATHER THAN MADE TO PASS.
+
+    The acceptance criterion asks that two profiles at different seeds report
+    DIFFERENT deviceMemory. ⛔ THAT IS NOT SATISFIABLE, and it is not a defect
+    in this slice — it is the Device Memory API. The pool's RAM axis is
+    {8, 16}; both rungs round to the spec's 8 GB cap, so EVERY profile reports
+    8 and would do so on any correct implementation. Making it vary would
+    require adding a sub-8GB pool entry (a product decision about what machines
+    persona claims to be, not a port question) and would publish a value
+    contradicting the profile's own claimed RAM.
+
+    What IS satisfiable, and is the property the hardcoded `return 8` actually
+    destroyed, is that the (cores, memory) PAIR diverges across seeds — which is
+    what makes two profiles two machines. That is asserted here.
+    """
+    seeds = sorted(EXPECTED_HOST_READING)
+    from src.services.browser.device_ext import hardware_concurrency_for
+
+    pairs = {
+        (hardware_concurrency_for(s, 0), device_memory_for(s, 0)) for s in seeds
+    }
+    assert len(pairs) == len(seeds), (
+        f"seeds {seeds} do not resolve to distinct hardware pairs ({pairs}); "
+        "two profiles would present as the same machine"
+    )
+
+    memories = {device_memory_for(s, 0) for s in seeds}
+    assert memories == {8.0}, (
+        f"deviceMemory now varies ({memories}). If a sub-8GB pool entry was "
+        "added deliberately this is correct and AC #2 is satisfiable after "
+        "all; update the PR's stated reading before the host measures it."
+    )
