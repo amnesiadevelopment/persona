@@ -461,14 +461,31 @@ def test_device_accessors_are_real_accessors_and_pin_their_name():
     that is deliberate rather than incidental. Measured against the generated
     script: every live `def()` callsite — screen.width/height/availWidth/
     availHeight/colorDepth/pixelDepth, orientation.type/angle, devicePixelRatio,
-    MediaQueryList.matches, navigator.hardwareConcurrency/deviceMemory — is
-    lexically served by a MINIFIED copy. The readable copy has ZERO callsites
-    and is dead code for every property this test can reach.
+    MediaQueryList.matches — is lexically served by a MINIFIED copy. The
+    readable copy has ZERO callsites and is dead code for every property this
+    test can reach.
 
     That matters for the falsification: reverting the readable copy alone leaves
     this test GREEN, because the reverted code never runs. A single-arm control
     caught exactly that, which is why the properties below are chosen to span
-    BOTH minified copies rather than to look representative.
+    every minified copy that still HAS callsites rather than to look
+    representative.
+
+    ⭐ THE SECOND MINIFIED COPY IS GONE, AND THAT IS A REAL STRUCTURAL CHANGE
+    RECORDED HERE RATHER THAN ABSORBED. This test used to span two seams: the
+    screen/`applyScreenPatch` copy, and a hardware/`applyHwPatch` copy that
+    served `navigator.hardwareConcurrency` and `navigator.deviceMemory`. The
+    pixelscan port deleted both of those installs — the engine authors both
+    properties in every realm — and the `def` copy that served them went with
+    them, because it had no other callsite.
+
+    So the two navigator rows are removed from the probe below, and `seen` drops
+    from 4 to 3. ⛔ THAT IS A NARROWER TEST AND IS NOT A WEAKER PRODUCT: the
+    accessors it can no longer inspect are gone from the page entirely, which is
+    strictly better than being present with a native-looking shape. But the
+    coverage reduction is real — if a SECOND minified `def` copy with live
+    callsites ever returns, add a property it serves here, or this test silently
+    stops spanning it.
     """
     d = tempfile.mkdtemp()
     build_device_extension(4242, str(pathlib.Path(d) / "ext"), 1, resolution=(1920, 1080))
@@ -476,15 +493,11 @@ def test_device_accessors_are_real_accessors_and_pin_their_name():
     out = _own_props_probe(
         script,
         {
-            # served by the FIRST minified copy (the screen/applyScreenPatch seam)
+            # served by the screen/applyScreenPatch seam — the only minified
+            # def() copy with live callsites since the port removed the other.
             "screen.width": "Object.getOwnPropertyDescriptor(G.screen,'width').get",
             "screen.height": "Object.getOwnPropertyDescriptor(G.screen,'height').get",
             "screen.colorDepth": "Object.getOwnPropertyDescriptor(G.screen,'colorDepth').get",
-            # served by the SECOND minified copy (the hardware/applyHwPatch seam)
-            "navigator.hardwareConcurrency":
-                "Object.getOwnPropertyDescriptor(G.navigator,'hardwareConcurrency').get",
-            "navigator.deviceMemory":
-                "Object.getOwnPropertyDescriptor(G.navigator,'deviceMemory').get",
         },
     )
     seen = 0
@@ -506,9 +519,10 @@ def test_device_accessors_are_real_accessors_and_pin_their_name():
             f"{label} getter reads .name === {got['name']!r}, leaking a "
             f"persona-internal identifier instead of the native 'get {prop}'"
         )
-    assert seen >= 4, (
+    assert seen >= 3, (
         f"only {seen} def()-served accessors were reachable in this realm; the "
-        f"test must span BOTH minified copies or it cannot see a revert of either"
+        f"test must span every minified copy with live callsites or it cannot "
+        f"see a revert of one"
     )
 
 
