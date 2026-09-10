@@ -29,6 +29,21 @@ be quietly un-fixed:
   * the scratch-home guard is defeated — and THIS is the lane that actually
     wipes: `trash-restore-and-wipe` calls `wipe_all_profiles`.
 
+⭐ PS-380 ADDED A FOURTH CHECK AND A FOURTH WAY TO UN-FIX THIS.
+`two-profile-unlinkability` — the only check anywhere that observes **Level 2
+of the bar (mutual unlinkability)** — used to be a DOCUMENTED OMISSION here,
+because 2 of its 5 must-differ pairs collide on the shipped firefox engine and
+requiring it whole would have made this gate permanently red. The exclusion was
+whole-check, so it also un-watched the 3 pairs that DO vary — which are exactly
+the vectors persona ships Firefox spoofs for. `behaviour.KNOWN_POSITIONS` pins
+the two colliding pairs per-pair (excluded, and reported on every run), so the
+check now sits in both constants and Level 2 is watched by a CI gate for the
+first time. The new way to un-fix it is to let that omission GROW BACK — so
+`RETIRED_OMISSIONS` records the shrink, `test_a_retired_omission_is_actually_in_
+the_lane_now` checks the name really arrived in the floor, and
+`tests/test_ps380_known_position.py` enforces the four rules that keep a
+per-vector exclusion from becoming a waiver list.
+
 ⚠️ WHAT THESE TESTS CAN AND CANNOT DO, STATED SO A GREEN HERE IS NOT
 OVER-READ. Nothing in this file launches a browser: this container has no
 display and the suite must not spend 66 seconds and 12 browser launches per
@@ -57,32 +72,46 @@ STEP_NAME = "Behavioural checks, launch lane (gating)"
 INSTALL_STEP_NAME = "Provision a display and the project"
 ENGINE_STEP_NAME = "Provision the Personium engine binary"
 CHROMIUM_STEP_NAME = "Provision the Personium chromium engine binary"
+SANDBOX_STEP_NAME = "Let the chromium sandbox start"
 
 #: The launch-backed checks this lane must certify. Held to the registry by
-#: `test_the_floor_is_the_registry_launch_lane_minus_the_one_documented_omission`
+#: `test_the_floor_is_the_registry_launch_lane_minus_the_documented_omissions`
 #: rather than trusted, so a drift is a test failure and not a gate that
 #: quietly stopped requiring one of them.
+#:
+#: `two-profile-unlinkability` JOINED AT PS-380 — it is the only check anywhere
+#: that observes Level 2 of the bar (mutual unlinkability), and it was excluded
+#: WHOLE-CHECK because 2 of its 5 must-differ pairs collide on the shipped
+#: firefox engine. Those two are now `behaviour.KNOWN_POSITIONS`, excluded
+#: per-pair and reported, so the other three gate.
 EXPECTED = (
     "restart-continuity",
+    "two-profile-unlinkability",
     "benign-edit-stability",
     "trash-restore-and-wipe",
     "no-process-survives-a-closed-session",
 )
 
-#: The launch-backed check deliberately NOT in the lane — ONE of them since
-#: PS-383, and this is a mapping rather than a set because an omission must say
-#: WHY. A bare set would let a future omission be added with no reason at all,
-#: which is exactly how a carve-out becomes a habit;
+#: The launch-backed checks deliberately NOT in the lane — NONE since PS-383.
+#: A MAPPING and not a set, so an omission cannot be added with no reason at
+#: all — which is exactly how a carve-out becomes a habit. Each entry has to say
+#: WHY, and
 #: `test_every_omission_states_a_distinct_reason` refuses two entries that
 #: share one.
 #:
-#: * two-profile-unlinkability — not dark (11 external callers, including a
-#:   test file that drives its body directly), and it reports a FINDING on the
-#:   firefox engine this project ships: a recorded, published fact since PS-135,
-#:   handed to PS-2 as product work. Requiring it would make this gate
-#:   permanently RED, which proves as little as permanently green.
+#: ⭐ THIS SHRANK AT PS-380, from two entries to one, and the DIRECTION is the
+#: point. `two-profile-unlinkability` used to sit here because it reports a
+#: FINDING on the shipped firefox engine; requiring it whole would have made
+#: this gate permanently red. But the collision is TWO of its FIVE must-differ
+#: pairs, and the exclusion was whole-check — so it also un-watched
+#: `window/webgl.readback`, `window/audio.digest` and
+#: `child_frame/webgl.readback.childFrame`, the three pairs that DO vary and
+#: that persona ships Firefox spoofs for. `behaviour.KNOWN_POSITIONS` pins the
+#: two colliding pairs to the digest they were recorded at and excludes them
+#: PER-PAIR, visibly, so the check could join the lane. An omission set is
+#: meant to shrink like this, never to grow.
 #:
-#: ⭐ THE SECOND ENTRY IS GONE (PS-383), AND THE SET SHRANK RATHER THAN GREW.
+#: ⭐⭐ AND IT SHRANK TO ZERO AT PS-383, BY THE OTHER ROUTE.
 #: `no-process-survives-a-closed-session` was excluded because it launches
 #: CHROMIUM on a lane that provisioned FIREFOX only — a fact about the VENUE,
 #: closable by CI work, and now closed: the workflow provisions the Personium
@@ -91,12 +120,90 @@ EXPECTED = (
 #: permanently EXIT 2) and only the second was ever ours to fix; collapsing
 #: them into one "known exclusions" set would have hidden that difference and
 #: left this one sitting behind the other's argument indefinitely.
-DOCUMENTED_OMISSIONS = {
+#:
+#: ⛔ AN EMPTY MAPPING IS THE STRICTEST STATE, NOT A DISABLED GUARD, and it is
+#: the reading most likely to be got backwards — so read the DIRECTION off the
+#: floor's own arithmetic. The floor is `lane - DOCUMENTED_OMISSIONS`, so a name
+#: in here SUBTRACTS from what the gate requires and emptying the mapping
+#: requires MORE. It therefore cannot be emptied to make a red lane green: the
+#: set-equality guard forces every name removed from here into `EXPECTED_CHECKS`
+#: in the same edit, and `SELECTED_CHECKS` too, or the lane requires a pass from
+#: a check it never runs and adjudicates to exit 2.
+#:
+#: ⛔ THE MOVE TO REFUSE IS THE REVERSE ONE. A future launch check that will not
+#: pass here belongs in this mapping WITH ITS OWN REASON, argued on its own
+#: terms — never selected and then adjudicated down, and never absorbed into a
+#: neighbour's argument. The mapping is kept (rather than deleted as dead code)
+#: precisely because that is the edit it exists to make expensive, and because
+#: `test_every_omission_states_a_distinct_reason` guards the shape it would
+#: come back in.
+DOCUMENTED_OMISSIONS: dict[str, str] = {}
+
+#: The omissions this lane has RETIRED, kept as a record rather than deleted. A
+#: shrink-only affordance needs a memory of what it shrank, because
+#: `tests/test_ps380_known_position.py` enforces rule 1 — a vector may enter
+#: KNOWN_POSITIONS only by moving OUT of a check-level omission that already
+#: existed — and that rule is unverifiable once the omission it came out of has
+#: been deleted without trace.
+#:
+#: ⚠️ THE TWO ENTRIES WERE RETIRED BY DIFFERENT ROUTES AND THE RECORD KEEPS
+#: THEM APART, because the routes are the whole reason the two were never
+#: collapsed into one carve-out: PS-380's was permanently RED (a real product
+#: FINDING, shrunk to per-pair known positions) and PS-383's was permanently
+#: EXIT 2 (a venue with no binary, provisioned). Only the second was ever CI's
+#: to fix. Note the asymmetry that follows: `RETIRED_OMISSION_PAIRS` records
+#: covered pairs for the FIRST only, because rule 1 is about vectors moving out
+#: of a comparison and the second omission rested on no vector at all.
+RETIRED_OMISSIONS = {
     "two-profile-unlinkability": (
-        "reports a FINDING on the shipped firefox engine (PS-135 §8, handed "
-        "to PS-2); requiring it would make this gate permanently red"
+        "PS-380: was omitted whole-check because 2 of its 5 must-differ pairs "
+        "collide on the shipped firefox engine (PS-135 §8, handed to PS-2). "
+        "The two pairs are now behaviour.KNOWN_POSITIONS, excluded per-pair "
+        "and reported on every run, so the other three gate and Level 2 is "
+        "watched for the first time."
+    ),
+    "no-process-survives-a-closed-session": (
+        "PS-383: was omitted because it launches CHROMIUM by construction and "
+        "this lane provisioned FIREFOX only, so requiring it made the gate a "
+        "measured CANNOT RUN / exit 2 — 'nothing was measured', the failure "
+        "this venue exists to remove. The workflow now provisions the Personium "
+        "chromium engine into a PERSONA_ENGINE_DIR outside the per-run scratch "
+        "home, and the check is in both constants. A VENUE fix, not a check "
+        "fix: the check's body, thresholds and sweep are untouched."
     ),
 }
+
+#: ⭐ WHICH PAIRS each retired omission's REASON ACTUALLY RESTED ON — and this
+#: is the record that makes shrink-only mean something at the granularity the
+#: rule is stated at.
+#:
+#: ⛔ THE ROUND-1 MISTAKE, WRITTEN DOWN SO IT IS NOT REPEATED. Rule 1 was
+#: enforced at CHECK granularity: a pinned pair was resolved to its owning
+#: check and that CHECK's name was required to be in DOCUMENTED_OMISSIONS ∪
+#: RETIRED_OMISSIONS. Since `two-profile-unlinkability` is permanently in the
+#: retired set, EVERY future pin on EVERY must-differ pair satisfied that for
+#: free — measured: adding a pin on `window/audio.digest`, a defended vector
+#: measured VARYING, left the guard PASSING. A rule stated per-pair and
+#: enforced per-check is a guard teaching its reader it is watching.
+#:
+#: A whole-check omission nominally "covered" all five pairs, so recording THAT
+#: as the covered set would be vacuous in exactly the same way. The covered set
+#: is therefore the pairs the omission's REASON rests on — the collisions PS-135
+#: §8 recorded and handed to PS-2 — and it is not trusted as a literal either:
+#: `tests/test_ps380_known_position.py::
+#: test_the_retired_omission_covers_exactly_the_pairs_its_evidence_recorded`
+#: re-derives this set by running the real comparator over the committed
+#: firefox-20 corpus, so a hand-widened entry is a test failure rather than a
+#: new permission.
+RETIRED_OMISSION_PAIRS = {
+    "two-profile-unlinkability": frozenset(
+        {"window/canvas.readback", "worker/canvas.readback"}
+    ),
+}
+
+#: The evidence `RETIRED_OMISSION_PAIRS` is re-derived from, named here so the
+#: two travel together: if the corpus moves, the derivation moves with it.
+RETIRED_OMISSION_PAIRS_EVIDENCE = "readings/ps135-2026-08-24"
 
 
 @pytest.fixture(scope="module")
@@ -305,26 +412,38 @@ def test_a_selection_narrowed_by_hand_cannot_narrow_the_floor_with_it(runner) ->
     still `is`-identical to the selection and that probe reports the defect
     when there is none.
 
-    ⭐ THE NARROWING LITERAL IS DERIVED FROM THE CONSTANT, NOT TYPED OUT
-    (PS-383). It was a hand-written string, and adding a fourth check to the
-    lane made `source.count(...)` zero — the guard below fired and correctly
-    refused to report a green over an attack it was no longer driving. That
-    refusal is the behaviour working; re-typing the literal would only postpone
-    the same failure to the next widening. Building it from
-    `runner.SELECTED_CHECKS` keeps the source edit REAL (the assertion below
-    still proves the text was found exactly once) while making it survive a
-    change to the lane's membership. ⛔ It is still matched against the FILE:
-    do not weaken this into an in-memory tuple edit, which would stop testing
-    that the two constants are separate TEXT.
+    ⚠️ THE LITERAL IS DERIVED FROM THE RUNNER'S OWN CONSTANT, NOT COPIED. It
+    was hand-copied until PS-380 added a fourth name to the lane, at which point
+    this test failed on the COPY going stale while the mechanism it drives was
+    perfectly intact — a guard that goes red on an unrelated edit teaches its
+    reader to re-copy reflexively, which is how a genuine break gets waved
+    through. Rebuilding it from `SELECTED_CHECKS` keeps the attack real (the
+    source text is still edited and re-executed) while removing the one part of
+    it that had nothing to do with what is being tested. The SHAPE is still
+    asserted — one name per line, four-space indent — because the edit below is
+    textual and silently matching nothing would make this test vacuous.
+
+    ⭐ PS-383 ADDED A FIFTH NAME AND THE DERIVATION ABSORBED IT WITHOUT AN EDIT,
+    which is the property being bought here rather than a claim about this
+    round: the same widening would have gone red on the hand-written copy for
+    the second time in two tickets. ⛔ It is still matched against the FILE — do
+    not weaken this into an in-memory tuple edit, which would stop testing that
+    the two constants are separate TEXT.
     """
     source = RUNNER_SCRIPT.read_text(encoding="utf-8")
-    body = "".join(f'    "{name}",\n' for name in runner.SELECTED_CHECKS)
-    selection = f"SELECTED_CHECKS = (\n{body})"
-
+    spec = importlib.util.spec_from_file_location("_ps336_shape", RUNNER_SCRIPT)
+    assert spec is not None and spec.loader is not None
+    live = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(live)
+    selection = (
+        "SELECTED_CHECKS = (\n"
+        + "".join(f'    "{name}",\n' for name in live.SELECTED_CHECKS)
+        + ")"
+    )
     assert source.count(selection) == 1, (
-        "the selection is no longer written in the shape this test narrows, so "
-        "the attack below is not being driven — re-derive it before trusting a "
-        "green here"
+        "the selection is no longer written in the shape this test narrows (one "
+        "name per line, four-space indent), so the attack below is not being "
+        "driven — re-derive it before trusting a green here"
     )
 
     narrowed = source.replace(
@@ -392,25 +511,39 @@ def test_the_floor_is_the_registry_launch_lane_minus_the_documented_omissions(
     it agree with an EMPTY registry by construction, which is the failure being
     guarded against. This is what keeps the hand-written copy honest.
 
-    ⭐ EVERY OMISSION IS NAMED AND REASONED, NOT A GAP IN THE ASSERTION, and
-    the two current ones are excluded for DIFFERENT reasons that must not be
-    collapsed:
+    ⭐ THERE ARE NO OMISSIONS LEFT — the floor IS the registry's whole launch
+    lane, all five checks. The set shrank to zero by two different routes, and
+    both are kept in `RETIRED_OMISSIONS` rather than deleted:
 
-    * `two-profile-unlinkability` reports a FINDING on the firefox engine this
-      project ships (readings/ps135-2026-08-24/EVIDENCE.md §8 predicts it
-      verbatim and §7 hands it to PS-2), so requiring it would make this gate
-      permanently red — which proves as little as permanently green. It is also
-      the one launch-backed body that was never dark: 11 external callers.
+    * `two-profile-unlinkability` (PS-380) was omitted whole-check over a
+      collision in 2 of its 5 must-differ pairs, which also un-watched the 3
+      that vary — the two canvas pairs are now `behaviour.KNOWN_POSITIONS`,
+      excluded per-pair and reported, so the check joined the lane. That record
+      is load-bearing: rule 1 of the known-position structure (shrink-only) is
+      unverifiable once the omission a vector came out of has been deleted
+      without trace.
 
-    * `no-process-survives-a-closed-session` launches CHROMIUM on a lane that
-      provisions FIREFOX only, so requiring it would make this gate permanently
-      exit 2 — "nothing was measured", the failure this venue exists to remove.
-      Measured by removing the chromium engine and running it under a display.
+    * `no-process-survives-a-closed-session` (PS-383) launched CHROMIUM on a
+      lane that provisioned FIREFOX only, so requiring it made this gate
+      permanently exit 2 — "nothing was measured", the failure this venue
+      exists to remove. Measured, by removing the chromium engine and running
+      it under a display. The workflow now provisions that engine, so the
+      exclusion is closed. ⚠️ It was a VENUE fix: nothing about the check
+      changed.
 
-    ⚠️ WHEN PS-2 FIXES THE CANVAS COLLISION, or when a chromium engine is
-    provisioned for CI, add the name to SELECTED_CHECKS and EXPECTED_CHECKS and
-    delete its entry from DOCUMENTED_OMISSIONS here, in the same change. This
-    test is what will remind you.
+    ⛔ READ THE DIRECTION OFF THE ARITHMETIC BELOW BEFORE CONCLUDING ANYTHING
+    ABOUT AN EMPTY MAPPING. The floor is `lane - DOCUMENTED_OMISSIONS`, so an
+    empty mapping makes this assertion require MORE, not less; a name added
+    here SUBTRACTS from what the gate certifies. Emptying it can therefore
+    never be the cheap repair for a red lane — the set equality forces every
+    removed name into `EXPECTED_CHECKS` in the same edit.
+
+    ⚠️ THE STANDING INSTRUCTION THIS DOCSTRING USED TO CARRY IS DISCHARGED. It
+    said: when a chromium engine is provisioned for CI, add the name to both
+    constants and move its entry to `RETIRED_OMISSIONS` in the same change.
+    That is what PS-383 did. It is recorded as done rather than deleted,
+    because an instruction that reads as outstanding is one a future reader
+    will try to carry out twice.
     """
     from src.services.verify.behaviour_checks import CHECKS
 
@@ -434,21 +567,59 @@ def test_the_floor_is_the_registry_launch_lane_minus_the_documented_omissions(
     )
 
 
-def test_every_omission_states_a_distinct_reason() -> None:
+def test_every_omission_states_a_distinct_reason(runner) -> None:
     """⛔ AN OMISSION SET IS A SLIPPERY THING, so its entries must EARN a place.
 
-    The guard above is satisfied by ANY name in `DOCUMENTED_OMISSIONS`, which
-    means the cheapest way to make a red lane green is to add a name to it —
-    the very repair the runner's header forbids in capitals. This is the
+    The floor guard above is satisfied by ANY name in `DOCUMENTED_OMISSIONS`,
+    which means the cheapest way to make a red lane green is to add a name to
+    it — the very repair the runner's header forbids in capitals. This is the
     counterweight: an omission must carry a REASON, and two omissions may not
     share one.
 
-    That matters because the two current entries are excluded for opposite
-    failure modes — one would make the gate permanently RED, the other
-    permanently EXIT 2 — and a set that collapsed them into "known exclusions"
-    would let the third be added with no argument at all.
+    ⭐ THE MAPPING IS EMPTY TODAY (PS-383), AND THAT IS WHY THIS TEST CHANGED
+    SHAPE RATHER THAN STAYING AS IT WAS. It used to open with
+    `assert DOCUMENTED_OMISSIONS, "the mapping must not be emptied to pass"` —
+    a guard against THIS TEST going vacuous, because a loop over an empty
+    mapping enforces nothing while still reporting green. That guard was
+    correct and its premise has expired: the set legitimately shrank to zero, so
+    keeping it would fail a lane that had gone STRICTER, and deleting it would
+    leave the vacuum it was written to prevent.
+
+    ⛔ SO THE EMPTINESS MUST BE EARNED, NOT ASSERTED. Instead of requiring an
+    entry, this requires the state an empty mapping is only honest in: the floor
+    covers the registry's whole launch lane. An empty mapping beside a floor
+    that is missing a check is exactly the shape this test exists to refuse — a
+    check nobody runs and nobody admits to skipping — and it fails here rather
+    than passing quietly.
+
+    ⚠️ THE DISTINCTNESS CLAUSE IS VACUOUS OVER ZERO LIVE ENTRIES AND IS KEPT
+    ANYWAY. It is a guard against the NEXT entry being absorbed into an existing
+    carve-out's reason rather than argued on its own, which is precisely the
+    move that makes a set of one into a set of five. Deleting it because it is
+    quiet today would remove it exactly when it is cheapest to remove and most
+    expensive to miss. It is NOT vacuous over `RETIRED_OMISSIONS`, which holds
+    two entries with two genuinely different reasons, so the same rule is being
+    driven over a real population one map over.
+
+    ⛔ AND THE REASONS ARE CHECKED ACROSS BOTH MAPS. A "new" omission may not
+    re-use the reason of a RETIRED one — that would be a retired carve-out
+    walking back in wearing its own old argument, which is the one regression
+    `RETIRED_OMISSIONS` exists to make visible.
     """
-    assert DOCUMENTED_OMISSIONS, "the mapping must not be emptied to pass"
+    from src.services.verify.behaviour_checks import CHECKS
+
+    if not DOCUMENTED_OMISSIONS:
+        lane = {c.name for c in CHECKS if c.needs_launch}
+        assert set(runner.EXPECTED_CHECKS) == lane, (
+            "DOCUMENTED_OMISSIONS is empty, which is only honest when the floor "
+            "requires the WHOLE launch lane. It does not, so a check is being "
+            "skipped by nothing but absence — no name, no reason, no record.\n"
+            f"  floor:    {sorted(runner.EXPECTED_CHECKS)}\n"
+            f"  registry: {sorted(lane)}\n"
+            f"  missing:  {sorted(lane - set(runner.EXPECTED_CHECKS))}\n"
+            "Either put the missing name in the floor, or give it an entry here "
+            "WITH A REASON. Silence is not an omission record."
+        )
 
     for name, reason in DOCUMENTED_OMISSIONS.items():
         assert reason and len(reason) > 40, (
@@ -459,11 +630,72 @@ def test_every_omission_states_a_distinct_reason() -> None:
 
     reasons = list(DOCUMENTED_OMISSIONS.values())
     assert len(set(reasons)) == len(reasons), (
-        "two omissions share a reason. They are excluded for DIFFERENT causes "
-        "(a permanent FINDING versus an unprovisioned engine); a shared reason "
-        "means one of them was absorbed into the other's carve-out rather than "
-        "argued on its own."
+        "two omissions share a reason. A shared reason means one of them was "
+        "absorbed into the other's carve-out rather than argued on its own."
     )
+
+    retired_reasons = list(RETIRED_OMISSIONS.values())
+    for name, note in RETIRED_OMISSIONS.items():
+        assert note and len(note) > 40, (
+            f"the retired omission {name!r} carries no real record of why it "
+            "was retired. That record is the only evidence the shrink was "
+            "argued rather than merely performed."
+        )
+    assert len(set(retired_reasons)) == len(retired_reasons), (
+        "two RETIRED omissions share a reason. They were retired by different "
+        "routes and for different reasons — permanently RED versus permanently "
+        "EXIT 2 — and collapsing them into one argument is how the difference "
+        "that made only one of them CI's to fix gets lost."
+    )
+
+    retired = set(RETIRED_OMISSIONS)
+    assert retired.isdisjoint(DOCUMENTED_OMISSIONS), (
+        f"{sorted(retired & set(DOCUMENTED_OMISSIONS))} is recorded as BOTH a "
+        "live omission and a retired one. A check cannot be both excluded and "
+        "un-excluded; if a retired omission genuinely had to come back, say so "
+        "in its live reason and remove the retired entry — do not leave both."
+    )
+    assert set(reasons).isdisjoint(retired_reasons), (
+        "a live omission re-uses a RETIRED omission's reason verbatim. That is "
+        "a retired carve-out walking back in under its own old argument."
+    )
+
+
+def test_a_retired_omission_is_actually_in_the_lane_now(runner) -> None:
+    """⭐ THE SHRINK MUST BE REAL, not merely recorded.
+
+    `RETIRED_OMISSIONS` is the memory that makes the known-position structure's
+    shrink-only rule verifiable (see `tests/test_ps380_known_position.py`), and
+    a memory nobody checks is a comment. A name moved out of
+    `DOCUMENTED_OMISSIONS` has to have arrived somewhere: either the check is
+    now in the floor, or it left the registry's launch lane entirely. A name
+    that is in NEITHER is a check that was quietly dropped from the gate while
+    a file in this repo claims it was promoted into it — the exact
+    false-accounting this suite exists to catch.
+    """
+    from src.services.verify.behaviour_checks import CHECKS
+
+    lane = {c.name for c in CHECKS if c.needs_launch}
+
+    for name, note in RETIRED_OMISSIONS.items():
+        assert note and len(note) > 40, (
+            f"the retired omission {name!r} carries no record of WHY it was "
+            "retired. That record is the only evidence the shrink was argued."
+        )
+        if name not in lane:
+            continue
+        assert name in runner.EXPECTED_CHECKS, (
+            f"{name!r} is recorded as a RETIRED omission and is still a "
+            "launch-backed check, but it is NOT in the lane's floor — so it is "
+            "neither excluded nor required, which is a check nobody runs and "
+            "nobody admits to skipping.\n"
+            f"  floor: {sorted(runner.EXPECTED_CHECKS)}"
+        )
+        assert name in runner.SELECTED_CHECKS, (
+            f"{name!r} is in the floor but is not SELECTED, so the lane "
+            "requires a pass from a check it never runs — which adjudicates to "
+            "exit 2 on every run."
+        )
 
 
 def test_the_two_floors_are_disjoint_and_neither_swallowed_the_other(runner) -> None:
@@ -923,6 +1155,79 @@ def test_the_chromium_engine_is_not_installed_into_the_scratch_home(
     )
 
 
+def test_the_runner_default_engine_dir_is_the_workflows_own_path(
+    steps, runner
+) -> None:
+    """⛔ THE SIBLING ABOVE CANNOT CATCH THIS, AND THE GAP SHIPPED ONCE.
+
+    `test_the_chromium_engine_is_not_installed_into_the_scratch_home` compares
+    the two WORKFLOW values (good — they must agree) and then checks only that
+    the string "PERSONA_ENGINE_DIR" APPEARS in the runner script. A substring
+    check cannot compare a value, so it was green while the script defaulted to
+    a completely different directory from the one the workflow names — and a
+    comment beside the gate step asserted, in that state, that "the script
+    defaults to the same path when it is unset, so a hand-run reproduces CI".
+
+    Measured on a runner, before the fix:
+
+        workflow env  : ${{ github.workspace }}/../.persona-ci-engine
+                        -> /home/runner/work/persona/.persona-ci-engine
+        script default: $HOME/.persona-ci-engine
+                        -> /home/runner/.persona-ci-engine
+        SAME? False
+
+    Siblings by coincidence of naming, not the same path. A hand-run therefore
+    resolved an engine directory the workflow never populated and got back the
+    `FileNotFoundError: .../fpchrome.AppImage` this whole lane exists to remove
+    — while the file claimed the opposite.
+
+    ⭐ SO THIS COMPARES THE RENDERED VALUES. `github.workspace` is the checkout
+    directory, which is REPO_ROOT on a runner, so `github.workspace/..` and
+    `REPO_ROOT.parent` are the same directory expressed in the two vocabularies
+    the two files have available. The expression is rebuilt here rather than
+    matched as a literal, so a workflow that switches to another spelling of the
+    same directory fails LOUDLY and gets read, instead of drifting silently.
+
+    ⛔ THE FIX FOR A FAILURE HERE IS TO MAKE THE TWO AGREE, never to relax this
+    into a substring check — that is precisely the weaker assertion that let the
+    false comment through.
+    """
+    from pathlib import Path
+
+    gate = steps[_index_of(steps, STEP_NAME)]
+    declared = gate["env"]["PERSONA_ENGINE_DIR"]
+
+    expected = "${{ github.workspace }}/../.persona-ci-engine"
+    assert declared == expected, (
+        "the workflow names an engine directory this test cannot resolve "
+        "against the script's default. Both sides are meant to mean 'the "
+        "parent of the checkout', and this test compares the two VALUES — so a "
+        "new spelling needs the derivation below updated with it, deliberately."
+        f"\n  workflow: {declared}\n  expected: {expected}"
+    )
+
+    # What that expression renders to on a runner, where `github.workspace` IS
+    # the checkout root: the parent of the repository directory.
+    workflow_resolves_to = Path(runner.REPO_ROOT).parent / ".persona-ci-engine"
+    script_default = Path(runner._DEFAULT_ENGINE_DIR)
+
+    assert script_default == workflow_resolves_to, (
+        "the runner's default engine directory is NOT the directory the "
+        "workflow installs into, so a hand-run of this script resolves an "
+        "engine nobody put there — the exact FileNotFoundError this lane was "
+        "built to eliminate, reproduced by the instructions in its own "
+        "comments.\n"
+        f"  workflow ({declared}) -> {workflow_resolves_to}\n"
+        f"  script default        -> {script_default}"
+    )
+
+    assert not script_default.is_relative_to(Path(runner.REPO_ROOT)), (
+        "the engine directory is INSIDE the checkout, so a 200 MB binary lands "
+        "in the working tree where `git status` and every path-walking test in "
+        "this suite will see it. It belongs one level above."
+    )
+
+
 def test_the_runner_scratch_home_fits_a_chromium_profile_name(runner) -> None:
     """⛔ THE SECOND WAY THE CHROMIUM ARM SILENTLY FAILS (PS-383).
 
@@ -1165,3 +1470,78 @@ def test_the_scratch_home_refusal_still_fires_with_the_reexec_flag_set() -> None
         "actually calls wipe_all_profiles"
     )
     assert "PERSONA_HOME is not set" in (result.stdout + result.stderr)
+
+
+def test_the_workflow_permits_the_chromium_sandbox_before_the_gate(steps) -> None:
+    """⛔ THE LOAD-BEARING STEP NOTHING ELSE PINS (PS-383).
+
+    Without it the chromium arm cannot launch, and the symptom is the least
+    legible one this lane can produce. Measured on this branch, run
+    34451331560, with the engine correctly placed and the socket budget fine:
+
+        [CANNOT RUN] no-process-survives-a-closed-session
+          … the launched group 6157 never held a SETTLED tree of at least 3
+          live processes (peak 3, last 0) within 90s …
+
+    and the engine's own stderr says why: `FATAL … No usable sandbox!` —
+    ubuntu-24.04 ships `kernel.apparmor_restrict_unprivileged_userns=1`, which
+    stops an unprivileged process creating the user namespace chromium's
+    sandbox is built on. The wrapper starts, the zygote refuses, the tree
+    collapses. From outside that is indistinguishable from a wedged launch.
+
+    ⚠️ WHY IT NEEDS A TEST WHEN THE OTHER NEW INVARIANTS HAVE ONE: deleting
+    this step left the venue suite entirely GREEN (measured: 43 passed). Its
+    entire justification lives in a comment, and it reads to a passing eye like
+    a leftover debugging hack — `sudo sysctl -w` in CI is exactly the line
+    someone tidies away. A green suite over a deleted load-bearing step is the
+    false-green this file exists to refuse, one level up.
+
+    ⛔ AND THE ORDER MATTERS, NOT ONLY THE PRESENCE. The write must happen
+    BEFORE the gate runs; a step that permits the sandbox afterwards permits
+    nothing. Both are asserted.
+
+    ⛔ THE FIX FOR A FAILURE HERE IS NOT `--no-sandbox`. That is what
+    `engine-gpu-variance.yml` passes and it is why that workflow launches
+    chromium on this same image — but `chromium_tier`'s own docstring refuses
+    it: persona's launch path passes that flag NOWHERE, so a tier that added it
+    would run the engine with a security boundary the product keeps and record
+    the result as the product's behaviour. It binds HARDER here: the sandbox is
+    what CREATES the tree whose teardown is the subject — the zygote and its
+    renderer fan-out ARE the sandboxed processes — so measuring teardown of an
+    unsandboxed launch would be measuring a tree the product never produces.
+    That is the vacuous measurement this check exists to refuse, one level down.
+    The RUNNER is changed to permit what the product needs; the product's launch
+    line is left alone.
+    """
+    sandbox_at = _index_of(steps, SANDBOX_STEP_NAME)
+    gate_at = _index_of(steps, STEP_NAME)
+
+    assert sandbox_at < gate_at, (
+        "the chromium sandbox is permitted AFTER the gate runs, which permits "
+        "nothing — the survivor check's tree dies at the zygote and reports "
+        "'peak 3, last 0', a sentence that reads as a wedged launch.\n"
+        f"  sandbox step index: {sandbox_at}\n"
+        f"  gate step index:    {gate_at}"
+    )
+
+    run = steps[sandbox_at]["run"]
+
+    assert "apparmor_restrict_unprivileged_userns=0" in run, (
+        "the step no longer clears the AppArmor restriction on unprivileged "
+        "user namespaces, so chromium's zygote cannot create the namespace its "
+        "sandbox is built on and the process tree never settles"
+    )
+    assert "unshare --user" in run, (
+        "the step writes the sysctl but never PROVES the write took. A silent "
+        "failure here surfaces 90 seconds later as a browser tree that never "
+        "appeared — verify it here, where the failure names itself."
+    )
+
+    gate_run = steps[gate_at]["run"]
+    assert "--no-sandbox" not in gate_run and "--no-sandbox" not in run, (
+        "the lane passes --no-sandbox. That makes the launch succeed and the "
+        "MEASUREMENT vacuous: the sandbox is what creates the multi-process "
+        "tree whose teardown this check counts, so an unsandboxed launch tears "
+        "down a tree the product never produces. Permit the sandbox on the "
+        "RUNNER instead; do not change what the product launches."
+    )

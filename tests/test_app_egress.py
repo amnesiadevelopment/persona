@@ -25,6 +25,7 @@ The two assertions that carry this file:
   SENT rather than silently falling back to the operator's real IP.
 """
 import asyncio
+import contextlib
 import json
 import socket
 import struct
@@ -131,6 +132,7 @@ def test_configured_policy_keeps_fetch_latest_full_off_urlopen(monkeypatch):
 def test_configured_policy_keeps_firefox_fetch_latest_off_urlopen(monkeypatch):
     """AC1, the other unattended fetch. Both call sites, or the policy is a
     setting one of them ignores."""
+    _require_engine_driver()
     settings.set_app_egress_proxy("socks5://127.0.0.1:9")
 
     def forbidden(*a, **k):
@@ -212,6 +214,7 @@ def test_default_is_direct_and_unchanged_for_chromium(monkeypatch):
 
 def test_default_is_direct_and_unchanged_for_firefox(monkeypatch):
     """AC3, the other call site."""
+    _require_engine_driver()
     assert settings.app_egress_proxy() == ""
 
     seen = {}
@@ -696,6 +699,7 @@ def test_both_call_sites_consult_the_same_authority(monkeypatch):
     """AC7. Not a grep but the behavioural version of it: one patch of the
     single resolver must divert BOTH fetches. A second copy of the decision in
     either call site would leave that site sending directly."""
+    _require_engine_driver()
     calls = []
 
     def only_authority(proxy=None):
@@ -1395,8 +1399,76 @@ from src.services.browser import engine_install as eng  # noqa: E402
 # that fixture, so it was the one that failed in isolation while passing in a
 # full-file run — i.e. it was passing on file ordering. Warming for the whole
 # module removes the ordering dependency for every test here, not just that one.
-import invisible_playwright.constants  # noqa: E402,F401
-import invisible_playwright.download  # noqa: E402,F401
+#
+# ⚠️ THE WARMING IS BEST-EFFORT, THE SKIP IS PER-TEST — and the two must not be
+# collapsed into one gesture. The driver is an OPTIONAL, git-pinned dependency
+# (`invisible_playwright @ git+…` in pyproject); CI installs it (ci.yml) and a
+# bare development container legitimately does not have it. A hard module-scope
+# `import` made that absence a COLLECTION ERROR, which pytest reports as
+# `Interrupted: 1 error during collection` — so the whole run stopped and the
+# 31 tests ABOVE this line, which need no driver at all, never executed either.
+# An absent optional dependency must cost the tests that need it, never the
+# ones that do not, and it must never masquerade as a suite-wide failure.
+#
+# So the warming is attempted and its failure tolerated HERE, while the three
+# tests that actually reach `_download_invisible` assert the requirement for
+# themselves via `_require_engine_driver()`. That keeps the property intact:
+# where the driver IS installed (CI, and any release runner) the import happens
+# at module scope exactly as before and the ordering hazard above stays closed;
+# where it is absent, those three SKIP with a reason instead of erroring, and
+# every driver-free test in this file still runs.
+with contextlib.suppress(ImportError):
+    import invisible_playwright.constants  # noqa: E402,F401
+    import invisible_playwright.download  # noqa: E402,F401
+
+
+def _require_engine_driver():
+    """Skip unless the pinned engine driver is importable.
+
+    Named rather than inlined because SIX tests share it and a skip reason is
+    the only thing standing between "this environment has no driver" and a
+    reader concluding the routing under test is broken.
+
+    THE SIX SPLIT INTO TWO KINDS, and both genuinely need the driver:
+
+    * three reach ``_download_invisible`` — the driver's own download path;
+    * three drive ``firefox.fetch_latest``/``fetch_latest_full``, which import
+      ``invisible_playwright.constants`` for ``BINARY_VERSION`` /
+      ``BROKEN_VERSIONS`` and RETURN EARLY (``"", False, ""``) when that import
+      fails. That early return is the trap this guard exists for: without it
+      those tests fail on ``tag == ""`` and read as "the egress policy did not
+      route the fetch", when in truth the fetch never happened at all. A
+      misleading failure about a security-relevant routing property is worse
+      than an honest skip.
+
+    ⛔ NOT a module-level skipif. Most of this file tests persona's OWN egress
+    authority (`egress.download_opener`, `httpdl`, the chromium arm through
+    `updater._download_to`) and needs no driver whatsoever — skipping the file
+    would silently retire real coverage over an unrelated missing package. The
+    chromium half of every "both call sites" pair still runs here.
+    """
+    # ⛔ THE WORDING IS LOAD-BEARING — DO NOT "IMPROVE" IT WITHOUT RE-MEASURING.
+    #
+    # `importorskip`'s `reason=` REPLACES its default text, and conftest.py's
+    # capability table classifies skips by SUBSTRING against that text. So a
+    # more helpful sentence that drops the matched stem leaves this skip
+    # classified as NOTHING, and a runner that declared `engine` then prints
+    # "ok engine: no test declined to run" beside `SKIPPED [6]` — six tests
+    # gone, three of them security-relevant egress-routing assertions, and the
+    # layer built to report exactly that reporting the opposite. Measured:
+    # this reason previously read "the PINNED engine driver is not installed",
+    # and that one extra word broke the match.
+    #
+    # The stem below is `conftest.CAPABILITIES["engine"]`'s third
+    # reason_pattern, which PS-371 added for precisely this shape and which
+    # tests/test_skip_visibility.py::test_the_pattern_is_the_stem_not_one_
+    # guards_exact_sentence pins: it is the ENVIRONMENT-INDEPENDENT part, so a
+    # guard may append its own detail after it and still classify.
+    pytest.importorskip(
+        "invisible_playwright",
+        reason="the engine driver is not installed in this environment "
+               "(CI installs it; see .github/workflows/ci.yml)",
+    )
 
 
 def _socks_listener_capturing(seen: dict, reply: bytes = b""):
@@ -1471,6 +1543,7 @@ def _wire_firefox_install(monkeypatch, tmp_path, host="engine.example.com"):
     test: a test that composed the opener and handed it in would pass with the
     consultation deleted, which is the AC9 trap.
     """
+    _require_engine_driver()
     import invisible_playwright.download as ipdl
 
     cache = tmp_path / "cache"
@@ -1633,6 +1706,13 @@ def test_refused_policy_opens_no_socket_for_either_engine_download(monkeypatch):
     one back on REFUSE would silently degrade "we cannot honour your proxy"
     into "send from the real IP", with 200MB behind it.
     """
+    # The Firefox half drives `_download_invisible`, which imports the driver
+    # LAZILY and BEFORE the egress consultation — so without it installed this
+    # test would record `opened == []` because the import died, not because a
+    # refusal was honoured. That is precisely the "green for a reason unrelated
+    # to the property" failure the module-scope comment above documents, and it
+    # is worth skipping over rather than passing vacuously.
+    _require_engine_driver()
     settings.set_app_egress_proxy("this is not a proxy url")
 
     opened = []

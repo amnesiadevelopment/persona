@@ -32,11 +32,16 @@ name: behaviour-launch-lane
 # ---------------------------------------------------------------------------
 # Measured on one linux host at n=1, real Personium engine, under `xvfb-run -a`:
 #
-#     the three selected checks       66.2s, 12 browser launches
-#     the whole registry (all seven)  93.5s, 16 browser launches
+#     the three selected checks       66.2s, 12 browser launches   (PS-336)
+#     the FOUR selected checks       113.5s, 16 browser launches   (PS-380)
 #     engine download, cold cache     ~10s, 584 MB extracted
 #
-# ⭐ AND SINCE PS-383 THERE IS A FOURTH CHECK AND A SECOND ENGINE. The figures
+# PS-380 added `two-profile-unlinkability` — the only check anywhere that
+# observes Level 2 of the bar — at a cost of 4 launches and ~47s. Its red arm
+# was measured on the same host: a planted collision on `window/webgl.readback`
+# ran 137.9s and exited 1 naming that vector.
+#
+# ⭐ AND SINCE PS-383 THERE IS A FIFTH CHECK AND A SECOND ENGINE. The figures
 # above are the FIREFOX arm and are unchanged; what was added is priced rather
 # than waved at:
 #
@@ -48,10 +53,12 @@ name: behaviour-launch-lane
 #                                     settles at 10 members within ~7s in
 #                                     practice, so ~30s typical / ~3min worst
 #
-# So the lane's WORST case is roughly 66s + 3min + ~45s of downloads ≈ 6 min,
-# and its typical case under 3. THE 45-MINUTE BUDGET STILL HOLDS with a wide
+# So the lane's WORST case is roughly 114s + 3min + ~45s of downloads ≈ 7 min,
+# and its typical case under 4. THE 45-MINUTE BUDGET STILL HOLDS with a wide
 # margin and is deliberately not reduced — it exists to stop a genuinely wedged
-# launch hanging for hours, not to track the measured time.
+# launch hanging for hours, not to track the measured time. ⚠️ The comment on
+# `timeout-minutes` itself carries this same arithmetic; if one is repriced the
+# other must be, and the two are meant to be read together.
 #
 # ⚠️ THE CHROMIUM FIGURE IS A DOWNLOAD MEASUREMENT, NOT A LAUNCH ONE, and the
 # distinction is stated rather than blurred: it was taken in a container that
@@ -61,9 +68,9 @@ name: behaviour-launch-lane
 # 15 chromium profiles per run on this same `ubuntu-24.04` image and reads a
 # GPU from every one. The launch-side timings above are the check's own
 # thresholds, which are a real bound; a measured wall-clock for the chromium
-# arm on a runner belongs to the first green run of this lane.
+# arm on a runner is recorded at `timeout-minutes` below, from a real run.
 #
-# So the lane itself is ~76s against ci.yml's 30-minute per-job cap, and it
+# So the lane itself is ~124s against ci.yml's 30-minute per-job cap, and it
 # WOULD fit there on wall-clock alone. It is here anyway, for three reasons
 # that are about cost and correctness rather than about the cap:
 #
@@ -89,8 +96,9 @@ name: behaviour-launch-lane
 #      HERE. `behaviour.py`'s UNCOVERED_SURFACES records that all but one of
 #      the 18 scratch profiles take `Context.make_profile`'s defaults
 #      (os_type=windows, device_type=desktop) — "the ONE combination that
-#      resolves to firefox". The exception is this lane's fourth check, which
-#      takes os_type=linux and therefore chromium, deliberately. Either way the
+#      resolves to firefox". The exception is `no-process-survives-a-closed-
+#      session`, which takes os_type=linux and therefore chromium,
+#      deliberately. Either way the
 #      three OS legs would measure the same arms three times over and learn one
 #      fact, while `xvfb` is linux-only and the display story on the macOS and
 #      Windows runners is unmeasured work this lane does not do.
@@ -245,16 +253,33 @@ concurrency:
 jobs:
   launch-lane:
     name: behavioural checks, launch lane (gating)
-    # LINUX ONLY, and stated rather than implied: the fixtures are firefox-only
-    # (see reason 2 in the header), `xvfb` is linux-only, and this ticket does
-    # not do the unmeasured work of a display story on the macOS and Windows
-    # runners. A pass here says nothing about how those platforms behave.
+    # LINUX ONLY, and stated rather than implied: `xvfb` is linux-only, both
+    # engines are provisioned for linux here, and this lane does not do the
+    # unmeasured work of a display story on the macOS and Windows runners. A
+    # pass here says nothing about how those platforms behave.
+    #
+    # ⚠️ NOT "the fixtures are firefox-only" — that sentence was true when this
+    # lane provisioned one engine and stopped being true at PS-383. Reason 2 in
+    # the header now reads MOSTLY firefox: 17 of the 18 scratch profiles take
+    # `Context.make_profile`'s windows+desktop defaults and resolve to firefox,
+    # and `no-process-survives-a-closed-session` takes os_type=linux and
+    # therefore chromium, deliberately. The linux-only conclusion is unchanged
+    # and now rests on xvfb and on provisioning rather than on the engine mix.
     runs-on: ubuntu-24.04
-    # The lane measured 66s and the whole registry 94s, plus ~10s for the
-    # engine and a couple of minutes of dependency installation. 45 leaves
-    # headroom for a slow runner or a slow upstream without letting a genuinely
-    # wedged browser launch hang for hours — the same budget
-    # engine-gpu-variance.yml settled on for the same reason.
+    # ⭐ PRICED FOR BOTH ENGINES, not for the firefox arm alone. The firefox
+    # checks measured 114s over 16 launches (PS-380) plus ~10s for that engine;
+    # PS-383 adds a ~200 MB chromium download (~35s measured) and two wrapper
+    # launches bounded by `_TREE_GROW_TIMEOUT` = 90s each, so ~3 minutes worst
+    # case. With a couple of minutes of dependency installation that is a
+    # WORST case near 7 minutes; the first green run of the wired lane took
+    # 2m26s end-to-end against 1m36s–2m31s for the firefox-only runs, so the
+    # chromium arm costs roughly +50s in practice.
+    #
+    # 45 is deliberately NOT reduced to track that. It exists to stop a
+    # genuinely wedged browser launch hanging for hours, not to bound the
+    # measured time — the same budget engine-gpu-variance.yml settled on for
+    # the same reason. The header carries this arithmetic in full; the two are
+    # meant to be read together and repriced together.
     timeout-minutes: 45
     steps:
       - name: Check out the code
@@ -456,10 +481,12 @@ jobs:
         # attribute to a tag cannot be acted on.
         shell: bash
         env:
-          # Must match the runner script's own default (`_ENGINE_DIR_ENV`), and
-          # is set explicitly on both sides rather than left to agree by luck:
-          # the script uses `setdefault`, so this value wins and a drift between
-          # the two shows up as a download landing where nothing reads it.
+          # Must match the runner script's own `_DEFAULT_ENGINE_DIR`, and is set
+          # explicitly on both sides rather than left to agree by luck: the
+          # script uses `setdefault`, so this value wins and a drift between the
+          # two shows up as a download landing where nothing reads it. The two
+          # are compared as VALUES by
+          # `test_the_runner_default_engine_dir_is_the_workflows_own_path`.
           PERSONA_ENGINE_DIR: ${{ github.workspace }}/../.persona-ci-engine
         run: |
           mkdir -p "$PERSONA_ENGINE_DIR"
@@ -500,8 +527,27 @@ jobs:
         #
         # PERSONA_ENGINE_DIR is passed through so the gate's child resolves the
         # chromium binary the step above installed rather than looking inside
-        # its own throwaway PERSONA_HOME. The script defaults to the same path
-        # when it is unset, so a hand-run reproduces CI.
+        # its own throwaway PERSONA_HOME.
+        #
+        # ⭐ THE SCRIPT'S OWN DEFAULT RESOLVES TO THIS SAME DIRECTORY, so a
+        # hand-run on the runner reads the engine CI installed. That property is
+        # not left to the naming: `${{ github.workspace }}/..` is the parent of
+        # the checkout, and `_DEFAULT_ENGINE_DIR` in the runner script is
+        # `REPO_ROOT.parent / ".persona-ci-engine"` — the same directory,
+        # derived the same way — and
+        # `test_the_runner_default_engine_dir_is_the_workflows_own_path`
+        # compares the two rendered VALUES rather than checking that a name
+        # appears in the text.
+        #
+        # ⛔ IT DID NOT HOLD IN AN EARLIER ROUND OF PS-383 and the failure is
+        # worth the sentence: the script defaulted to `$HOME/.persona-ci-engine`
+        # while this env named `github.workspace/../.persona-ci-engine`, which
+        # on a runner are `/home/runner/.persona-ci-engine` and
+        # `/home/runner/work/persona/.persona-ci-engine` — siblings by
+        # coincidence of naming and not the same path. A hand-run therefore hit
+        # the `FileNotFoundError: .../fpchrome.AppImage` this lane exists to
+        # eliminate, while this comment claimed it reproduced CI. If either side
+        # is changed, change both and let that test prove it.
         env:
           PERSONA_ENGINE_DIR: ${{ github.workspace }}/../.persona-ci-engine
         shell: bash

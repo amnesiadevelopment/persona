@@ -60,7 +60,20 @@ skip in the current CI. Nothing is wrong when they do.
 | `test_invisible_launch.py:718` | `could not import 'invisible_playwright'` | `engine` |
 | `test_invisible_launch.py:2051` | `could not import 'invisible_core'` | `engine` |
 | `test_invisible_launch.py:5203` | `could not import 'invisible_playwright'` | `engine` |
+| `test_app_egress.py:1467` (×6) | `the engine driver is not installed in this environment (CI installs it; …)` | `engine` |
+| `test_verify_engine_selection.py:68` | `the engine driver is not installed here, so persona's firefox engine cannot be inspected` | `engine` |
 | `test_assets.py:40`, `:81` | `could not import 'PIL.Image'` | — (dev extra) |
+
+> **The last two rows carry a wording constraint, not just a location.** Both
+> pass `reason=` to `importorskip`, which REPLACES the wording this table's
+> `Capability` column is matched from — so the reason must contain the stem
+> `the engine driver is not installed` or it classifies as **nothing**, and a
+> runner that declares `engine` prints *"ok engine: no test declined to run"*
+> beside the skips. That has now happened twice (PS-371's macOS fence; PS-353
+> wrote *"the **pinned** engine driver…"* here and six egress tests — three of
+> them security-relevant routing assertions — went quiet). It is swept for by
+> `tests/test_skip_visibility.py::TestACustomImportorskipReasonIsStillPoliced::test_every_engine_guard_in_this_repo_writes_a_reason_that_classifies`,
+> so a third occurrence fails rather than passing silently.
 
 The three `test_ff_language_override.py` skips are the ones that matter most.
 They are the real-Firefox probes — the suite's strongest evidence, checked
@@ -102,6 +115,34 @@ Correct everywhere except the named platform. Not a provisioning gap on Linux.
 |---|---|
 | `test_apply_restart.py:131`, `:136` | no real AppImage available |
 | `test_ps341_engine_continuity_live.py` (×22) | `PS-341 evidence not present at readings/ps341-2026-09-07/…` |
+| `test_browser_process_global_guards.py::test_the_pre_fix_fixture_is_the_real_historical_blob` | `the pre-fix revision 360c488… is not in this checkout (shallow clone or exported tree)` |
+
+#### The PS-360 provenance guard, and the skip it deliberately REPLACED
+
+⚠️ **Read this row as the INVERSE of the one it supersedes.** PS-360's gate
+(`tests/test_browser_process_global_guards.py`) carries its strongest
+falsification: run the guard-gate against the source *as it shipped before the
+fix* and confirm it names the real historical defect, rather than one the test
+planted itself. That test originally reached the pre-fix source with
+`git show <sha>` — and **CI's `actions/checkout` is a shallow clone**, so on
+every leg on every platform it skipped, permanently. The one test whose whole
+claim is *"this gate would have caught the bug it was written for"* was the one
+test CI never ran, and it looked exactly like success. That is this file's own
+opening argument, arriving in the wild.
+
+So the evidence is **committed**:
+`tests/fixtures/ps360_pre_fix_launch_child.py.txt` holds `_child` and
+`_launch_and_watch` verbatim at `360c488`, as a `.txt` so no collector, linter
+or import machine touches it. **The falsification now runs everywhere,
+including CI.**
+
+What skips instead is the much narrower **provenance** check above: a committed
+fixture *can* be doctored, and a falsification run against doctored evidence
+proves nothing — so the fixture is re-extracted from git and compared byte for
+byte whenever git can reach the revision. That is every full clone, including
+every developer machine; it is not a shallow CI checkout. **A skip here means
+"the fixture's authenticity was not re-verified on this run", never "the
+falsification did not run".**
 
 #### The PS-341 guard, and why it is shaped that way
 

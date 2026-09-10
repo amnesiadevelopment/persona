@@ -592,6 +592,45 @@ PERIMETER_ARTIFACTS: tuple[Artifact, ...] = (
             "Popen, IS scrubbed on all platforms."
         ),
     ),
+    Artifact(
+        artifact=(
+            "the browser child's Wayland app_id (MOZ_APP_REMOTINGNAME) is not "
+            "set on the thread launch path (Windows/macOS, and Linux under "
+            "in_process=True), so the taskbar icon is not matched to the "
+            "profile's .desktop entry on a Wayland session"
+        ),
+        site="src/services/browser/invisible_launch.py:_remoting_name",
+        scope=SCOPE_HOST,
+        # ⚠️ NOT ("windows", "macos") LIKE ITS THREE SIBLINGS, and the
+        # difference is the entry's whole point. The other three gaps are
+        # PLATFORM gaps: their guards read `not in_thread and IS_LINUX`, so on
+        # Linux they always apply. This one is guarded the same way, but its
+        # ABSENCE is reachable on Linux too — `in_process=True` forces the
+        # thread arm there (verify/baseline.py's recorder), which is exactly
+        # the combination PS-360 measured. Recording it as Windows/macOS-only
+        # would repeat the reading error the ticket was raised to correct.
+        platforms=ALL_PLATFORMS,
+        disposition=DISPOSITION_EXCEPTION,
+        # An ABSENCE, so there is no write site to find: the artifact is what
+        # this path does NOT do.
+        detected=False,
+        reason=(
+            "PS-360. On the thread path os.environ IS persona's own, and this "
+            "variable is on no scrub list and is never cleared, so writing it "
+            "there (1) outlives the session, (2) makes a later unnamed "
+            "profile start under the previous profile's identity, and (3) "
+            "makes two CONCURRENT sessions both read the last writer's name — "
+            "the very collision a per-profile-unique remoting name exists to "
+            "prevent. All three were measured before the guard was added. "
+            "Set-and-restore was considered and REFUSED: it is the shape "
+            "env_policy.neutralise_vendored_credentials already argues "
+            "against, and a finally would clear a concurrent session's live "
+            "value. A recorded absence, not a guarantee that silently doesn't "
+            "hold. The X11 half (--name) is a per-launch Popen-style ARGUMENT "
+            "rather than process-global state, so IT is set on all platforms; "
+            "the engine seam exposes no env= for the Wayland half to use."
+        ),
+    ),
 )
 
 
