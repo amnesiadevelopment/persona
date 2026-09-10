@@ -572,6 +572,81 @@ def test_the_published_set_is_not_pinned(workflow_yaml):
             assert not found, (step.get("name"), key, found)
 
 
+def test_the_shipped_tag_is_derived_from_the_record_set_not_a_literal(tmp_path):
+    """⭐ AC6, AND IT IS FALSIFIABLE, WHICH THE DERIVATION ALONE IS NOT.
+
+    `SHIPPED_TAG` in `tests/test_ps343_release_provenance.py` was a compile-time
+    literal; it is now derived from the record directory. But this repository
+    carries exactly ONE record today, so the derived value and the literal it
+    replaced are THE SAME STRING — reverting the derivation fails nothing, and a
+    derivation nothing can falsify is decoration.
+
+    So this drives the derivation at a record set this repository does not have.
+    It pins two things a literal cannot do: it FOLLOWS THE DIRECTORY, and it
+    sorts NUMERICALLY — lexicographically `personium-99.…` sorts above
+    `personium-152.…`, which is the same trap `engine_versions_newest_first`
+    avoids by sorting on `parse_version` rather than taking the API's ref order.
+    """
+    import importlib.util as _ilu
+
+    spec = _ilu.spec_from_file_location(
+        "ps343_suite_for_ps385", REPO / "tests" / "test_ps343_release_provenance.py"
+    )
+    suite = _ilu.module_from_spec(spec)
+    spec.loader.exec_module(suite)
+
+    # It follows the directory: a record set this repo does not have.
+    (tmp_path / "personium-153.0.8100.12.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "personium-152.0.7977.75.json").write_text("{}", encoding="utf-8")
+    assert suite._newest_record_tag(tmp_path) == "personium-153.0.8100.12"
+
+    # And it sorts numerically, not lexicographically.
+    lex = tmp_path / "lex"
+    lex.mkdir()
+    (lex / "personium-99.0.0.0.json").write_text("{}", encoding="utf-8")
+    (lex / "personium-152.0.7977.75.json").write_text("{}", encoding="utf-8")
+    assert suite._newest_record_tag(lex) == "personium-152.0.7977.75"
+    assert sorted(p.stem for p in lex.glob("*.json"))[-1] == "personium-99.0.0.0", (
+        "the lexicographic answer must differ from the numeric one, or this "
+        "assertion proves nothing"
+    )
+
+    # An empty record set is an explicit failure, never a silent empty string:
+    # SHIPPED_TAG feeds the `shipped_record` fixture every lint test depends on.
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    with pytest.raises(AssertionError):
+        suite._newest_record_tag(empty)
+
+
+def test_the_lint_fixture_stays_hermetic(monkeypatch):
+    """⛔ §4's constraint: `SHIPPED_TAG` is also read by the `shipped_record`
+    fixture, which ~30 record-lint tests depend on. Deriving it from the
+    PUBLISHED set would make all of them depend on GitHub.
+
+    So the derivation is asserted to touch no network path at all: the whole
+    PS-343 suite is re-imported with the enumerator booby-trapped."""
+    from src.services.engine import updater
+
+    def forbidden(*a, **k):  # pragma: no cover - reaching it is the failure
+        raise AssertionError(
+            "the PS-343 suite reached the published-set enumerator — its "
+            "record-lint fixtures must stay hermetic"
+        )
+
+    monkeypatch.setattr(updater, "engine_versions_newest_first", forbidden)
+
+    import importlib.util as _ilu
+
+    spec = _ilu.spec_from_file_location(
+        "ps343_suite_hermetic", REPO / "tests" / "test_ps343_release_provenance.py"
+    )
+    suite = _ilu.module_from_spec(spec)
+    spec.loader.exec_module(suite)
+    assert suite.SHIPPED_TAG.startswith("personium-")
+    assert (RECORDS_DIR / f"{suite.SHIPPED_TAG}.json").is_file()
+
+
 def test_no_run_body_carries_an_unintended_expression_delimiter(workflow_yaml):
     """⭐ MEASURED, NOT ANTICIPATED. The first push of this workflow FAILED TO
     PARSE, with zero jobs and no log — GitHub expands expressions in a `run:`

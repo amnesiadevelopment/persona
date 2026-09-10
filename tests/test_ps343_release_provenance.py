@@ -99,17 +99,26 @@ verify_asset = _V.verify_asset
 # depend on GitHub. The published-set quantifier is evaluated by
 # `.github/scripts/ps343_release_audit.py`, on its own schedule, and pinned by
 # `tests/test_ps385_release_provenance_audit.py`.
-def _newest_record_tag() -> str:
+def _newest_record_tag(records_dir: Path | None = None) -> str:
     """The newest provenance record on disk, by version rather than by string.
 
     Numeric, because lexicographically `personium-99.…` sorts above
     `personium-152.…` — the same reason `updater.engine_versions_newest_first`
     sorts by `parse_version` rather than taking the API's ref order.
+
+    ⚠️ `records_dir` IS A TEST HOOK AND NOTHING ELSE. Today this repository
+    carries exactly one record, so the derived value and the literal it replaced
+    are the SAME STRING — which means reverting the derivation does not fail
+    anything, and a derivation nothing can falsify is decoration. The parameter
+    exists so `tests/test_ps385_release_provenance_audit.py` can drive it at a
+    record set this repository does not have (two records, and a `99` that must
+    not outsort a `152`) and observe that it actually follows the directory.
     """
-    tags = sorted(p.stem for p in RECORDS_DIR.glob("personium-*.json"))
-    if not tags:  # pragma: no cover - the repo always carries at least one
+    directory = records_dir or RECORDS_DIR
+    tags = sorted(p.stem for p in directory.glob("personium-*.json"))
+    if not tags:
         raise AssertionError(
-            f"no personium-*.json provenance record in {RECORDS_DIR} — the "
+            f"no personium-*.json provenance record in {directory} — the "
             "record set this suite lints is empty"
         )
 
