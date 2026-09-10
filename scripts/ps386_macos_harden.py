@@ -50,11 +50,17 @@ WHAT IT SIGNS, AND WHAT IT DELIBERATELY DOES NOT
 -------------------------------------------------
 ⭐ ONLY THE SLICES WE PRODUCE. The honest target named by PS-386 is "every slice
 we build" and explicitly NOT a bundle-wide `225/225`, which would misreport
-vendored third-party code we did not sign and did not produce. Two vendored
-binaries in this bundle carry REAL third-party identities — Node.js
-Foundation's `node`, and Microsoft's redistributables in the engine — and
-re-signing those would DESTROY a genuine signature and replace it with our
-ad-hoc one. That is strictly worse than leaving them alone.
+vendored third-party code we did not sign and did not produce. PS-346 measured
+`SIGNED_CMS=1` in this bundle: the Node.js Foundation's `node`, vendored under
+playwright's driver, which arrived already signed. Re-signing it would DESTROY a
+genuine signature and replace it with our ad-hoc one — strictly worse than
+leaving it alone.
+
+⚠️ ONE identity, not two. Microsoft's signed `d3dcompiler_47.dll` / `dxil.dll`
+DO exist in PS-346's reading, but they are PE files in the WINDOWS engine zip
+and are not in this bundle at all. Reading a Windows-asset finding as a
+macOS-bundle fact is exactly the cross-asset conflation PS-346's report was
+careful to avoid, and it must not be the justification for a guard on this path.
 
 So this walks the bundle and skips anything already carrying a CMS signature
 (a real identity), re-signing only ad-hoc/unsigned Mach-O code.
@@ -150,19 +156,32 @@ def is_macho(path: Path) -> bool:
         return False
 
 
-def has_real_identity(path: Path) -> bool:
-    """Does this item already carry a CMS signature naming a real identity?
+def classify(path: Path) -> tuple[str, str]:
+    """OURS / THIRD_PARTY / UNREADABLE — three values, because three things happen.
 
-    ⭐ THIS IS THE GUARD THAT KEEPS US OFF THIRD-PARTY CODE. `codesign -dvvv`
-    prints an `Authority=` line only for a genuine signature; an ad-hoc one has
-    no authority chain at all. So an `Authority=` hit means somebody with an
-    actual certificate signed this, and re-signing it would replace their
-    identity with our ad-hoc nothing.
+    ⭐ THIS USED TO BE A BOOLEAN AND THAT WAS THE DEFECT. Collapsing "could not
+    tell" into "third-party" is the same class of error PS-346's instrument was
+    hardened against across five rework rounds: a three-valued fact rendered as
+    two, so the run reports a clean count over slices nobody could read.
 
-    ⚠️ FAIL SAFE, NOT FAIL OPEN: if the probe itself errors we return True
-    ("treat as third-party, leave alone"). Skipping an item we could have
-    hardened is a measurable shortfall the verifier will report as a miss;
-    destroying a real signature is not recoverable from the build output.
+    `codesign -dvvv` prints an `Authority=` line only for a genuine signature;
+    an ad-hoc one has no authority chain at all. So:
+
+      * exit 0 with `Authority=`     -> THIRD_PARTY (a real certificate signed it)
+      * exit 0 without `Authority=`  -> OURS        (ad-hoc or unsigned)
+      * anything else                -> UNREADABLE  (we do not know)
+
+    ⚠️ THE NON-ZERO EXIT ARM IS THE ONE THAT MATTERED. `subprocess.run` without
+    `check=True` does NOT raise on a non-zero exit, so a `codesign` that errored
+    per-slice previously fell through the `Authority=` test to False and was
+    RE-SIGNED as ours. That is the most likely per-slice failure mode, and it
+    was the one the old fail-safe did not actually cover.
+
+    UNREADABLE is treated as third-party for the SIGNING decision — skipping a
+    slice we could have hardened is a shortfall the verifier reports, while
+    destroying a real signature is not recoverable — but it is COUNTED AND
+    PRINTED separately, so a blind skip can never be mistaken for a legitimate
+    third-party one.
     """
     try:
         out = subprocess.run(
@@ -171,10 +190,19 @@ def has_real_identity(path: Path) -> bool:
             text=True,
             timeout=60,
         )
-    except (OSError, subprocess.SubprocessError):
-        return True
+    except (OSError, subprocess.SubprocessError) as exc:
+        return "UNREADABLE", f"{type(exc).__name__}"
     blob = (out.stderr or "") + (out.stdout or "")
-    return "Authority=" in blob
+    if out.returncode != 0:
+        first = next((ln for ln in blob.splitlines() if ln.strip()), "")
+        return "UNREADABLE", f"codesign exit {out.returncode}: {first[:120]}"
+    if "Authority=" in blob:
+        authority = next(
+            (ln.strip() for ln in blob.splitlines() if ln.strip().startswith("Authority=")),
+            "Authority=?",
+        )
+        return "THIRD_PARTY", authority[:160]
+    return "OURS", ""
 
 
 def bundle_main_executable(bundle: Path) -> Path | None:
@@ -356,14 +384,40 @@ def main() -> int:
     print(f"  {len(items) - len(bundles)} loose Mach-O file(s)")
 
     ours: list[Path] = []
-    theirs: list[Path] = []
+    theirs: list[tuple[Path, str]] = []
+    unreadable: list[tuple[Path, str]] = []
     for path in items:
-        (theirs if has_real_identity(path) else ours).append(path)
+        state, detail = classify(path)
+        if state == "OURS":
+            ours.append(path)
+        elif state == "THIRD_PARTY":
+            theirs.append((path, detail))
+        else:
+            unreadable.append((path, detail))
 
-    print(f"\n  {len(ours)} ad-hoc/unsigned  -> WILL be re-signed (ours)")
-    print(f"  {len(theirs)} carrying a real identity -> LEFT ALONE (third-party)")
-    for path in theirs:
+    print(f"\n  {len(ours)} OURS (ad-hoc/unsigned) -> WILL be re-signed")
+    print(f"  {len(theirs)} THIRD_PARTY (a real certificate) -> LEFT ALONE")
+    for path, detail in theirs:
         print(f"      skip: {path.relative_to(app)}")
+        print(f"            {detail}")
+    print(f"  {len(unreadable)} UNREADABLE (we could not tell) -> LEFT ALONE")
+    for path, detail in unreadable:
+        print(f"      skip: {path.relative_to(app)}")
+        print(f"            {detail}")
+    if unreadable:
+        # ⚠️ NOT FATAL, BUT NEVER INVISIBLE. These are slices we might have been
+        # able to harden and did not. The verifier reads the produced bytes and
+        # will report any of them that lack the runtime flag, so the shortfall
+        # surfaces as a measured miss rather than as a silent one — but it must
+        # be legible HERE too, or a count of "re-signed N" reads as complete.
+        print(
+            f"\n⚠️  {len(unreadable)} slice(s) could NOT be classified and were left\n"
+            "    alone. They are NOT third-party — they are unknown. The final\n"
+            "    count below therefore covers the slices this run CHOSE to target,\n"
+            "    not every slice in the bundle. scripts/ps386_verify_posture.py\n"
+            "    reads the produced bytes and will fail on any of these that\n"
+            "    ships without the hardened runtime."
+        )
 
     if args.dry_run:
         print("\n--dry-run: nothing was signed.")
@@ -407,9 +461,14 @@ def main() -> int:
         print("FAIL: the bundle does not verify after re-signing.", file=sys.stderr)
         return 1
 
-    print("\nOK: every targeted item re-signed with --options runtime, and the")
-    print("    bundle still verifies --deep --strict (its seals were rewritten,")
+    print(f"\nOK: {len(ours)} targeted item(s) re-signed with --options runtime, and")
+    print("    the bundle still verifies --deep --strict (its seals were rewritten,")
     print("    not invalidated).")
+    if unreadable:
+        print(
+            f"⚠️  ...but {len(unreadable)} slice(s) were UNREADABLE and skipped. This run\n"
+            "    is COMPLETE OVER WHAT IT COULD CLASSIFY, not over the bundle."
+        )
     print(
         "\n⚠️  THIS IS NOT A NOTARIZED OR IDENTITY-SIGNED BUILD, and must not be\n"
         "    reported as one. The signature is still AD-HOC and carries no\n"

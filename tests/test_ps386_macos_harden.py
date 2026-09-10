@@ -384,6 +384,123 @@ def test_entitlements_go_on_bundles_and_not_on_loose_dylibs(mod, tmp_path):
         assert "--options" in cmd and "runtime" in cmd, "the runtime option is the point"
 
 
+# ── ⭐ three-valued classification: ours / theirs / unknown ──────────────────
+
+
+class _FakeCompleted:
+    def __init__(self, returncode=0, stdout="", stderr=""):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+def test_an_adhoc_slice_classifies_as_ours(mod, monkeypatch, tmp_path):
+    """No Authority line and a clean exit means nobody with a certificate signed it."""
+    monkeypatch.setattr(
+        mod.subprocess, "run", lambda *a, **k: _FakeCompleted(0, stderr="Signature=adhoc\n")
+    )
+    state, _ = mod.classify(tmp_path / "libfoo.dylib")
+    assert state == "OURS"
+
+
+def test_a_real_identity_classifies_as_third_party_and_names_it(mod, monkeypatch, tmp_path):
+    """Node.js Foundation's `node` is the one real identity in this bundle.
+
+    Re-signing it would DESTROY a genuine signature and replace it with our
+    ad-hoc nothing, so it must be recognised — and NAMED, so a reader can tell
+    which third party it belonged to rather than trusting the count.
+    """
+    monkeypatch.setattr(
+        mod.subprocess,
+        "run",
+        lambda *a, **k: _FakeCompleted(
+            0, stderr="Authority=Developer ID Application: Node.js Foundation (HX7739G8FX)\n"
+        ),
+    )
+    state, detail = mod.classify(tmp_path / "node")
+    assert state == "THIRD_PARTY"
+    assert "Node.js Foundation" in detail
+
+
+def test_a_nonzero_codesign_exit_is_UNREADABLE_and_never_OURS(mod, monkeypatch, tmp_path):
+    """⭐ THE DEFECT THIS CLASSIFIER EXISTS TO FIX.
+
+    `subprocess.run` without `check=True` does NOT raise on a non-zero exit, so
+    a `codesign` that errored on a single slice used to fall through the
+    `Authority=` test to False — and get RE-SIGNED as ours. That is the most
+    likely per-slice failure mode, and it was precisely the one the old
+    fail-safe did not cover: it caught "codesign missing" and nothing else.
+
+    An errored probe means we DO NOT KNOW. It must never read as ours.
+    """
+    monkeypatch.setattr(
+        mod.subprocess,
+        "run",
+        lambda *a, **k: _FakeCompleted(1, stderr="test.dylib: invalid format\n"),
+    )
+    state, detail = mod.classify(tmp_path / "weird.dylib")
+    assert state == "UNREADABLE", "an errored probe must not be treated as ours"
+    assert "exit 1" in detail
+
+
+def test_a_missing_codesign_is_UNREADABLE_not_OURS(mod, monkeypatch, tmp_path):
+    """The original fail-safe's one covered case — still covered."""
+
+    def boom(*a, **k):
+        raise OSError("codesign not found")
+
+    monkeypatch.setattr(mod.subprocess, "run", boom)
+    state, _ = mod.classify(tmp_path / "x.dylib")
+    assert state == "UNREADABLE"
+
+
+def test_the_three_states_are_genuinely_distinct(mod, monkeypatch, tmp_path):
+    """A three-valued fact must not render as two.
+
+    Without this, all three arms could collapse to the same string and every
+    test above would still pass individually.
+    """
+    seen = set()
+    for rc, err in (
+        (0, "Signature=adhoc\n"),
+        (0, "Authority=Developer ID Application: Someone\n"),
+        (1, "broken\n"),
+    ):
+        monkeypatch.setattr(mod.subprocess, "run", lambda *a, _rc=rc, _e=err, **k: _FakeCompleted(_rc, stderr=_e))
+        seen.add(mod.classify(tmp_path / "x")[0])
+    assert seen == {"OURS", "THIRD_PARTY", "UNREADABLE"}
+
+
+def test_an_unreadable_slice_is_not_silently_folded_into_third_party(mod):
+    """⚠️ SKIPPED FOR TWO DIFFERENT REASONS MUST READ DIFFERENTLY.
+
+    Both an unreadable slice and a third-party one are left alone, so the
+    SIGNING decision is the same. The REPORTING must not be: a count that mixes
+    "Node.js Foundation signed this" with "I could not read this" gives the
+    liaison a number with no way to tell a legitimate skip from a blind one.
+    """
+    src = SCRIPT.read_text(encoding="utf-8")
+    assert "UNREADABLE (we could not tell)" in src
+    assert "THIRD_PARTY (a real certificate)" in src
+    assert "not over the bundle" in src, (
+        "the success line must not claim completeness over slices it never classified"
+    )
+
+
+def test_the_docstring_does_not_claim_windows_binaries_are_in_this_bundle(mod):
+    """⛔ CROSS-ASSET CONFLATION — a wrong justification for a right guard.
+
+    PS-346 measured SIGNED_CMS=1 in the macOS bundle: Node.js Foundation's
+    `node`. Microsoft's signed `d3dcompiler_47.dll` / `dxil.dll` are real, but
+    they are PE files in the WINDOWS engine zip and are not in this bundle at
+    all. A guard justified by a fact about a different asset is a guard someone
+    later removes on finding the fact false.
+    """
+    src = SCRIPT.read_text(encoding="utf-8")
+    assert "ONE identity, not two" in src
+    assert "WINDOWS engine zip" in src
+
+
 # ── ⭐ the verifier: does the posture land in the BYTES? ─────────────────────
 
 
@@ -818,3 +935,52 @@ def test_ci_never_passes_a_signing_identity(macos_steps):
         blob = (step.get("run") or "") + str(step.get("env") or "")
         for forbidden in ("APPLE_ID", "AC_PASSWORD", "notarytool", "altool", "--keychain"):
             assert forbidden not in blob, f"{forbidden!r} in the macOS job — no credential path"
+
+
+# ── the runbook's one un-runnable step ───────────────────────────────────────
+
+RUNBOOK = REPO / "readings" / "ps386-liaison-runbook.md"
+
+
+def test_the_runbook_pins_the_origin_reading_to_the_merge_base():
+    """⛔ THE BASELINE MUST NOT BE TAKEN ON THIS BRANCH.
+
+    `[tool.flet.macos.entitlement]` is a LIVE merge seam: flet merges it over
+    its five defaults, so a `flet build macos` on this branch writes a generated
+    `Release.entitlements` that already mentions `get-task-allow`. A Step 0 run
+    here therefore reads OUR OWN COMMIT and calls it the baseline.
+
+    Worse, the discriminator inverts: the runbook's stop-branch is "if the key
+    is in the generated file, the analysis is wrong" — which on this tree fires
+    on a tree where the analysis is right, sending the liaison to report a
+    defect that does not exist.
+
+    The reading Step 0 exists to take — does ad-hoc codesign inject the key when
+    NOTHING declares it? — is obtainable only where nothing declares it.
+    """
+    text = RUNBOOK.read_text(encoding="utf-8")
+    step0 = text.split("## Step 1")[0]
+    assert "d300635" in step0, "Step 0 must name the merge-base to build at"
+    assert "git worktree add" in step0, "Step 0 must build from a separate merge-base checkout"
+    assert "MERGE-BASE, NOT ON THIS BRANCH" in step0
+
+
+def test_the_runbook_does_not_call_the_branch_build_a_baseline():
+    """The phrasing that caused the defect must not survive the fix.
+
+    "Build ONCE without the hardening" reads as achievable on this branch. It is
+    not — the entitlement declaration is already in the tree.
+    """
+    step0 = RUNBOOK.read_text(encoding="utf-8").split("## Step 1")[0]
+    assert "Build ONCE without the hardening" not in step0
+
+
+def test_the_runbook_keeps_unreadable_distinct_from_third_party():
+    """The liaison must be told these are two different skips.
+
+    A count that mixes "Node.js Foundation signed this" with "I could not read
+    this" gives no way to tell a legitimate skip from a blind one.
+    """
+    text = RUNBOOK.read_text(encoding="utf-8")
+    assert "UNREADABLE` is not a synonym for `THIRD_PARTY" in text
+    assert "three** counts" in text or "three counts" in text
