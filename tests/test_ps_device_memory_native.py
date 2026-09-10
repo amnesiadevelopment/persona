@@ -271,21 +271,84 @@ def test_the_emitted_device_js_defines_no_deviceMemory_in_EITHER_realm(seed, tmp
     )
 
 
-def test_hardwareConcurrency_is_UNTOUCHED_by_this_slice(tmp_path):
-    """The negative control: one surface per PR.
+def test_hardwareConcurrency_is_ALSO_off_the_navigator_instance(tmp_path):
+    """⛔ INVERTED IN AUDIT ROUND 2 — this test used to pin the defect.
 
-    `hardwareConcurrency` shares the pool, the hash, the salt and both realms
-    with `deviceMemory`, so a careless deletion takes it with them. It must
-    still be authored in both realms exactly as before.
+    It was written as a negative control for slice 2's "one surface per PR"
+    discipline: `hardwareConcurrency` shares this file's pool, hash and salt
+    with `deviceMemory`, so a careless deletion takes it along, and the guard
+    asserted it survived in BOTH realms.
+
+    ⚠️ THAT MADE THE SUITE GREEN *BECAUSE* THE LEAK WAS PRESENT. The install it
+    protected — `def(navigator,'hardwareConcurrency',HM[0])` — does
+    `Object.defineProperty` against the navigator INSTANCE, leaving
+    `navigator.hasOwnProperty('hardwareConcurrency') === true` where the bare
+    engine carries the property only on `Navigator.prototype`. Measured on the
+    owner's Windows host, the VALUE agreed at 4 in both arms, so no value
+    comparison anywhere could see it. A guard that pins a measured defect as
+    desired behaviour is worse than no guard, because it turns red on the fix.
+
+    So the assertion is inverted rather than deleted, and the control it was
+    protecting moves to the machinery instead: `test_the_shared_pool_survived_
+    the_deletion` below is what now catches a deletion that took the pool with
+    it.
     """
     base = tmp_path / "control"
     build_device_extension(1337, str(base), CURRENT_HARDWARE_GENERATION,
                            os_type="windows")
     js = (base / "device.js").read_text(encoding="utf-8")
 
-    assert "'hardwareConcurrency'" in js, "the page realm lost hardwareConcurrency"
+    page = js.split("function applyHwPatch", 1)[0]
+    assert "def(navigator, 'hardwareConcurrency'" not in page, (
+        "the page realm installs hardwareConcurrency on the navigator instance "
+        "again — an own property where the bare engine has none, which is the "
+        "position leak this round closed"
+    )
+
     worker = js.split("function applyHwPatch", 1)[1]
-    assert "hardwareConcurrency" in worker, "the worker realm lost hardwareConcurrency"
+    assert "hardwareConcurrency" not in worker, (
+        "the worker twin installs hardwareConcurrency again. ⚠️ Deleting this "
+        "was safe ONLY because the engine answers worker realms too: the "
+        "switch is read in NavigatorConcurrentHardware::hardwareConcurrency(), "
+        "which WorkerNavigator inherits through NavigatorBase exactly as "
+        "Navigator does. If that ever stops being true, the correct fix is to "
+        "restore the worker carry and say so — a page/worker VALUE mismatch is "
+        "a worse tell than an own property."
+    )
+
+
+def test_the_shared_pool_survived_the_deletion():
+    """The control the inverted test above used to provide, moved to what it
+    was actually protecting.
+
+    `hardwareConcurrency` and `deviceMemory` shared one `(cores, RAM)` pick, so
+    the risk in deleting their JS installs was never the properties themselves
+    — it was taking the pool, the hash or the salt with them. Both engine flags
+    still resolve from that machinery, so it must survive the deletion intact.
+    """
+    from src.services.browser.device_ext import (
+        CORES_MEMORY,
+        CORES_MEMORY_SALT,
+        cores_memory_pick,
+        hardware_concurrency_for,
+    )
+
+    assert CORES_MEMORY, "the cores/RAM pool is empty"
+    assert CORES_MEMORY_SALT == 0xC0DE5, "the pool salt moved"
+
+    picks = {cores_memory_pick(s, 0) for s in (0, 1, 42, 1337, 0xDEADBEEF)}
+    assert len(picks) > 1, (
+        f"the resolver collapsed to a single pick {picks} — the divisor or the "
+        "hash was damaged by the deletion"
+    )
+    for seed in (0, 1, 42, 1337, 0xDEADBEEF):
+        cores, ram = cores_memory_pick(seed, 0)
+        assert hardware_concurrency_for(seed, 0) == cores, (
+            f"seed {seed}: the cores flag no longer reads the shared pick"
+        )
+        assert device_memory_for(seed, 0) == spec_device_memory(ram), (
+            f"seed {seed}: the memory flag no longer reads the shared pick"
+        )
 
 
 # ---------------------------------------------------------------------------
