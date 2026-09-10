@@ -216,13 +216,39 @@ jobs:
         # through conftest's table with this declaration in force, and ZERO
         # newly fail. It polices a state that does not currently occur — which
         # is exactly what a guard is for.
+        #
+        # ── WHY `yaml` IS DECLARED HERE (PS-389) ─────────────────────────────
+        # The workflow-SHAPE tests — including the two directly below this
+        # comment's own subject, `test_ci_declares_the_browser_capability_…`
+        # and `test_ci_declares_the_engine_capability_on_every_platform` — read
+        # THIS FILE through `pytest.importorskip("yaml")`. Until PyYAML had a
+        # capability name, those guards sat outside the mechanism entirely: on
+        # a run with PyYAML absent, 97 tests across 15 files declined silently,
+        # and declaring `browser,engine` over that run was byte-identical to
+        # declaring nothing. The tests asserting that the OTHER declarations
+        # exist were the ones that could go dark without a word.
+        #
+        # DECLARABLE BECAUSE PROVISIONED, ON THIS JOB SPECIFICALLY: the install
+        # step runs `pip install -r requirements-dev.txt`, where PyYAML is now
+        # a direct entry (PS-389 added it; before that it arrived only as a
+        # transitive dependency of `uvicorn[standard]` under `pip install .`,
+        # which nothing pinned for this purpose and no test asserted). Both
+        # routes are present here and the declaration is in force only at the
+        # suite step, which runs after that install.
+        #
+        # BLAST RADIUS, measured rather than assumed (at 9dad467, over the 15
+        # yaml-touching files via a `sys.meta_path` blocker raising a genuine
+        # ModuleNotFoundError): with PyYAML PRESENT — which is this job's state
+        # — the run is byte-identical with and without this declaration. It
+        # reds nothing that is green today; it polices a state that does not
+        # currently occur.
         shard:
           - name: main
             marker: "not ui_driver"
-            capabilities: browser,engine
+            capabilities: browser,engine,yaml
           - name: ui-driver
             marker: "ui_driver"
-            capabilities: browser,engine,ui_driver
+            capabilities: browser,engine,yaml,ui_driver
     runs-on: ${{ matrix.os }}
     # ⚠️ THE CAP IS STILL 30. THIS SPLIT DELIBERATELY DID NOT RAISE IT.
     #
@@ -651,7 +677,14 @@ jobs:
           # deliberately in neither. tests/test_ci_verification_gates.py pins
           # that the non-ubuntu fallback declares `engine`, so this copy cannot
           # drift back out of step without a red test.
-          PERSONA_REQUIRED_CAPABILITIES: ${{ matrix.os == 'ubuntu-24.04' && matrix.shard.capabilities || 'browser,engine' }}
+          #
+          # `yaml` is in both for the same reason `engine` is, and it is the
+          # exact trap this paragraph warns about (PS-389): the workflow-shape
+          # guards run on all three platforms, `requirements-dev.txt` — where
+          # PyYAML is now a direct entry — is installed on all three, and
+          # leaving it out of this literal would police the class on ubuntu
+          # only. tests/test_ci_verification_gates.py pins this copy too.
+          PERSONA_REQUIRED_CAPABILITIES: ${{ matrix.os == 'ubuntu-24.04' && matrix.shard.capabilities || 'browser,engine,yaml' }}
         # `-m` here SELECTS THIS SHARD'S PORTION — it is not the `-k` narrowing
         # forbidden above. The two shards partition the suite (15 + 5551 ==
         # 5566, pinned by tests/test_ci_shard_partition.py) and both gate, so
