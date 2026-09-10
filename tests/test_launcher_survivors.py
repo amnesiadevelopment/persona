@@ -44,6 +44,7 @@ from src.services.browser.session_registry import (
     capture_create_time,
     make_record,
 )
+from tests.pid_release import await_pid_release
 
 
 class _Proc:
@@ -154,6 +155,11 @@ def test_a_stale_record_does_not_block_a_launch(tmp_path, monkeypatch):
     proc = subprocess.Popen([sys.executable, "-c", "pass"])
     ct = capture_create_time(proc.pid)
     proc.wait()  # the process is now genuinely gone
+    # ...as far as THIS process is concerned. On Windows the pid outlives the
+    # reap for a short interval (PS-384), and every assertion below reads
+    # "GONE" off `liveness_of`, so the precondition is established rather
+    # than assumed. Free on POSIX.
+    await_pid_release(proc.pid)
 
     reg = SessionRegistry(str(tmp_path / "s.json"))
     reg.record(
@@ -254,6 +260,14 @@ def test_survivor_for_re_probes_and_releases_a_browser_since_closed(
     # The user closes the browser by hand.
     proc.kill()
     proc.wait()
+    # ⚠️ AND THE OS MUST HAVE FINISHED CLOSING IT. On Windows a killed and
+    # reaped pid stays resolvable for a short interval, during which
+    # `liveness_of` truthfully reads ALIVE — it sees the pid AND a matching
+    # create time. Asserting the release before the OS has performed it is
+    # what reddened `tests (windows-latest, main)` on run 34422663145
+    # (PS-384) with this exact assertion. Free on POSIX: the pid is already
+    # released by `wait()`, so this returns on its first check.
+    await_pid_release(proc.pid)
 
     assert bl.survivor_for("alpha") is None, "a closed browser must stop blocking"
     assert bl.is_running("alpha") is False
@@ -303,6 +317,7 @@ def test_start_thread_allows_a_launch_when_the_record_is_stale(
     dead = subprocess.Popen([sys.executable, "-c", "pass"])
     ct = capture_create_time(dead.pid)
     dead.wait()
+    await_pid_release(dead.pid)  # the Windows pid-release window (PS-384)
 
     reg = SessionRegistry(str(tmp_path / "s.json"))
     reg.record(
@@ -454,7 +469,11 @@ def test_a_survivor_refusal_releases_the_slot_it_reserved(tmp_path, monkeypatch)
         "every future launch will be refused as a duplicate"
     )
 
-    # The survivor is gone now, so the guard must let the user back in.
+    # The survivor is gone now, so the guard must let the user back in — but
+    # only once the OS agrees it is gone. On Windows the killed-and-reaped pid
+    # stays resolvable briefly (PS-384) and `liveness_of` reads ALIVE off it,
+    # which would refuse this launch and read as the very lockout below.
+    await_pid_release(proc.pid)
     bl.start_thread(Profile(name="alpha", os_type="windows"), lambda m: None)
 
     assert spawned == ["alpha"], (
