@@ -194,9 +194,16 @@ jobs:
       - name: Prove the verdict can still go red
         run: |
           python -m pip install --upgrade pip
-          pip install --prefer-binary pytest
+          # PyYAML too, and NOT incidentally: six of the workflow-shape
+          # tests below parse THIS FILE through `pytest.importorskip("yaml")`,
+          # and requirements.txt is not installed until the next step. The
+          # first CI run reported "34 passed, 6 SKIPPED" — the six that assert
+          # this job cannot be hollowed out were inert in the job they guard.
+          # `-p no:randomly --strict-markers` is not used here; `-ra` is, so
+          # any future skip is NAMED in the log rather than being a number.
+          pip install --prefer-binary pytest PyYAML
           python -m pytest tests/test_ps344_published_engine_verdict.py \
-                           tests/test_ps370_published_engine_gate.py -q
+                           tests/test_ps370_published_engine_gate.py -q -ra
 
       - name: Provision a display, the project and the engine driver
         run: |
@@ -347,7 +354,7 @@ jobs:
                job reports; it does not fix.
 
           ⛔ DO NOT "fix" a red run by pinning the engine, by passing
-          --skip-falsification, by adding `|| true`, or by letting exit 2 pass.
+          --skip-falsification, by adding a '|| true', or by letting exit 2 pass.
           Each of those turns this back into a gate that reports a verdict it
           has not earned, which is the entire defect this venue was built to
           close.
