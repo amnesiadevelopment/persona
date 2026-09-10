@@ -1243,7 +1243,7 @@ def spawn_browser(profile: Profile, *, in_process: bool = False) -> subprocess.P
             # ⛔ THE SWITCH THAT MUST NEVER APPEAR IN THIS LIST: --disable-spoofing.
             #
             # A reader auditing the fingerprint switches will notice that patch
-            # 000 declares twelve and this launch passes six, and the natural
+            # 000 declares thirteen and this launch passes seven, and the natural
             # next thought is "wire the rest". This one is the counter-example
             # that makes that instinct wrong, and the reason is recorded HERE —
             # beside the flags it sits among — rather than in a test, because
