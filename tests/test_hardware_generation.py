@@ -1023,25 +1023,36 @@ _APPENDED_PAIR = device_ext.CoresMemoryEntry(24, 32, since=NEXT_GEN)
 
 
 def _hw_seen(tmp_path, seed, generation, tag):
-    """What a page actually reads for (hardwareConcurrency, deviceMemory)."""
-    node = shutil.which("node")
-    if not node:
-        pytest.skip("node not available")
-    d = pathlib.Path(
-        build_device_extension(seed, str(tmp_path / f"{tag}{seed}"), generation)
+    """What the ENGINE FLAGS report for (hardwareConcurrency, deviceMemory).
+
+    ⭐ REPOINTED BY THE PIXELSCAN PORT — this used to build the extension, run
+    it in node and read what a PAGE saw, which was the right instrument while
+    `device_ext` installed both properties in JS. It no longer does: the engine
+    authors them natively in every realm, so the emitted script carries neither
+    the values nor the pool, and a page read here would report the stub realm's
+    own numbers rather than persona's.
+
+    The generation-filter property these tests exist to guard is UNCHANGED —
+    appending to `CORES_MEMORY` must not re-index existing profiles onto a
+    different machine — but its consumer moved from the emitted JS to the two
+    Python resolvers that feed the launch flags. So this reads THEM, which is
+    where the answer now lives.
+
+    ⚠️ WHAT IS LOST, STATED RATHER THAN ABSORBED: this no longer executes
+    anything. The old form could catch a divisor that was correct in Python and
+    wrong in the shipped script; there is no shipped script to be wrong any
+    more, so that class is unconstructible rather than unwatched — but if a JS
+    author for either property ever returns, restore the node execution with it.
+    """
+    from src.services.browser.device_ext import (
+        device_memory_for,
+        hardware_concurrency_for,
     )
-    harness = d / "hwharness.js"
-    harness.write_text(_HW_READ, encoding="utf-8")
-    out = subprocess.run(
-        [node, str(harness), str(d / "device.js")],
-        capture_output=True, text=True, timeout=60, encoding="utf-8",
+
+    return (
+        hardware_concurrency_for(seed, generation),
+        device_memory_for(seed, generation),
     )
-    assert out.returncode == 0, out.stderr
-    seen = json.loads(out.stdout)
-    assert seen["cores"] != -1 and seen["memory"] != -1, (
-        "the extension did not patch navigator, so this measured nothing"
-    )
-    return (seen["cores"], seen["memory"])
 
 
 def _append_cores_memory(monkeypatch):
@@ -1088,38 +1099,64 @@ def test_appended_cores_memory_pair_is_reachable_by_a_new_profile(
 
 
 def test_worker_realm_reports_the_same_machine_as_the_page(tmp_path, monkeypatch):
-    # The two realms render from ONE list, so they cannot disagree. A page/worker
-    # mismatch in cores or RAM is itself a detection tell, and the duplicated
-    # literals these replaced had to be kept in sync by eye.
+    # ⭐ REPOINTED BY THE PIXELSCAN PORT — the property is the same, its
+    # mechanism is not, and the change is an UPGRADE worth stating.
     #
-    # BUILT AT THE NEW GENERATION, WITH AN APPEND, DELIBERATELY. At generation 0
-    # a stale hard-coded literal and a correctly-filtered pool are byte-identical,
-    # so a generation-0 version of this test passes against a realm that was never
-    # wired to CORES_MEMORY at all — it did, during falsification. Appending and
-    # building at NEXT_GEN is what makes the two forms diverge: the filtered pool
-    # has the new pair, a stale literal does not.
-    node = shutil.which("node")
-    if not node:
-        pytest.skip("node not available")
+    # This used to assert that the emitted script rendered TWO pools (`HCMEM`
+    # for the page realm, `P` for the worker twin) from one CORES_MEMORY list,
+    # so the two realms could not disagree about which machine the profile is.
+    # A page/worker mismatch in cores or RAM is itself a detection tell, and the
+    # duplicated JS literals these replaced had to be kept in sync by eye.
+    #
+    # ⛔ NEITHER POOL EXISTS ANY MORE. Both installs were deleted: the engine
+    # reads the switches in NavigatorConcurrentHardware / NavigatorDeviceMemory,
+    # which `Navigator` and `WorkerNavigator` BOTH inherit through
+    # `NavigatorBase`, so one engine read answers the page realm, dedicated and
+    # shared workers, and the ServiceWorker realm no script can reach.
+    #
+    # So realm agreement is now STRUCTURAL rather than arithmetic — there is one
+    # author instead of two agreeing ones, and the mismatch this test watched
+    # for is unconstructible rather than merely absent. What remains checkable,
+    # and is what this now asserts, is the half that a deletion could still
+    # break: the generation filter feeding the flags, and the two flags reading
+    # ONE pick rather than resolving independently.
+    #
+    # BUILT WITH AN APPEND AT THE NEW GENERATION, DELIBERATELY, for the original
+    # reason: at generation 0 a stale hard-coded literal and a correctly
+    # filtered pool are byte-identical, so a generation-0 form of this passes
+    # against a resolver that was never wired to CORES_MEMORY at all — it did,
+    # during falsification.
+    from src.services.browser.device_ext import (
+        cores_memory_for_generation,
+        cores_memory_pick,
+        device_memory_for,
+        hardware_concurrency_for,
+        spec_device_memory,
+    )
+
     _append_cores_memory(monkeypatch)
-    d = pathlib.Path(
+
+    pool = cores_memory_for_generation(NEXT_GEN)
+    assert list(_APPENDED_PAIR.pair) in [list(p) for p in pool], (
+        "the appended pair is absent from the new generation's pool — the "
+        "resolver is not reading CORES_MEMORY and will drift from it by hand"
+    )
+
+    # The two flags must come from ONE pick, or a profile could publish cores
+    # from one machine and RAM from another — the same tell one level down.
+    for seed in (42, 7, 4154289201):
+        cores, ram = cores_memory_pick(seed, NEXT_GEN)
+        assert hardware_concurrency_for(seed, NEXT_GEN) == cores
+        assert device_memory_for(seed, NEXT_GEN) == spec_device_memory(ram)
+
+    # And the emitted script must not have quietly regained an author.
+    js = pathlib.Path(
         build_device_extension(42, str(tmp_path / "realms"), NEXT_GEN)
-    )
-    js = (d / "device.js").read_text(encoding="utf-8")
-    pools = re.findall(r"var (?:HCMEM|P)\s*=\s*(\[\[.*?\]\])", js)
-    assert len(pools) == 2, (
-        f"expected both realm pools in the emitted script, found {len(pools)}"
-    )
-    page, worker = json.loads(pools[0]), json.loads(pools[1])
-    assert page == worker, (
-        "the page and worker realms rendered DIFFERENT cores/RAM pools — one of "
-        "them is not reading CORES_MEMORY, so they will drift apart by hand"
-    )
-    # Both must actually track the list, not merely agree with each other: two
-    # identical stale literals would satisfy the equality above.
-    assert list(_APPENDED_PAIR.pair) in page, (
-        "neither realm picked up the appended pair at the new generation — the "
-        "pools are hard-coded rather than rendered from CORES_MEMORY"
+    ).joinpath("device.js").read_text(encoding="utf-8")
+    assert "HCMEM" not in js, (
+        "the cores/RAM pool is being rendered into device.js again — if a JS "
+        "author has returned, restore the two-pool equality assertion above "
+        "with it, because two authors CAN disagree"
     )
 
 

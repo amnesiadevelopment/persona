@@ -181,7 +181,32 @@ def test_the_switch_list_matches_the_patch_that_declares_them(shipped_record):
     """The record's switch list is not a hand-typed constant: it must agree with
     `000-add-fingerprint-switches.patch` as it stands in the tree. If a future
     rebase adds or removes a switch, this fails rather than letting the record
-    describe a patch set that no longer exists."""
+    describe a patch set that no longer exists.
+
+    ⛔ AMENDED AT PS-392, AND THE AMENDMENT IS THE POINT — READ IT BEFORE
+    "FIXING" THIS TEST.
+
+    This assertion compared the TREE's patch against a record of a SHIPPED
+    BINARY, which conflates two different objects. The moment anyone edits
+    patch 000, the tree gains a switch the shipped engine does not contain —
+    and the shipped engine genuinely does not contain it, because it was built
+    before the edit. That is the record staying HONEST, not the record breaking.
+
+    ⛔ SO THE TEMPTING FIX IS A FALSIFICATION. Adding the new switch to
+    `SWITCHES` (or to the record) asserts that a binary users are already
+    running carries a spoof it does not carry, in the one file whose entire job
+    is being trustworthy about what shipped. The record's own figures say so:
+    each asset's `fingerprint_switches_present` is
+    `confidence: derived_from_artifact` — those 11 names were read out of the
+    published binary's string table, not copied from the patch.
+
+    So the comparison is now TREE ⊇ RECORD, with the surplus named. A switch
+    added to the patch after the release is EXPECTED to be absent from the
+    record, and stays absent until a rebuilt engine actually ships and a new
+    record is written for it. A switch REMOVED from the patch while the record
+    still claims it IS still a failure — that direction means the record
+    describes a patch set that never existed.
+    """
     import re
 
     patch = (
@@ -191,7 +216,25 @@ def test_the_switch_list_matches_the_patch_that_declares_them(shipped_record):
     declared = sorted(
         f["value"] for f in shipped_record["patch_set"]["switches_introduced"]["value"]
     )
-    assert declared == in_patch
+
+    missing_from_tree = sorted(set(declared) - set(in_patch))
+    assert not missing_from_tree, (
+        f"the shipped record claims {missing_from_tree}, which patch 000 no "
+        "longer declares. The record describes a patch set that never existed "
+        "— that direction is a real defect, not post-release drift."
+    )
+
+    added_since_release = sorted(set(in_patch) - set(declared))
+    assert added_since_release == ["fingerprint-device-memory"], (
+        "the set of switches added to patch 000 SINCE the shipped release has "
+        f"changed: {added_since_release}. This is not automatically wrong — a "
+        "switch added after a release is absent from that release's record by "
+        "construction, and must NOT be added to it (the record's per-asset "
+        "`fingerprint_switches_present` is derived_from_artifact: those names "
+        "were read out of the published binary). Update this literal when you "
+        "add a switch, and CLEAR it when a rebuilt engine ships with a new "
+        "record — that is the moment the record catches up, not before."
+    )
 
 
 def test_recorded_asset_names_match_the_releasing_scheme(shipped_record):

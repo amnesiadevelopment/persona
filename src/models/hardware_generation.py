@@ -27,8 +27,12 @@ the claim is that THESE SEVEN are all of them:
      behind ``device_ext.SCREEN_RES_POOLS`` by PS-264; before that it was a JS
      array literal no census guard could iterate, and an untagged append moved
      18 of 20 generation-0 profiles on BOTH arms while the suite stayed green.
-  7. ``device_ext`` ``CORES_MEMORY``   — hardwareConcurrency + deviceMemory,
-     rendered into BOTH realms (page + the applyHwPatch worker twin); 82% moved
+  7. ``device_ext`` ``CORES_MEMORY``   — hardwareConcurrency + deviceMemory;
+     82% moved. Was rendered into BOTH realms (page + the applyHwPatch worker
+     twin) until PS-392 deleted the JS authorship — the engine now authors both
+     properties, so this pool reaches the emitted script not at all and its one
+     consumer is the Python resolver feeding the two --fingerprint-* switches.
+     The pool-index defect below is unaffected: the divisor is still a length.
 
 HOW THAT SET WAS DERIVED, so it can be re-derived rather than trusted: the
 defect is a pool index whose divisor is a POOL LENGTH, so the sweep is for
