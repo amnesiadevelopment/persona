@@ -113,11 +113,33 @@ def test_our_repository_does_not_own_a_list_of_upstreams_runtime_files():
     symptom is an ICU error on somebody else's machine months later, which reads
     like a broken compile.
 
-    So: the file names must appear NOWHERE in our tracked source. `readings/` is
-    excluded because it holds PS-301's historical report, which quotes the files
-    it had to hand-stage — that is a record of the defect, not an inventory the
-    build reads. This file is excluded for the same reason: the names above are
-    a prohibition, and a test that searched itself could never pass.
+    So: the file names must appear NOWHERE in our tracked source that a BUILD
+    STEP READS. `readings/` is excluded because it holds PS-301's historical
+    report, which quotes the files it had to hand-stage — that is a record of the
+    defect, not an inventory the build reads. This file is excluded for the same
+    reason: the names above are a prohibition, and a test that searched itself
+    could never pass.
+
+    ⚠️ COMMENT LINES ARE EXCLUDED, AND THE REASON IS THE MECHANISM, NOT
+    CONVENIENCE. This test fired on `scripts/ps374_runtime_enable_probe.py:561`,
+    which mentions `chrome_crashpad_handler` in a comment explaining that an
+    earlier draft of that probe LEAKED 380 such PROCESSES. That is prose about a
+    process leak; it is not a file list, nothing reads it, and no drift in
+    upstream's runtime tree can make it wrong.
+
+    The defect being prevented is an INVENTORY THAT ROTS: a list our build reads,
+    correct the day it is written and silently wrong once upstream changes
+    theirs. A comment cannot rot into an artifact that does not run, because no
+    build step consults it — and the moment anybody UNCOMMENTS one, it becomes
+    code and this test fires. So the ratchet still bites exactly when it matters,
+    and `test_a_commented_out_file_list_is_caught_the_moment_it_becomes_code`
+    below is the positive control proving that, rather than leaving it asserted.
+
+    Narrowing a prohibition is exactly the move that quietly guts a guard, so the
+    narrowing is bounded to lines that cannot execute — never to a file, and
+    never to a directory. Excluding `ps374_runtime_enable_probe.py` itself would
+    have been the easy repair and the wrong one: it would have blinded this test
+    to any real list that file might carry later.
     """
     tracked = subprocess.run(
         ["git", "ls-files"],
@@ -137,8 +159,12 @@ def test_our_repository_does_not_own_a_list_of_upstreams_runtime_files():
             text = path.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
             continue  # binary or unreadable: not a place a file list is authored
+        executable = "\n".join(
+            line for line in text.splitlines()
+            if not line.lstrip().startswith("#")
+        )
         for name in UPSTREAM_RUNTIME_FILES:
-            if name in text:
+            if name in executable:
                 offenders.setdefault(name, []).append(rel)
 
     assert not offenders, (
@@ -325,6 +351,47 @@ def test_the_two_arms_artifacts_can_be_told_apart_by_a_reader_holding_both():
         "each staged artifact must carry its arm in the filename, so a reader "
         "holding both downloads can tell the patched tree from the control"
     )
+
+
+def test_a_commented_out_file_list_is_caught_the_moment_it_becomes_code():
+    """The positive control for the comment-line narrowing above.
+
+    A prohibition that was narrowed is a prohibition that might have been gutted,
+    and the difference is not visible by reading the exclusion — the test above
+    passes either way. So this drives the same rule over two synthetic files: one
+    where the runtime names sit behind `#`, and the SAME names uncommented.
+
+    The first must be tolerated (a comment is read by no build step and cannot
+    rot into an artifact that does not run) and the second must be caught (that
+    is a real second inventory of upstream's build output). Without this, the
+    narrowing would be an assertion about itself.
+    """
+    names = ("icudtl.dat", "resources.pak", "chrome_crashpad_handler")
+
+    def offenders_in(text: str) -> set[str]:
+        # The same rule the test above applies, exercised directly.
+        executable = "\n".join(
+            line for line in text.splitlines()
+            if not line.lstrip().startswith("#")
+        )
+        return {n for n in names if n in executable}
+
+    commented = "\n".join("# stages {} beside the binary".format(n) for n in names)
+    assert offenders_in(commented) == set(), (
+        "prose naming a runtime file must be tolerated: nothing reads a comment, "
+        "so it cannot ship an artifact that does not run"
+    )
+
+    as_code = "\n".join('cp "$OUT/{}" "$STAGE/"'.format(n) for n in names)
+    assert offenders_in(as_code) == set(names), (
+        "the moment a file list becomes executable it MUST be caught — that is "
+        "the second inventory this ticket's central constraint forbids"
+    )
+
+    # The mixed case, which is how a real regression would actually arrive:
+    # someone uncomments one line of an otherwise-commented block.
+    mixed = commented + '\ncp "$OUT/icudtl.dat" "$STAGE/"'
+    assert offenders_in(mixed) == {"icudtl.dat"}
 
 
 def test_packaging_does_not_drift_into_publication():
