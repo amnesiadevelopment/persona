@@ -393,7 +393,13 @@ def main(argv: "list[str] | None" = None) -> int:
         print(f"reason         : {body.get('reason')}")
 
     if args.out:
-        pathlib.Path(args.out).write_text(
+        out_path = pathlib.Path(args.out)
+        # PARENTS TOO. Found by the first CI run: the local reproduction had
+        # /tmp/ps370 left over from an earlier step, so `--out` into a directory
+        # that does not exist yet raised FileNotFoundError AFTER a correct plan
+        # had already been printed — a red run whose log said PLAN_OK.
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(
             json.dumps(body, indent=2, sort_keys=True), encoding="utf-8"
         )
 

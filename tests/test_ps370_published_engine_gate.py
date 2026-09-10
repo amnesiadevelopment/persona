@@ -630,6 +630,92 @@ def test_the_judges_own_selftest_runs_before_anything_is_downloaded(workflow_yam
     assert "tests/test_ps344_published_engine_verdict.py" in steps[selftest]["run"]
 
 
+def test_the_selftest_installs_what_this_suite_needs_to_not_skip(workflow_yaml):
+    """FOUND BY RUNNING IT IN CI, and it is the sharpest failure of the batch.
+
+    The first CI run reported `34 passed, 6 SKIPPED` at the selftest step. The
+    six were the workflow-SHAPE tests below — the ones asserting that this job
+    has no `|| true`, does not waive the falsification, and states its bounds —
+    and they skipped because `pytest.importorskip("yaml")` found no PyYAML: the
+    selftest deliberately runs BEFORE `requirements.txt` is installed.
+
+    So the guard against this gate being hollowed out was itself inert, inside
+    the very job it guards, and the step still reported green. That is the exact
+    defect class this whole ticket exists to remove — a check that reports
+    success over something it did not look at — reproduced one level up.
+
+    A skip is not a pass. Assert the dependency is installed rather than
+    trusting a number that counts them separately.
+    """
+    steps = workflow_yaml["jobs"]["verdict"]["steps"]
+    selftest = next(s for s in steps if "pytest" in (s.get("run") or ""))
+    run = selftest["run"]
+    # ⚠️ ASSERT ON THE EXECUTABLE LINES, NOT THE STEP BODY. The first draft of
+    # this test read `"PyYAML" in run` and SURVIVED removing PyYAML from the pip
+    # line — because the comment above that line explains why PyYAML is there.
+    # A test that passes on its own rationale is the exact defect it guards.
+    executable = "\n".join(
+        line for line in run.splitlines() if not line.lstrip().startswith("#")
+    )
+    installs = [
+        line for line in executable.splitlines() if line.lstrip().startswith("pip ")
+    ]
+    assert any("PyYAML" in line for line in installs), (
+        "the selftest step must install PyYAML, or the workflow-shape tests "
+        f"silently skip and this job's own guard is inert. pip lines: {installs}"
+    )
+    # And the run must NAME any skip rather than only counting it.
+    assert "-ra" in executable.split(), executable
+
+
+def test_the_plan_writes_its_json_even_when_the_directory_is_new(gate, tmp_path, capsys):
+    """FOUND BY RUNNING IT IN CI. A correct plan that cannot be SAVED is red.
+
+    The first CI run printed `outcome: PLAN_OK` / `engine tag:
+    personium-152.0.7977.75` and then died with FileNotFoundError writing
+    `/tmp/ps370/plan.json` — the local reproduction had that directory left over
+    from an earlier step and never met it. The failure block then reported
+    `plan outcome: <none>` over a plan that had in fact succeeded, which is
+    exactly the kind of misattributed red this job's whole vocabulary exists to
+    prevent.
+    """
+    out = tmp_path / "does" / "not" / "exist" / "plan.json"
+    code = gate.main(["--out", str(out), "--engine-version", "152.0.7977.75"])
+    assert code == gate.PLAN_OK
+    assert out.exists()
+    body = json.loads(out.read_text(encoding="utf-8"))
+    assert body["outcome"] == "PLAN_OK"
+    assert body["engine_version"] == "152.0.7977.75"
+
+
+def test_the_failure_block_is_a_quoted_heredoc_that_survives_backticks():
+    """FOUND BY RUNNING IT IN CI. The remedy text must reach the operator INTACT.
+
+    The failure block's `cat <<EOF` is UNQUOTED so `${TAG}` expands — which also
+    makes bash treat a backtick as command substitution. The first CI run's
+    remedy therefore read `by adding , or by letting exit 2 pass` beside a
+    `syntax error near unexpected token '||'`: the one line telling a reader NOT
+    to add `|| true` had the `|| true` eaten out of it.
+
+    Advice that mangles itself in the failure path is advice nobody receives.
+    """
+    text = WORKFLOW.read_text(encoding="utf-8")
+    in_unquoted_heredoc = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("cat <<EOF"):
+            in_unquoted_heredoc = True
+            continue
+        if in_unquoted_heredoc and stripped == "EOF":
+            in_unquoted_heredoc = False
+            continue
+        if in_unquoted_heredoc:
+            assert "`" not in line, (
+                "a backtick inside an unquoted heredoc is command substitution "
+                f"and will be eaten from the operator's remedy text: {line!r}"
+            )
+
+
 def test_the_readings_are_kept_when_the_gate_goes_red(workflow_yaml):
     """On a red run they are the whole evidence base for what to blocklist."""
     steps = workflow_yaml["jobs"]["verdict"]["steps"]
