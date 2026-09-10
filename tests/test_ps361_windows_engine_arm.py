@@ -215,7 +215,7 @@ def test_staged_list_refuses_a_series_naming_an_absent_file(tmp_path):
     mod = load_probe()
     _fake_checkout(tmp_path, ["000-a.patch"])
     series = tmp_path / "patches" / "series"
-    series.write_text(series.read_text() + "fingerprint/999-missing.patch\n", encoding="utf-8")
+    series.write_text(series.read_text(encoding="utf-8") + "fingerprint/999-missing.patch\n", encoding="utf-8")
 
     paths, err = mod.staged_patch_list(str(tmp_path))
     assert paths is None
