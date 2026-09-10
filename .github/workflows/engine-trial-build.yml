@@ -419,6 +419,33 @@ jobs:
       - name: Salvage the previous dispatch's evidence, then zero record/
         run: persona/scripts/ps289_journal.sh salvage
 
+      # ── PS-359: ZERO OUR OWN STAGING ROOT, BEFORE ANYTHING CAN FAIL ────────
+      # `package-out/` sits in $GITHUB_WORKSPACE beside `record/`, outside both
+      # checkouts, for exactly the reason spelled out above: `actions/checkout`
+      # never reaches it and a self-hosted runner does not wipe `_work` between
+      # runs. The salvage step above zeroes `record/` and ONLY `record/`.
+      #
+      # ⚠️ THE PACKAGING STEP CANNOT BE THE ONLY PLACE THIS HAPPENS. Packaging
+      # is gated on `steps.compile.outcome == 'success'`, correctly — a tree
+      # that did not compile has nothing to package. The binary upload below is
+      # `if: always()` and its path names `package-out/<arm>/`. So on a dispatch
+      # whose COMPILE FAILED, packaging never runs, nothing is removed, and the
+      # upload ships the PREVIOUS dispatch's AppImage under THIS run's artifact
+      # name — beside a manifest stating the tree did not compile.
+      # `if-no-files-found: ignore` does not help: files are found.
+      #
+      # That upload used to be two files nobody could launch; since PS-359 it is
+      # THE RUNNABLE ENGINE, and PS-344 and PS-345 are queued to measure through
+      # it. A measurement taken against a silently-substituted binary from
+      # another tag is the same PS-192 shape this file cites just above — a
+      # confident reading from an instrument nobody re-zeroed — and it is worse
+      # than the ICU error, because the ICU error is loud.
+      #
+      # Placed HERE: after the persona checkout that makes the script reachable,
+      # and before every step that can fail.
+      - name: Zero the packaging staging root (PS-359)
+        run: persona/scripts/ps359_package.sh reset
+
       - name: Check out ungoogled-chromium-portablelinux
         uses: actions/checkout@v4
         with:
@@ -868,6 +895,36 @@ jobs:
       # what it recovers under `record/salvaged/` and never at the top level.
       - name: Salvage the previous dispatch's evidence, then zero record/
         run: persona/scripts/ps289_journal.sh salvage
+
+      # ── PS-359: ZERO OUR OWN STAGING ROOT, BEFORE ANYTHING CAN FAIL ────────
+      # `package-out/` sits in $GITHUB_WORKSPACE beside `record/`, outside both
+      # checkouts — so `actions/checkout` never reaches it and a self-hosted
+      # runner does not wipe `_work` between runs. The salvage step above zeroes
+      # `record/` and ONLY `record/`; nothing else zeroes anything here.
+      #
+      # ⚠️ THE PACKAGING STEP CANNOT BE THE ONLY PLACE THIS HAPPENS, and that is
+      # why this is a separate step and not two lines inside that script's
+      # packaging path. Packaging is gated on `steps.compile.outcome ==
+      # 'success'`, correctly — a tree that did not compile has nothing to
+      # package. The binary upload below is `if: always()` and its path names
+      # `package-out/<arm>/`. So on a dispatch whose COMPILE FAILED, packaging
+      # never runs, nothing is removed, and the upload ships the PREVIOUS
+      # dispatch's AppImage under THIS run's artifact name, beside a manifest
+      # stating the tree did not compile. `if-no-files-found: ignore` does not
+      # help: files are found.
+      #
+      # This matters more since this ticket than it would have before. That
+      # upload used to be two files nobody could launch; it is now THE RUNNABLE
+      # ENGINE, and PS-344 and PS-345 are queued to measure through it. A
+      # measurement taken against a silently-substituted binary from another tag
+      # is the PS-192 shape cited above — a confident reading from an instrument
+      # nobody re-zeroed — and it is worse than the ICU error, because the ICU
+      # error is loud.
+      #
+      # Placed HERE: after the persona checkout that makes the script reachable,
+      # and before every step that can fail.
+      - name: Zero the packaging staging root (PS-359)
+        run: persona/scripts/ps359_package.sh reset
 
       - name: Check out ungoogled-chromium-portablelinux
         uses: actions/checkout@v4

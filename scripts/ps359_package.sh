@@ -77,6 +77,43 @@
 #    everything present afterwards is THIS RUN'S BY CONSTRUCTION rather than by
 #    inspection. Nothing is silently destroyed: the inventory is in the record.
 #
+# 1b. AND IT ZEROES OUR OWN STAGING ROOT — `reset`, WHICH IS A SEPARATE MODE
+#    BECAUSE IT MUST RUN ON DISPATCHES WHERE PACKAGING NEVER HAPPENS AT ALL.
+#
+#    `package-out/` is OURS, and it lives in $GITHUB_WORKSPACE — outside both
+#    checkouts, exactly where `record/` lives and for the same reason nobody
+#    cleans it: `actions/checkout` never touches it and a self-hosted runner
+#    does not wipe `_work` between runs. Point 1 above protects UPSTREAM's
+#    directory and stops at its edge; this protects ours, and the argument is
+#    verbatim the same one — an input from a previous run is VERIFIED, not
+#    trusted (PS-244, PS-307), and removing beats verifying.
+#
+#    ⚠️ THE REMOVAL CANNOT LIVE ONLY ON THE PACKAGING PATH, and that is the
+#    whole reason `reset` is a mode of its own rather than two lines further
+#    down this file. The packaging step is gated on `steps.compile.outcome ==
+#    'success'` — correctly — while the binary upload is `if: always()` and
+#    names `package-out/<tree>/`. So on a dispatch whose COMPILE FAILED,
+#    packaging never runs, nothing here executes, and the upload ships the
+#    PREVIOUS dispatch's AppImage under THIS run's artifact name, beside a
+#    manifest that says the tree did not compile. `if-no-files-found: ignore`
+#    cannot help: files are found. A removal inside the packaging path is
+#    necessary and NOT sufficient, so `reset` is invoked unconditionally, early
+#    in the job, before any step that could fail.
+#
+#    It removes the ROOT, not one arm's directory, so an arm renamed in a later
+#    edit cannot orphan a directory that still matches the upload's path.
+#
+#    ⛔ IT DOES NOT COUPLE THE REMOVAL TO THE INVENTORY, and the asymmetry with
+#    point 1 is deliberate rather than an oversight. There, the bytes are
+#    upstream's packager output and may be the only surviving copy of a
+#    previous dispatch's artifact, so destroying them unread is the worse
+#    outcome and an unreadable inventory REFUSES the removal. Here the bytes
+#    are a COPY we made of that same output, wholly derived and of no
+#    evidentiary value — and the failure mode inverts with them: refusing to
+#    remove would SHIP a foreign browser under this run's name, to be measured
+#    through by PS-344 and PS-345. When those two priorities conflict, the
+#    removal wins. The inventory is still recorded, as a record of what went.
+#
 # 2. IT PROVES THE SUBMODULE INIT IS A NO-OP INSTEAD OF ASSUMING IT.
 #
 #    `docker-package.sh` runs `git submodule update --init --recursive` if it
@@ -213,17 +250,78 @@ count_entries() {
   find "$1" -maxdepth 1 -mindepth 1 2>/dev/null | wc -l | tr -d ' '
 }
 
-TREE="${1:?usage: ps359_package.sh <unmodified|patched>}"
+TREE="${1:?usage: ps359_package.sh <reset|unmodified|patched>}"
+
+STAGE_ROOT="$(pwd)/package-out"
+
+# ── `reset` — ZERO OUR OWN STAGING ROOT, UNCONDITIONALLY, EARLY ──────────────
+# Invoked once per job BEFORE anything that can fail, and deliberately NOT part
+# of the packaging path.
+#
+# THE FAILURE THIS CLOSES, IN THE THREE FACTS THAT PRODUCE IT:
+#
+#   1. `package-out/` lives in $GITHUB_WORKSPACE, outside both checkouts.
+#      Nothing wipes it: `actions/checkout` never reaches it, a self-hosted
+#      runner does not wipe `_work` between runs, and the one thing that DOES
+#      zero this root — `ps289_journal.sh salvage` — zeroes `record/` alone.
+#   2. Packaging is gated on `steps.compile.outcome == 'success'`, which is
+#      correct: a tree that did not compile has nothing to package.
+#   3. The binary upload is `if: always()` and its path names this directory.
+#
+# Put together: a dispatch whose COMPILE FAILED runs no packaging, so nothing
+# removes anything, and the upload ships the PREVIOUS dispatch's AppImage under
+# THIS run's artifact name — beside a manifest that says the tree did not
+# compile. `if-no-files-found: ignore` cannot save it, because files ARE found.
+# The same mechanism at a different tag ships a foreign browser beside a
+# provenance sidecar that counts only the artifacts this run staged.
+#
+# ⚠️ WHY THAT MATTERS MORE NOW THAN IT WOULD HAVE BEFORE. Until this ticket the
+# binary upload was two files nobody could launch. It is now THE RUNNABLE
+# ENGINE, and PS-344 and PS-345 are queued to measure THROUGH it. A masking
+# measurement taken against a silently-substituted binary from another tag is
+# the PS-192 shape this workflow cites at `:415-417` — a confident reading from
+# an instrument nobody re-zeroed — and it is strictly worse than the ICU error
+# this ticket closes, because the ICU error is LOUD and this one is not.
+#
+# THE ROOT, NOT ONE ARM. Removing `package-out/<tree>/` would leave a directory
+# named by an earlier spelling of an arm still sitting under a `path:` that
+# names the root's child — an orphan that still uploads. Removing the root
+# cannot orphan anything.
+#
+# SAFE ACROSS THE TWO JOBS: `patched` declares `needs: unmodified`, so the
+# control job's own upload has already completed before this can run in the
+# subject job. On a `trees=patched` dispatch the control job is skipped and
+# there is nothing of its to lose.
+if [ "$TREE" = "reset" ]; then
+  echo "# PS-359 — zeroing our staging root before anything can fail"
+  echo "root: ${STAGE_ROOT}"
+  if [ -d "$STAGE_ROOT" ]; then
+    echo "state: PRESENT before this run — from a previous dispatch. Inventory:"
+    # Recorded for a reader, NOT coupled to the removal. Unlike upstream's
+    # release directory, everything here is a COPY WE MADE of output that was
+    # inventoried, hashed and uploaded when it was staged — no bytes are unique
+    # to this directory. And the two priorities point opposite ways: refusing to
+    # remove an unreadable staging root would SHIP a foreign browser under this
+    # run's name. When they conflict, the removal wins.
+    find "$STAGE_ROOT" -maxdepth 2 -mindepth 1 2>/dev/null | sort | sed 's/^/    /' || true
+    rm -rf "$STAGE_ROOT"
+    echo "removed: yes — anything under this root afterwards is THIS run's by construction, not by inspection"
+  else
+    echo "state: absent — nothing carried over from a previous dispatch"
+  fi
+  exit 0
+fi
+
 UCPL_DIR="${UCPL_DIR:?UCPL_DIR must point at the ungoogled-chromium-portablelinux checkout}"
 UNGOOGLED_TAG="${UNGOOGLED_TAG:-unknown}"
 
 case "$TREE" in
   unmodified|patched) ;;
-  *) echo "unknown tree: $TREE (expected unmodified|patched)" >&2; exit 2 ;;
+  *) echo "unknown tree: $TREE (expected reset|unmodified|patched)" >&2; exit 2 ;;
 esac
 
 REC="$(pwd)/record"
-STAGE="$(pwd)/package-out/${TREE}"
+STAGE="${STAGE_ROOT}/${TREE}"
 mkdir -p "$REC"
 
 REPORT="${REC}/package-${TREE}.txt"
@@ -387,6 +485,18 @@ if [ ! -d "$RELEASE_DIR" ]; then
   exit 1
 fi
 
+# ── OUR OWN STAGING DIRECTORY, ZEROED AT THE POINT OF CREATION ──────────────
+# The `reset` mode above already removed this root at the top of the job, and
+# this is the SECOND removal rather than the only one. That is deliberate: the
+# early reset is what covers the dispatches where packaging never runs at all
+# (a failed compile), and this one is what makes the guarantee local to the
+# code that depends on it — a future edit that moves, reorders or drops the
+# reset step cannot silently reintroduce a stale artifact here.
+#
+# It is the same argument this script already makes about upstream's release
+# directory, applied to our own: what is present afterwards is THIS RUN'S BY
+# CONSTRUCTION rather than by inspection.
+rm -rf "$STAGE"
 mkdir -p "$STAGE"
 
 say ""
