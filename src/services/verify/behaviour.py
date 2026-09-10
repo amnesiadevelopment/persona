@@ -239,6 +239,14 @@ UNCOVERED_SURFACES: tuple[tuple[str, str], ...] = (
 #    enters this set solely by moving OUT of a check-level omission that
 #    already exists — never by moving out of a passing lane. A check that is
 #    green today may not buy itself a known position tomorrow.
+#    ⭐ ENFORCED PER-PAIR, because the rule is stated per-pair: the retired
+#    omission records WHICH PAIRS its reason rested on
+#    (`test_ps336_launch_behaviour_venue.RETIRED_OMISSION_PAIRS`, re-derived
+#    from the committed corpus rather than trusted), and a pin outside that set
+#    is refused. A check-granular version of this rule goes VACUOUS the moment
+#    the check is retired — every future pin satisfies it for free — which is
+#    what round 1 shipped and what `test_rule_1_REFUSES_a_pin_on_a_pair_the_
+#    omission_never_covered` now keeps failing-capable.
 # 2. EXCLUDED VISIBLY, NEVER FORGIVEN. The pair is removed from the comparison
 #    BEFORE a verdict exists, and it is named in the outcome's detail and
 #    evidence on every run. Nothing adjudicates a FINDING down to a PASS:
@@ -248,9 +256,18 @@ UNCOVERED_SURFACES: tuple[tuple[str, str], ...] = (
 #    is invisible, which is why only the first is admissible.
 # 3. THE PIN IS A READING, NOT A VECTOR NAME. An entry carries the DIGEST the
 #    collision was recorded at, on the BUILD it was recorded on. A pair that
-#    collides on a DIFFERENT value is NOT the known position and is reported
-#    as the finding it is — and so is a pair that has stopped colliding, which
-#    means the premise expired and the entry must go.
+#    collides on a DIFFERENT value is NOT the known position: it rejoins the
+#    live comparison and is reported as the finding it is.
+#    ⚠️ A PAIR THAT HAS STOPPED COLLIDING IS THE OPPOSITE CASE AND IS NOT A
+#    FINDING. Its premise expired because the PRODUCT GOT BETTER, so it
+#    rejoins the live comparison and gates normally, the dead pin is REPORTED
+#    so it gets deleted, and THE VERDICT IS UNAFFECTED — the lane stays green.
+#    Failing on it would turn the day PS-2 ships its fix into a red, which is
+#    "permanently red is as bad as permanently green" arriving by the back
+#    door. The prompt to delete a dead pin is therefore a REPORT LINE ON A
+#    GREEN RUN, plus one test that goes red on its own evidence
+#    (`test_a_firefox_canvas_arm_is_what_PROMPTS_deleting_the_pins`) — never
+#    this lane going red.
 # 4. EVERY ENTRY CITES A FILE AND A VERBATIM QUOTE, on the model of
 #    `tests/test_engine_masking_matrix.py`'s RECORDED_REASON_SOURCES. A
 #    recorded decision whose record has been deleted or reworded is an
@@ -307,9 +324,9 @@ class KnownPosition:
 #: a derived set would grow silently and each entry has to be argued.
 #:
 #: ⛔ DO NOT ADD AN ENTRY TO MAKE A RED LANE GREEN. Rule 1 above is enforced by
-#: `tests/test_ps380_known_position.py`, which refuses an entry for a pair that
-#: is not inside a check-level omission already recorded in
-#: `tests/test_ps336_launch_behaviour_venue.py`'s DOCUMENTED_OMISSIONS.
+#: `tests/test_ps380_known_position.py`, which refuses a pin on any pair that
+#: the check's own recorded omission did not rest on — PER PAIR, not per check
+#: (`RETIRED_OMISSION_PAIRS`, itself re-derived from the committed corpus).
 KNOWN_POSITIONS: tuple[KnownPosition, ...] = (
     KnownPosition(
         realm="window",
@@ -996,8 +1013,13 @@ def format_report(outcomes: "list[Outcome]", ctx: "Context | None" = None) -> st
             "KNOWN POSITIONS — single (realm, probe) pairs whose collision is "
             "already RECORDED and owned elsewhere. Each is EXCLUDED from the "
             "cross-profile comparison and REPORTED here, never adjudicated "
-            "down to a pass. A pair that collides at a DIFFERENT reading, or "
-            "has STOPPED colliding, is reported as a finding:"
+            "down to a pass. A pin only ever removes an EXACTLY-MATCHING "
+            "recorded collision; every other reading rejoins the comparison "
+            "and gates normally. So a pair colliding at a DIFFERENT reading "
+            "is a FINDING (the pin does not describe it), while a pair that "
+            "has STOPPED colliding is NOT — that is the product improving: "
+            "the pair gates normally again, the dead pin is reported here so "
+            "it gets deleted, and the verdict is unaffected:"
         )
         for kp in KNOWN_POSITIONS:
             lines.append(

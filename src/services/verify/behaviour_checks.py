@@ -28,6 +28,7 @@ from .behaviour import (
     BehaviourCheckError,
     Check,
     Context,
+    KnownPosition,
     Outcome,
     _first_readable,
     _readings_or_refuse,
@@ -220,7 +221,22 @@ def _known_position_split(entries: list[dict], build: "str | None"):
     equal and can never make it greener — the towards-2 asymmetry, one level
     below the adjudicator that states it.
     """
-    known = {kp.pair: kp for kp in known_positions_for(build)}
+    known: dict[str, KnownPosition] = {}
+    for kp in known_positions_for(build):
+        # ⚠️ TWO ENTRIES PINNING THE SAME PAIR ON THE SAME BUILD would silently
+        # collapse to the last one under a plain dict comprehension, so the
+        # second pin's digest would be the only one that could ever match and
+        # the first would be inert without saying so. Cannot happen today (two
+        # entries, two pairs), but a silent collapse in a structure whose whole
+        # value is legibility is exactly the rot the four rules exist against.
+        if kp.pair in known:
+            raise BehaviourCheckError(
+                f"two known positions pin {kp.pair!r} on build {kp.build!r} "
+                f"({known[kp.pair].digest!r} and {kp.digest!r}). A pair has ONE "
+                "recorded reading per build; keeping both would silently make "
+                "one of them inert. Delete the stale entry."
+            )
+        known[kp.pair] = kp
     if not known:
         return list(entries), [], []
 
