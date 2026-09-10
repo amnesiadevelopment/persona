@@ -79,10 +79,10 @@ NOT BECOMING ITS OWN TELL
 -------------------------
 ``getContext`` is one of the most-inspected functions in the browser, so the
 replacement must be indistinguishable from the native one by the means detectors
-actually use: it carries the ``__pnaName`` marker consumed by native_ext's
-Function.prototype.toString patch (a per-function ``.toString`` override is
-bypassed by the ``.call`` form detectors use), copies ``name`` and ``length``
-from the original, and is installed with the original property descriptor's own
+actually use: it is registered in this leaf's own closure WeakMap, which its own
+chained ``Function.prototype.toString`` cloak reads (a per-function ``.toString``
+override is bypassed by the ``.call`` form detectors use), copies ``name`` and
+``length`` from the original, and is installed with the original descriptor's own
 writable/enumerable/configurable flags so a descriptor read or a ``for...in``
 sees what the platform shows. Every non-alias call forwards untouched —
 arguments and ``this`` included — so ``2d``, ``bitmaprenderer``, ``webgpu``,
@@ -93,7 +93,7 @@ one-context-per-canvas caching all keep their native behaviour.
 import json
 import pathlib
 
-from .worker_wrap import realm_bootstrap_js, realm_guard_js
+from .worker_wrap import chromium_leaf_cloak_js, realm_bootstrap_js, realm_guard_js
 
 _CONTENT_SCRIPT = r"""
 (function () {
@@ -122,6 +122,7 @@ _CONTENT_SCRIPT = r"""
     var orig = proto && proto.getContext;
     if (typeof orig !== "function") return;
 __REALM_GUARD__
+__LEAF_CLOAK__
 
     // WebKit's legacy name, and the modern name it resolves to. WebGL1 per
     // HTMLCanvasElement::toWebGLVersion — see the module docstring.
@@ -203,11 +204,20 @@ __REALM_GUARD__
         writable: false, enumerable: false, configurable: true });
       Object.defineProperty(replacement, "length", { value: orig.length,
         writable: false, enumerable: false, configurable: true });
-      // Mark for native_ext's Function.prototype.toString patch so
-      // Function.prototype.toString.call(canvas.getContext) reads native. A
-      // plain replacement.toString override is bypassed by that .call form.
-      Object.defineProperty(replacement, "__pnaName", { value: orig.name });
     } catch (e) {}
+
+    // Register for THIS LEAF's own Function.prototype.toString cloak (spliced
+    // above) so Function.prototype.toString.call(canvas.getContext) reads
+    // native. A plain replacement.toString override is bypassed by that .call
+    // form.
+    //
+    // ⛔ A CLOSURE WEAKMAP, NOT AN OWN PROPERTY (PS-368). `getContext` is among
+    // the most heavily inspected functions in the DOM and its own-property list
+    // (["length","name"]) is known by heart, so a third name there was a
+    // ONE-LINE tell — cheaper for a detector to run than the toString
+    // comparison the marker existed to satisfy. Same argument worker_wrap
+    // already made for `appendChild`.
+    __pncMark(replacement, orig.name);
 
     try {
       // Reinstall with the ORIGINAL descriptor's flags. A method that became an
@@ -273,6 +283,7 @@ def build_canvas_ctx_extension(os_type: str, base_dir: str) -> str:
         .replace("__OS__", os_norm)
         .replace("__REALM_BOOTSTRAP__", realm_bootstrap_js("applyCanvasCtxPatch"))
         .replace("__REALM_GUARD__", realm_guard_js("canvas_ctx"))
+        .replace("__LEAF_CLOAK__", chromium_leaf_cloak_js(4))
     )
     (ext_dir / "canvas_ctx.js").write_text(script, encoding="utf-8")
     (ext_dir / "manifest.json").write_text(

@@ -17,7 +17,12 @@ import pathlib
 from dataclasses import dataclass
 
 from ...models.hardware_generation import normalize_generation, visible_entries
-from .worker_wrap import realm_bootstrap_js, realm_guard_js, realm_slot_js
+from .worker_wrap import (
+    chromium_leaf_cloak_js,
+    realm_bootstrap_js,
+    realm_guard_js,
+    realm_slot_js,
+)
 
 
 @dataclass(frozen=True)
@@ -308,6 +313,11 @@ def _render_screen_pool(pool: list[ScreenResolutionEntry]) -> str:
 #     `top`. Nothing regresses here; the gap is real, unchanged, tracked apart.
 _CONTENT_SCRIPT = r"""
 (function () {
+  // The OUTER IIFE's own cloak, for the readable `def()` below. Each of the
+  // three leaves carries its OWN copy inside its body (the body is what
+  // crosses realms as source text, so a map out here is undefined there).
+  var G = (typeof self !== "undefined") ? self : this;
+__IIFE_LEAF_CLOAK__
   var SEED = __SEED__;
 
   function h32(x) {
@@ -343,8 +353,19 @@ _CONTENT_SCRIPT = r"""
       // would otherwise leak the persona-internal identifier "getter".
       try {
         Object.defineProperty(getter, 'name', { value: 'get ' + prop });
-        Object.defineProperty(getter, '__pnaName', { value: 'get ' + prop });
       } catch (e) {}
+      // ⛔ WeakMap, not an own `__pnaName` (PS-368): an own marker made every
+      // accessor read a third name under `Object.getOwnPropertyNames`, which
+      // is persona identification in one line and independent of the toString
+      // cloak it existed to serve.
+      //
+      // ⚠️ THE `get ` PREFIX IS PART OF THE STRINGIFIED NAME ON V8 — measured
+      // off `Object.getOwnPropertyDescriptor(Map.prototype,'size').get`, whose
+      // source text reads `function get size() ...`. SpiderMonkey drops the
+      // prefix (invisible_launch.py takes the source name separately for that
+      // reason); emitting the wrong engine's form would be a sharper tell than
+      // the marker this replaces.
+      __pncMark(getter, 'get ' + prop);
       Object.defineProperty(obj, prop, {
         get: getter, configurable: true, enumerable: true,
       });
@@ -364,6 +385,7 @@ _CONTENT_SCRIPT = r"""
     if (!G || !G.screen) return;
 __SCREEN_REALM_GUARD__
 __SCREEN_REALM_SLOT__
+__SCREEN_LEAF_CLOAK__
     var SEED = __SEED__;
     var FORCED = __FORCED_RES__;
     var OS = "__OS__";
@@ -381,7 +403,7 @@ __SCREEN_REALM_SLOT__
     var DEPTH = IS_MAC ? 30 : 24;
     var DPR = IS_MAC ? 2 : 1;
     function h(x){var v=SEED^(x|0);v=Math.imul(v^(v>>>16),0x85ebca6b);v=Math.imul(v^(v>>>13),0xc2b2ae35);return (v^(v>>>16))>>>0;}
-    var def=function(o,k,val){try{var g=Object.getOwnPropertyDescriptor({get m(){return val;}},'m').get;try{Object.defineProperty(g,'name',{value:'get '+k});Object.defineProperty(g,'__pnaName',{value:'get '+k});}catch(e){}Object.defineProperty(o,k,{get:g,configurable:true,enumerable:true});}catch(e){}};
+    var def=function(o,k,val){try{var g=Object.getOwnPropertyDescriptor({get m(){return val;}},'m').get;try{Object.defineProperty(g,'name',{value:'get '+k});}catch(e){}__pncMark(g,'get '+k);Object.defineProperty(o,k,{get:g,configurable:true,enumerable:true});}catch(e){}};
     // The LEAF-LOCAL wrapper builder that serves `G.matchMedia`. PS-314 built
     // this as the minified twin of a readable top-level `nativeWrap`; that
     // readable copy is gone (its last callsite was the `enumerateDevices`
@@ -393,7 +415,7 @@ __SCREEN_REALM_SLOT__
     // the readable copy alone left
     // matchMedia reading ["__pnaName","arguments","caller","length","name",
     // "prototype"]; measured from a realm, not reasoned.
-    var nw=function(orig,rep){var s;try{s=({m(){return rep.apply(this,arguments);}}).m;}catch(e){s=rep;}try{Object.defineProperty(s,'length',{value:orig.length});Object.defineProperty(s,'name',{value:orig.name});Object.defineProperty(s,'__pnaName',{value:orig.name});}catch(e){}return s;};
+    var nw=function(orig,rep){var s;try{s=({m(){return rep.apply(this,arguments);}}).m;}catch(e){s=rep;}try{Object.defineProperty(s,'length',{value:orig.length});Object.defineProperty(s,'name',{value:orig.name});}catch(e){}return __pncMark(s,orig.name);};
 
     // Logical (CSS-px) resolutions from a real-world distribution for the OS.
     // Third element is the hardware GENERATION the entry was added in (absent =
@@ -549,6 +571,7 @@ __SCREEN_REALM_BOOTSTRAP__
     var md = G.navigator.mediaDevices;
     if (!md || !md.enumerateDevices) return;
 __DEVICES_REALM_GUARD__
+__DEVICES_LEAF_CLOAK__
     var SEED = __SEED__;
     function h32(x) {
       var h = SEED ^ (x | 0);
@@ -575,9 +598,8 @@ __DEVICES_REALM_GUARD__
       try {
         Object.defineProperty(s, 'length', { value: orig.length });
         Object.defineProperty(s, 'name', { value: orig.name });
-        Object.defineProperty(s, '__pnaName', { value: orig.name });
       } catch (e) {}
-      return s;
+      return __pncMark(s, orig.name);
     };
     var grpMic = hx(64, 0xa11), grpCam = hx(64, 0xb22), grpSpk = hx(64, 0xc33);
     var list = [
@@ -638,6 +660,7 @@ __DEVICES_REALM_BOOTSTRAP__
    try {
     if (!G || !G.navigator) return;
 __HW_REALM_GUARD__
+__HW_LEAF_CLOAK__
     var SEED = __SEED__;
     function h(x){var v=SEED^(x|0);v=Math.imul(v^(v>>>16),0x85ebca6b);v=Math.imul(v^(v>>>13),0xc2b2ae35);return (v^(v>>>16))>>>0;}
     // Same pre-filtered pool as the page realm, rendered from the SAME
@@ -647,7 +670,7 @@ __HW_REALM_GUARD__
     // page actually ends up with — it must be generation-filtered too, and
     // fixing only the copy above would have changed nothing observable.
     var P=__HCMEM__; var m=P[h(0xc0de5)%P.length];
-    var def=function(o,k,val){try{var g=Object.getOwnPropertyDescriptor({get m(){return val;}},'m').get;try{Object.defineProperty(g,'name',{value:'get '+k});Object.defineProperty(g,'__pnaName',{value:'get '+k});}catch(e){}Object.defineProperty(o,k,{get:g,configurable:true,enumerable:true});}catch(e){}};
+    var def=function(o,k,val){try{var g=Object.getOwnPropertyDescriptor({get m(){return val;}},'m').get;try{Object.defineProperty(g,'name',{value:'get '+k});}catch(e){}__pncMark(g,'get '+k);Object.defineProperty(o,k,{get:g,configurable:true,enumerable:true});}catch(e){}};
     def(G.navigator,'hardwareConcurrency',m[0]);
     def(G.navigator,'deviceMemory',Math.min(m[1],8));
    } catch (e) {}
@@ -745,6 +768,14 @@ def build_device_extension(
         # from a completed one. That is the same argument GUARD_SITES' own
         # comment makes for why device.js already carries two leaves.
         "__DEVICES_REALM_BOOTSTRAP__", realm_bootstrap_js("applyDevicesPatch")
+    ).replace(
+        "__SCREEN_LEAF_CLOAK__", chromium_leaf_cloak_js(4)
+    ).replace(
+        "__DEVICES_LEAF_CLOAK__", chromium_leaf_cloak_js(4)
+    ).replace(
+        "__HW_LEAF_CLOAK__", chromium_leaf_cloak_js(4)
+    ).replace(
+        "__IIFE_LEAF_CLOAK__", chromium_leaf_cloak_js(2)
     ).replace(
         "__SCREEN_REALM_GUARD__", realm_guard_js("screen")
     ).replace(

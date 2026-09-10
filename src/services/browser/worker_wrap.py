@@ -424,12 +424,24 @@ _CHROMIUM_HOOK_CLOAK_SETUP = r"""
       } catch (e) {}"""
 
 
-# Chromium: mark the wrapper for the single `Function.prototype.toString` patch
-# native_ext.py installs from the extension side, which reads `__pnaName`.
+# Chromium: the Worker/SharedWorker constructor wrapper, registered in the SAME
+# closure WeakMap (`__hnm`) `_CHROMIUM_HOOK_CLOAK_SETUP` declares — reachable
+# here because `W` is built inside `__pnaInstall`, which is where that map lives.
+#
+# ⛔ THIS USED TO PIN A `__pnaName` OWN PROPERTY read by native_ext's
+# cross-script `Function.prototype.toString` patch (PS-368 removed the last of
+# those). The note above this constant argued the trade was fine FOR `Worker`
+# specifically — "a page that enumerates `Worker`'s own properties is already
+# doing something unusual" — while refusing it for the DOM inserters. Measured
+# on the wrappers, that distinction did not survive: `"__pnaName" in Worker` is
+# one line, costs a detector nothing, and identifies persona SPECIFICALLY rather
+# than a wrapper generically. `W` needed no new machinery to stop paying it —
+# the map the DOM inserters already use is in scope — so the exemption is now
+# the rule, and this seam and `hook_mark` below register the same way.
 CHROMIUM_WORKER_CLOAK = WorkerCloak(
     setup=_CHROMIUM_HOOK_CLOAK_SETUP,
     apply=(
-        '        try { Object.defineProperty(W, "__pnaName", { value: Orig.name }); } catch (e) {}\n'
+        '        try { if (__hnm) { __hnm.set(W, Orig.name); } } catch (e) {}\n'
         '        try { Object.defineProperty(W, "name", { value: Orig.name }); } catch (e) {}\n'
         # ARITY IS AN OWN PROPERTY TOO, and `name` alone is half the pin: the
         # wrapper is written `function (url, options)` and so reports 2, where
@@ -1474,6 +1486,173 @@ def firefox_native_wrap_js() -> str:
     differs.
     """
     return _FIREFOX_NATIVE_WRAP
+
+
+# ---------------------------------------------------------------------------
+# The CHROMIUM LEAF's own closure-WeakMap cloak (PS-368)
+# ---------------------------------------------------------------------------
+#
+# WHAT THIS REPLACES, AND WHY THE OLD MECHANISM HAD TO GO.
+#
+# Until PS-368 every Chromium wrapper carried a non-enumerable `__pnaName` OWN
+# PROPERTY and `native_ext.py`'s single `Function.prototype.toString` patch read
+# it (`this.__pnaName`). That is a CROSS-SCRIPT PROTOCOL: twelve content scripts
+# in one MAIN world with no shared closure could all be served by one reader,
+# because the marker travelled ON the function. It bought the toString cloak at
+# the cost of one own property, and the trade was recorded in-tree as deliberate.
+#
+# ⛔ THE TRADE IS REFUTED BY MEASUREMENT ON THE WRAPPERS. Read out of a realm
+# after the real generated scripts run, against a native-shaped control:
+#
+#     NATIVE   Array.prototype.map          ["length","name"]
+#     CHROMIUM wrapper (own-property tell)  ["length","name","__pnaName"]
+#     FIREFOX  wrapper (WeakMap marker)     ["length","name"]
+#
+# So `Object.getOwnPropertyNames(<any spoofed wrapper>)` returned a third name,
+# and `"__pnaName" in fn` was POSITIVE PERSONA IDENTIFICATION in one line — a
+# read that costs a detector nothing and is entirely independent of the toString
+# cloak the marker existed to serve. `_CHROMIUM_HOOK_CLOAK_SETUP` above already
+# refused that trade for the DOM inserters on exactly this reasoning; PS-368
+# generalises its argument to the other twelve modules rather than inventing one.
+#
+# ⚠️ NOT a claim that `Function.prototype.toString`'s OWN shape was ever wrong.
+# It is native in the shipped artifact and always was once PS-215 landed `__hts`
+# over the leaf's expression-shaped `patched`; that half of the original reading
+# was refuted separately and is out of scope here.
+#
+# WHY EACH MODULE NEEDS ITS OWN CLOAK RATHER THAN A SHARED WEAKMAP. A marker
+# property is a protocol; a WeakMap is not, by construction — it is reachable
+# only from the closure that declares it. `__hnm` (above) is a `var` inside
+# `__pnaInstall`, so a leaf's body cannot see it, and a leaf is what crosses into
+# a worker as SOURCE TEXT. So each of the ten modules that had no cloak of its
+# own gets one HERE, from one source, spliced into its leaf body — and the
+# wrappers it produces register in ITS map.
+#
+# It composes for the same reason the existing links do: CHAINED, never
+# flag-guarded. Whichever patch is outermost answers a hit it knows and
+# otherwise delegates down, so N scripts compose in any load order with no
+# shared name between them and no shared global to enumerate.
+#
+# ⛔ THE SELF-REGISTRATION IS NOT OPTIONAL. `map.set(cloak, "toString")` is what
+# makes the patch itself stringify as native; a detector stringifies
+# `Function.prototype.toString` to catch exactly this trick. Moving to a WeakMap
+# WITHOUT it fixes the own-property axis and opens the stringification axis —
+# strictly worse than the marker it replaces. `__hts` above and
+# `invisible_launch._native_cloak_js` both do this correctly and are the idiom
+# this emitter generalises.
+#
+# THE NATIVE SHAPE IS DERIVED FROM THE ENGINE, NEVER HARD-CODED, for the two
+# reasons `_CHROMIUM_HOOK_CLOAK_SETUP` gives at length: a literal would ship the
+# text of a synthesised native string into every bundle that splices this, and
+# V8's one-line form differs from SpiderMonkey's three-line one so a literal
+# cannot be right on an engine nobody anticipated. `hasOwnProperty` is the probe
+# — native everywhere, and wrapped by nothing in this project.
+#
+# ⚠️ SPLICE IT INSIDE THE LEAF, never in an enclosing IIFE. The leaf body is what
+# `realm_bootstrap_js` serialises with `LEAF.toString()` to cross into a worker,
+# so a map in an enclosing scope is `undefined` there — the exact failure
+# worker_wrap's own docstring records, where a depth-2 worker silently reported
+# real values while the page reported spoofed ones.
+_CHROMIUM_LEAF_CLOAK = r"""// --- this module's own toString cloak (PS-368) --------------------------
+// A closure WeakMap, NOT a `__pnaName` own property: an own marker is a
+// one-line tell (`Object.getOwnPropertyNames(fn)` reads three names where a
+// native function reads two) and identifies persona specifically. See the
+// note beside _CHROMIUM_LEAF_CLOAK in worker_wrap.py.
+var __pnc = (typeof WeakMap === "function") ? new WeakMap() : null;
+// G's Function, never the lexical one: this leaf reaches a child frame as a
+// PARENT-REALM function object, so a bare `Function.prototype` would re-patch
+// the parent's and leave the child's pristine while the wrappers ARE
+// installed into the child. Measured in two isolated realms, not reasoned.
+var __pncF = G.Function;
+var __pncO = (__pncF && __pncF.prototype && __pncF.prototype.toString)
+             || Function.prototype.toString;
+// The native SHAPE, read off a real native function at runtime. A literal
+// would ship the text of a synthesised native string into every bundle and
+// could not be right on an engine whose form nobody here anticipated. The
+// open-paren is built with fromCharCode(40) because the balanced-paren
+// assertions over these templates count raw parens.
+var __pncShape = null;
+try {
+  var __pncLp = String.fromCharCode(40);
+  var __pncPr = G.Object && G.Object.prototype && G.Object.prototype.hasOwnProperty;
+  var __pncPs = __pncPr && __pncO.call(__pncPr);
+  var __pncPi = __pncPs ? __pncPs.indexOf(__pncLp) : -1;
+  if (__pncPi > 0) { __pncShape = __pncPs.slice(__pncPi); }
+} catch (e) {}
+// METHOD SHORTHAND, not a function expression. Once installed this object IS
+// `Function.prototype.toString`, so a detector reading
+// getOwnPropertyNames(Function.prototype.toString) must find only
+// ["length","name"]; an expression owns `prototype` too and `delete` cannot
+// repair it (a function's `prototype` is non-configurable).
+var __pncTs = ({
+  m() {
+    'use strict';
+    try {
+      var n = __pnc && __pnc.get(this);
+      // No derived shape means no honest answer, so DELEGATE rather than
+      // guess: a wrong-shaped native string is a SHARPER tell than the raw
+      // source it would be hiding.
+      if (typeof n === "string" && __pncShape) {
+        return "function " + n + __pncShape;
+      }
+    } catch (e) {}
+    return __pncO.apply(this, arguments);
+  },
+}).m;
+// Register a wrapper's stringified name. `s` is what the SOURCE TEXT must
+// carry, which differs from `.name` for an accessor: a native getter reads
+// `.name === "get width"` but stringifies as `function width() {...}`.
+var __pncMark = function (f, s) {
+  try { if (__pnc) { __pnc.set(f, s); } } catch (e) {}
+  return f;
+};
+try {
+  // ⛔ THE PATCH MUST ITSELF READ AS NATIVE. A detector stringifies
+  // Function.prototype.toString to catch exactly this trick, so a WeakMap
+  // move WITHOUT this line trades the own-property axis for the
+  // stringification axis and ships something worse than the marker it
+  // replaces. Same idiom as __hts above and the Firefox cloak.
+  __pncMark(__pncTs, "toString");
+  Object.defineProperty(__pncTs, "name", { value: "toString", configurable: true });
+  // Arity is an own property too, and Function.prototype.toString reports 0.
+  // Copied from the original rather than hard-coded.
+  Object.defineProperty(__pncTs, "length", { value: __pncO.length, configurable: true });
+  // CHAIN, don't flag-guard: __pncO is whoever patched before us (the engine's
+  // own toString, or another module's cloak), so N scripts compose in any load
+  // order with no shared name between them.
+  if (__pncF && __pncF.prototype) { __pncF.prototype.toString = __pncTs; }
+} catch (e) {}"""
+
+
+def chromium_leaf_cloak_js(indent: int = 4) -> str:
+    """Inline JS installing this leaf's OWN closure-WeakMap toString cloak.
+
+    THE ONLY SOURCE OF THIS TEXT, on the same terms as ``realm_guard_js`` and
+    ``realm_slot_js``: a leaf carries a ``*_LEAF_CLOAK__`` placeholder in its
+    template and fills it from HERE in its builder's ``.replace()`` chain. Do
+    NOT paste the emitted body into a leaf — that is precisely how the twelve
+    ``realm_guard`` copies came to be coupled to their helper by nothing.
+
+    It defines two names the leaf then uses:
+
+    ``__pnc``
+        the closure WeakMap. Nothing outside this leaf can reach it, which is
+        the whole point — a marker property is a cross-script protocol and a
+        WeakMap deliberately is not.
+    ``__pncMark(f, s)``
+        register wrapper ``f`` as stringifying with the name ``s``, and return
+        ``f``. ``s`` is the SOURCE-TEXT name, which for an accessor is the bare
+        property name (``width``) rather than its ``.name`` (``get width``).
+
+    Splice it INSIDE the leaf body, after the leaf's own preconditions and
+    before it wraps anything: the body is what crosses into a worker as source
+    text, so a map in an enclosing scope would be ``undefined`` there.
+
+    ``indent`` is the leaf body's own indentation — voice_ext indents by 2,
+    every other leaf by 4 — and a wrong value here is a real mismatch rather
+    than cosmetic.
+    """
+    return textwrap.indent(_CHROMIUM_LEAF_CLOAK, " " * indent)
 
 
 # ---------------------------------------------------------------------------
