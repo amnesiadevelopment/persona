@@ -536,7 +536,7 @@ jobs:
                 echo "engine continuity: the identity HELD across ${OLD} -> ${NEW}."
                 ;;
               no_predecessor)
-                echo "engine continuity: only one engine release is published, so there is nothing to compare yet."
+                echo "engine continuity: ${NEW} has no published predecessor, so there is nothing to compare yet. Read the job summary for which case this is — no second release exists at all (the scheduled path), or a dispatched version that is the oldest published one."
                 ;;
             esac
             exit 0

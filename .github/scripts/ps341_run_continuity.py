@@ -232,6 +232,7 @@ def resolve(verdict, new_version: str = "", old_version: str = "",
     # into whatever the next network call happened to return, which is how a
     # settled fact gets reported as an outage. It is also the cheap order: on a
     # repository with one engine tag this returns before spending a request.
+
     # ⚠️ A DISPATCHED VERSION IS NORMALISED BEFORE IT IS USED FOR ANYTHING.
     # `fetch_release_full` accepts a `personium-`-prefixed value, so a human can
     # legitimately paste the published TAG into the dispatch box — but
