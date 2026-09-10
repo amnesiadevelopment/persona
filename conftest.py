@@ -367,8 +367,14 @@ CAPABILITIES: dict[str, Capability] = {
     # is deliberately left out of the umbrella to respect. Declaring a
     # capability no job supplies fails for want of provisioning rather than for
     # want of correctness, so this is declared ONLY where it is supplied:
-    #   * ci.yml — `pip install -r requirements-dev.txt` runs in the tests job
-    #     BEFORE pytest (ci.yml:329), and this commit puts PyYAML in that file.
+    #   * ci.yml — the tests job's `Install deps` step runs
+    #     `pip install -r requirements-dev.txt`, and it is declared BEFORE the
+    #     step that runs pytest, so the dependency is present by the time this
+    #     capability is in force. (Named by STEP rather than by line number on
+    #     purpose: this commit itself adds lines to ci.yml above that point, so
+    #     a line reference written here would have been stale in its own diff.
+    #     A step name degrades to findable; a wrong line number does not.)
+    #     This commit puts PyYAML in that file.
     #     Before this commit it arrived only as a transitive dependency of
     #     `uvicorn[standard]`, which nothing pinned for this purpose and no
     #     test asserted.
@@ -715,23 +721,13 @@ def pytest_runtest_logfinish(nodeid: str, location) -> None:  # noqa: ARG001
 
 
 #: The config of the run currently collecting, for :func:`pytest_collectreport`.
-#: A one-slot holder rather than a module global so a nested in-process run (the
-#: sandboxes in tests/test_skip_visibility.py drive real subprocesses, but an
-#: in-process caller is possible) cannot leave a stale config behind.
-class _ConfigSlot:
-    __slots__ = ("_config",)
-
-    def __init__(self) -> None:
-        self._config: pytest.Config | None = None
-
-    def set(self, config: pytest.Config | None) -> None:
-        self._config = config
-
-    def get(self) -> pytest.Config | None:
-        return self._config
-
-
-_COLLECT_CONFIG = _ConfigSlot()
+#: A SECOND slot rather than a reuse of `_ACTIVE_CONFIG` above, and the reason is
+#: timing, not style: `_ACTIVE_CONFIG` is filled in `pytest_collection_modify
+#: items` and only when a watchdog exists, so it is both LATE (collect reports
+#: have already fired by then) and CONDITIONAL. This one is set at configure,
+#: unconditionally. Same one-slot-list idiom on purpose — a reader meets one
+#: pattern in this file, not two — and `pytest_unconfigure` clears both.
+_COLLECT_CONFIG: list[pytest.Config | None] = [None]
 
 
 def pytest_unconfigure(config: pytest.Config) -> None:
@@ -740,7 +736,7 @@ def pytest_unconfigure(config: pytest.Config) -> None:
         watchdog.stop()
     _ACTIVE_CONFIG[0] = None
     _ITEM_BY_NODEID.clear()
-    _COLLECT_CONFIG.set(None)
+    _COLLECT_CONFIG[0] = None
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -788,8 +784,7 @@ def pytest_configure(config: pytest.Config) -> None:
     # has no route back to the config through the report it is handed. Stash it
     # here rather than reaching for a global: the hook needs exactly one fact
     # (what this run declared), and this is the object that knows it.
-    _COLLECT_CONFIG.set(config)
-
+    _COLLECT_CONFIG[0] = config
 
 
 def _required(config: pytest.Config) -> list[str]:
@@ -1051,7 +1046,7 @@ def pytest_collectreport(report: pytest.CollectReport):
     if not report.skipped:
         return (yield)
 
-    config = _COLLECT_CONFIG.get()
+    config = _COLLECT_CONFIG[0]
     if config is None:  # pragma: no cover - defensive
         return (yield)
 
