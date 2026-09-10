@@ -945,14 +945,37 @@ def test_the_runner_scratch_home_fits_a_chromium_profile_name(runner) -> None:
         [CANNOT RUN] no-process-survives-a-closed-session
           … socket at 119 bytes, and the limit is 107 …   -> EXIT 2
 
-    ⛔ THE FIX IS A SHORTER PREFIX. Never a shorter profile name, never a
-    looser guard, never a relaxed `_MIN_LIVE_TREE` — a budget checked on one
-    side only is a budget that fails on the other.
+    ⛔ THE FIX IS A SHORTER PREFIX OR A SHORTER BASE. Never a shorter profile
+    name, never a looser guard, never a relaxed `_MIN_LIVE_TREE` — a budget
+    checked on one side only is a budget that fails on the other.
+
+    ⛔ THE LIMIT IS A POSIX FACT, NOT A UNIVERSAL ONE, and this test caught
+    itself making the exact mistake `singleton_socket_is_bound` was written to
+    prevent. On its first CI run the Windows leg failed with
+
+        'C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\pb-ci-fyw683i1' is 51 bytes
+        and leaves -16 for a profile name
+
+    over a home the engine launches from perfectly well: Windows' process
+    singleton is a NAMED MUTEX, it binds no socket, and there is no 107-byte
+    wall to measure there. `behaviour.py` records the same rejection of the same
+    path and calls it "a guard inventing a failure on a platform whose engine
+    cannot have it, which is worse than the defect it was written for". The
+    RUNTIME guard was gated correctly from the start; this test was not.
     """
     import tempfile
 
-    from src.services.verify.behaviour import profile_name_budget
+    from src.services.verify.behaviour import (
+        profile_name_budget,
+        singleton_socket_is_bound,
+    )
     from src.services.verify.behaviour_checks import SOCKET_BOUND_PROFILE_NAMES
+
+    if not singleton_socket_is_bound():
+        pytest.skip(
+            "no UNIX-socket singleton on this platform, so there is no "
+            "sun_path budget to measure — see singleton_socket_is_bound"
+        )
 
     needed = max(len(n) for n in SOCKET_BOUND_PROFILE_NAMES)
 
