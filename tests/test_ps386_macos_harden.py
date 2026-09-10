@@ -36,6 +36,7 @@ What they DO cover:
 from __future__ import annotations
 
 import importlib.util
+import re
 import struct
 import subprocess
 import sys
@@ -697,6 +698,46 @@ def test_verifier_scopes_its_verdict_to_our_slices_only(verifier, tmp_path):
     assert ok, reasons
 
 
+def test_verifier_refuses_a_verdict_when_ZERO_slices_are_ours(verifier, tmp_path):
+    """⛔ `0/0` MUST NOT READ AS SUCCESS — a guard that measured nothing passed.
+
+    Every check in `verdict()` is a "no offenders found" test, so over an EMPTY
+    list every one of them is vacuously satisfied and the function returns
+    `(True, [])`. A bundle whose Mach-Os are all third-party would therefore
+    print `hardened runtime, OUR slices: 0/0` and exit 0 — a green build that
+    asserted nothing about anything we produce.
+
+    ⚠️ THIS IS UNREACHABLE FOR PERSONA TODAY and is refused anyway. PS-346
+    measured 113 files with exactly one SIGNED_CMS, so `ours` cannot be empty on
+    this bundle — but that is a fact about the BUNDLE, not about this function,
+    and it would stop being true the moment the vendored set changed. PS-386's
+    own acceptance criterion is that "a guard only ever observed passing is
+    indistinguishable from a broken one"; `0/0 -> PASS` is precisely that shape.
+
+    ⛔ Distinct from the no-Mach-O case, which exits 2 ("nothing was read").
+    Here the bundle WAS read and every slice in it belonged to someone else.
+    """
+    # Direct, because the state is about the list rather than about bytes.
+    ok, reasons = verifier.verdict([])
+    assert not ok, "zero judged slices must not be a pass"
+    assert any("0 slices" in r or "not a pass" in r.lower() for r in reasons), (
+        f"the refusal must say WHY it is not a pass; got {reasons}"
+    )
+
+    # And through the real reader, over a bundle whose only Mach-O is theirs.
+    app = _app(tmp_path)
+    vendored = app / "Contents" / "Resources" / "node"
+    vendored.parent.mkdir(parents=True, exist_ok=True)
+    vendored.write_bytes(
+        _make_macho(adhoc=False, cms_payload=b"\x30\x82fake", hardened=False)
+    )
+    control = verifier.load_control()
+    ours, theirs = verifier.split_ours(verifier.read_app(app, control))
+    assert len(theirs) == 1 and ours == [], "precondition: everything is theirs"
+    ok, reasons = verifier.verdict(ours)
+    assert not ok, "the all-third-party bundle must not pass either"
+
+
 def test_verifier_refuses_to_call_an_unreadable_entitlements_blob_clean(
     verifier, tmp_path
 ):
@@ -1147,4 +1188,118 @@ def test_the_runbook_tells_the_liaison_a_zero_UNSIGNED_count_is_a_defect():
     ]
     assert any("stop and report" in ln.lower() for ln in stop_lines), (
         "a zero UNSIGNED count must carry its OWN stop-branch, on its own line"
+    )
+
+
+def test_the_runbook_predicts_the_liaisons_screen_in_ITEMS_not_arch_slices():
+    """⭐ THE NUMBER THE LIAISON COMPARES AGAINST MUST BE IN THE TOOL'S OWN UNIT.
+
+    ⚠️ THIS TEST IS SCOPED TO THE *WHOLE* DOCUMENT, DELIBERATELY, AND THAT IS
+    THE POINT OF IT. Its sibling above scopes to `text.split("## Step 2")[0]`,
+    and the line that actually predicts the liaison's screen — in "What to
+    report back" — sits AFTER Step 2 and was therefore uncovered by
+    construction. A test that cannot reach the wrong number is not coverage of
+    it: the runbook shipped `"UNSIGNED should be ~28"` under a green suite.
+
+    The two tools share a vocabulary and not a unit. `classify()` is called once
+    per PATH (unit = ITEM); the control's `macho_slices()` returns one entry per
+    architecture (unit = ARCH SLICE). PS-346's committed artifact states both in
+    one line — 113 files, 225 slices — so on universal binaries the dry-run
+    prints roughly HALF of PS-346's figures, and a liaison told to expect 28
+    reads a correct 14 as a half-broken classifier, on a Mac session that is
+    expensive to get.
+    """
+    text = RUNBOOK.read_text(encoding="utf-8")
+
+    # The unit distinction must be NAMED, not left to be inferred.
+    assert "ITEM" in text and "SLICE" in text.upper(), (
+        "the runbook must name both units explicitly"
+    )
+
+    # The report-back section is the one that predicts what the screen shows.
+    report_back = text.split("## What to report back")[1]
+    assert "14" in report_back, (
+        "the report-back prediction must be stated in ITEMS (~14), not in "
+        "PS-346's arch-slice figure"
+    )
+
+    # ⛔ AND THE THIN-ARCH READING MUST BE PRESENT WHEREVER THE PREDICTION IS.
+    # Nobody has read this bundle's `lipo -archs`, so ~28 is not WRONG — it is
+    # the correct answer for a thin-arch build. Stating only one of the two
+    # turns a correct reading into a suspected defect, which is the same failure
+    # one number over.
+    assert "thin-arch" in report_back or "thin arch" in report_back, (
+        "the prediction must state the thin-arch fallback, so a correct ~28 "
+        "reading is never mistaken for a broken classifier"
+    )
+
+    # The stop condition is a ZERO and only a zero — neither ~14 nor ~28.
+    assert "0" in report_back and "defect" in report_back.lower(), (
+        "the report-back section must still say a 0 is the defect"
+    )
+
+
+def test_the_runbook_shows_the_slice_to_item_arithmetic_rather_than_asserting_it():
+    """The 2x factor must be DERIVED on the page, not handed down as a number.
+
+    A bare "expect ~14" is a claim the liaison cannot check. The reconciliation
+    against PS-346's committed artifact is forced rather than merely consistent
+    (196/2 + 28/2 + 1 = 113 == the measured file count; 28 single-arch files
+    would demand 2.33 slices/file across the remainder, which arm64+x86_64
+    cannot reach), and showing it is what lets a reader confirm the translation
+    instead of trusting it.
+    """
+    text = RUNBOOK.read_text(encoding="utf-8")
+    assert "113" in text, "the file count from PS-346's artifact must be shown"
+    assert "225" in text, "the slice count from PS-346's artifact must be shown"
+    # The arithmetic itself, in whatever spacing the page uses.
+    assert re.search(r"196\s*/\s*2", text), "show 196/2 = 98 ADHOC items"
+    assert re.search(r"28\s*/\s*2", text), "show 28/2 = 14 UNSIGNED items"
+    # And the one command that settles the unit outright, in either direction.
+    assert "lipo -archs" in text, (
+        "the runbook must give the liaison the single command that settles "
+        "the unit question on the actual bundle"
+    )
+
+
+def test_the_runbook_test_count_is_not_stale():
+    """⚠️ A NUMBER IN A HANDOVER DOCUMENT THAT NOTHING CHECKS WILL DRIFT.
+
+    This one has, every commit: 36 -> 46 -> 47 -> 51 -> 55, and the runbook was
+    still saying 36 three commits after it stopped being true. It is a small
+    lie in a document whose whole value is that a human can trust its numbers
+    on hardware that is expensive to get, and it costs one assertion to make
+    impossible. Same class as the units defect above, one order of magnitude
+    less serious: an unverified number in the handover.
+    """
+    declared = re.search(
+        r"\*\*new\.\*\* (\d+) tests", RUNBOOK.read_text(encoding="utf-8")
+    )
+    assert declared, "the runbook must state how many tests this file carries"
+    actual = len(
+        re.findall(r"^def test_", Path(__file__).read_text(encoding="utf-8"), re.M)
+    )
+    assert int(declared.group(1)) == actual, (
+        f"the runbook claims {declared.group(1)} tests; this file has {actual}"
+    )
+
+
+def test_the_hardener_does_not_claim_its_counts_read_straight_against_PS346():
+    """⛔ THE OVER-CLAIM THAT MADE THE WRONG PREDICTION LOOK JUSTIFIED.
+
+    `OURS_STATES`' comment used to argue that sharing the control's vocabulary
+    meant "this script's counts can be read straight against that measured
+    baseline instead of translated". Sharing the words is real and worth having;
+    the conclusion does not follow, because the two tools count different
+    things. Asserting no translation is needed is worse than saying nothing,
+    because it is the sentence a future reader would cite when writing the
+    prediction the liaison then reads.
+    """
+    src = SCRIPT.read_text(encoding="utf-8")
+    assert "read straight against" not in src, (
+        "the counts need translating: items here, arch slices there"
+    )
+    # The correction must be present, not merely the over-claim absent.
+    assert "THE UNIT IS NOT" in src.upper(), (
+        "the comment must state that the vocabulary is shared and the unit is not"
     )
