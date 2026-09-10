@@ -1,0 +1,18 @@
+PS-406 exit-guard probe — recorded 2026-09-10T21:08:49Z
+credential source: /workspace/_secrets/test-proxy.txt (== PERSONA_TEST_PROXY)
+
+== gateway TCP reachability ==
+gw.dataimpulse.com:824 TCP CONNECT OK
+
+== SOCKS5 handshake, real credential ==
+*   Trying 67.213.121.97:824...
+* User was rejected by the SOCKS5 server (1 2).
+
+== FALSIFICATION: a deliberately WRONG password ==
+* User was rejected by the SOCKS5 server (1 2).
+
+== FALSIFICATION: a nonexistent username ==
+* User was rejected by the SOCKS5 server (1 2).
+
+== project's own canonical prover ==
+EXIT NOT PROVEN: ExitNotProven could not observe the exit through the proxy — 2 provider(s) tried (https://ipinfo.io/json: SOCKS5AuthError: SOCKS5 authentication failed; https://ipwho.is/: SOCKS5AuthError: SOCKS5 authentication failed), none answered. The connection may be refused, timed out, or the credential unusable. Refusing to fall back to a direct connection: rotation is the operator's, from the host.
