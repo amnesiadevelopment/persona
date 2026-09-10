@@ -725,6 +725,16 @@ class TestCapabilityClassification:
             ("node not available", "node"),
             ("could not import 'invisible_core': No module named 'invisible_core'", "engine"),
             ("could not import 'invisible_playwright': No module named x", "engine"),
+            # PyYAML, BOTH wordings (PS-389). These are not two spellings of
+            # one pattern — they share no substring, so a single pattern
+            # cannot reach both, and an entry covering only the first would
+            # leave the module-level guards dark WHILE REPORTING SUCCESS.
+            ("could not import 'yaml': No module named 'yaml'", "yaml"),
+            ("PyYAML is needed to parse the workflow", "yaml"),
+            # The STEM, not one guard's sentence: a future guard that words its
+            # own detail differently must still classify, on the `engine`
+            # precedent that this repo has already been bitten by twice.
+            ("PyYAML is needed to read the release manifest", "yaml"),
             # genuinely unrelated skips must stay unclassified: a capability
             # that swept these in would fail runs for reasons no operator
             # declared anything about.
@@ -732,6 +742,14 @@ class TestCapabilityClassification:
             ("SO_PEERCRED not exposed on this platform", None),
             ("no real AppImage available", None),
             ("exercises the real Windows PowerShell/WMI pid query path", None),
+            # ⚠️ THE COLLISION THE `yaml` PATTERNS COULD HAVE CAUSED, pinned in
+            # the direction that actually threatened. "could not import 'yaml"
+            # is a substring of nothing else here, but a careless widening to a
+            # bare "yaml" would swallow every skip that merely MENTIONS a
+            # workflow file — including these, which are about something else
+            # entirely and must keep classifying as nothing.
+            ("the workflow yaml under test is not in this checkout", None),
+            ("this reading needs a live GitHub API token", None),
         ],
     )
     def test_a_skip_reason_maps_to_the_capability_that_would_fix_it(
@@ -964,11 +982,29 @@ class TestACustomImportorskipReasonIsStillPoliced:
         so a new file gets this for free and nobody has to remember.
 
         ⛔ SCOPED TO THE ENGINE ON PURPOSE, and the scope is the honest part.
-        Some reasons in this repo legitimately classify as nothing — the
-        `PyYAML` guards name no capability because none is declared for them,
-        and inventing one to make a sweep pass would be the reverse defect.
-        The claim here is narrow and true: where a capability EXISTS and is
-        DECLARED in CI, a guard for it must be reachable by it.
+        Some reasons in this repo legitimately classify as nothing, and
+        inventing a capability to make this sweep pass would be the reverse
+        defect. The claim here is narrow and true: where a capability EXISTS
+        and is DECLARED in CI, a guard for it must be reachable by it.
+
+        ⚠️ THIS NOTE USED TO NAME THE `PyYAML` GUARDS AS ITS EXAMPLE OF THE
+        FIRST SENTENCE, AND THAT EXAMPLE IS NOW FALSE (PS-389). It read: "the
+        `PyYAML` guards name no capability because none is declared for them".
+        A `yaml` capability now exists in conftest's table and ci.yml declares
+        it, so the condition that sentence rested on — *none is declared for
+        them* — no longer holds, and leaving the sentence would put a note in
+        the tree that reads as contradicted by the file next to it.
+
+        THE POSITION IT RECORDED IS UNCHANGED AND STILL BINDING. PS-389 did
+        NOT add that capability to green this sweep — this sweep does not look
+        at yaml guards and STILL DOES NOT, deliberately: `engine_modules`
+        below is unchanged, and widening it is a separate judgement nobody has
+        made. The capability was added on its own evidence, measured three
+        ways, because 89 workflow-shape tests were declining silently under
+        ci.yml's own full declaration — 37 of them the guards in
+        tests/test_ci_verification_gates.py that assert the OTHER capability
+        declarations exist. That is the opposite of the reverse defect: the
+        name was earned by a measured absence, not by a red sweep.
         """
         import ast
 
@@ -1032,3 +1068,464 @@ class TestACustomImportorskipReasonIsStillPoliced:
             "reason, or drop `reason=` and let importorskip write its own:\n  "
             + "\n  ".join(unclassified)
         )
+
+
+# ---------------------------------------------------------------------------
+# PS-389: PyYAML — the capability the workflow-shape guards had no name for
+# ---------------------------------------------------------------------------
+
+#: The BARE form: `pytest.importorskip("yaml")`, which is what 6 of this repo's
+#: guards use and what produces 78 of the 89 dark skips.
+#:
+#: ⚠️ THE MODULE NAME IS DELIBERATELY UNIMPORTABLE, AND IT MUST STAY THAT WAY —
+#: the same discipline the engine probes above are written under, and for the
+#: same reason. Naming the REAL `yaml` here would make these tests pass in a
+#: bare container and FAIL everywhere PyYAML is installed (which is CI, and is
+#: this repo's own dev image): the importorskip would succeed, no skip would
+#: occur, and the `assert False` would fire. The claim under test is about the
+#: SHAPE of the guard and about how conftest CLASSIFIES the resulting skip, not
+#: about what happens to be installed. A submodule that cannot exist under the
+#: real top-level name still makes importorskip write "could not import 'yaml",
+#: which is the string the capability table matches on.
+_UNSEEN_YAML_TEST_BARE = '''
+import pytest
+
+def test_a_bare_yaml_probe():
+    pytest.importorskip("yaml.no_such_submodule_ps389")
+    assert False, "must never execute: the importorskip skips first"
+'''
+
+#: The CUSTOM-REASON form, VERBATIM as 8 module-level guards in this repo write
+#: it. This wording shares NO SUBSTRING with the bare form's, which is the whole
+#: reason the `yaml` capability carries two patterns instead of one.
+_UNSEEN_YAML_TEST_WITH_CUSTOM_REASON = '''
+import pytest
+
+def test_a_yaml_probe_with_a_custom_reason():
+    pytest.importorskip(
+        "yaml.no_such_submodule_ps389",
+        reason="PyYAML is needed to parse the workflow",
+    )
+    assert False, "must never execute: the importorskip skips first"
+'''
+
+#: The THIRD form, which is not an importorskip at all:
+#: `tests/test_ps372_firefox_major_watch.py` guards from a FIXTURE with a bare
+#: `pytest.skip()`, deliberately — an importorskip at its module level would
+#: skip the entire file at collection. 11 skips ride this shape, and a sweep
+#: looking only for `importorskip` would miss every one. The table matches on
+#: the reason TEXT rather than on the call that wrote it, so this must classify
+#: identically; that is a claim worth driving through a real run rather than
+#: asserting about the matcher.
+_UNSEEN_YAML_TEST_BARE_SKIP_CALL = '''
+import pytest
+
+@pytest.fixture
+def workflow():
+    pytest.skip("PyYAML is needed to parse the workflow")
+
+def test_a_yaml_probe_guarded_by_a_plain_skip(workflow):
+    assert False, "must never execute: the fixture skips first"
+'''
+
+
+class TestThePyYAMLGuardsAreReachableByADeclaration:
+    """PS-389 — both arms, and the quiet one is the one that discriminates.
+
+    THE DEFECT, measured at 9dad467 with a `sys.meta_path` blocker raising a
+    genuine ``ModuleNotFoundError`` (an ``ImportError`` stub takes a different
+    path and produces errors, not skips):
+
+    * PyYAML absent, nothing declared          -> 89 tests SILENTLY SKIPPED
+    * PyYAML absent, ``browser,engine``        -> 89 tests SILENTLY SKIPPED
+      (ci.yml's OWN declaration, verbatim)        BYTE-IDENTICAL to declaring
+                                                  nothing at all
+
+    ci.yml's full declaration bought nothing, because the table had no name for
+    PyYAML. 37 of those 89 live in ``tests/test_ci_verification_gates.py`` and
+    include the guards asserting that the OTHER capability declarations exist —
+    so the failure mode is a suite that stops policing its own policing and
+    reports green while doing it.
+
+    Driven through real pytest processes, on the same reasoning as every other
+    end-to-end test in this file: a test written against ``capability_for_skip``
+    alone would keep passing if the hooks were never registered.
+    """
+
+    def test_the_bare_form_fails_where_yaml_is_declared(self, sandbox: Path):
+        """LOUD, form 1 of 3 — `importorskip("yaml")`, 78 of the 89."""
+        (sandbox / "test_probe.py").write_text(
+            _UNSEEN_YAML_TEST_BARE, encoding="utf-8"
+        )
+
+        result = _run_pytest(
+            sandbox, "-q", env_extra={persona_conftest.REQUIRE_ENV_VAR: "yaml"}
+        )
+
+        assert result.returncode != 0, (
+            "a PyYAML guard declined to run in an environment DECLARING yaml "
+            "and the run still reported green: " + result.stdout + result.stderr
+        )
+        assert "test_a_bare_yaml_probe" in result.stdout
+        # The failure names the dependency and how to supply it, rather than
+        # merely going red — the whole point of the table's third field.
+        assert "yaml" in result.stdout
+        assert "requirements-dev.txt" in result.stdout
+
+    def test_the_custom_reason_form_is_policed_identically(self, sandbox: Path):
+        """LOUD, form 2 of 3 — and the form a single-pattern entry would MISS.
+
+        The two wordings share no substring. An entry written against
+        `importorskip`'s default text alone would leave these guards dark while
+        the change reported success — this file's own subject matter re-created
+        inside the fix for it, which is why this arm is not a paraphrase of the
+        one above.
+        """
+        (sandbox / "test_probe.py").write_text(
+            _UNSEEN_YAML_TEST_WITH_CUSTOM_REASON, encoding="utf-8"
+        )
+
+        result = _run_pytest(
+            sandbox, "-q", env_extra={persona_conftest.REQUIRE_ENV_VAR: "yaml"}
+        )
+
+        assert result.returncode != 0, (
+            "the custom-reason PyYAML guard classified as nothing, so a yaml "
+            "declaration polices it not at all: " + result.stdout + result.stderr
+        )
+        assert "test_a_yaml_probe_with_a_custom_reason" in result.stdout
+
+    def test_a_plain_skip_call_is_policed_identically(self, sandbox: Path):
+        """LOUD, form 3 of 3 — the fixture-level `pytest.skip()`, 11 of the 89.
+
+        Not an importorskip at all, so anything keyed off the CALL rather than
+        off the reason TEXT would miss it. This is the shape
+        `tests/test_ps372_firefox_major_watch.py` uses for a stated reason, and
+        it must not be a hole.
+        """
+        (sandbox / "test_probe.py").write_text(
+            _UNSEEN_YAML_TEST_BARE_SKIP_CALL, encoding="utf-8"
+        )
+
+        result = _run_pytest(
+            sandbox, "-q", env_extra={persona_conftest.REQUIRE_ENV_VAR: "yaml"}
+        )
+
+        assert result.returncode != 0, result.stdout + result.stderr
+        assert "test_a_yaml_probe_guarded_by_a_plain_skip" in result.stdout
+
+    def test_an_undeclared_run_still_skips_and_still_passes(self, sandbox: Path):
+        """QUIET — and this is the arm that proves the guard DISCRIMINATES.
+
+        The loud arms above prove only that it can fire. A contributor with no
+        PyYAML, declaring nothing, must keep getting a green run: buying the
+        loud path by making an ordinary checkout red would be a worse bug than
+        the one being fixed. This project has shipped the one-armed version
+        twice (PS-299's probe printing "81/81 hunks, 0 rejects" against an
+        empty directory; PS-341's "8 of 8 moved"), which is why this is not
+        optional.
+        """
+        for source in (
+            _UNSEEN_YAML_TEST_BARE,
+            _UNSEEN_YAML_TEST_WITH_CUSTOM_REASON,
+            _UNSEEN_YAML_TEST_BARE_SKIP_CALL,
+        ):
+            (sandbox / "test_probe.py").write_text(source, encoding="utf-8")
+
+            result = _run_pytest(sandbox, "-q", "-rs")
+
+            assert result.returncode == 0, result.stdout + result.stderr
+            assert "1 skipped" in result.stdout
+
+    def test_declaring_browser_or_engine_does_not_police_yaml(self, sandbox: Path):
+        """THE DEFECT ITSELF, pinned — ARM C of the research falsification.
+
+        This is the assertion that would have caught the original bug: ci.yml's
+        own declaration, verbatim as it stood before this change, must NOT
+        reach a PyYAML guard. If some later widening quietly folded yaml into
+        `browser` or `engine`, the specific failure an operator reads would
+        stop naming PyYAML and start naming a browser — and the reverse, a
+        `yaml` pattern broad enough to swallow an engine skip, is the collision
+        the two stem patterns are deliberately narrow to avoid.
+        """
+        (sandbox / "test_probe.py").write_text(
+            _UNSEEN_YAML_TEST_BARE, encoding="utf-8"
+        )
+
+        result = _run_pytest(
+            sandbox,
+            "-q",
+            "-rs",
+            env_extra={persona_conftest.REQUIRE_ENV_VAR: "browser,engine"},
+        )
+
+        assert result.returncode == 0, (
+            "declaring browser+engine policed a PyYAML skip, so the capability "
+            "names have blurred into each other and the failure an operator "
+            "reads no longer says what is actually missing: "
+            + result.stdout
+            + result.stderr
+        )
+        assert "1 skipped" in result.stdout
+
+    def test_the_yaml_capability_the_workflow_declares_actually_exists(self):
+        """A declaration naming a capability the harness does not know is a
+        hard UsageError at startup, so a typo in ci.yml would take every tests
+        job down rather than silently doing nothing. Assert the name resolves
+        AND that it classifies the real guards' own wordings — the table entry
+        and the declaration are two halves of one guard, and either alone
+        enforces nothing.
+        """
+        assert "yaml" in persona_conftest.CAPABILITIES
+
+        for reason in (
+            # tests/test_ci_verification_gates.py:45 and :51, among others.
+            "could not import 'yaml': No module named 'yaml'",
+            # tests/test_ps306_toolchain_retry.py:54 and 7 siblings, and
+            # tests/test_ps372_firefox_major_watch.py:706's plain skip.
+            "PyYAML is needed to parse the workflow",
+        ):
+            cap = persona_conftest.capability_for_skip(reason)
+            assert cap is not None and cap.name == "yaml", (
+                f"{reason!r} — a real guard's own wording, taken from the tree "
+                f"— classifies as {cap.name if cap else None}, so declaring "
+                "'yaml' in ci.yml polices that guard not at all"
+            )
+
+    def test_pyyaml_is_declared_in_the_file_ci_installs(self):
+        """NAMING THE GAP IS NOT CLOSING IT — the other half of PS-389.
+
+        A capability declared but not PROVISIONED fails for want of
+        provisioning rather than for want of correctness, which is the mistake
+        `browser_chromium` is deliberately left out of the umbrella to avoid.
+        ci.yml's tests job installs `requirements-dev.txt` before running
+        pytest, so that file is where the declaration is honoured.
+
+        ⚠️ THIS IS NOT BOOKKEEPING. Before PS-389 PyYAML was declared in NO
+        dependency file at all and reached the tests job only as a transitive
+        dependency of `uvicorn[standard]`. That route works today and is an
+        accident: nothing pins it for this purpose, and the day the extra drops
+        it the 89 guards go quiet — with a `yaml` declaration in force, they
+        would instead go RED for want of provisioning. The declaration and the
+        dependency have to land together, so this pins that they stay together.
+        """
+        text = (REPO_ROOT / "requirements-dev.txt").read_text(encoding="utf-8")
+        declarations = [
+            line for line in text.splitlines()
+            if line.strip() and not line.strip().startswith("#")
+            and "yaml" in line.split("#", 1)[0].lower()
+        ]
+        assert declarations, (
+            "PyYAML is not declared in requirements-dev.txt, but ci.yml "
+            "declares the 'yaml' capability — so on any runner where the "
+            "transitive route stops supplying it, every workflow-shape test "
+            "goes RED for want of provisioning rather than for want of "
+            "correctness"
+        )
+
+
+#: A MODULE-LEVEL guard: `importorskip` at import time, which is how 8 files in
+#: this repo guard PyYAML. It raises `Skipped` during COLLECTION — the file is
+#: dropped whole and NO test item is ever created — so `pytest_runtest_makereport`
+#: is never called for it and cannot police it however loudly the environment
+#: declares the capability.
+_UNSEEN_MODULE_LEVEL_YAML_TEST = '''
+import pytest
+
+yaml = pytest.importorskip(
+    "yaml.no_such_submodule_ps389",
+    reason="PyYAML is needed to parse the workflow",
+)
+
+def test_one():
+    assert False, "must never execute: the module skipped at import"
+
+def test_two():
+    assert False, "must never execute: the module skipped at import"
+
+def test_three():
+    assert False, "must never execute: the module skipped at import"
+'''
+
+
+class TestAModuleLevelGuardIsPolicedToo:
+    """PS-389 — the hole a declaration could not reach, and the one that would
+    have made this whole capability a half-fix reporting success.
+
+    THE TWO HOOKS ARE TWO ENTRY POINTS, NOT TWO OPINIONS.
+    ``pytest_runtest_makereport`` sees a skip that happened while RUNNING a
+    test — a guard in the body, or in a fixture it takes. A MODULE-LEVEL
+    ``importorskip`` never gets that far: it raises during COLLECTION, the
+    whole file is dropped, and there is no item for that hook to be called
+    with. So the run-time hook alone polices the fixture-level guards and is
+    structurally blind to the module-level ones.
+
+    MEASURED DURING PS-389, NOT REASONED ABOUT, and it is the reason this class
+    exists rather than a comment. With the ``yaml`` capability wired only to
+    the run-time hook, eight module-level files reported this verbatim::
+
+        ok yaml: no test declined to run
+        SKIPPED [1] tests/test_ps306_toolchain_retry.py:54: PyYAML is needed...
+
+    **222 tests vanished and the summary said nothing had** — while printing a
+    green "ok" line about the exact capability that had just failed. That is
+    strictly worse than having no capability at all, because a reader is now
+    reassured rather than merely uninformed.
+
+    ⛔ THIS IS CAPABILITY-BLIND AND MUST STAY THAT WAY. Nothing below mentions
+    yaml except the fixture text: the hook checks the same table every other
+    path checks, so a module-level guard for ANY capability, in any file
+    written from now on, is covered without anyone remembering to wire it.
+    """
+
+    def test_a_module_level_guard_fails_where_the_capability_is_declared(
+        self, sandbox: Path
+    ):
+        """LOUD — and the failure names the MODULE, because there are no test
+        ids to name. They were never created, and for the same reason the
+        message states no COUNT: the module never imported, so how many tests
+        were lost is unknowable at that point and printing a figure would mean
+        inventing one."""
+        (sandbox / "test_probe.py").write_text(
+            _UNSEEN_MODULE_LEVEL_YAML_TEST, encoding="utf-8"
+        )
+
+        result = _run_pytest(
+            sandbox, "-q", env_extra={persona_conftest.REQUIRE_ENV_VAR: "yaml"}
+        )
+
+        assert result.returncode != 0, (
+            "a module-level guard skipped the WHOLE FILE in an environment "
+            "declaring the capability, and the run still reported green — the "
+            "declaration was structurally unable to see it: "
+            + result.stdout
+            + result.stderr
+        )
+        assert "test_probe.py" in result.stdout
+        assert "yaml" in result.stdout
+        # The message must say what happened — that a whole module went, not
+        # that one test declined — or the reader has to work that out for
+        # themselves from a count that is not shown.
+        assert "MODULE" in result.stdout or "module" in result.stdout
+
+    def test_the_summary_does_not_report_ok_for_a_capability_that_just_failed(
+        self, sandbox: Path
+    ):
+        """THE MEASURED REGRESSION, pinned in the exact shape it appeared.
+
+        The half-fix did not merely miss the skip — it printed
+        ``ok yaml: no test declined to run`` beside it. This asserts the
+        summary line is the FAILED one, so a future change that reintroduces
+        the blindness cannot do it quietly.
+        """
+        (sandbox / "test_probe.py").write_text(
+            _UNSEEN_MODULE_LEVEL_YAML_TEST, encoding="utf-8"
+        )
+
+        result = _run_pytest(
+            sandbox, "-q", "-rs", env_extra={persona_conftest.REQUIRE_ENV_VAR: "yaml"}
+        )
+        out = result.stdout + result.stderr
+
+        assert "ok yaml: no test declined to run" not in out, (
+            "the summary reported the yaml capability held, in a run where a "
+            "whole module declined to collect for want of it — the exact "
+            "false green this mechanism exists to remove:\n" + out
+        )
+        assert "FAILED yaml" in out, out
+
+    def test_an_undeclared_run_still_drops_the_module_and_still_passes(
+        self, sandbox: Path
+    ):
+        """QUIET — the arm that proves the collection hook DISCRIMINATES.
+
+        A contributor with no PyYAML, declaring nothing, must still get a green
+        run with the module honestly skipped. A collection hook that failed
+        unconditionally would make every ordinary checkout red, which is a
+        worse bug than the one it was added to fix.
+        """
+        (sandbox / "test_probe.py").write_text(
+            _UNSEEN_MODULE_LEVEL_YAML_TEST, encoding="utf-8"
+        )
+        # ⚠️ AN ORDINARY TEST BESIDE IT, DELIBERATELY. A sandbox holding only
+        # the skipped module exits 5 ("no tests collected"), which is neither
+        # the green under test nor a red — it would make this arm assert
+        # nothing while looking like it passed.
+        (sandbox / "test_ok.py").write_text(
+            "def test_fine():\n    assert True\n", encoding="utf-8"
+        )
+
+        result = _run_pytest(sandbox, "-q", "-rs")
+
+        assert result.returncode == 0, (
+            "an undeclared run went red on a module-level skip, so the loud "
+            "path was bought by making an ordinary checkout fail: "
+            + result.stdout
+            + result.stderr
+        )
+        assert "PyYAML is needed" in result.stdout
+
+    def test_declaring_a_different_capability_does_not_police_it(
+        self, sandbox: Path
+    ):
+        """The collection hook checks the SAME table as every other path, so a
+        declaration of something else must leave this skip alone. Without this,
+        a hook that fired on any collection skip at all would convert honest
+        platform-bound module guards into failures across the suite."""
+        (sandbox / "test_probe.py").write_text(
+            _UNSEEN_MODULE_LEVEL_YAML_TEST, encoding="utf-8"
+        )
+        # See the note on the arm above: without this the run exits 5 and the
+        # assertion below would be checking nothing.
+        (sandbox / "test_ok.py").write_text(
+            "def test_fine():\n    assert True\n", encoding="utf-8"
+        )
+
+        result = _run_pytest(
+            sandbox,
+            "-q",
+            "-rs",
+            env_extra={persona_conftest.REQUIRE_ENV_VAR: "browser,engine"},
+        )
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "PyYAML is needed" in result.stdout
+
+    def test_an_unclassifiable_module_skip_is_left_alone(self, sandbox: Path):
+        """A module that skips for a reason no capability claims must stay a
+        skip, even on a fully-declared run. Platform-bound module guards are
+        real and honest; sweeping them in would fail runs for reasons nobody
+        declared anything about."""
+        (sandbox / "test_probe.py").write_text(
+            'import pytest\n'
+            'pytest.skip(\n'
+            '    "exercises the real Windows Toolhelp process scan",\n'
+            '    allow_module_level=True,\n'
+            ')\n'
+            '\n'
+            'def test_never():\n'
+            '    assert False\n',
+            encoding="utf-8",
+        )
+        # See the note on the first quiet arm: without this the run exits 5.
+        (sandbox / "test_ok.py").write_text(
+            "def test_fine():\n    assert True\n", encoding="utf-8"
+        )
+
+        result = _run_pytest(
+            sandbox,
+            "-q",
+            "-rs",
+            env_extra={
+                persona_conftest.REQUIRE_ENV_VAR: "browser,engine,yaml,node"
+            },
+        )
+
+        assert result.returncode == 0, (
+            "a module skip that classifies as NO capability was converted into "
+            "a failure on a declared run — the collection hook is firing on "
+            "the skip rather than on the classification: "
+            + result.stdout
+            + result.stderr
+        )
+        assert "Windows Toolhelp" in result.stdout
