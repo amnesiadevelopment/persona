@@ -1254,10 +1254,63 @@ def _falsify_trash_restore_and_wipe(ctx: Context) -> str:
 # SCOPE OF THIS FIRST SLICE, stated rather than implied: ONE engine (chromium)
 # on ONE platform (Linux). Chromium is the arm the defect was measured on — it
 # is a WRAPPER launch (fpchrome.AppImage) above a multi-process browser, which
-# is the shape that leaks; a direct, single-process launch does not leak on
-# `terminate()` at all, so a measurement taken there would be vacuous. Both
-# engines on every shipped platform is the roadmap's full bar and a later
-# widening.
+# is the shape that leaks. Both engines on every shipped platform is the
+# roadmap's full bar and a later widening.
+#
+# ⛔⛔ AND THE REASON FIREFOX IS ABSENT IS NOT THE ONE THIS COMMENT USED TO
+# GIVE. It said "a direct, single-process launch does not leak on `terminate()`
+# at all, so a measurement taken there would be vacuous". THAT SENTENCE WAS
+# FALSE IN BOTH HALVES and it is corrected here rather than deleted, because a
+# reader who finds a plausible wrong reason stops looking for the real one.
+#
+#   * A persona firefox launch is NOT a direct, single-process launch. It is a
+#     FORK launch (`_spawn_invisible` -> `InvisibleProcess`, `_fork =
+#     needs_fork_launch() and not in_process`) above a 10-to-11 process Gecko
+#     tree — a forkserver, a Socket Process, WebExtensions, an RDD Process, a
+#     Utility Process and four Web Content children. Measured three times, by
+#     three tickets, for three different purposes:
+#     `readings/ps171-2026-08-25/REPORT.md:405` (`proc_cmdline_n` 6 at one tab,
+#     11 at two), `readings/ps349-2026-09-09/jugwedge.txt` (nproc 10 across 300
+#     samples, 12 across 105), and `readings/ps402-2026-09-10/` (11 members,
+#     named process by process, on this engine under this check's own sampler).
+#
+#   * ⭐ THE REAL OBSTACLE IS THAT THIS CHECK'S INSTRUMENT CANNOT SEE THAT
+#     TREE, AND IT IS A CEILING RATHER THAN A THRESHOLD. `firefox` calls
+#     `setsid`, so the ENGINE leader's pgid == sid == its own pid — a DIFFERENT
+#     group from the one `record_group_by_construction` recorded at launch,
+#     which is the group the FORKED PYTHON LEADER leads. So
+#     `process_group_survivors(recorded_group(proc))` counts TWO processes (the
+#     forked leader and the playwright node driver) while the browser is eleven,
+#     and the intersection of the two populations is EMPTY. Measured on 8
+#     consecutive launches (`readings/ps402-2026-09-10/tree_vs_group.py`).
+#
+#   * ⛔ SO `_MIN_LIVE_TREE` (3) IS UNSATISFIABLE ON THIS ENGINE, and a firefox
+#     arm added to this section would report CANNOT_RUN on every run forever:
+#     peak 3, oscillating 2<->3, `stable_run` 0/8 after the full 90s
+#     `_TREE_GROW_TIMEOUT`. ⚠️ A WIDER TIMEOUT CANNOT FIX A CEILING — the tree
+#     reached eleven within ~5s and held it for 45s while the counted group
+#     never passed three — and lowering the threshold is forbidden for the
+#     reason it exists: 2 is what several ways of NOT LAUNCHING look like.
+#
+#   * ⛔ AND THE FALSIFICATION CANNOT BE SATISFIED EITHER, which is the
+#     independent reason: `run_check` runs `falsify` FIRST and a check that
+#     fails its self-test never reaches a verdict. The pre-PS-192 sabotage
+#     (section 8's body verbatim, `os.kill` on the held pid) leaves ZERO
+#     survivors in the group AND zero in the engine session, twice
+#     (`readings/ps402-2026-09-10/falsifiability.py`) — because the engine tree
+#     was never in the group being signalled.
+#
+# ⭐ WHAT WOULD ACTUALLY GATE FIREFOX, so the next slice is specified rather
+# than left to be rediscovered: a survivor check anchored on the ENGINE'S OWN
+# SESSION (`os.getsid` of the engine leader) rather than on the group recorded
+# at launch. That is a DIFFERENT INSTRUMENT, not a second profile — copying
+# these two arms with `os_type="windows"` produces the permanent CANNOT_RUN
+# above. ⚠️ AND IT IS NOT A LEAK REPORT: firefox's teardown is CORRECT on every
+# path the product takes (`terminate_process_group` sends SIGTERM to the group
+# first, `_child`'s SIGTERM handler runs `session.teardown()`, and the tree
+# goes — measured at 0 of 10 survivors both quiet and wedged). What is missing
+# is the ability to OBSERVE that, which is what a gate is for. See
+# `behaviour.UNCOVERED_SURFACES` for the recorded gap.
 
 #: How many live processes must be observed IN THE LAUNCHED GROUP before this
 #: check will assert anything about survivors.
@@ -1379,8 +1432,40 @@ def _survivor_profile(ctx: Context, name: str):
 
     ``os_type='linux'`` rather than this module's ``windows`` default, and that
     is load-bearing rather than incidental: windows+desktop is the one
-    combination that resolves to firefox (see UNCOVERED_SURFACES), and firefox
-    is not the arm PS-192 was measured on.
+    combination that resolves to firefox (see UNCOVERED_SURFACES), and this
+    helper is the CHROMIUM arm.
+
+    ⚠️ ``os_type`` IS THE FIELD THAT SELECTS THE ENGINE, NOT ``engine``.
+    Executed rather than read (``profile.coherence.coherent_engine``):
+    ``("windows", "firefox") -> firefox`` but ``("linux", "firefox") ->
+    CHROMIUM``, and likewise for macos and android. So a caller who copies this
+    function and edits ``engine=`` gets chromium anyway — which would silently
+    measure the arm that is ALREADY gated and report it under a firefox name.
+    Both fields are pinned here so the pair cannot be half-changed.
+
+    ⛔ AND THE OLD REASON GIVEN FOR EXCLUDING FIREFOX WAS FALSE. This docstring
+    used to end "and firefox is not the arm PS-192 was measured on", beside a
+    module note claiming firefox is "a direct, single-process launch [that] does
+    not leak on terminate() at all". A persona firefox launch is a FORK launch
+    above a 10-to-11 process Gecko tree (measured in
+    ``readings/ps171-2026-08-25/REPORT.md:405``,
+    ``readings/ps349-2026-09-09/jugwedge.txt`` and
+    ``readings/ps402-2026-09-10/``). The real obstacle is that the ENGINE calls
+    ``setsid``, so its tree is in its OWN session and NOT in the group
+    ``recorded_group`` returns — this module's whole instrument. The section
+    header above states that in full; it is summarised here because this is the
+    function a firefox arm would be tempted to reuse.
+
+    ⛔⛔ AND REUSING THIS HELPER FOR A FIREFOX ARM WOULD MANUFACTURE A FALSE
+    ``CANNOT_RUN`` ON TOP OF THAT. The refusal below is gated on
+    ``singleton_socket_is_bound()``, which is ``not IS_WINDOWS`` — TRUE on Linux
+    for a firefox launch too — while the arithmetic it guards describes
+    CHROMIUM's 108-byte ``sun_path`` and nothing else. Firefox binds no such
+    socket on this path (``grep AF_UNIX|sun_path|SingletonSocket
+    invisible_launch.py`` -> 0 hits), so the raise would refuse a perfectly
+    launchable session for a constraint that does not exist on it — and a
+    ``BehaviourCheckError`` lands as CANNOT_RUN (exit 2), a false void rather
+    than a pass.
 
     ⚠️ THE NAME IS DELIBERATELY SHORT, AND ITS LENGTH IS MEASURED RATHER THAN
     STYLISTIC — see :data:`SOCKET_BOUND_PROFILE_NAMES`, which is where the two
@@ -1674,8 +1759,14 @@ def _run_no_process_survives_a_closed_session(ctx: Context) -> Outcome:
                 f"group ({pgid}), and the product's teardown left ZERO of them "
                 "running — counted from the operating system's process table, "
                 "not from the teardown's return value. NOTE: chromium on "
-                "Linux only (the wrapper launch PS-192 was measured on); the "
-                "firefox arm and the other platforms are not observed here."
+                "Linux only (the wrapper launch PS-192 was measured on). The "
+                "firefox arm is NOT observed here, and the reason is this "
+                "check's INSTRUMENT rather than firefox's shape: the engine "
+                "calls setsid, so its 10-to-11 process tree runs in its OWN "
+                "session and is not in the group recorded at launch — measured "
+                "in readings/ps402-2026-09-10/. Gating it needs a "
+                "session-anchored counter, not a second profile. The other two "
+                "platforms are unobserved too."
             ),
             evidence=[
                 f"peak live tree: {peak} process(es) in group {pgid}",
