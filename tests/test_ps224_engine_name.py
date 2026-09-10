@@ -619,9 +619,18 @@ _NOT_OUR_ENGINE_NAME = {
     # "Chromium" appears in cloaking comments. Our name must NEVER reach here —
     # `test_the_name_is_absent_from_every_extension_the_launch_injects` asserts
     # the opposite direction on the real launch.
+    #
+    # ⭐ `services/browser/device_ext.py` WAS HERE AND IS NOT ANY MORE. Its only
+    # matching literal was inside the emitted JS template — the comment
+    # "fingerprint-chromium leaves these at the host's real values on a desktop
+    # profile…", the premise beside the hardwareConcurrency install. The
+    # pixelscan port deleted that install (the engine authors the property
+    # natively) and the falsified premise with it, so the file now contains no
+    # typed engine name at all and the entry became exactly the STALE
+    # allow-list row this test refuses. Removed rather than kept: an entry that
+    # matches nothing is a standing excuse for a defect somebody adds later.
     "services/browser/audio_ext.py",
     "services/browser/canvas_ctx_ext.py",
-    "services/browser/device_ext.py",
     "services/browser/gpu_ext.py",
     "services/browser/voice_ext.py",
     # ⭐ `services/browser/webgl_ext.py` LEFT THIS SET IN PS-368, and its removal
