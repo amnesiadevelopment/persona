@@ -30,6 +30,7 @@ from src.services.browser.session_registry import (
     liveness_of,
     make_record,
 )
+from tests.pid_release import await_pid_release
 
 
 def _record(**over) -> SessionRecord:
@@ -67,6 +68,12 @@ def test_record_for_a_dead_process_is_gone_not_alive():
     proc = subprocess.Popen([sys.executable, "-c", "pass"])
     ct = capture_create_time(proc.pid)
     proc.wait()  # reaped: the pid is released, not a zombie
+    # ...and on Windows "reaped" is not yet "released": the pid stays
+    # resolvable for a short interval after the exit status is collected, and
+    # `liveness_of` reads ALIVE off it because the create time still matches
+    # (PS-384). Establish the precondition rather than assume it. Free on
+    # POSIX, where `wait()` has already released the pid.
+    await_pid_release(proc.pid)
     rec = _record(pid=proc.pid, create_time=ct)
     assert liveness_of(rec) is Liveness.GONE
 
@@ -235,6 +242,7 @@ def test_live_records_drops_dead_records_from_the_file(tmp_path):
     proc = subprocess.Popen([sys.executable, "-c", "pass"])
     ct = capture_create_time(proc.pid)
     proc.wait()
+    await_pid_release(proc.pid)  # the Windows pid-release window (PS-384)
 
     reg = SessionRegistry(str(tmp_path / "s.json"))
     reg.record(_record(profile="ghost", pid=proc.pid, create_time=ct))
