@@ -72,18 +72,36 @@ def test_spoofs_hardware_concurrency_and_device_memory(tmp_path):
     )
 
 
-def test_carries_hardware_into_workers(tmp_path):
-    # navigator.hardwareConcurrency in a Web Worker otherwise reports the real
-    # host cores (a VM host leaked 32 in a worker while the page reported 12) — a
-    # worker/page mismatch. The spoof must be carried into workers.
+def test_the_hw_realm_leaf_still_transports_though_it_installs_nothing(tmp_path):
+    # ⛔ INVERTED at the pixelscan port's slice-2 audit. This used to assert the
+    # worker carry EXISTS: "navigator.hardwareConcurrency in a Web Worker
+    # otherwise reports the real host cores (a VM host leaked 32 in a worker
+    # while the page reported 12) — the spoof must be carried into workers."
+    #
+    # ⚠️ THAT MEASUREMENT PREDATES THE ENGINE FLAG. The engine now reads
+    # --fingerprint-hardware-concurrency in NavigatorConcurrentHardware::
+    # hardwareConcurrency(), which WorkerNavigator inherits through
+    # NavigatorBase exactly as Navigator does, so worker realms are answered
+    # natively and the JS carry was redundant — and, being installed on the
+    # navigator INSTANCE, was itself an own-property position leak.
+    #
+    # The leaf survives EMPTY because it owns the "hw" realm-guard key; the
+    # guard is per-key, so folding it away would let a realm that ran this leaf
+    # silently skip a sibling install. So what is asserted here is TRANSPORT
+    # (the leaf is still registered and still crosses into worker realms),
+    # never the install.
     js = pathlib.Path(
         build_device_extension(1, str(tmp_path / "dev"), 0) + "/device.js"
     ).read_text(encoding="utf-8")
     assert "applyHwPatch" in js
     assert "G.Worker" in js
-    # SEED lives inside applyHwPatch so .toString() re-derives the same pair
+
     body = js.split("function applyHwPatch(G)", 1)[1].split("__pnaBoot", 1)[0]
-    assert "var SEED =" in body
+    assert "hardwareConcurrency" not in body, (
+        "the hw leaf installs hardwareConcurrency again — the engine is the "
+        "sole author, and a descriptor here is an own property the bare engine "
+        "does not have"
+    )
 
 
 def test_carries_screen_and_hardware_into_iframes(tmp_path):
