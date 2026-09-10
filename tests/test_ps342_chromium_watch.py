@@ -36,11 +36,53 @@ value slipping through into the green set.
 NO NETWORK. Everything here drives the pure functions or injects a fake probe
 runner / URL opener, so this runs offline — which is what lets the workflow put
 it in front of the clone rather than after it.
+
+AND THAT SENTENCE IS NOW ENFORCED, because it silently stopped being true.
+────────────────────────────────────────────────────────────────────────────
+`no_real_network` below is an autouse fixture that replaces BOTH of the
+watcher's two ways out of this process — `urllib.request.urlopen` and
+`subprocess.run` — with guards that fail the test by name. Read it as the
+executable form of the paragraph above, not as belt-and-braces: the paragraph
+is prose, and prose is the one assertion surface in this repo that nothing
+validates, so it rotted and was then quoted as authority (PS-24).
+
+The rot it is pinned against, exactly (PS-401):
+`test_a_readable_baseline_still_takes_the_normal_path` drove `watch.main()`
+with `--tag`, which DOES seal `discover_newest_tag` — the forced-tag branch
+returns before the only `urlopen` in the module is ever reached. So every audit
+that went looking for an unsealed *opener* correctly found none, and the test
+was reaching the network anyway: past discovery, `watch()` falls through to
+`run_probe`, which SUBPROCESSES `scripts/ps299_rebase_probe.py` — a shallow
+`git clone` plus ~38 googlesource fetches, inside this file's 120s
+`pytest-timeout`. On a hosted macOS/Windows runner that lost the race, so
+`main` went red on three of eight consecutive runs while every local run passed.
+
+⚠️ TWO SEAMS, NOT ONE, and that is the whole lesson of the incident. A
+`main()`-driven test cannot pass `runner=` — `main()` has no such parameter and
+calls `watch()` with token/forced_tag/probe_timeout only — so sealing the
+opener leaves the subprocess wide open, and the file's own siblings
+(`test_github_output_never_writes_green_true_for_unmeasured`,
+`test_report_is_filed_for_clean_not_only_for_defects`) already stub `run_probe`
+on the module for exactly that reason. A guard on urlopen alone would have
+watched this bug walk straight past it.
+
+The guards raise `pytest.fail.Exception`, which derives from `BaseException`
+and NOT from `Exception` — load-bearing, not incidental. `discover_newest_tag`
+catches bare `Exception` around its fetch and converts anything it catches into
+a tidy DISCOVERY_FAILED result, so a guard raising `RuntimeError` would be
+swallowed by the code under test and the offending test would go GREEN having
+proved nothing. The guard has to be un-catchable by the module it is watching.
+
+A test that legitimately wants either seam stubs it itself (`monkeypatch`ing
+`watch.run_probe`, or passing `opener=`/`runner=`); the guard only ever fires on
+a call that reaches the REAL one.
 """
 
 import importlib.util
 import json
+import subprocess
 import sys
+import urllib.request
 from pathlib import Path
 
 import pytest
@@ -61,6 +103,75 @@ def load(path, name):
     sys.modules[name] = mod
     spec.loader.exec_module(mod)
     return mod
+
+
+# ── the docstring's NO NETWORK claim, as an assertion ─────────────────────────
+
+# The ONE subprocess in this file that is not a way out of the machine.
+# `test_watcher_script_compiles` shells out to `python -m py_compile` to check
+# the watcher parses — a local bytecode compile that touches no socket. It is
+# allowlisted by its argv rather than by test name so the exemption stays
+# pinned to what makes it safe (the `-m py_compile` form) instead of to who is
+# asking; a test that renamed itself would keep the exemption, a test that
+# started spawning something else would lose it.
+_LOCAL_ONLY_SUBPROCESS = ("-m", "py_compile")
+
+
+def _looks_like_a_local_compile(cmd):
+    """True only for `<python> -m py_compile <path>` — nothing else."""
+    try:
+        parts = [str(a) for a in cmd]
+    except TypeError:  # a bare string command; never the compile form
+        return False
+    return parts[1:3] == list(_LOCAL_ONLY_SUBPROCESS)
+
+
+@pytest.fixture(autouse=True)
+def no_real_network(monkeypatch):
+    """Fail any test in this file that reaches the real network. See module docstring.
+
+    Both seams are covered, because the watcher has two and they are reached by
+    different callers:
+
+      * `urllib.request.urlopen` — `discover_newest_tag`'s fetch, reached when
+        no `opener=` is injected AND no `forced_tag` short-circuits discovery.
+      * `subprocess.run` — `run_probe`'s spawn of `scripts/ps299_rebase_probe.py`
+        (shallow clone + ~38 googlesource fetches), reached when no `runner=` is
+        injected and `watch.run_probe` is not stubbed on the module. THIS is the
+        seam PS-401's red CI came through, and a `--tag` argument does not close
+        it: forcing a tag skips discovery and then runs the probe anyway.
+
+    ⚠️ `pytest.fail` is the raise, deliberately. `pytest.fail.Exception` derives
+    from `BaseException`, not `Exception`, so it escapes `discover_newest_tag`'s
+    bare `except Exception` — which would otherwise catch the guard, convert it
+    into an orderly DISCOVERY_FAILED result, and let the offending test pass.
+    The guard must be un-catchable by the code it is watching.
+    """
+    def _no_urlopen(*a, **kw):
+        pytest.fail(
+            "this file is NO NETWORK (see the module docstring) but a test "
+            "reached the real urllib.request.urlopen. Inject a fake via "
+            "`opener=`, or stub `watch.discover_newest_tag`.",
+            pytrace=False,
+        )
+
+    real_run = subprocess.run
+
+    def _no_subprocess(cmd, *a, **kw):
+        if _looks_like_a_local_compile(cmd):
+            return real_run(cmd, *a, **kw)
+        pytest.fail(
+            "this file is NO NETWORK (see the module docstring) but a test "
+            "spawned a real subprocess: %r. If this is `run_probe`, it clones "
+            "chromium and fetches ~38 files from googlesource inside a 120s "
+            "pytest-timeout — that is PS-401. Inject a fake via `runner=`, or "
+            "(from a `main()`-driven test, which has no `runner` parameter) "
+            "monkeypatch `watch.run_probe`." % (cmd,),
+            pytrace=False,
+        )
+
+    monkeypatch.setattr(urllib.request, "urlopen", _no_urlopen)
+    monkeypatch.setattr(subprocess, "run", _no_subprocess)
 
 
 @pytest.fixture(scope="module")
@@ -947,15 +1058,52 @@ def test_workflow_verdict_step_names_the_unreadable_baseline_case(watch):
     assert "CURRENT_TAG.txt" in y
 
 
-def test_a_readable_baseline_still_takes_the_normal_path(watch, tmp_path):
-    """The guard must not swallow the happy path it sits in front of."""
+def test_a_readable_baseline_still_takes_the_normal_path(watch, tmp_path, monkeypatch):
+    """The guard must not swallow the happy path it sits in front of.
+
+    THE PROBE IS STUBBED, and that is not a detail of convenience — it is what
+    this test got wrong for long enough to redden `main` three times (PS-401).
+    Unstubbed, `run_probe` spawned the REAL `ps299_rebase_probe.py`: a shallow
+    chromium clone plus ~38 googlesource fetches, inside this file's 120s
+    `pytest-timeout`, in a file whose contract is that it runs offline. It won
+    that race on every local run and lost it on hosted macOS and Windows.
+
+    ⚠️ Note WHERE the stub goes. This test drives `main()`, and `main()` has no
+    `runner` parameter to thread through — so `runner=` is not available here
+    and the seam is `watch.run_probe` on the module, exactly as this file's two
+    other `main()`-driven probe tests already do it. A `--tag` argument is NOT a
+    seal: it skips discovery and then runs the probe anyway.
+
+    Stubbing also lets the assertions stop hedging. `rc in (0, 1, 2)` was every
+    value `exit_code_for` can return — true of a run that measured nothing, of
+    an invalid tag, of an unreadable baseline, of literally any outcome — so it
+    could not fail. With the probe's exit code chosen here, the normal path has
+    ONE right answer and this asserts that one.
+    """
     out = tmp_path / "out"
+    calls = []
+
+    def fake_probe(tag, timeout=None, runner=None):
+        calls.append(tag)
+        return 0, "all 16 patches apply"
+
+    monkeypatch.setattr(watch, "run_probe", fake_probe)
+
     rc = watch.main(["--tag", "152.0.7977.75-1", "--github-output", str(out)])
     text = out.read_text(encoding="utf-8")
 
     assert "status=baseline_unreadable" not in text, text
     assert "current_tag=%s" % watch.read_current_tag() in text
-    assert rc in (0, 1, 2)
+    # The normal path is the one that MEASURES. Asserting the probe was reached
+    # is what distinguishes "took the happy path" from "returned early with a
+    # green-looking status" — the early-return statuses (INVALID_TAG,
+    # BASELINE_UNREADABLE) never call it at all.
+    assert calls == ["152.0.7977.75-1"], (
+        "the normal path must reach the probe, with the forced tag"
+    )
+    assert "status=%s" % watch.CLEAN in text, text
+    assert "green=true" in text
+    assert rc == 0, "a clean apply on the normal path exits 0"
 
 
 # ── every comment that points at a symbol must point at one that exists ───────
@@ -1025,3 +1173,85 @@ def test_no_comment_cites_a_symbol_this_file_does_not_define(watch):
         "these comments cite a symbol that does not exist — name the real thing "
         "or drop the parenthetical: %r" % dangling
     )
+
+
+# ── the guard is itself prescribed machinery, so it is itself driven ──────────
+#
+# `no_real_network` is the only thing in this file that no test would notice the
+# loss of: it fires on nothing during a healthy run, so a version of it that had
+# been quietly defanged — patching the wrong name, raising a catchable exception,
+# allowlisting too much — would look EXACTLY like the working one, and the file
+# would read as sealed while being open. It bought its place by turning PS-401's
+# red into a named failure, and these four tests are what keep it able to.
+
+
+def test_the_network_guard_fires_on_the_seam_that_reddened_ci(watch, tmp_path):
+    """The regression itself, pinned: an unstubbed `main()` must FAIL, not hang.
+
+    This is PS-401 reproduced offline in milliseconds. `--tag` skips discovery
+    and falls through to `run_probe`, which spawns the real rebase probe; before
+    the guard, that was a 120s race against a chromium clone that hosted macOS
+    and Windows runners lost. The assertion is that the seam is now CLOSED, so
+    an unsealed test here fails by name instead of intermittently timing out.
+    """
+    out = tmp_path / "out"
+    with pytest.raises(pytest.fail.Exception) as e:
+        watch.main(["--tag", "152.0.7977.75-1", "--github-output", str(out)])
+
+    assert "NO NETWORK" in str(e.value)
+    assert "ps299_rebase_probe" in str(e.value), (
+        "the message must name the command it stopped, or the reader cannot "
+        "tell which seam leaked"
+    )
+
+
+def test_the_network_guard_fires_on_the_opener_seam_too(watch):
+    """The other way out: discovery with no `opener=` and no forced tag.
+
+    Nothing in the file currently leaks this way — the audit that missed PS-401
+    proved exactly that, and it was right. It is pinned anyway because "no test
+    does this today" is a fact about today, and this seam is the one an author
+    adding a discovery test would reach for first.
+    """
+    with pytest.raises(pytest.fail.Exception) as e:
+        watch.discover_newest_tag()
+
+    assert "NO NETWORK" in str(e.value)
+    assert "urlopen" in str(e.value)
+
+
+def test_the_network_guard_is_not_catchable_by_the_code_it_watches(watch):
+    """The guard must escape `discover_newest_tag`'s bare `except Exception`.
+
+    THE POLARITY THAT MATTERS. `discover_newest_tag` wraps its fetch in
+    `except Exception` and converts whatever it catches into an orderly
+    DISCOVERY_FAILED result. So a guard raising `RuntimeError` would be caught
+    BY THE CODE UNDER TEST, the offending test would go green having proved
+    nothing, and this file would report itself sealed while leaking — the exact
+    failure mode PS-401 already demonstrated once.
+
+    Asserted on the type rather than on the observed behaviour above, because
+    the behaviour is a consequence of the type and the type is the thing a
+    future edit could change without noticing.
+    """
+    assert not issubclass(pytest.fail.Exception, Exception), (
+        "pytest.fail.Exception must stay outside the Exception hierarchy, or "
+        "the module's `except Exception` swallows the guard"
+    )
+    assert issubclass(pytest.fail.Exception, BaseException)
+
+
+def test_the_network_guard_still_allows_the_local_compile():
+    """It must not over-fire. `py_compile` touches no socket and must survive.
+
+    `test_watcher_script_compiles` is the file's one legitimate subprocess. A
+    guard that blocked it would have to be loosened by whoever hit it next, and
+    a loosened guard is how the seal is lost — so the exemption is asserted here
+    rather than left as a comment claiming it works.
+    """
+    assert _looks_like_a_local_compile([sys.executable, "-m", "py_compile", "x.py"])
+    # and it must NOT wave through the thing it exists to stop
+    assert not _looks_like_a_local_compile(
+        [sys.executable, str(PROBE), "--tag", "152.0.7977.75-1"]
+    )
+    assert not _looks_like_a_local_compile("git clone https://example.invalid")
