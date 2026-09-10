@@ -102,6 +102,22 @@ STATUSES AND THIS MODULE'S EXIT CONTRACT
                                           resolved — yanked, deleted, or no
                                           asset for this OS. We were supposed to
                                           be able to compare, and could not.
+    build_unreachable          3    no    The SAME failure on the OTHER leg: an
+                                          engine release we needed (usually
+                                          build N) is published and would not
+                                          resolve to an asset. Its own status
+                                          because calling it `discovery_failed`
+                                          would deny reading a tag list this run
+                                          PRINTED, and calling it
+                                          `predecessor_unreachable` would name
+                                          the wrong build to the human reading
+                                          the issue.
+    staging_failed             5    no    A release RESOLVED and the download or
+                                          its digest check failed. One step past
+                                          build_unreachable, and its own code so
+                                          "we could not reach it" and "we could
+                                          not fetch it" are distinguishable
+                                          without reading prose.
     discovery_failed           2    no    We could not even ask which engine
                                           versions are published.
     refused_by_policy          4    no    persona itself refuses to install this
@@ -109,6 +125,20 @@ STATUSES AND THIS MODULE'S EXIT CONTRACT
                                           not install is the wrong question; the
                                           refusal is correct and this job must
                                           not re-litigate it.
+
+⚠️ THE THREE "COULD NOT GET IT" STATUSES ARE NOT INTERCHANGEABLE, and this is
+not fastidiousness — every one of the three was, at some point in this file's
+own history, reported for an event that belonged to another:
+
+    discovery_failed     we could not ASK which versions exist
+    build_unreachable    we asked, we got the list, and ONE named release
+                         would not resolve to an asset
+    staging_failed       it resolved, and the DOWNLOAD failed
+
+The shared exit code between `build_unreachable` and `predecessor_unreachable`
+is deliberate — they are the same failure on two legs, and an automation
+branching on the code should treat them identically — while the STATUS names
+which build a human should go and look at.
 
 ⚠️ WHY ``no_predecessor`` IS GREEN AND ``predecessor_unreachable`` IS NOT — the
 two are one letter apart in prose and opposite in meaning, and collapsing them
@@ -203,6 +233,8 @@ NO_PREDECESSOR = "no_predecessor"
 UNMEASURED = "unmeasured"
 RECORD_INCONSISTENT = "record_inconsistent"
 PREDECESSOR_UNREACHABLE = "predecessor_unreachable"
+BUILD_UNREACHABLE = "build_unreachable"
+STAGING_FAILED = "staging_failed"
 DISCOVERY_FAILED = "discovery_failed"
 REFUSED_BY_POLICY = "refused_by_policy"
 
@@ -214,8 +246,10 @@ GREEN_STATUSES = frozenset({HELD, MOVED, NO_PREDECESSOR})
 EXIT_HELD = 0
 EXIT_FINDING = 1          # RESERVED, deliberately unallocated — see the header.
 EXIT_UNMEASURED = 2
-EXIT_PREDECESSOR_UNREACHABLE = 3
+EXIT_UNREACHABLE = 3
+EXIT_PREDECESSOR_UNREACHABLE = EXIT_UNREACHABLE   # kept: the original spelling
 EXIT_REFUSED_BY_POLICY = 4
+EXIT_STAGING_FAILED = 5
 
 EXIT_FOR_STATUS = {
     HELD: EXIT_HELD,
@@ -223,9 +257,11 @@ EXIT_FOR_STATUS = {
     NO_PREDECESSOR: EXIT_HELD,
     UNMEASURED: EXIT_UNMEASURED,
     RECORD_INCONSISTENT: EXIT_UNMEASURED,
-    PREDECESSOR_UNREACHABLE: EXIT_PREDECESSOR_UNREACHABLE,
+    PREDECESSOR_UNREACHABLE: EXIT_UNREACHABLE,
+    BUILD_UNREACHABLE: EXIT_UNREACHABLE,
     DISCOVERY_FAILED: EXIT_UNMEASURED,
     REFUSED_BY_POLICY: EXIT_REFUSED_BY_POLICY,
+    STAGING_FAILED: EXIT_STAGING_FAILED,
 }
 
 # Which statuses are NEWS a human should receive rather than a green line in a
@@ -237,16 +273,19 @@ EXIT_FOR_STATUS = {
 # weekly forever would train the reader to ignore the ones that are.
 REPORT_STATUSES = frozenset({
     MOVED, UNMEASURED, RECORD_INCONSISTENT,
-    PREDECESSOR_UNREACHABLE, DISCOVERY_FAILED, REFUSED_BY_POLICY,
+    PREDECESSOR_UNREACHABLE, BUILD_UNREACHABLE, STAGING_FAILED,
+    DISCOVERY_FAILED, REFUSED_BY_POLICY,
 })
 
 HEADLINE = {
     HELD: "The engine-authored WebGL identity HELD across the build change",
     MOVED: "The engine-authored WebGL identity MOVED across the build change",
-    NO_PREDECESSOR: "Only one engine release is published — nothing to compare",
+    NO_PREDECESSOR: "No predecessor engine release exists — nothing to compare",
     UNMEASURED: "NOTHING WAS MEASURED — this is not a pass",
     RECORD_INCONSISTENT: "THE READING CONTRADICTS ITSELF — it cannot be trusted",
     PREDECESSOR_UNREACHABLE: "THE PREVIOUS BUILD COULD NOT BE OBTAINED — nothing was compared",
+    BUILD_UNREACHABLE: "AN ENGINE RELEASE COULD NOT BE OBTAINED — nothing was compared",
+    STAGING_FAILED: "AN ENGINE COULD NOT BE STAGED — nothing was compared",
     DISCOVERY_FAILED: "COULD NOT ASK which engine releases are published",
     REFUSED_BY_POLICY: "persona itself REFUSES this build — it was not measured",
 }
@@ -479,6 +518,82 @@ def predecessor_unreachable_result(new_version, old_version, now=None) -> dict:
     }
 
 
+def build_unreachable_result(version, leg="N", now=None) -> dict:
+    """Build **N** is published and its release will not resolve.
+
+    ⚠️ THIS IS NOT ``discovery_failed`` AND IT IS NOT
+    ``predecessor_unreachable``, and both mislabellings were shipped once and
+    caught in review, so the distinction is written down rather than left to a
+    reader:
+
+      * ``discovery_failed`` says *we could not even ask which engine versions
+        are published*. Routing an N-side asset failure there produces a report
+        that denies reading a tag list the same run PRINTED two lines earlier —
+        false about the one fact the run did establish.
+      * ``predecessor_unreachable`` says *the PREDECESSOR could not be
+        obtained*. Routing an N-side failure there names the wrong build to the
+        human who reads the issue, and (when N is the only version in hand)
+        renders a comparison of a version against ITSELF.
+
+    So the unreachable build is named, and WHICH LEG it was is carried in
+    ``leg`` rather than inferred from which field happens to be populated. The
+    real-world cause is identical on both legs — ``fetch_release_full``
+    answering ``('','','')`` for a yanked release, a release with no asset for
+    this OS, or a transient API failure — which is exactly why the two arms of
+    :func:`resolve` must not disagree about what to call it.
+    """
+    return {
+        "status": BUILD_UNREACHABLE,
+        "new_version": version or None,
+        "old_version": None,
+        "unreachable_leg": leg,
+        "error": (
+            "the engine release for build %s (%s) could not be resolved to an "
+            "asset for this OS (fetch_release_full returned ('','','') — a "
+            "yanked or deleted release, one with no asset here, or a transient "
+            "API failure). The published tag list WAS read successfully; it is "
+            "this one release that could not be obtained. Nothing was "
+            "compared, and nothing was substituted for it."
+            % (leg, ("%r" % version) if version else
+               "the version could not be named either")
+        ),
+        "measured_at": now or utcnow(),
+        **_empty_tally(),
+    }
+
+
+def staging_failed_result(version, leg, detail, now=None) -> dict:
+    """A resolved build could not be DOWNLOADED or INSTALLED.
+
+    Distinct from :func:`build_unreachable_result` one step earlier: there the
+    release would not resolve to a URL, here the URL resolved and the transfer
+    or its digest check failed — ``download_engine`` refusing, an
+    ``EngineUnverifiable`` digest mismatch, a mid-run yank, a truncated
+    transfer, a full disk.
+
+    ⛔ IT EXISTS BECAUSE A RAISE IS NOT A REPORT. The runner's staging step used
+    to let ``RuntimeError`` escape: the run went red with the right colour and
+    wrote NO step output, filed NO issue and uploaded NO artifact — which is the
+    silent-red outcome this module's header forbids in its own words, on a job
+    whose entire cost is two downloads.
+    """
+    return {
+        "status": STAGING_FAILED,
+        "new_version": version or None,
+        "old_version": None,
+        "unreachable_leg": leg,
+        "error": (
+            "build %s (%s) resolved to an asset but could not be staged: %s. "
+            "The download itself failed — a refusal from download_engine, a "
+            "digest mismatch, a mid-run yank, a truncated transfer or a full "
+            "disk all land here. Nothing was compared."
+            % (leg, version or "unnamed", detail or "no detail")
+        ),
+        "measured_at": now or utcnow(),
+        **_empty_tally(),
+    }
+
+
 def discovery_failed_result(error, now=None) -> dict:
     return {
         "status": DISCOVERY_FAILED,
@@ -532,6 +647,16 @@ def issue_title(result) -> str:
     if status == REFUSED_BY_POLICY:
         return "[engine-continuity] persona refuses engine %s — not measured" % (
             result.get("new_version") or "?"
+        )
+    if status in (BUILD_UNREACHABLE, STAGING_FAILED):
+        # ⚠️ ONE VERSION, NOT A PAIR. The generic `N vs N−1` title would render
+        # `152 vs ?` at best and `152 vs 152` at worst — a comparison of a
+        # version against itself, which was shipped once and is what this title
+        # exists to stop. Only one build is implicated, so only one is named.
+        return "[engine-continuity] engine %s (build %s) could not be %s" % (
+            result.get("new_version") or "?",
+            result.get("unreachable_leg") or "?",
+            "obtained" if status == BUILD_UNREACHABLE else "staged",
         )
     return "[engine-continuity] %s vs %s — %s" % (
         result.get("new_version") or "?",
@@ -622,15 +747,71 @@ def render_report(result, record=None) -> str:
         lines += _rows_table(result, record)
     elif status == NO_PREDECESSOR:
         pub = result.get("published_versions") or []
+        # ⚠️ THE SCHEDULED AND MANUAL PATHS REACH THIS FOR DIFFERENT REASONS and
+        # the body must say the one that applies. Scheduled: the tag list holds
+        # fewer than two versions, so no predecessor exists ANYWHERE. Manual: a
+        # human named the OLDEST published version as N, so no predecessor
+        # exists BELOW IT — a list of five versions is not "only one release is
+        # published", and rendering that headline over a body that then counts
+        # five was the scheduled path's assumption leaking into the manual one.
+        newest = pub[0] if pub else None
+        requested = result.get("new_version")
+        only_one = len(pub) < 2
+        if only_one:
+            lines += [
+                "The published engine tag list holds %d version(s): %s." % (
+                    len(pub), ", ".join("`%s`" % v for v in pub) or "none"),
+                "",
+                "There is no predecessor build in existence, so there is "
+                "nothing to compare. **This is a definitive answer, not a "
+                "failure to look** — the tag list was read successfully and it "
+                "says so. This job will begin comparing the moment a second "
+                "`personium-` release is published.",
+            ]
+        else:
+            lines += [
+                "`%s` is the OLDEST of the %d published engine version(s): %s."
+                % (requested or "?", len(pub),
+                   ", ".join("`%s`" % v for v in pub) or "none"),
+                "",
+                "Nothing was published before it, so it has no predecessor to "
+                "be compared against. **This is a definitive answer, not a "
+                "failure to look** — the tag list was read successfully and it "
+                "says so. Dispatch a NEWER version as build N (the newest is "
+                "`%s`) to compare an actual pair." % (newest or "?"),
+            ]
+    elif status == BUILD_UNREACHABLE:
         lines += [
-            "The published engine tag list holds %d version(s): %s." % (
-                len(pub), ", ".join("`%s`" % v for v in pub) or "none"),
+            "⛔ **THE COMPARISON COULD NOT BE SET UP. This is not a finding "
+            "about the engine, and it is not a pass.**",
             "",
-            "There is no predecessor build in existence, so there is nothing "
-            "to compare. **This is a definitive answer, not a failure to "
-            "look** — the tag list was read successfully and it says so. This "
-            "job will begin comparing the moment a second `personium-` release "
-            "is published.",
+            "%s" % (result.get("error") or ""),
+            "",
+            "⚠️ Note what this is NOT. The published tag list WAS read — this "
+            "run knows which engine versions exist. What failed is resolving "
+            "ONE of them to a downloadable asset, which is why this is neither "
+            "`discovery_failed` (we could not ask) nor "
+            "`predecessor_unreachable` (the PREVIOUS build was the one we "
+            "could not get). Only the build named above is implicated.",
+            "",
+            "`updater.fetch_release_full`'s own docstring names this case and "
+            "what a caller owes it: *\"The caller must REPORT that plainly — a "
+            "rollback that silently installs something else is worse than one "
+            "that refuses.\"* Nothing was substituted for the missing build. "
+            "Usually transient; re-dispatch before reading anything into it.",
+        ]
+    elif status == STAGING_FAILED:
+        lines += [
+            "⛔ **THE COMPARISON COULD NOT BE SET UP. This is not a finding "
+            "about the engine, and it is not a pass.**",
+            "",
+            "%s" % (result.get("error") or ""),
+            "",
+            "The release RESOLVED — this is one step past `build_unreachable` — "
+            "and the transfer or its digest check is what failed. Check the "
+            "step log for the downloader's own message: a digest mismatch is a "
+            "different problem from a truncated transfer, and this job "
+            "deliberately does not guess which it was.",
         ]
     elif status == UNMEASURED:
         lines += [
@@ -794,9 +975,19 @@ def _selftest_cases():
         ("no-rows-at-all", no_rows, UNMEASURED, EXIT_UNMEASURED),
         ("no-predecessor", no_predecessor_result("152.0.7977.75", ["152.0.7977.75"]),
          NO_PREDECESSOR, EXIT_HELD),
+        ("no-predecessor-oldest-dispatched",
+         no_predecessor_result("148.0.7778.215",
+                               ["152.0.7977.75", "148.0.7778.215"]),
+         NO_PREDECESSOR, EXIT_HELD),
         ("predecessor-unreachable",
          predecessor_unreachable_result("152.0.7977.75", "148.0.7778.215"),
-         PREDECESSOR_UNREACHABLE, EXIT_PREDECESSOR_UNREACHABLE),
+         PREDECESSOR_UNREACHABLE, EXIT_UNREACHABLE),
+        ("build-n-unreachable",
+         build_unreachable_result("152.0.7977.75", leg="N"),
+         BUILD_UNREACHABLE, EXIT_UNREACHABLE),
+        ("staging-failed",
+         staging_failed_result("152.0.7977.75", "N", "digest mismatch"),
+         STAGING_FAILED, EXIT_STAGING_FAILED),
         ("discovery-failed", discovery_failed_result("upstream did not answer"),
          DISCOVERY_FAILED, EXIT_UNMEASURED),
         ("refused-by-policy",
@@ -846,6 +1037,35 @@ def _cmd_selftest(args) -> int:
     else:
         print("[selftest] an unreadable leg is EXCLUDED from the tally "
               "(moved=0, unreadable=3) rather than scoring as a difference.")
+
+    # ⚠️ THE THREE "COULD NOT GET IT" STATUSES MUST STAY DISTINCT, asserted here
+    # rather than left to prose. Each of them was, at some point, reported for an
+    # event belonging to another — an N-side asset failure filed as
+    # `discovery_failed` (denying a tag list the same run printed) and as
+    # `predecessor_unreachable` (naming the wrong build, and rendering `N vs N`).
+    # Collapsing any two of them again would restore that, silently.
+    distinct = {DISCOVERY_FAILED, BUILD_UNREACHABLE, PREDECESSOR_UNREACHABLE,
+                STAGING_FAILED}
+    if len(distinct) != 4 or any(is_green(s) for s in distinct):
+        failures.append(("unreachable-vocabulary", "4 distinct, none green", 0,
+                         "%d distinct" % len(distinct), 0))
+    else:
+        print("[selftest] 'could not ask', 'could not resolve N', 'could not "
+              "resolve N−1' and 'could not download' are four distinct "
+              "statuses, and none of them is green.")
+
+    # And the one an N-side failure must NEVER render: a comparison of a version
+    # against itself. `build_unreachable` names ONE build, in its own title.
+    n_gone = build_unreachable_result("152.0.7977.75", leg="N")
+    if n_gone.get("old_version") is not None or "vs" in issue_title(n_gone):
+        failures.append(("n-side-never-renders-a-pair",
+                         "old_version=None and no 'vs' in the title", 0,
+                         "old_version=%r title=%r"
+                         % (n_gone.get("old_version"), issue_title(n_gone)), 0))
+    else:
+        print("[selftest] an unreachable build N names ONE build and never "
+              "files a '%s vs %s' comparison against itself."
+              % ("X", "X"))
 
     if failures:
         print("\nSELF-TEST FAILED: this verdict can no longer be trusted.",
