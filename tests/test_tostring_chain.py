@@ -86,10 +86,19 @@ _NATIVE_REFLAGGED = (
     "if (!G || !G.Function || G.__pnaToStringPatched) return;\n"
     "    G.__pnaToStringPatched = true;"
 )
-_LOCALE_ANCHOR = "if (FP) {"
+# PS-368 replaced locale_ext's hand-rolled marker-reading cloak with the SHARED
+# closure-WeakMap emitter (`worker_wrap.chromium_leaf_cloak_js`), so the old
+# `if (FP) {` anchor no longer exists in the generated file. The counterfactual
+# is unchanged in substance — guard this script's install on the shared global
+# instead of chaining onto whatever is already there — so the anchor moves to
+# the shared emitter's own install line, which is still unique in `locale.js`.
+_LOCALE_ANCHOR = (
+    "if (__pncF && __pncF.prototype) { __pncF.prototype.toString = __pncTs; }"
+)
 _LOCALE_REFLAGGED = (
-    "if (FP && !G.__pnaToStringPatched) {\n"
-    "        G.__pnaToStringPatched = true;"
+    "if (__pncF && __pncF.prototype && !G.__pnaToStringPatched) {\n"
+    "    G.__pnaToStringPatched = true;\n"
+    "    __pncF.prototype.toString = __pncTs; }"
 )
 
 
@@ -369,16 +378,53 @@ def test_a_marked_wrapper_reads_native_exactly_once(realms, order, name):
 
 
 @pytest.mark.parametrize("order", _ORDERS)
-def test_chaining_matches_the_guard_on_what_the_guard_protected(realms, flagged_realms, order):
-    # Explicitly: the fix did not trade invisibility for a rendering regression.
-    # What the pre-change build rendered for a marked wrapper is what the
-    # post-change build renders, in both orders and with two patches installed
-    # instead of one.
-    assert (
-        _realm(realms, order, "page")["marked"]
-        == _realm(flagged_realms, order, "page")["marked"]
-        == _MARKED_NATIVE
+def test_chaining_is_not_merely_equal_to_the_guard_but_required(
+    realms, flagged_realms, order
+):
+    """The chained build renders native in BOTH orders; the guarded one does not.
+
+    ⭐ THIS ASSERTION INVERTED IN PS-368, AND THE INVERSION IS THE POINT. It used
+    to read "what the pre-change build rendered is what the post-change build
+    renders" — i.e. chaining cost nothing and bought invisibility. That was true
+    while the marker was an own property: `__pnaName` was a CROSS-SCRIPT
+    PROTOCOL, so whichever single cloak won the flag race could still serve every
+    other script's wrappers, because the name travelled ON the function.
+
+    PS-368 moved every script's registry into its OWN closure WeakMap, precisely
+    so nothing persona-shaped is an own property. A WeakMap is not a protocol —
+    it is reachable only from the closure that declares it — so a flag guard no
+    longer merely publishes a global name, it SILENTLY DISABLES the loser's
+    cloak: its wrappers are registered in a map that nothing consults. Measured
+    here, in the `native_first` counterfactual:
+
+        chained (shipped)   Intl.DateTimeFormat -> "function DateTimeFormat() { [native code] }"
+        flag-guarded        Intl.DateTimeFormat -> "function (locales, options) {
+                                                       return Reflect.construct(...)" ← SOURCE LEAKED
+
+    So chaining is now LOad-BEARING for the spoof itself rather than only for
+    invisibility, and the counterfactual is strictly worse on both axes. The
+    `locale_first` arm still renders native — locale_ext's own map holds its own
+    wrapper — which is what makes this an ORDER-DEPENDENT silent failure and the
+    hardest kind to notice without a probe in both orders.
+    """
+    assert _realm(realms, order, "page")["marked"] == _MARKED_NATIVE, (
+        f"{order}: the shipped, chained build must render the native form"
     )
+
+    guarded = _realm(flagged_realms, order, "page")["marked"]
+    if order == "native_first":
+        assert guarded != _MARKED_NATIVE and "Reflect.construct" in guarded, (
+            "FALSIFICATION WEAKENED: with per-script closure WeakMaps, a flag "
+            "guard must leave locale_ext's wrapper UNCLOAKED in native_first "
+            f"order — the loser's map is consulted by nobody. Got {guarded!r}. "
+            "If this now renders native, the registry has silently become "
+            "cross-script again, which is the own-property tell coming back."
+        )
+    else:
+        # locale_ext wins the race and its own map holds its own wrapper, so
+        # this order is indistinguishable from the shipped build. That is what
+        # makes the failure above ORDER-DEPENDENT rather than absolute.
+        assert guarded == _MARKED_NATIVE
 
 
 # --- AC5: the cloak still cloaks itself, and still delegates ---------------
@@ -386,11 +432,13 @@ def test_chaining_matches_the_guard_on_what_the_guard_protected(realms, flagged_
 @pytest.mark.parametrize("order", _ORDERS)
 @pytest.mark.parametrize("name", _REALMS)
 def test_the_patch_itself_reads_native(realms, order, name):
-    # `applyNativePatch` in native_ext.py pins `__pnaName: "toString"` onto its
-    # `patched` wrapper — a detector stringifies Function.prototype.toString to
+    # The cloak registers ITSELF in its own closure WeakMap (`__pncMark(__pncTs,
+    # "toString")`) — a detector stringifies Function.prototype.toString to
     # catch exactly this trick. Chaining puts a SECOND wrapper on top, so this is
-    # the assertion most at risk from the change: the outer patch must carry its
-    # own __pnaName.
+    # the assertion most at risk from the change: the OUTERMOST patch must have
+    # registered itself in ITS OWN map. PS-368 moved that registration from an
+    # own `__pnaName` property to the WeakMap; dropping it there would fix the
+    # own-property axis and open this one, which is why it has its own AC.
     assert _realm(realms, order, name)["patchSelf"] == (
         "function toString() { [native code] }"
     ), f"{order}/{name}: the cloak betrayed itself"

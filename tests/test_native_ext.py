@@ -20,9 +20,28 @@ def test_builds_manifest_and_js(tmp_path):
     js = (p / "native.js").read_text(encoding="utf-8")
     # the generated script patches Function.prototype.toString to render the
     # native form; that it actually WORKS is asserted by execution below, in
-    # test_marked_wrapper_reads_native_under_call
+    # test_wrapper_reads_native_under_call_whatever_the_load_order
     assert "Function.prototype.toString" in js
-    assert "[native code]" in js
+    # ⭐ THE `[native code]` LITERAL IS DELIBERATELY ABSENT, and this assertion
+    # inverted in PS-368 rather than being deleted. The old cloak built the
+    # native form from a hard-coded template; the shared emitter
+    # (`worker_wrap.chromium_leaf_cloak_js`) READS THE SHAPE OFF A REAL NATIVE
+    # FUNCTION at runtime instead — `Object.prototype.hasOwnProperty` — for the
+    # two reasons that emitter records: a literal ships the text of a synthesised
+    # native string into every bundle that splices it, and V8's one-line form
+    # differs from SpiderMonkey's three-line one, so a literal cannot be right on
+    # an engine nobody anticipated.
+    #
+    # `test_device_ext.py` already pinned this same ABSENCE for device.js on the
+    # same reasoning ("we keep real toString via the leaves' own nw"); native.js
+    # now meets that standard too. That the cloak nonetheless RENDERS the native
+    # form is asserted by execution below — which is the only witness that can
+    # tell a derived shape from a missing one.
+    assert "[native code]" not in js, (
+        "native.js carries a hard-coded native-form literal; the shape must be "
+        "derived off a real native function at runtime (see "
+        "worker_wrap._CHROMIUM_LEAF_CLOAK)"
+    )
 
 
 def test_wrapper_reads_native_under_call_whatever_the_load_order(tmp_path):

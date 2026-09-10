@@ -13,7 +13,11 @@ import json
 import pathlib
 
 from .engine_version import ChromiumVersion
-from .worker_wrap import realm_bootstrap_js, realm_guard_js
+from .worker_wrap import (
+    chromium_leaf_cloak_js,
+    realm_bootstrap_js,
+    realm_guard_js,
+)
 
 _CONTENT_SCRIPT = r"""
 (function () {
@@ -29,6 +33,7 @@ _CONTENT_SCRIPT = r"""
    try {
     if (!G || !G.navigator) return;
 __MOBILE_REALM_GUARD__
+__MOBILE_LEAF_CLOAK__
     var IS_IOS   = __IS_IOS__;
     var MODEL    = "__MODEL__";
     var FULLVER  = "__FULLVER__";
@@ -49,8 +54,19 @@ __MOBILE_REALM_GUARD__
           { get m() { return val; } }, 'm').get;
         try {
           Object.defineProperty(getter, 'name', { value: 'get ' + prop });
-          Object.defineProperty(getter, '__pnaName', { value: 'get ' + prop });
         } catch (e) {}
+        // ⛔ WeakMap, not an own `__pnaName` (PS-368) — see the cloak above.
+        //
+        // ⚠️ THE `get ` PREFIX IS PART OF THE STRINGIFIED NAME ON THIS ENGINE,
+        // and it is the one thing easy to get wrong when porting the Firefox
+        // idiom: SpiderMonkey renders a native getter's source WITHOUT the
+        // prefix (invisible_launch.py takes the source name separately for
+        // exactly that reason), while V8 keeps it — measured off
+        // `Object.getOwnPropertyDescriptor(Map.prototype,'size').get`, whose
+        // source reads `function get size() ...`. Dropping the prefix here
+        // would emit the WRONG ENGINE's form, which is a sharper tell than the
+        // marker this replaces, so the stringified name equals `.name`.
+        __pncMark(getter, 'get ' + prop);
         Object.defineProperty(obj, prop, {
           get: getter, configurable: true, enumerable: true,
         });
@@ -213,8 +229,10 @@ __MOBILE_REALM_GUARD__
                 { get m() { return want; } }, 'm').get;
               try {
                 Object.defineProperty(mg, 'name', { value: 'get matches' });
-                Object.defineProperty(mg, '__pnaName', { value: 'get matches' });
               } catch (e) {}
+              // `get ` included: V8 keeps the prefix in a native getter's
+              // source text. See def() above for the measurement.
+              __pncMark(mg, 'get matches');
               Object.defineProperty(mql, 'matches', {
                 get: mg, configurable: true,
               });
@@ -239,8 +257,8 @@ __MOBILE_REALM_GUARD__
         } catch (e) {}
         try {
           Object.defineProperty(patchedMM, 'name', { value: 'matchMedia' });
-          Object.defineProperty(patchedMM, '__pnaName', { value: 'matchMedia' });
         } catch (e) {}
+        __pncMark(patchedMM, 'matchMedia');
         G.matchMedia = patchedMM;
       } catch (e) {}
     }
@@ -320,6 +338,7 @@ def build_mobile_extension(
         .replace("__DPR__", repr(float(dpr)))
         .replace("__MEM__", str(int(device_memory)))
         .replace("__HWC__", str(int(hardware_concurrency)))
+        .replace("__MOBILE_LEAF_CLOAK__", chromium_leaf_cloak_js(4))
         .replace("__MOBILE_REALM_BOOTSTRAP__", realm_bootstrap_js("applyMobilePatch"))
         .replace("__MOBILE_REALM_GUARD__", realm_guard_js("mobile"))
     )
