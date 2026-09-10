@@ -261,6 +261,177 @@ state rather than the status quo:
 * `test_cert_terminator.py:580` (running as root) and
   `test_peer_auth.py:49` (`SO_PEERCRED`) — neither condition held.
 
+## PyYAML — the guards that had no name until PS-389
+
+⚠️ **This section records a skip class that does NOT fire today, anywhere.**
+It is here because that is precisely the state this file exists to make
+legible: "that one always skips" and "that one used to run here and stopped"
+are different sentences, and the second is unreadable without the first
+written down first.
+
+### What it covers
+
+Every **workflow-shape** test in this repo parses its subject with PyYAML.
+Measured at `9dad467` with a `sys.meta_path` blocker raising a genuine
+`ModuleNotFoundError` — ⚠️ **not** an `ImportError` stub, which takes a
+different path and produces *errors* rather than skips — over the 16 test files
+that guard on yaml:
+
+| PyYAML | declaration in force | outcome |
+|---|---|---|
+| present | — | **660 passed, 0 skipped** |
+| absent | *nothing declared* | **89 silently skipped** |
+| absent | `browser,engine` — ci.yml's OWN declaration, verbatim | **89 silently skipped** — *byte-identical to declaring nothing* |
+| absent | `browser,engine,yaml` — ci.yml's declaration **after** PS-389 | **89 FAILED / errored**, each naming PyYAML and how to supply it |
+
+⚠️ **The 89 counts SKIPS only.** A further **222** tests are lost at
+*collection* to the 8 module-level guards — see the section on that hole
+below, which the capability alone could not reach.
+
+That last row is the defect PS-389 closed. The full declaration bought nothing,
+because the capability table had no name for PyYAML.
+
+Weighted per file (`pytest -rs` collapses same-reason skips into
+`SKIPPED [N] file:line`, so these figures multiply by `[N]`):
+
+| file | dark tests |
+|---|---|
+| `test_ci_verification_gates.py` | **37** |
+| `test_ps336_launch_behaviour_venue.py` | 13 |
+| `test_ps372_firefox_major_watch.py` | 11 |
+| `test_ps370_published_engine_gate.py` | 9 |
+| `test_ps375_engine_continuity_gate.py` | 9 |
+| `test_ps315_behaviour_gate.py` | 6 |
+| `test_protocol_conformance_gate.py` | 4 |
+| **TOTAL** | **89** |
+
+⭐ **Read the top row as recursive, because that is the whole argument.** The
+37 are not ordinary tests. They include, by name,
+`test_ci_declares_the_browser_capability_rather_than_inferring_it` and
+`test_ci_declares_the_engine_capability_on_every_platform` — the guards
+asserting that the OTHER capability declarations in this file's table exist.
+Without PyYAML the mechanism stops policing its own shape, and reports green
+while doing it.
+
+`tests/test_ps370_published_engine_gate.py::test_the_selftest_installs_what_this_suite_needs_to_not_skip`
+was the sharpest case: it takes a fixture that `importorskip`s yaml, so it
+skipped in **precisely the condition it was written to catch**.
+
+### Three guard shapes, and the wording is what the table matches on
+
+| shape | wording produced | count |
+|---|---|---|
+| `pytest.importorskip("yaml")` | `could not import 'yaml': No module named 'yaml'` | 78 |
+| `pytest.importorskip("yaml", reason="PyYAML is needed to parse the workflow")` | that reason, verbatim | 8 module-level guards |
+| a fixture-level bare `pytest.skip("PyYAML is needed to parse the workflow")` | the same | 11 (`test_ps372_firefox_major_watch.py:706`) |
+
+⚠️ **The first two strings share no substring**, so one pattern cannot reach
+both — `conftest.py`'s `yaml` entry carries **two** stems for that reason. An
+entry written against `importorskip`'s default wording alone would have left 11
+tests dark **and reported success**, which is this file's own subject matter
+re-created inside the fix for it.
+
+The third shape is deliberately not an `importorskip`: at module level that
+raises during *collection* and skips the entire file, which
+`test_ps372_firefox_major_watch.py` documents having measured (`1 skipped` for
+a whole file, green). It needs no pattern of its own — the table matches on the
+reason **text**, not on the call that wrote it.
+
+### Two shapes that are already loud, and are NOT in the 89
+
+Worth recording so a future reader does not go looking for them:
+
+* `test_engine_autoupdate_workflow.py` and `test_release_fingerprint_baseline.py`
+  use a bare module-level `import yaml`, which is a **collection error**, not a
+  skip. Loud already.
+* `test_ps342_chromium_watch.py` imports yaml *inside* two tests, which
+  **fails** them. Loud already.
+
+### ⭐ The hole the capability alone could not reach — 222 more tests
+
+⚠️ **Found by running the fix rather than by reading it, and it would have made
+PS-389 a half-fix that reported success.**
+
+`conftest.py`'s declaration was wired to `pytest_runtest_makereport`, which
+sees a skip that happened while **running** a test — a guard in the body, or in
+a fixture it takes. A **module-level** `importorskip` never gets that far: it
+raises during **collection**, the whole file is dropped, and no test item is
+ever created for that hook to be called with.
+
+Eight of the yaml guards are module-level. With the capability declared and
+PyYAML absent, they reported this, verbatim:
+
+```
+ok yaml: no test declined to run
+SKIPPED [1] tests/test_ps306_toolchain_retry.py:54: PyYAML is needed to parse the workflow
+SKIPPED [1] tests/test_ci_shard_partition.py:47: PyYAML is needed to parse the workflow
+```
+
+**222 tests vanished** (18 + 34 + 27 + 19 + 38 + 40 + 7 + 39) **and the summary
+printed a green `ok` line about the exact capability that had just failed.**
+That is strictly worse than having no capability: a reader is reassured rather
+than merely uninformed.
+
+`conftest.py` now carries a `pytest_collectreport` hook as a **second entry
+point** — not a second opinion. It reads the same table every other path reads,
+so it is **capability-blind**: any module-level guard, for any capability, in
+any file written from now on, is covered without anyone remembering to wire it.
+The engine and browser guards are all fixture-level today, so this changes
+nothing for them — which is the point. A file that moves its guard to module
+level tomorrow does not thereby escape the declaration.
+
+It names the **file**, not test ids: there are none to name, they were never
+created. Inventing per-test ids for items that do not exist would be a
+fabricated precision. Pinned by
+`tests/test_skip_visibility.py::TestAModuleLevelGuardIsPolicedToo`, in both
+directions — a module skip that classifies as **nothing** (a platform-bound
+guard, say) stays an honest skip on a fully-declared run.
+
+### The position
+
+**A `yaml` capability now exists and `ci.yml` declares it, on both copies of
+the declaration** (the shard matrix and the `||` fallback macOS and Windows
+actually receive). PyYAML is declared in `requirements-dev.txt`, which the
+tests job installs before pytest runs.
+
+⛔ **Those two are one change and must stay together.** Declaring the
+capability alone converts 89 silent skips into 89 red ones on any runner that
+fails to supply PyYAML — honest, but a gate failing for want of provisioning
+rather than for want of correctness, which is the mistake `browser_chromium` is
+deliberately left out of the umbrella to avoid. Declaring the dependency alone
+re-creates the original defect one level up: a declared dep that fails to
+install still skips *silently*, with a requirements file as its new hiding
+place. Both are pinned by tests
+(`tests/test_skip_visibility.py::TestThePyYAMLGuardsAreReachableByADeclaration`,
+`tests/test_ci_verification_gates.py::test_ci_declares_the_yaml_capability_on_every_platform`).
+
+**Blast radius: nil, measured.** With PyYAML present the 16 guarding files
+report 660 passed and **zero** skips, so this declaration converts nothing that
+currently happens. It polices a state that does not currently occur — which is
+what a guard is for.
+
+### What is deliberately unchanged
+
+* `release.yml` runs the full suite and declares **no** capabilities at all.
+  It is untouched: this mechanism polices what is declared, and that job
+  declares nothing.
+* `chromium-upstream-watch.yml:134`, `firefox-major-watch.yml:131`,
+  `published-engine-verdict.yml:208` and `engine-continuity.yml:332` install
+  PyYAML **by name** at their own pip line and run a single named test file
+  with no declaration. Those hand-rolled installs stay: two of them are
+  *asserted by name* by the very tests they enable
+  (`test_ps342_chromium_watch.py`, `test_ps372_firefox_major_watch.py`), and
+  they are the control this change was measured against — not duplication to
+  be tidied away. Three of five workflows learning this by hand, each after
+  being bitten, is the frequency argument for naming the class, not a
+  refutation of it.
+* `tests/test_skip_visibility.py`'s AST sweep is **still scoped to the engine**.
+  Widening it to yaml is a separate judgement nobody has made; adding a
+  capability *in order to* green that sweep is named there as the reverse
+  defect, and this is not that. Its scope note was updated in the same commit,
+  because the example it used to give — "the `PyYAML` guards name no capability
+  because none is declared for them" — is now false.
+
 ## Which guard fires in CI — measured, not reasoned
 
 The browser probes are guarded **twice**, and it matters which one fires,

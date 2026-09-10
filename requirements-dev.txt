@@ -1,6 +1,32 @@
 pytest>=9.0
 pytest-timeout>=2.4
 
+# PyYAML (PS-389). Declared here because it was previously declared NOWHERE —
+# not in requirements.txt, not in requirements-dev.txt, not in pyproject.toml —
+# while 89 tests parse a workflow file with it, 37 of them the gate-shape
+# guards in tests/test_ci_verification_gates.py that assert the OTHER
+# capability declarations exist.
+#
+# It reached the tests job only as a TRANSITIVE dependency of
+# `uvicorn[standard]` under `pip install .`. That route is real and works
+# today; it is also an accident. Nothing pins it for this purpose, no test
+# asserts it, and the day uvicorn drops the extra those 89 tests go quiet.
+# Three workflows had already learned this by hand, each after being bitten —
+# see the `pip install ... PyYAML` lines in chromium-upstream-watch.yml,
+# firefox-major-watch.yml and published-engine-verdict.yml.
+#
+# ⛔ DECLARING IT HERE IS HALF THE FIX AND MUST NOT BE MISTAKEN FOR ALL OF IT.
+# A declared dependency that fails to install still skips SILENTLY: the defect
+# is re-created one level up, with a requirements file as its new hiding place.
+# The other half is conftest.py's `yaml` capability, declared in ci.yml — that
+# is what turns the absence into a failure instead of a green. The two land
+# together or neither is worth anything.
+#
+# Unbounded deliberately, unlike mypy below: this is a YAML parser read by
+# workflow-shape tests through `safe_load`, not a checker whose verdict is
+# version-sensitive. A floor would pin nothing a test depends on.
+PyYAML>=6.0
+
 # Type checker (PS-165). Declared here because it was previously installed by
 # nothing and invoked by nowhere — mypy.ini had sat in the repo unused, and the
 # ONLY reason it went unrun was this absence.
