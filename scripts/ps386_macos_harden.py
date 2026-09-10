@@ -65,6 +65,14 @@ careful to avoid, and it must not be the justification for a guard on this path.
 So this walks the bundle and skips anything already carrying a CMS signature
 (a real identity), re-signing only ad-hoc/unsigned Mach-O code.
 
+⭐ "UNSIGNED" IS NOT A ROUNDING ERROR IN THAT SENTENCE — it is 28 of this
+bundle's 225 slices, and they are ours. PS-346 measured `ADHOC=196,
+UNSIGNED=28, SIGNED_CMS=1` and named the 28: the compiled Python extensions
+(`aiohttp/_http_parser.cpython-312-darwin.so` and siblings), which ship with no
+signature at all. They are the slices MOST in need of the hardened runtime, and
+`classify` must reach them — see its docstring for the reason that is harder
+than it sounds.
+
 ⚠️ ENTITLEMENTS GO ON BUNDLES, NOT ON EVERY DYLIB, and that asymmetry is
 deliberate rather than an oversight. An entitlement blob is a statement about a
 PROCESS, so it belongs on the executable the kernel launches; stamping one onto
@@ -181,32 +189,68 @@ def is_macho(path: Path) -> bool:
         return False
 
 
+# The states `classify` can return, and the two of them that mean "we produced
+# this, so harden it". Named as a set rather than spelled out at each call site
+# because the OURS/NOT-OURS split is the decision the whole script turns on.
+#
+# ⭐ THE VOCABULARY IS DELIBERATELY THE CONTROL'S. `read_macho_slice` in
+# `scripts/ps346_signing_state.py` reports exactly these four states, and
+# PS-346's committed tally is stated in them (`ADHOC=196, UNSIGNED=28,
+# SIGNED_CMS=1, UNREADABLE=0`). Using the same words means this script's counts
+# can be read straight against that measured baseline instead of translated —
+# and a translation step is where an off-by-one population hides.
+OURS_STATES = ("ADHOC", "UNSIGNED")
+
+
 def classify(path: Path) -> tuple[str, str]:
-    """OURS / THIRD_PARTY / UNREADABLE — three values, because three things happen.
+    """ADHOC / UNSIGNED / THIRD_PARTY / UNREADABLE — four values, four outcomes.
 
-    ⭐ THIS USED TO BE A BOOLEAN AND THAT WAS THE DEFECT. Collapsing "could not
-    tell" into "third-party" is the same class of error PS-346's instrument was
-    hardened against across five rework rounds: a three-valued fact rendered as
-    two, so the run reports a clean count over slices nobody could read.
+    ⭐ THIS WAS A BOOLEAN, THEN THREE-VALUED, AND BOTH WERE WRONG IN THE SAME
+    DIRECTION: a fact with N outcomes rendered in fewer than N, so some real
+    population lands in a bucket that does not describe it. The boolean folded
+    "could not tell" into "third-party". The three-valued version then folded
+    "measured: this object has NO signature" into "could not tell" — which is
+    the same collapse one bucket over, and it is the more expensive one, because
+    UNSIGNED is not a rare edge here. It is 28 of this bundle's 225 slices.
 
-    `codesign -dvvv` prints an `Authority=` line only for a genuine signature;
-    an ad-hoc one has no authority chain at all. So:
+    ⚠️ THE FACT THAT FORCES FOUR VALUES: `codesign -dvvv` EXITS NON-ZERO ON AN
+    UNSIGNED MACH-O. It prints `code object is not signed at all` and returns 1.
+    That is not an error, it is an answer — and a three-valued classifier keyed
+    on the exit code cannot hear it. PS-346's own artifact sizes the population
+    it silences (`artifacts/signing_state_run.txt:9`):
 
-      * exit 0 with `Authority=`     -> THIRD_PARTY (a real certificate signed it)
-      * exit 0 without `Authority=`  -> OURS        (ad-hoc or unsigned)
-      * anything else                -> UNREADABLE  (we do not know)
+        arch slices: ADHOC=196, UNSIGNED=28, SIGNED_CMS=1, UNREADABLE=0
 
-    ⚠️ THE NON-ZERO EXIT ARM IS THE ONE THAT MATTERED. `subprocess.run` without
-    `check=True` does NOT raise on a non-zero exit, so a `codesign` that errored
-    per-slice previously fell through the `Authority=` test to False and was
-    RE-SIGNED as ours. That is the most likely per-slice failure mode, and it
-    was the one the old fail-safe did not actually cover.
+    and names it (`REPORT.md:124-125`): the compiled Python extensions,
+    `aiohttp/_http_parser.cpython-312-darwin.so` and siblings. Those are OURS —
+    frozen into our bundle, by our build — and they are the slices most in need
+    of hardening, since they carry no signature at all today.
 
-    UNREADABLE is treated as third-party for the SIGNING decision — skipping a
-    slice we could have hardened is a shortfall the verifier reports, while
-    destroying a real signature is not recoverable — but it is COUNTED AND
-    PRINTED separately, so a blind skip can never be mistaken for a legitimate
-    third-party one.
+    So:
+
+      * exit 0 with `Authority=`        -> THIRD_PARTY (a real certificate)
+      * exit 0 without `Authority=`     -> ADHOC       (ours, signed by `-`)
+      * non-zero + "not signed at all"  -> UNSIGNED    (ours, no signature yet)
+      * anything else non-zero, or an
+        exception                       -> UNREADABLE  (we genuinely do not know)
+
+    ⚠️ THE UNREADABLE ARM IS STILL LOAD-BEARING AND IS NOT WEAKENED HERE. A
+    `codesign` that errors for some OTHER reason must not read as ours and get
+    re-signed; only the one specific, measured, self-describing failure is
+    promoted. That is the difference between reading an answer and ignoring a
+    return code.
+
+    ⛔ WHY NOT READ THE MACH-O DIRECTLY INSTEAD OF MATCHING APPLE'S WORDING.
+    The control already parses `LC_CODE_SIGNATURE`, and reusing it here would
+    make the hardener and the verifier agree by construction. That is exactly
+    why it is refused: `test_the_hardener_does_not_import_or_wrap_the_control`
+    forbids it, and the reason is not stylistic. If the thing that CHANGES the
+    bytes shares a reader with the thing that MEASURES them, one misread skips a
+    slice and passes it — a correlated failure that reports success. Independent
+    readers can disagree, and their disagreement is the signal: the verifier
+    reads the produced bytes with PS-346's audited parser and FAILS on any slice
+    of ours shipping without the runtime flag. So a mistake here is loud rather
+    than self-confirming, which is worth more than agreeing by construction.
     """
     try:
         out = subprocess.run(
@@ -220,6 +264,11 @@ def classify(path: Path) -> tuple[str, str]:
     blob = (out.stderr or "") + (out.stdout or "")
     if out.returncode != 0:
         first = next((ln for ln in blob.splitlines() if ln.strip()), "")
+        # Apple's own wording for "I read this object and it carries no
+        # signature". Stable across releases, and it is a MEASUREMENT — the one
+        # non-zero exit that answers the question rather than failing to.
+        if "not signed at all" in blob.lower():
+            return "UNSIGNED", "codesign: code object is not signed at all"
         return "UNREADABLE", f"codesign exit {out.returncode}: {first[:120]}"
     if "Authority=" in blob:
         authority = next(
@@ -227,7 +276,7 @@ def classify(path: Path) -> tuple[str, str]:
             "Authority=?",
         )
         return "THIRD_PARTY", authority[:160]
-    return "OURS", ""
+    return "ADHOC", ""
 
 
 def bundle_main_executable(bundle: Path) -> Path | None:
@@ -410,18 +459,27 @@ def main() -> int:
     print(f"  {len(items) - len(bundles)} loose Mach-O file(s)")
 
     ours: list[Path] = []
+    ours_by_state: dict[str, int] = {state: 0 for state in OURS_STATES}
     theirs: list[tuple[Path, str]] = []
     unreadable: list[tuple[Path, str]] = []
     for path in items:
         state, detail = classify(path)
-        if state == "OURS":
+        if state in OURS_STATES:
             ours.append(path)
+            ours_by_state[state] += 1
         elif state == "THIRD_PARTY":
             theirs.append((path, detail))
         else:
             unreadable.append((path, detail))
 
-    print(f"\n  {len(ours)} OURS (ad-hoc/unsigned) -> WILL be re-signed")
+    split = ", ".join(f"{state}={ours_by_state[state]}" for state in OURS_STATES)
+    print(f"\n  {len(ours)} OURS ({split}) -> WILL be re-signed")
+    # ⚠️ THE SPLIT IS PRINTED, NOT JUST THE TOTAL, and it is the number to read
+    # against PS-346's committed tally (`ADHOC=196, UNSIGNED=28, SIGNED_CMS=1`).
+    # An UNSIGNED count of zero on this bundle would mean the classifier has
+    # stopped seeing the 28 compiled Python extensions — which is precisely the
+    # regression this reporting exists to make visible, and a single OURS total
+    # cannot show it.
     print(f"  {len(theirs)} THIRD_PARTY (a real certificate) -> LEFT ALONE")
     for path, detail in theirs:
         print(f"      skip: {path.relative_to(app)}")

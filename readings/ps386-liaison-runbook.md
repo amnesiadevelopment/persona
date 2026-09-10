@@ -144,13 +144,25 @@ python3 scripts/ps386_macos_harden.py --app "$APP" --dry-run
 python3 scripts/ps386_verify_posture.py --app "$APP"      # expect FAIL — the baseline
 ```
 
-`--dry-run` reports **three** counts, and the third is the one to read carefully:
+`--dry-run` reports **four** counts — two of them ours, two of them skips — and
+the last is the one to read carefully:
 
-| bucket | meaning |
-|---|---|
-| `OURS` | ad-hoc/unsigned — will be re-signed |
-| `THIRD_PARTY` | a real certificate signed it; **named**, so you can see whose |
-| `UNREADABLE` | `codesign` could not tell us — **left alone, but this is not a third-party skip** |
+| bucket | ours? | meaning |
+|---|---|---|
+| `ADHOC` | ✅ | signed by `-`, no identity — will be re-signed |
+| `UNSIGNED` | ✅ | **no signature at all** — will be re-signed; this is the compiled Python extensions |
+| `THIRD_PARTY` | ❌ | a real certificate signed it; **named**, so you can see whose |
+| `UNREADABLE` | ❌ | `codesign` could not tell us — **left alone, but this is not a third-party skip** |
+
+⭐ **`UNSIGNED` must not be zero, and a zero there is a defect rather than good
+news.** PS-346 measured this bundle as `ADHOC=196, UNSIGNED=28, SIGNED_CMS=1`,
+and the 28 are the compiled Python extensions
+(`aiohttp/_http_parser.cpython-312-darwin.so` and siblings) — ours, shipped with
+no signature, and the slices most in need of the hardened runtime. They reach
+the classifier through a **non-zero `codesign` exit** (`code object is not
+signed at all`), which is an answer rather than an error; a version of this
+script that read it as an error skipped all 28 and then failed Step 3 on them.
+**If `UNSIGNED` reads 0, stop and report it** — do not proceed to Step 2.
 
 ⚠️ **`UNREADABLE` is not a synonym for `THIRD_PARTY`.** Both are skipped, so the
 signing decision is the same, but an unreadable slice is one we might have been
@@ -271,8 +283,10 @@ on the ticket):
 
 - **Step 0:** run **at the merge-base `d300635`**, not on the branch. Generated
   plist vs signed binary — where `get-task-allow` enters
-- **Step 1:** the **three** counts from `--dry-run` (OURS / THIRD_PARTY /
-  UNREADABLE); baseline verifier exit
+- **Step 1:** the **four** counts from `--dry-run` (ADHOC / UNSIGNED /
+  THIRD_PARTY / UNREADABLE); baseline verifier exit. ⭐ `UNSIGNED` should be
+  ~28 — a 0 there means the classifier stopped seeing the compiled Python
+  extensions
 - **Step 2:** exit code (and any seal/ordering complaint)
 - **Step 3:** `flags` before/after, `get-task-allow` before/after, both exits
 - **Step 4:** launched? engine spawned? if not — the log lines and the
