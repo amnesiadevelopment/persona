@@ -876,6 +876,12 @@ __LEAF_CLOAK__
   //   papered over: see `tests/test_ps393_desktop_ext_set.py`, which pins both
   //   the addition and the refusal.
   //
+  // ⚠️ THIS LIST IS THE WEBGL1 ANSWER ONLY. It used to be served to BOTH
+  // contexts, which meant every entry added here was also added to a WebGL2
+  // context that cannot expose sixteen of them. The WebGL2 answer is
+  // DESKTOP_GL2_EXTS below — read its comment before editing this array,
+  // because the two are NOT derivable from one another in either direction.
+  //
   // ⚠️ ORDER IS EMITTED AS THE ENGINE EMITS IT, not tidied. The measured engine
   // order is codepoint-sorted on this arm, and a detector that hashes the raw
   // array catches a reordering instantly — so this list is the engine's measured
@@ -1003,15 +1009,122 @@ __LEAF_CLOAK__
     "WEBGL_lose_context", "WEBGL_multi_draw", "WEBGL_polygon_mode"
   ];
 
+  // ⛔⛔ THE WEBGL2 SETS. A CONTEXT THAT ANSWERS A VERSION-SPECIFIC QUESTION
+  // WITH A VERSION-AGNOSTIC ANSWER IS A CATEGORY ERROR, AND A CATEGORY ERROR
+  // OUTRANKS THE COUNT DEFECT ABOVE IT (PS-393 rework).
+  //
+  // Until this block existed, every non-iOS arm handed its ONE list to both
+  // installOn() call sites, so a WebGL2 context advertised the SIXTEEN WebGL1
+  // extensions that WebGL2 PROMOTED INTO CORE — and a promoted extension
+  // cannot appear in a conforming WebGL2 getSupportedExtensions(), because
+  // there is no extension object left to hand out. Measured on the owner's
+  // Windows host: persona 33/33 BYTE-IDENTICAL where the engine reports 35/32
+  // with genuinely different contents.
+  //
+  // ⚠️ WHY THIS IS WORSE THAN A WRONG COUNT, which is the ranking that decided
+  // this rework. A MAGNITUDE error needs a BASELINE: "persona claims 27" means
+  // nothing until the detector knows this GPU reports 35, so it costs a
+  // comparison and host knowledge. A CATEGORY error needs NOTHING —
+  // `webgl2.getSupportedExtensions().includes("ANGLE_instanced_arrays")` is
+  // impossible in every browser that has ever shipped, so it is a one-line
+  // positive identification. Note the direction of travel that made this
+  // urgent: the 27→33 fix above made the WebGL1 arm materially better and the
+  // WebGL2 arm SIX entries louder, because the two arms shared an array.
+  //
+  // THE PROMOTED-TO-CORE SET IS 16 AND IS A PROPERTY OF THE SPEC, NOT OF A GPU
+  // — which is why three independent sources agree on it exactly:
+  //   * the liaison's real Windows host (engine 35/32),
+  //   * `readings/ps161-coherence-2026-08-25/` on a GPU-LESS VM (engine 36/30),
+  //   * THIS MODULE'S OWN measured iOS pair (IOS_GL1_EXTS minus IOS_GL2_EXTS).
+  // Two different hosts with different totals and a third-party WebKit reading
+  // produce the identical sixteen. See PROMOTED_TO_WEBGL2_CORE in
+  // `tests/test_ps393_desktop_ext_set.py`, which re-derives it from the corpus
+  // and from the iOS pair rather than trusting this comment.
+  //
+  // ⛔ THE GL2 LIST IS NOT THE GL1 LIST MINUS SIXTEEN. That subtraction leaves
+  // 17 where the engine reports 32: WebGL2 also ADDS extensions that exist on
+  // no WebGL1 context (EXT_color_buffer_float, OVR_multiview2,
+  // WEBGL_clip_cull_distance, …), and they cannot be recovered from the GL1
+  // array by any transformation because they were never in it. The additions
+  // below are the liaison's measured WebGL2 array, not a derivation.
+  //
+  // ⚠️ THE TWO GL1 RESIDUALS ARE RESIDUALS ON GL1 ONLY. The engine reports
+  // KHR_parallel_shader_compile and WEBGL_blend_func_extended on BOTH contexts;
+  // they stay out of DESKTOP_EXTS because that arm's residual is a separate,
+  // stated question, but they are IN the GL2 set because the GL2 set is derived
+  // from the GL2 reading. Carrying a GL1 omission across would be deriving one
+  // list from the other, which is exactly what is forbidden above.
+  //
+  // ⛔ astc/etc/etc1 STAY OUT of the desktop GL2 set for the same reason they
+  // stay out of DESKTOP_EXTS: the VM's GL2 reading lists all three because
+  // SwiftShader advertises everything, and that is the software-rasteriser
+  // signature audit7 #3 exists to catch on a claimed D3D11 card.
+  var DESKTOP_GL2_EXTS = [
+    "EXT_clip_control", "EXT_color_buffer_float",
+    "EXT_color_buffer_half_float", "EXT_conservative_depth",
+    "EXT_depth_clamp", "EXT_disjoint_timer_query_webgl2",
+    "EXT_float_blend", "EXT_polygon_offset_clamp", "EXT_render_snorm",
+    "EXT_texture_compression_bptc", "EXT_texture_compression_rgtc",
+    "EXT_texture_filter_anisotropic", "EXT_texture_mirror_clamp_to_edge",
+    "EXT_texture_norm16", "KHR_parallel_shader_compile",
+    "NV_shader_noperspective_interpolation", "OES_draw_buffers_indexed",
+    "OES_sample_variables", "OES_shader_multisample_interpolation",
+    "OES_texture_float_linear", "OVR_multiview2",
+    "WEBGL_blend_func_extended", "WEBGL_clip_cull_distance",
+    "WEBGL_compressed_texture_s3tc",
+    "WEBGL_compressed_texture_s3tc_srgb", "WEBGL_debug_renderer_info",
+    "WEBGL_debug_shaders", "WEBGL_lose_context", "WEBGL_multi_draw",
+    "WEBGL_polygon_mode", "WEBGL_provoking_vertex",
+    "WEBGL_stencil_texturing"
+  ];
+
+  // ⚠️ macOS AND ANDROID GET THE SUBTRACTION AND NOTHING ELSE, AND THAT IS A
+  // DELIBERATELY WEAKER CLAIM THAN THE DESKTOP SET ABOVE. No WebGL2 reading
+  // exists for either arm, so the additive half — the WebGL2-only extensions a
+  // real Metal or Adreno/Mali context reports — is UNKNOWN and is NOT invented
+  // here. What IS known without any measurement is the removal: the sixteen
+  // promoted names cannot appear on a conforming WebGL2 context on ANY
+  // hardware, because that is a fact about the WebGL2 specification.
+  //
+  // So these two lists are SHORT — 10 and 12 against a real device's larger
+  // set — and short is the direction this module accepts when the alternative
+  // is a guess. A shorter-than-native list is a MAGNITUDE tell needing a
+  // baseline (the defect PS-393's first half fixed); serving the promoted
+  // sixteen would be a CATEGORY tell needing none. Trading the second for the
+  // first is a strict improvement, and the residual is stated rather than
+  // closed by invention. ⭐ WHEN A MACOS OR ANDROID WEBGL2 READING ARRIVES,
+  // ADD ITS MEASURED WEBGL2-ONLY EXTENSIONS HERE — do not pad these to a
+  // plausible length from the desktop set, which claims different hardware.
+  var APPLE_GL2_EXTS = [
+    "EXT_color_buffer_half_float", "EXT_float_blend",
+    "EXT_texture_compression_bptc", "EXT_texture_compression_rgtc",
+    "EXT_texture_filter_anisotropic", "OES_texture_float_linear",
+    "WEBGL_debug_renderer_info", "WEBGL_debug_shaders",
+    "WEBGL_lose_context", "WEBGL_multi_draw"
+  ];
+  var ANDROID_GL2_EXTS = [
+    "EXT_color_buffer_half_float", "EXT_float_blend",
+    "EXT_texture_filter_anisotropic", "KHR_parallel_shader_compile",
+    "OES_texture_float_linear", "WEBGL_compressed_texture_astc",
+    "WEBGL_compressed_texture_etc", "WEBGL_compressed_texture_etc1",
+    "WEBGL_debug_renderer_info", "WEBGL_debug_shaders",
+    "WEBGL_lose_context", "WEBGL_multi_draw"
+  ];
+
   var STABLE_EXTS = (OS === "android") ? ANDROID_EXTS
                   : (OS === "macos") ? APPLE_EXTS
                   : DESKTOP_EXTS;
+  var STABLE_GL2_EXTS = (OS === "android") ? ANDROID_GL2_EXTS
+                      : (OS === "macos") ? APPLE_GL2_EXTS
+                      : DESKTOP_GL2_EXTS;
   // Real browsers NEVER return the same extension list for a WebGL1 and a WebGL2
-  // context, so the list is selected per context rather than shared. Only iOS
-  // models that split today; the other platforms keep their single list until
-  // each is given its own measured pair.
+  // context, so the list is selected per context rather than shared. EVERY arm
+  // splits — iOS from its own measured WebKit pair, the rest from the pair
+  // above. If a fourth arm is ever added, it needs BOTH lists: a new arm whose
+  // GL2 line falls through to its GL1 list re-creates the exact defect this
+  // block was written to remove.
   var EXTS_GL1 = (OS === "ios") ? IOS_GL1_EXTS : STABLE_EXTS;
-  var EXTS_GL2 = (OS === "ios") ? IOS_GL2_EXTS : STABLE_EXTS;
+  var EXTS_GL2 = (OS === "ios") ? IOS_GL2_EXTS : STABLE_GL2_EXTS;
 
   var UNMASKED_VENDOR = 0x9245;    // 37445
   var UNMASKED_RENDERER = 0x9246;  // 37446
@@ -1092,7 +1205,11 @@ __LEAF_CLOAK__
     // getSupportedExtensions otherwise reflects the host GPU's real extension
     // set (e.g. a real RTX exposes extensions a claimed UHD 630 wouldn't).
     // Return the stable per-context set for the claimed renderer, chosen by the
-    // caller — WebGL1 and WebGL2 get DIFFERENT lists (see EXTS_GL1/EXTS_GL2).
+    // caller — WebGL1 and WebGL2 get DIFFERENT lists (see EXTS_GL1/EXTS_GL2),
+    // on EVERY arm rather than on iOS alone. ⛔ This function must never be
+    // called with the same array for both contexts: sixteen WebGL1 extensions
+    // were promoted into WebGL2 core, so a shared array makes the WebGL2
+    // context advertise extensions no conforming browser can expose.
     var realGSE = proto.getSupportedExtensions;
     if (realGSE && extList) {
       proto.getSupportedExtensions = nativeWrap(realGSE, function () {

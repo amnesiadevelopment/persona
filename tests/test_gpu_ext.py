@@ -950,9 +950,39 @@ def test_non_ios_platforms_select_unchanged_values(tmp_path, os_type):
     p = _probe(tmp_path, 42, os_type)
     assert p["version_gl1"] == "WebGL 1.0 (OpenGL ES 2.0 Chromium)"
     assert p["version_gl2"] == "WebGL 2.0 (OpenGL ES 3.0 Chromium)"
-    # non-iOS keeps ONE shared list across both contexts (unchanged behaviour;
-    # splitting theirs is explicitly out of scope for this ticket)
-    assert p["exts_gl1"] == p["exts_gl2"]
+    # ⛔ INVERTED BY PS-393, DELIBERATELY. This line used to read
+    # `assert p["exts_gl1"] == p["exts_gl2"]` with the note "non-iOS keeps ONE
+    # shared list across both contexts (unchanged behaviour; splitting theirs is
+    # explicitly out of scope for this ticket)". That was an accurate scope note
+    # for the iOS ticket that wrote it — and it meant this guard PINNED the
+    # defect: every non-iOS arm served its WebGL1 array to a WebGL2 context,
+    # which advertises the sixteen extensions WebGL2 promoted into core. PS-393
+    # is the ticket that took that scope, so the assertion is inverted rather
+    # than deleted, and the direction now binds the opposite way: a regression
+    # that re-shares one array fails here as well as in
+    # `tests/test_ps393_desktop_ext_set.py`.
+    #
+    # ⭐ THIS IS ALSO THE RUNTIME CONFIRMATION. `_probe` executes the emitted
+    # gpu.js in node and calls the patched methods, so unlike the source-literal
+    # guards it reads what a PAGE would see — the split is real at the call
+    # site, not only in the array literals.
+    assert p["exts_gl1"] != p["exts_gl2"], (
+        f"{os_type} serves a byte-identical extension list to both contexts. "
+        "Real browsers never do, and the shared list advertises core-promoted "
+        "extensions on WebGL2 — a positive identification needing no baseline."
+    )
+    promoted_on_gl2 = {
+        "ANGLE_instanced_arrays", "EXT_blend_minmax", "EXT_disjoint_timer_query",
+        "EXT_frag_depth", "EXT_sRGB", "EXT_shader_texture_lod",
+        "OES_element_index_uint", "OES_fbo_render_mipmap",
+        "OES_standard_derivatives", "OES_texture_float", "OES_texture_half_float",
+        "OES_texture_half_float_linear", "OES_vertex_array_object",
+        "WEBGL_color_buffer_float", "WEBGL_depth_texture", "WEBGL_draw_buffers",
+    } & set(p["exts_gl2"])
+    assert not promoted_on_gl2, (
+        f"{os_type}'s WebGL2 context advertises extensions promoted into WebGL2 "
+        f"core, which no conforming context can expose: {sorted(promoted_on_gl2)}"
+    )
     assert "Apple GPU" not in (p["unmaskedRenderer"] or "")
     if os_type == "macos":
         assert "ANGLE Metal Renderer" in p["unmaskedRenderer"]
