@@ -403,7 +403,7 @@ def test_entitlements_go_on_bundles_and_not_on_loose_dylibs(mod, tmp_path):
         assert "--options" in cmd and "runtime" in cmd, "the runtime option is the point"
 
 
-# ── ⭐ three-valued classification: ours / theirs / unknown ──────────────────
+# ── ⭐ four-valued classification: adhoc / unsigned / theirs / unknown ───────
 
 
 class _FakeCompleted:
@@ -413,13 +413,56 @@ class _FakeCompleted:
         self.stderr = stderr
 
 
+# The exact stderr real `codesign -dvvv` emits for a Mach-O carrying no
+# signature. Written once, used by every test about that population, because a
+# paraphrase here would test a string Apple does not print.
+CODESIGN_UNSIGNED_STDERR = (
+    "/tmp/x/aiohttp/_http_parser.cpython-312-darwin.so: code object is not signed at all\n"
+)
+
+
 def test_an_adhoc_slice_classifies_as_ours(mod, monkeypatch, tmp_path):
     """No Authority line and a clean exit means nobody with a certificate signed it."""
     monkeypatch.setattr(
         mod.subprocess, "run", lambda *a, **k: _FakeCompleted(0, stderr="Signature=adhoc\n")
     )
     state, _ = mod.classify(tmp_path / "libfoo.dylib")
-    assert state == "OURS"
+    assert state == "ADHOC"
+    assert state in mod.OURS_STATES, "an ad-hoc slice is one we produced"
+
+
+def test_an_unsigned_slice_is_OURS_and_gets_hardened(mod, monkeypatch, tmp_path):
+    """⭐ THE REGRESSION THIS TEST EXISTS FOR — 28 of 225 slices, all ours.
+
+    `codesign -dvvv` EXITS NON-ZERO on a Mach-O with no signature: it prints
+    `code object is not signed at all` and returns 1. A classifier that decides
+    "readable" on the exit code therefore files a measured answer under "could
+    not tell", and every one of those slices is skipped instead of hardened.
+
+    That is not a corner case. PS-346 measured this exact bundle
+    (`readings/ps346-2026-09-07/artifacts/signing_state_run.txt:9`):
+
+        arch slices: ADHOC=196, UNSIGNED=28, SIGNED_CMS=1, UNREADABLE=0
+
+    and named the 28 (`REPORT.md:124-125`) as the compiled Python extensions —
+    frozen into our bundle by our build, carrying no signature, and therefore
+    the population most in need of the hardened runtime.
+
+    ⚠️ The second half is worse than a skip: `ps386_verify_posture.py` splits on
+    the CMS payload, so it counts those same slices as OURS, finds no runtime
+    flag, and fails the release gate. The hardener saying "not ours" while its
+    own verifier says "ours, and they failed" is the disagreement that turns a
+    silent shortfall into a red build with no dmg.
+    """
+    monkeypatch.setattr(
+        mod.subprocess,
+        "run",
+        lambda *a, **k: _FakeCompleted(1, stderr=CODESIGN_UNSIGNED_STDERR),
+    )
+    state, detail = mod.classify(tmp_path / "_http_parser.cpython-312-darwin.so")
+    assert state == "UNSIGNED", "a measured 'no signature' is an ANSWER, not an error"
+    assert state in mod.OURS_STATES, "an unsigned slice of ours must be hardened"
+    assert "not signed at all" in detail
 
 
 def test_a_real_identity_classifies_as_third_party_and_names_it(mod, monkeypatch, tmp_path):
@@ -438,19 +481,20 @@ def test_a_real_identity_classifies_as_third_party_and_names_it(mod, monkeypatch
     )
     state, detail = mod.classify(tmp_path / "node")
     assert state == "THIRD_PARTY"
+    assert state not in mod.OURS_STATES, "a real signature must never be overwritten"
     assert "Node.js Foundation" in detail
 
 
 def test_a_nonzero_codesign_exit_is_UNREADABLE_and_never_OURS(mod, monkeypatch, tmp_path):
-    """⭐ THE DEFECT THIS CLASSIFIER EXISTS TO FIX.
+    """⭐ THE DEFECT THIS CLASSIFIER EXISTS TO FIX, AND IT IS STILL COVERED.
 
     `subprocess.run` without `check=True` does NOT raise on a non-zero exit, so
     a `codesign` that errored on a single slice used to fall through the
-    `Authority=` test to False — and get RE-SIGNED as ours. That is the most
-    likely per-slice failure mode, and it was precisely the one the old
-    fail-safe did not cover: it caught "codesign missing" and nothing else.
+    `Authority=` test to False — and get RE-SIGNED as ours.
 
-    An errored probe means we DO NOT KNOW. It must never read as ours.
+    ⚠️ Promoting the ONE self-describing non-zero exit (`not signed at all`) to
+    a real answer must not re-open this. An exit that says something else still
+    means we DO NOT KNOW, and must not read as ours.
     """
     monkeypatch.setattr(
         mod.subprocess,
@@ -459,6 +503,7 @@ def test_a_nonzero_codesign_exit_is_UNREADABLE_and_never_OURS(mod, monkeypatch, 
     )
     state, detail = mod.classify(tmp_path / "weird.dylib")
     assert state == "UNREADABLE", "an errored probe must not be treated as ours"
+    assert state not in mod.OURS_STATES
     assert "exit 1" in detail
 
 
@@ -471,23 +516,54 @@ def test_a_missing_codesign_is_UNREADABLE_not_OURS(mod, monkeypatch, tmp_path):
     monkeypatch.setattr(mod.subprocess, "run", boom)
     state, _ = mod.classify(tmp_path / "x.dylib")
     assert state == "UNREADABLE"
+    assert state not in mod.OURS_STATES
 
 
-def test_the_three_states_are_genuinely_distinct(mod, monkeypatch, tmp_path):
-    """A three-valued fact must not render as two.
+def test_the_four_states_are_genuinely_distinct(mod, monkeypatch, tmp_path):
+    """A four-valued fact must not render as three.
 
-    Without this, all three arms could collapse to the same string and every
-    test above would still pass individually.
+    Without this, two arms could collapse to the same string and every test
+    above would still pass individually — which is exactly how UNSIGNED came to
+    be reported as UNREADABLE while four separate tests stayed green.
+
+    ⭐ FOUR, NOT THREE, AND THE COUNT IS NOT ARBITRARY: it is the control's own
+    vocabulary. `read_macho_slice` in `scripts/ps346_signing_state.py` reports
+    ADHOC / UNSIGNED / SIGNED_CMS / UNREADABLE, and PS-346's committed tally is
+    stated in all four. A classifier with fewer buckets than the instrument it
+    is measured against has to merge two populations to fit, and the merge is
+    silent.
     """
     seen = set()
     for rc, err in (
         (0, "Signature=adhoc\n"),
         (0, "Authority=Developer ID Application: Someone\n"),
+        (1, CODESIGN_UNSIGNED_STDERR),
         (1, "broken\n"),
     ):
         monkeypatch.setattr(mod.subprocess, "run", lambda *a, _rc=rc, _e=err, **k: _FakeCompleted(_rc, stderr=_e))
         seen.add(mod.classify(tmp_path / "x")[0])
-    assert seen == {"OURS", "THIRD_PARTY", "UNREADABLE"}
+    assert seen == {"ADHOC", "UNSIGNED", "THIRD_PARTY", "UNREADABLE"}
+
+
+def test_the_two_ours_states_are_exactly_the_two_the_control_calls_ours(mod):
+    """⛔ THE HARDENER AND ITS VERIFIER MUST AGREE ON WHO OWNS A SLICE.
+
+    `ps386_verify_posture.py::split_ours` keys on the CMS payload — anything
+    that is not `SIGNED_CMS` is ours — and it is right to, because a real
+    identity is the only thing that makes a slice somebody else's. The hardener
+    reaches the same split from the other side, through `codesign`, and the two
+    must name the same population.
+
+    If they drift, the failure is not symmetric: the hardener skipping a slice
+    the verifier counts is a RED BUILD with no dmg, discovered on a Mac session
+    that is expensive to get. This pins the two halves together.
+    """
+    assert set(mod.OURS_STATES) == {"ADHOC", "UNSIGNED"}
+    control = CONTROL.read_text(encoding="utf-8")
+    for state in mod.OURS_STATES:
+        assert f'"{state}"' in control, (
+            f"{state} is not a state the control reports — the vocabularies have drifted"
+        )
 
 
 def test_an_unreadable_slice_is_not_silently_folded_into_third_party(mod):
@@ -503,6 +579,21 @@ def test_an_unreadable_slice_is_not_silently_folded_into_third_party(mod):
     assert "THIRD_PARTY (a real certificate)" in src
     assert "not over the bundle" in src, (
         "the success line must not claim completeness over slices it never classified"
+    )
+
+
+def test_the_ours_count_is_reported_split_and_not_only_as_a_total(mod):
+    """A single OURS total cannot show the regression that produced this test.
+
+    28 unsigned slices vanishing into UNREADABLE moves the OURS total by 28 and
+    says nothing about WHY. Printing `ADHOC=n, UNSIGNED=m` makes the count
+    readable directly against PS-346's committed tally, where an UNSIGNED of 0
+    on this bundle is visibly wrong rather than merely lower than expected.
+    """
+    src = SCRIPT.read_text(encoding="utf-8")
+    assert "ours_by_state" in src, "the OURS bucket must be counted per state"
+    assert "OURS ({split})" in src or "{split}" in src, (
+        "the per-state split must reach the printed line, not just a variable"
     )
 
 
@@ -1026,4 +1117,34 @@ def test_the_runbook_keeps_unreadable_distinct_from_third_party():
     """
     text = RUNBOOK.read_text(encoding="utf-8")
     assert "UNREADABLE` is not a synonym for `THIRD_PARTY" in text
-    assert "three** counts" in text or "three counts" in text
+    assert "four** counts" in text or "four counts" in text
+
+
+def test_the_runbook_tells_the_liaison_a_zero_UNSIGNED_count_is_a_defect():
+    """⭐ THE ONE READING THAT LOOKS LIKE GOOD NEWS AND IS NOT.
+
+    Every other bucket in the dry-run reads the obvious way: a big OURS is
+    progress, a THIRD_PARTY of 1 is expected, an UNREADABLE of 0 is clean. An
+    UNSIGNED of 0 reads clean too — and on this bundle it means the classifier
+    has stopped seeing 28 slices it is supposed to harden, which Step 3 then
+    fails on.
+
+    The liaison has one shot at this on a Mac that is expensive to get, so the
+    runbook has to say so before Step 2 rather than leave it to be inferred from
+    a failure two steps later.
+    """
+    text = RUNBOOK.read_text(encoding="utf-8")
+    step1 = text.split("## Step 2")[0]
+    assert "UNSIGNED" in step1, "the runbook must name the UNSIGNED bucket"
+    assert "28" in step1, "it must give the expected count from PS-346's measurement"
+
+    # ⚠️ SCOPED TO THE UNSIGNED SENTENCE, NOT TO THE WHOLE SECTION. A bare
+    # `"stop and report" in step1` passes on Step 0's own unrelated stop-branch,
+    # so it would stay green with this warning deleted — a check that cannot
+    # fail is not coverage. Read the line that actually carries the number.
+    stop_lines = [
+        ln for ln in step1.splitlines() if "UNSIGNED" in ln and "0" in ln
+    ]
+    assert any("stop and report" in ln.lower() for ln in stop_lines), (
+        "a zero UNSIGNED count must carry its OWN stop-branch, on its own line"
+    )
