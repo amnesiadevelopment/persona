@@ -36,6 +36,33 @@ name: behaviour-launch-lane
 #     the whole registry (all seven)  93.5s, 16 browser launches
 #     engine download, cold cache     ~10s, 584 MB extracted
 #
+# ⭐ AND SINCE PS-383 THERE IS A FOURTH CHECK AND A SECOND ENGINE. The figures
+# above are the FIREFOX arm and are unchanged; what was added is priced rather
+# than waved at:
+#
+#     chromium engine download        ~35s, 202,193,400 bytes
+#                                     (personium-152.0.7977.75, measured)
+#     no-process-survives-a-closed-session
+#                                     2 wrapper launches, each bounded by
+#                                     `_TREE_GROW_TIMEOUT` = 90s; the tree
+#                                     settles at 10 members within ~7s in
+#                                     practice, so ~30s typical / ~3min worst
+#
+# So the lane's WORST case is roughly 66s + 3min + ~45s of downloads ≈ 6 min,
+# and its typical case under 3. THE 45-MINUTE BUDGET STILL HOLDS with a wide
+# margin and is deliberately not reduced — it exists to stop a genuinely wedged
+# launch hanging for hours, not to track the measured time.
+#
+# ⚠️ THE CHROMIUM FIGURE IS A DOWNLOAD MEASUREMENT, NOT A LAUNCH ONE, and the
+# distinction is stated rather than blurred: it was taken in a container that
+# CANNOT launch chromium at all (unprivileged user namespaces are denied, so
+# the engine exits FATAL "No usable sandbox!" ~3s in). That is a fact about
+# that sandbox and not about this runner — `engine-gpu-variance.yml` launches
+# 15 chromium profiles per run on this same `ubuntu-24.04` image and reads a
+# GPU from every one. The launch-side timings above are the check's own
+# thresholds, which are a real bound; a measured wall-clock for the chromium
+# arm on a runner belongs to the first green run of this lane.
+#
 # So the lane itself is ~76s against ci.yml's 30-minute per-job cap, and it
 # WOULD fit there on wall-clock alone. It is here anyway, for three reasons
 # that are about cost and correctness rather than about the cap:
@@ -46,20 +73,27 @@ name: behaviour-launch-lane
 #      in all six. That is free at 0.4s and emphatically not free for a lane
 #      that downloads a 584 MB engine: appending this beside it would pay the
 #      download SIX TIMES PER PR, with the macOS and Windows legs paying the
-#      worst of it.
+#      worst of it. ⭐ That argument got STRONGER at PS-383, not weaker: the
+#      lane now downloads a SECOND engine, so folding it into that matrix would
+#      pay for both, six times over. ⛔ ci.yml's own `browser_chromium` refusal
+#      (:427-455) is about exactly that matrix and remains correct and
+#      untouched — this lane is the "separate slice" it points at, not a
+#      contradiction of it.
 #      ⚠️ NOTE what that is and is not: `timeout-minutes` is per JOB INSTANCE
 #      and the matrix declares `fail-fast: false` with no `max-parallel`, so
 #      the six run concurrently on six runners with six separate 30-minute
 #      budgets. The x6 is RUNNER-MINUTES AND BANDWIDTH, not cap pressure. An
 #      earlier reading of this called it cap pressure; it is not, and the
 #      correction matters because it pushes toward the wrong remedy.
-#   2. THE FIXTURES ARE FIREFOX-ONLY AND THE ENGINE IS LINUX-PROVISIONED HERE.
-#      `behaviour.py`'s UNCOVERED_SURFACES records that all 18 scratch profiles
-#      take `Context.make_profile`'s defaults (os_type=windows,
-#      device_type=desktop) — "the ONE combination that resolves to firefox".
-#      So the three OS legs would measure the same firefox arm three times over
-#      and learn one fact, while `xvfb` is linux-only and the display story on
-#      the macOS and Windows runners is unmeasured work this ticket does not do.
+#   2. THE FIXTURES ARE MOSTLY FIREFOX AND THE ENGINES ARE LINUX-PROVISIONED
+#      HERE. `behaviour.py`'s UNCOVERED_SURFACES records that all but one of
+#      the 18 scratch profiles take `Context.make_profile`'s defaults
+#      (os_type=windows, device_type=desktop) — "the ONE combination that
+#      resolves to firefox". The exception is this lane's fourth check, which
+#      takes os_type=linux and therefore chromium, deliberately. Either way the
+#      three OS legs would measure the same arms three times over and learn one
+#      fact, while `xvfb` is linux-only and the display story on the macOS and
+#      Windows runners is unmeasured work this lane does not do.
 #   3. A PR IS THE WRONG EVENT FOR MOST OF THE RISK. These bodies rot from
 #      changes to the product and from ENGINE BUILDS this repo does not author
 #      (`engine-baseline.txt` is bumped by engine-autoupdate.yml). A daily
@@ -91,6 +125,28 @@ name: behaviour-launch-lane
 # playwright's (`~/.cache/ms-playwright`, absent on a machine where these
 # checks pass). `playwright install firefox` populates the latter and leaves
 # the former empty, so the two provisioning steps are not interchangeable.
+#
+# ⭐ AND SINCE PS-383, A SECOND ENGINE: the Personium CHROMIUM build, fetched by
+# `src.services.engine.updater` — the same downloader the operator's app calls
+# hourly. It is here because `no-process-survives-a-closed-session` launches
+# chromium BY CONSTRUCTION (`os_type="linux"`): the leak it guards is a
+# property of the WRAPPER, multi-process launch (fpchrome.AppImage above a
+# browser above a zygote/gpu/renderer fan-out), and a direct single-process
+# launch does not leak on `terminate()` at all — so the same measurement on
+# this lane's firefox fixtures would be VACUOUS. That check shipped merged in
+# PS-347 and, until this workflow provisioned the engine, had ZERO callers
+# anywhere in .github/: a written check, not a gate.
+#
+# ⛔ THE TWO ENGINES ARE PROVISIONED DIFFERENTLY AND THAT IS DELIBERATE — the
+# firefox arm is PINNED to engine-baseline.txt, the chromium arm is UNPINNED.
+# The argument is written out at the chromium step below rather than here,
+# because it is a property of what each check measures. Do not "tidy" the two
+# into one posture without reading it.
+#
+# ⛔ NOR IS THE CHROMIUM ARM POINTABLE AT THE FIREFOX ENGINE ALREADY PRESENT.
+# `_survivor_profile` takes `os_type="linux", engine="chromium"` and its
+# docstring says why; windows+desktop is the one combination that resolves to
+# firefox, and firefox is not the arm PS-192 was measured on.
 #
 # ---------------------------------------------------------------------------
 # WHY xvfb IS INSTALLED HERE WHEN ci.yml MEASURED THAT IT DID NOT NEED ONE
@@ -140,6 +196,32 @@ on:
   # and widening the filter to the launch stack would put the download back on
   # a large fraction of PRs. Stated so the next reader does not mistake the
   # list for a completeness claim.
+  #
+  # ⭐ PS-383 RE-EXAMINED THAT TRADE AND LEFT THE LIST ALONE — the decision is
+  # recorded because a second engine download is exactly the kind of change
+  # that should prompt it, and because the temptation runs the OTHER way here.
+  #
+  # WHAT CHANGED: the PR arm now costs ~200 MB more when it fires (two engines,
+  # not one), so the case for NARROWING the list got stronger, and the case for
+  # widening it got weaker. Neither was acted on.
+  #
+  # WHY NOT NARROW: every path listed is a file whose edit can make this lane
+  # wrong in the one way a daily reading is worst at catching — a change that
+  # breaks the INSTRUMENT rather than the product, where 24 hours of green
+  # means 24 hours of a gate certifying nothing. The added download does not
+  # change that; it makes those runs dearer, not less necessary.
+  #
+  # WHY NOT WIDEN, THOUGH THE NEW CHECK ARGUES FOR IT MOST: the survivor check
+  # reads through `src/services/browser/process_group.py` — literally the
+  # module whose regression it exists to catch (PS-192) — and that file is NOT
+  # on this list, so a PR that reintroduces the leak does not trigger this
+  # lane and is caught by the cron up to a day later. That is a real gap and it
+  # is named rather than papered over. It is accepted for the reason above:
+  # `process_group.py` sits under a directory a large fraction of PRs touch,
+  # and adding it would put two engine downloads on those PRs. ⛔ A future
+  # reader who wants that gap closed should close it by making the download
+  # CHEAP (a cache) rather than by widening this list — widening it without
+  # that is how a lane becomes something people disable.
   pull_request:
     branches:
       - main
@@ -226,10 +308,136 @@ jobs:
           print('installed build:', current_version())
           " "$tag"
 
+      - name: Provision the Personium chromium engine binary
+        # ⭐ THE SECOND ENGINE (PS-383). `no-process-survives-a-closed-session`
+        # launches CHROMIUM by construction — the leak it guards is a property
+        # of the WRAPPER, multi-process launch, so the same measurement on this
+        # lane's firefox fixtures would be vacuous — and until this step existed
+        # the check was in the registry with ZERO callers anywhere in .github/.
+        #
+        # ---------------------------------------------------------------------
+        # WHERE IT LANDS, AND WHY THAT IS NOT THE DEFAULT
+        # ---------------------------------------------------------------------
+        # `config.ENGINE_DIR` is `_under_home("engine", "PERSONA_ENGINE_DIR")`,
+        # and the runner script hands the CHILD a fresh throwaway PERSONA_HOME
+        # on every run. So downloading with the default resolution puts the
+        # binary in THIS step's home and the child looks for it in a directory
+        # created seconds later by mkdtemp — empty. Measured on this branch:
+        #
+        #     scratch home: /tmp/persona-behaviour-launch-ci-yp34liw3
+        #     ENGINE_BINARY= /tmp/.../engine/fpchrome.AppImage   exists= False
+        #
+        # which is byte-for-byte the `FileNotFoundError: .../fpchrome.AppImage`
+        # that kept this check out of the lane. So the path is PINNED, here and
+        # in the runner script's own default, via the documented
+        # `PERSONA_ENGINE_DIR` override. The firefox arm above needs none of
+        # this: it resolves through ~/.cache/invisible-playwright, which is not
+        # under PERSONA_HOME at all — which is exactly why the lane never met
+        # this problem while it provisioned firefox only.
+        #
+        # ---------------------------------------------------------------------
+        # UNPINNED, AND THE FORK WAS PRICED RATHER THAN DECIDED BY PROXIMITY
+        # ---------------------------------------------------------------------
+        # This lane now holds BOTH postures at once — a PINNED firefox above
+        # (engine-baseline.txt, bumped by engine-autoupdate.yml) and an UNPINNED
+        # chromium here — and that asymmetry is deliberate rather than an
+        # oversight, so the argument is written out.
+        #
+        # WHAT A PIN WOULD COST HERE, checked against the shipped API rather
+        # than assumed. `updater.fetch_release_full(tag)` exists and returns
+        # (version, url, digest) for one named release, so a pinned download IS
+        # implementable with shipped code. Three costs come with it:
+        #
+        #   1. THERE IS NO CHROMIUM PIN ARTIFACT. engine-baseline.txt is
+        #      `firefox-20` and is firefox-only. A pin needs a NEW file or
+        #      constant.
+        #   2. NOTHING WOULD BUMP IT. engine-autoupdate.yml bumps
+        #      engine-baseline.txt and only that. A new pin goes stale by
+        #      construction — the precise failure engine-gpu-variance.yml argues
+        #      a pin produces ("a gate on a pinned build stays green forever
+        #      while the build users actually receive goes bad").
+        #   3. `fetch_release_full` DOES NOT APPLY `policy.check`. It reaches
+        #      egress.fetch_json and _release_asset with no policy path, so a
+        #      pinned download would bypass persona's own known-bad refusal —
+        #      which the unpinned call below gets for free.
+        #
+        # WHAT THE PIN WOULD BUY, stated because it is real: attributability. A
+        # behavioural red on a pinned engine is a fact about the PRODUCT; on an
+        # unpinned one it may be a fact about an engine that moved. That is why
+        # the firefox arm above IS pinned.
+        #
+        # ⭐ WHY UNPINNED WINS ON THIS PARTICULAR CHECK, and it is a property of
+        # WHAT IS BEING MEASURED rather than a general preference. The other
+        # three checks read a MASKED IDENTITY — values persona's layer computes,
+        # where an engine that changed its output is indistinguishable from a
+        # product regression, so a pin is what makes their red readable. This
+        # check counts PROCESSES. Its subject is persona's own teardown
+        # (`terminate_process_group` walking the group it recorded), and a leak
+        # is a leak whatever the engine version: the failure mode a pin protects
+        # against — "the engine moved, not the product" — barely applies, while
+        # the failure mode a pin CAUSES (a stale pin measuring a wrapper shape
+        # users no longer receive) applies fully, because the wrapper's own
+        # process fan-out is exactly what upstream is free to change. Attaching
+        # a permanently-stale artifact to gain attributability this check does
+        # not need is the worse trade.
+        #
+        # So AC9's staleness story is answered by not creating the artifact: no
+        # new pin file exists, so nothing has to bump one. If a future reader
+        # wants the pinned posture, the thing to build FIRST is the bumper.
+        #
+        # The tag is ECHOED either way, so a red run names the build it read —
+        # gpu-variance's reason, and it holds here too: a finding you cannot
+        # attribute to a tag cannot be acted on.
+        shell: bash
+        env:
+          # Must match the runner script's own default (`_ENGINE_DIR_ENV`), and
+          # is set explicitly on both sides rather than left to agree by luck:
+          # the script uses `setdefault`, so this value wins and a drift between
+          # the two shows up as a download landing where nothing reads it.
+          PERSONA_ENGINE_DIR: ${{ github.workspace }}/../.persona-ci-engine
+        run: |
+          mkdir -p "$PERSONA_ENGINE_DIR"
+          python - <<'PY'
+          import os, sys
+          from src.services.engine import updater
+
+          # fetch_latest_checked applies policy.check, so a build already on the
+          # known-bad list is refused here rather than measured. The refusal is
+          # the correct outcome and this lane must not re-litigate it.
+          tag, url, digest, verdict, message = updater.fetch_latest_checked(timeout=30)
+          print(f"newest chromium engine release: {tag} (policy verdict: {verdict})")
+          if verdict != "ok":
+              print(f"persona already refuses this build: {message}")
+              sys.exit(f"refusing to measure a build persona will not install: {tag}")
+          if not updater.download_engine(url, digest=digest, tag=tag):
+              sys.exit(f"could not download chromium engine build {tag}")
+          # download_engine does NOT write version.txt — the UI does that after
+          # a successful install (app.py). Without this the build reads
+          # "unknown", and a finding you cannot attribute to a TAG cannot be
+          # acted on. So write it explicitly.
+          updater.write_version(tag)
+          print(f"installed chromium: {updater.current_version()!r}")
+          print(f"binary: {updater.ENGINE_BINARY}")
+          if not os.path.exists(updater.ENGINE_BINARY):
+              sys.exit(
+                  "the chromium binary is not where the gate will look for it. "
+                  "PERSONA_ENGINE_DIR must be set to the SAME directory here "
+                  "and in run_launch_behaviour_checks.py, and it must be "
+                  "outside the per-run scratch PERSONA_HOME."
+              )
+          PY
+
       - name: Behavioural checks, launch lane (gating)
         # A bare `run:` so the script's exit code reaches the runner unmodified.
         # `xvfb-run` propagates its child's code (verified: exit 2 in, exit 2
         # out), so the three verdicts survive the display wrapper.
+        #
+        # PERSONA_ENGINE_DIR is passed through so the gate's child resolves the
+        # chromium binary the step above installed rather than looking inside
+        # its own throwaway PERSONA_HOME. The script defaults to the same path
+        # when it is unset, so a hand-run reproduces CI.
+        env:
+          PERSONA_ENGINE_DIR: ${{ github.workspace }}/../.persona-ci-engine
         shell: bash
         run: xvfb-run -a python .github/scripts/run_launch_behaviour_checks.py
 

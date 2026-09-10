@@ -41,6 +41,7 @@ in the PR and in the runner script's header, not asserted here.
 from __future__ import annotations
 
 import importlib.util
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -55,6 +56,7 @@ NO_LAUNCH_RUNNER = REPO_ROOT / ".github" / "scripts" / "run_behaviour_checks.py"
 STEP_NAME = "Behavioural checks, launch lane (gating)"
 INSTALL_STEP_NAME = "Provision a display and the project"
 ENGINE_STEP_NAME = "Provision the Personium engine binary"
+CHROMIUM_STEP_NAME = "Provision the Personium chromium engine binary"
 
 #: The launch-backed checks this lane must certify. Held to the registry by
 #: `test_the_floor_is_the_registry_launch_lane_minus_the_one_documented_omission`
@@ -64,12 +66,13 @@ EXPECTED = (
     "restart-continuity",
     "benign-edit-stability",
     "trash-restore-and-wipe",
+    "no-process-survives-a-closed-session",
 )
 
-#: The launch-backed checks deliberately NOT in the lane — TWO of them, for TWO
-#: DIFFERENT reasons, which is why this is a mapping and not a set. A bare set
-#: would let a future omission be added with no reason at all, which is exactly
-#: how a carve-out becomes a habit; each entry here has to say WHY, and
+#: The launch-backed check deliberately NOT in the lane — ONE of them since
+#: PS-383, and this is a mapping rather than a set because an omission must say
+#: WHY. A bare set would let a future omission be added with no reason at all,
+#: which is exactly how a carve-out becomes a habit;
 #: `test_every_omission_states_a_distinct_reason` refuses two entries that
 #: share one.
 #:
@@ -79,22 +82,19 @@ EXPECTED = (
 #:   handed to PS-2 as product work. Requiring it would make this gate
 #:   permanently RED, which proves as little as permanently green.
 #:
-#: * no-process-survives-a-closed-session — a CHROMIUM launch (os_type=linux,
-#:   deliberately: the leak it guards is a property of the wrapper launch, so
-#:   the same measurement on this lane's firefox fixtures would be vacuous) on
-#:   a lane that provisions FIREFOX only. Measured by removing the chromium
-#:   engine: CANNOT RUN, exit 2 — so requiring it would make this gate
-#:   permanently "nothing was measured", the failure the venue exists to
-#:   remove. ci.yml:427-455 already names `browser_chromium` as a capability
-#:   nothing declares and says closing it is a separate slice.
+#: ⭐ THE SECOND ENTRY IS GONE (PS-383), AND THE SET SHRANK RATHER THAN GREW.
+#: `no-process-survives-a-closed-session` was excluded because it launches
+#: CHROMIUM on a lane that provisioned FIREFOX only — a fact about the VENUE,
+#: closable by CI work, and now closed: the workflow provisions the Personium
+#: chromium engine and the check is in both constants. Recorded here because
+#: the two exclusions had OPPOSITE failure modes (permanently RED versus
+#: permanently EXIT 2) and only the second was ever ours to fix; collapsing
+#: them into one "known exclusions" set would have hidden that difference and
+#: left this one sitting behind the other's argument indefinitely.
 DOCUMENTED_OMISSIONS = {
     "two-profile-unlinkability": (
         "reports a FINDING on the shipped firefox engine (PS-135 §8, handed "
         "to PS-2); requiring it would make this gate permanently red"
-    ),
-    "no-process-survives-a-closed-session": (
-        "launches CHROMIUM, which this firefox-only lane does not provision; "
-        "measured CANNOT RUN exit 2 without it (ci.yml:427-455 names the gap)"
     ),
 }
 
@@ -281,7 +281,7 @@ def test_the_selection_and_the_floor_agree(runner) -> None:
     )
 
 
-def test_a_selection_narrowed_by_hand_cannot_narrow_the_floor_with_it() -> None:
+def test_a_selection_narrowed_by_hand_cannot_narrow_the_floor_with_it(runner) -> None:
     """The floor must be INDEPENDENT of the selection, not an alias of it.
 
     This drives the attack the runner header calls mechanism 2, and it is the
@@ -304,15 +304,23 @@ def test_a_selection_narrowed_by_hand_cannot_narrow_the_floor_with_it() -> None:
     de-duplicates equal literal tuples, so a correctly de-aliased floor is
     still `is`-identical to the selection and that probe reports the defect
     when there is none.
+
+    ⭐ THE NARROWING LITERAL IS DERIVED FROM THE CONSTANT, NOT TYPED OUT
+    (PS-383). It was a hand-written string, and adding a fourth check to the
+    lane made `source.count(...)` zero — the guard below fired and correctly
+    refused to report a green over an attack it was no longer driving. That
+    refusal is the behaviour working; re-typing the literal would only postpone
+    the same failure to the next widening. Building it from
+    `runner.SELECTED_CHECKS` keeps the source edit REAL (the assertion below
+    still proves the text was found exactly once) while making it survive a
+    change to the lane's membership. ⛔ It is still matched against the FILE:
+    do not weaken this into an in-memory tuple edit, which would stop testing
+    that the two constants are separate TEXT.
     """
     source = RUNNER_SCRIPT.read_text(encoding="utf-8")
-    selection = (
-        'SELECTED_CHECKS = (\n'
-        '    "restart-continuity",\n'
-        '    "benign-edit-stability",\n'
-        '    "trash-restore-and-wipe",\n'
-        ')'
-    )
+    body = "".join(f'    "{name}",\n' for name in runner.SELECTED_CHECKS)
+    selection = f"SELECTED_CHECKS = (\n{body})"
+
     assert source.count(selection) == 1, (
         "the selection is no longer written in the shape this test narrows, so "
         "the attack below is not being driven — re-derive it before trusting a "
@@ -342,10 +350,11 @@ def test_a_selection_narrowed_by_hand_cannot_narrow_the_floor_with_it() -> None:
         0, _report(["restart-continuity"]), floor
     )
     assert code == 2, (
-        "a lane that certified 1 of 3 checks exited 0 — 'the behaviour held' "
-        "over two checks that never ran. This is PS-315's hole, one lane over"
+        f"a lane that certified 1 of {len(EXPECTED)} checks exited 0 — 'the "
+        "behaviour held' over checks that never ran. This is PS-315's hole, "
+        "one lane over"
     )
-    for missing in ("benign-edit-stability", "trash-restore-and-wipe"):
+    for missing in set(EXPECTED) - {"restart-continuity"}:
         assert missing in (note or ""), (
             f"the downgrade does not name {missing!r}, so the log says a check "
             "went missing without saying which"
@@ -834,6 +843,176 @@ def test_the_gate_runs_after_the_project_is_installed(steps) -> None:
     them it DEGRADES to CANNOT RUN rather than failing cleanly."""
     assert _index_of(steps, STEP_NAME) > _index_of(steps, INSTALL_STEP_NAME)
     assert _index_of(steps, STEP_NAME) > _index_of(steps, ENGINE_STEP_NAME)
+    assert _index_of(steps, STEP_NAME) > _index_of(steps, CHROMIUM_STEP_NAME)
+
+
+# --- the chromium engine, and the two ways it fails to arrive ---------------
+
+
+def test_the_workflow_provisions_the_chromium_engine(steps) -> None:
+    """PS-383. `no-process-survives-a-closed-session` launches CHROMIUM by
+    construction, and this lane provisioned FIREFOX only — which is why a
+    merged check sat in the registry with zero callers anywhere in .github/.
+
+    Asserted on the PRODUCT's own downloader rather than on any chromium: the
+    check resolves `ENGINE_DIR/fpchrome.AppImage` and `chromium_tier` refuses a
+    chromium found on PATH by design, so a stock browser would not satisfy this
+    lane even if a step installed one.
+    """
+    step = steps[_index_of(steps, CHROMIUM_STEP_NAME)]
+    run = step["run"]
+
+    assert "updater" in run and "download_engine" in run, (
+        "the lane does not download the Personium chromium engine through the "
+        "product's own downloader — the check would report the "
+        "FileNotFoundError this venue's header quotes as its exclusion reason"
+    )
+    assert "write_version" in run, (
+        "version.txt is not written, so the build reads 'unknown' and a red "
+        "run cannot be attributed to a TAG — which is the whole remedy path"
+    )
+    assert "fetch_latest_checked" in run, (
+        "the download does not go through the policy-checked resolver, so a "
+        "build persona already refuses would be measured anyway"
+    )
+
+
+def test_the_chromium_engine_is_not_installed_into_the_scratch_home(
+    steps, script_text
+) -> None:
+    """⛔ THE DEFECT THAT MAKES A CORRECT DOWNLOAD INVISIBLE (PS-383).
+
+    `config.ENGINE_DIR` is `_under_home("engine", "PERSONA_ENGINE_DIR")`, and
+    the runner hands its CHILD a fresh `PERSONA_HOME` per run. So an engine
+    downloaded under the default resolution lands in the workflow's home while
+    the child looks in a directory `mkdtemp` created seconds later — empty.
+    Measured on this branch:
+
+        scratch home: /tmp/persona-behaviour-launch-ci-yp34liw3
+        ENGINE_BINARY= /tmp/.../engine/fpchrome.AppImage   exists= False
+
+    which is byte-for-byte the `FileNotFoundError: .../fpchrome.AppImage` the
+    exclusion cited. Both sides must pin the SAME directory, and it must be
+    outside the scratch home — pinned here because a drift between them is
+    silent: the download succeeds, the gate reports CANNOT RUN, and the two
+    look unrelated.
+    """
+    step = steps[_index_of(steps, CHROMIUM_STEP_NAME)]
+    gate = steps[_index_of(steps, STEP_NAME)]
+
+    for name, s in (("chromium provisioning", step), ("the gate", gate)):
+        env = s.get("env") or {}
+        assert "PERSONA_ENGINE_DIR" in env, (
+            f"{name} does not pin PERSONA_ENGINE_DIR, so the engine resolves "
+            "under the per-run scratch PERSONA_HOME and the gate reports "
+            "CANNOT RUN over a download that succeeded"
+        )
+
+    assert (step["env"]["PERSONA_ENGINE_DIR"]
+            == gate["env"]["PERSONA_ENGINE_DIR"]), (
+        "the download and the gate point at DIFFERENT engine directories, so "
+        "the binary is installed where nothing reads it:\n"
+        f"  download: {step['env']['PERSONA_ENGINE_DIR']}\n"
+        f"  gate:     {gate['env']['PERSONA_ENGINE_DIR']}"
+    )
+
+    assert "PERSONA_ENGINE_DIR" in script_text, (
+        "the runner script does not pin an engine directory of its own, so a "
+        "hand-run (no workflow env) silently reproduces the defect this test "
+        "exists to catch"
+    )
+
+
+def test_the_runner_scratch_home_fits_a_chromium_profile_name(runner) -> None:
+    """⛔ THE SECOND WAY THE CHROMIUM ARM SILENTLY FAILS (PS-383).
+
+    Chromium's process singleton binds a UNIX socket UNDER the profile, and the
+    engine does not degrade when the path does not fit — it exits FATAL
+    'Socket path too long' seconds into the launch, which from outside looks
+    like a browser that started and vanished.
+
+    `behaviour.default_scratch_home` sizes ITS home against the two
+    socket-bound names and calls its `pb-` prefix "load-bearing rather than a
+    style preference". The CI runner provisions its OWN home and did not, which
+    was harmless while every selected check launched firefox (no socket) and is
+    not now. Measured with the old prefix:
+
+        /tmp/persona-behaviour-launch-ci-hv7nlra0  -> 41 bytes, budget  -6
+        (the names need 5: 'p347a', 'p347b')
+
+    end-to-end, engine correctly placed, under a real display:
+
+        [CANNOT RUN] no-process-survives-a-closed-session
+          … socket at 119 bytes, and the limit is 107 …   -> EXIT 2
+
+    ⛔ THE FIX IS A SHORTER PREFIX. Never a shorter profile name, never a
+    looser guard, never a relaxed `_MIN_LIVE_TREE` — a budget checked on one
+    side only is a budget that fails on the other.
+    """
+    import tempfile
+
+    from src.services.verify.behaviour import profile_name_budget
+    from src.services.verify.behaviour_checks import SOCKET_BOUND_PROFILE_NAMES
+
+    needed = max(len(n) for n in SOCKET_BOUND_PROFILE_NAMES)
+
+    home = tempfile.mkdtemp(prefix=runner._SCRATCH_PREFIX)
+    try:
+        budget = profile_name_budget(home)
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+    assert budget >= needed, (
+        f"the runner's scratch home {home!r} is {len(home)} bytes and leaves "
+        f"{budget} for a profile name, but this lane launches chromium under "
+        f"names needing {needed}. The engine exits FATAL mid-launch, which "
+        "reads from outside as a browser that started and vanished — so the "
+        "lane would be permanently exit 2 for a reason that has nothing to do "
+        "with the product. Shorten the prefix; do NOT touch the check."
+    )
+
+
+def test_the_runner_refuses_a_home_too_long_for_chromium(runner) -> None:
+    """The budget is CHECKED at runtime, not merely satisfied by today's prefix.
+
+    A green above proves the prefix fits on THIS machine. It does not protect a
+    runner whose TMPDIR is long — a GitHub runner's `/home/runner/work/_temp`
+    is 23 bytes, macOS's `/var/folders/…` is 53 — and on those the same
+    arithmetic fails with the prefix untouched. So the script measures its own
+    home and refuses with a sentence naming the cure, rather than spending 90
+    seconds waiting for a tree that cannot appear.
+
+    Driven with a home that is deliberately too long, so this asserts the
+    REFUSAL rather than the happy path.
+    """
+    from src.services.verify.behaviour import singleton_socket_is_bound
+
+    if not singleton_socket_is_bound():
+        pytest.skip("no UNIX-socket singleton on this platform")
+
+    too_long = "/tmp/" + ("x" * 120)
+    message = runner._assert_name_budget(too_long)
+
+    assert message is not None, (
+        "the runner accepted a home no chromium profile can launch under, so "
+        "the lane would report 'no browser tree was observed' instead of "
+        "naming the byte budget that is actually wrong"
+    )
+    assert "CANNOT RUN" in message and "Nothing was certified" in message, (
+        "the refusal does not speak the venue's own vocabulary, so it would "
+        "read as a product finding rather than as an environment refusal"
+    )
+
+    import tempfile
+
+    ok_home = tempfile.mkdtemp(prefix=runner._SCRATCH_PREFIX)
+    try:
+        assert runner._assert_name_budget(ok_home) is None, (
+            "the guard refuses the home the runner actually provisions, so it "
+            "would refuse every run — a guard that always fires is not a guard"
+        )
+    finally:
+        shutil.rmtree(ok_home, ignore_errors=True)
 
 
 def test_the_install_step_installs_the_project_itself(steps) -> None:
