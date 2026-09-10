@@ -256,6 +256,62 @@ def read_current_tag(path=CURRENT_TAG_FILE):
     return value
 
 
+def windows_counterpart_tag(linux_tag):
+    """`152.0.7977.75-1` -> `152.0.7977.75-1.1`: the WINDOWS sibling's tag.
+
+    ⚠️ THE TWO GRAMMARS ARE DIFFERENT AND ARE NOT INTERCHANGEABLE.
+    `ungoogled-chromium-portablelinux` tags read `N.N.N.N-N`; the
+    `ungoogled-chromium-windows` sibling's read `N.N.N.N-N.N` — a second
+    packaging component. `scripts/ps299_rebase_probe.py` carries a per-platform
+    `tag_re` in `PLATFORMS` for exactly this reason, and says why at length: one
+    shared regex matches NOTHING on the other platform, and `newest_tag` then
+    IndexErrors rather than saying so.
+
+    ⛔ THIS FUNCTION EXISTS SO THE DERIVATION IS WRITTEN ONCE. The `.1` suffix
+    is a rule about how upstream names two repositories, not an incidental
+    string, and three call sites doing `tag + ".1"` inline are three places a
+    future grammar change has to be found. PS-390 put it here rather than in the
+    probe because this module already owns `read_current_tag()` — the reader of
+    the pin and the deriver of its counterpart belong together, and the probe is
+    a measurement tool that is handed a tag rather than one that resolves it.
+
+    ⚠️ IT IS A NAMING RULE, NOT A CLAIM THAT THE TAG EXISTS. Upstream publishes
+    the two siblings independently; that they have moved in lockstep at every
+    tag we have measured is an observation, not a guarantee. Whether the
+    counterpart is actually published is a network question and is deliberately
+    NOT asked here.
+
+    Raises ValueError when the input is not a portablelinux tag, because
+    silently deriving a counterpart of something that is not a tag would hand a
+    caller a plausible-looking string that clones nothing.
+    """
+    if parse_tag(linux_tag) is None:
+        raise ValueError(
+            "%r is not an ungoogled-chromium-portablelinux tag, so it has no "
+            "windows counterpart" % (linux_tag,)
+        )
+    return "%s.1" % linux_tag.strip()
+
+
+def _counterpart_for_report(linux_tag):
+    """Render the windows counterpart for a human-readable report, or say why not.
+
+    `render_report` must never raise: it is the LAST thing that runs on every
+    non-green path, and a traceback here is red-and-silent — no issue filed, no
+    `$GITHUB_OUTPUT` written. That is the exact failure shape
+    `invalid_tag_result` exists to prevent one layer up. So a tag we cannot
+    derive a counterpart from is reported as unknown rather than allowed to
+    escape.
+    """
+    try:
+        return "`%s`" % windows_counterpart_tag(linux_tag)
+    except (ValueError, AttributeError, TypeError):
+        return (
+            "the counterpart of the linux tag (append `.1`) — this report could "
+            "not derive it, so read it off the upstream tag list"
+        )
+
+
 def is_newer(candidate, current):
     """True when `candidate` is a strictly newer tag than `current`."""
     c, cur = parse_tag(candidate), parse_tag(current)
@@ -439,8 +495,47 @@ def render_report(result):
             "control from another tag is correctly refused)." % result["newest_tag"]
         )
         lines.append(
-            "2. If it builds, update `engine/patches/fingerprint/CURRENT_TAG.txt` "
-            "and the \"Current target\" line in `%s` together." % REBASING_DOC
+            "2. If it builds, update `%s` and the \"Current target\" line in "
+            "`%s` together." % (CURRENT_TAG_REL, REBASING_DOC)
+        )
+        # ⛔ PS-390 — THE THIRD STEP EXISTS BECAUSE THE PIN IS WRITTEN ON TWO
+        # PLATFORMS AND THIS LIST ONLY EVER NAMED ONE. Since PS-361 the Windows
+        # arm carries its own copy of the tag and of the base commit, as
+        # workflow-level env fallbacks AND as workflow_dispatch input defaults.
+        # Nothing bumps them, and the arm's pull_request trigger fires on any
+        # change to engine/patches/fingerprint/*.patch — which is exactly what a
+        # rebase PR is. So a bump that stops at step 2 leaves the Windows arm
+        # measuring the tag we are LEAVING, and reporting green about it. The
+        # probe's --expect-base cannot catch that: the stale tag and the stale
+        # base are CONSISTENT with each other, and a mismatch assertion is
+        # structurally blind to a coherent-but-obsolete pair.
+        lines.append(
+            "3. ⚠️ **AND move the WINDOWS arm's pin in the same change** — "
+            "`.github/workflows/engine-trial-build-windows.yml` writes it in "
+            "FOUR places: the `env:` fallbacks `UNGOOGLED_TAG` / `EXPECT_BASE`, "
+            "and the `workflow_dispatch` input defaults `ungoogled_tag` / "
+            "`expect_base` (the latter pair is what you see in the GitHub UI "
+            "when you dispatch it by hand)."
+        )
+        lines.append("")
+        counterpart = _counterpart_for_report(result.get("newest_tag"))
+        lines.append(
+            "   * The Windows tag is the COUNTERPART of the linux one — %s — "
+            "note the grammar: portablelinux is `-1`, windows is `-1.1`, and "
+            "they are not interchangeable." % counterpart
+        )
+        lines.append(
+            "   * `EXPECT_BASE` is the `ungoogled-chromium` submodule commit "
+            "BOTH siblings pin. It is a 40-char sha and is **not derivable from "
+            "a tag** — read it with `git ls-tree HEAD ungoogled-chromium` on "
+            "each checkout, and if the two siblings ever disagree the "
+            "cross-platform argument in `%s` has expired and the Windows arm "
+            "must not be bumped on it." % REBASING_DOC
+        )
+        lines.append("")
+        lines.append(
+            "   A test (`tests/test_ps342_chromium_watch.py`) fails if step 3 "
+            "is skipped, so this is a reminder rather than the guard."
         )
     elif status == REJECTS:
         lines.append(

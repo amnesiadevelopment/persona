@@ -65,6 +65,28 @@ classification of the three exit statuses lives in one tested place
 move together.** A test asserts they agree; if they drift, the watcher measures
 news against a baseline nobody believes we are on.
 
+⛔ **AND SINCE PS-361 THE PIN IS WRITTEN ON A SECOND PLATFORM.**
+`.github/workflows/engine-trial-build-windows.yml` carries its own copy in
+**four** places — the workflow-level `env:` fallbacks `UNGOOGLED_TAG` and
+`EXPECT_BASE`, and the `workflow_dispatch` input defaults `ungoogled_tag` and
+`expect_base` (that second pair is what a human sees in the GitHub UI when they
+dispatch the arm by hand). They move in the SAME change as the two above. The
+Windows tag is the counterpart of the linux one — note the grammar, `-1` vs
+`-1.1`, they are not interchangeable — and `EXPECT_BASE` is the shared
+`ungoogled-chromium` submodule commit, which is **not** derivable from a tag:
+read it with `git ls-tree HEAD ungoogled-chromium` on each checkout.
+
+⚠️ **Why this needs saying rather than being obvious from the arm's own guard.**
+That arm has a narrow `pull_request` trigger on
+`engine/patches/fingerprint/*.patch` — which is exactly what a rebase PR edits —
+and on that trigger `inputs.*` is empty, so the run falls through to the `env:`
+fallbacks. A bump that moves only the two Linux places leaves the arm measuring
+the tag we are LEAVING, and reporting **green** about it. `--expect-base` cannot
+catch that shape: a stale tag paired with its own stale base is *consistent*, and
+that guard only sees a mismatch. `tests/test_ps342_chromium_watch.py` reconciles
+the tag half against `CURRENT_TAG.txt` (PS-390), and the watcher's own "To act on
+this:" checklist names this step.
+
 **Green here is necessary, not sufficient.** A clean textual apply is not a
 compile — see "What this does NOT establish" at the bottom.
 

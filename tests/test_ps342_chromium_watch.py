@@ -40,6 +40,7 @@ it in front of the clone rather than after it.
 
 import importlib.util
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -53,6 +54,10 @@ CURRENT_TAG_FILE = PATCH_DIR / "CURRENT_TAG.txt"
 REBASING = PATCH_DIR / "REBASING.md"
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "chromium-upstream-watch.yml"
 FIREFOX_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "engine-autoupdate.yml"
+# PS-390. The pin is a MULTI-PLACE fact since PS-361 stood up a second platform,
+# and this file already owns the two places it was reconciled in. The windows
+# arm is the third and fourth.
+WINDOWS_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "engine-trial-build-windows.yml"
 
 
 def load(path, name):
@@ -341,6 +346,371 @@ def test_current_tag_agrees_with_rebasing_doc(watch):
     assert "`%s`" % tag in doc, (
         "CURRENT_TAG.txt says %s but REBASING.md's Current target line does not "
         "mention it — update both together" % tag
+    )
+
+
+# ── PS-390: the pin is written on TWO PLATFORMS, and only one was reconciled ──
+#
+# PS-361 stood up `.github/workflows/engine-trial-build-windows.yml`, which
+# carries its OWN copy of the tag we target — twice, as a workflow-level `env:`
+# fallback and as a `workflow_dispatch` input default. Nothing reconciled either
+# against `CURRENT_TAG.txt`; `grep -c CURRENT_TAG` over that workflow was 0.
+#
+# ⚠️ WHY THIS IS NOT COVERED BY THE ARM'S OWN `--expect-base` GUARD, which is
+# correct and stays untouched. That guard asserts the ungoogled-chromium
+# submodule commit the cloned tag pins, so it catches a MISMATCHED pair (a stale
+# tag against a fresh base) and exits 2 — loud, and correctly reported as
+# "nothing was measured". What it is structurally blind to is the COHERENT pair:
+# a stale tag whose stale base agrees with it. That pair is exactly what a rebase
+# PR produces, because the arm's `pull_request` trigger fires on
+# `engine/patches/fingerprint/*.patch` — which is what a rebase edits — and on
+# that trigger `inputs.*` is empty, so the run falls through to the `env:`
+# defaults nobody moved. The arm then measures the tag we are LEAVING and reports
+# green about it. A mismatch assertion cannot see that; only reconciliation
+# against the file that IS the pin can.
+#
+# ⛔ THE `EXPECT_BASE` DECISION, MADE HERE AND WRITTEN DOWN RATHER THAN
+# DEFAULTED (PS-390 AC3 left the fork open). The base is a 40-char sha and is
+# NOT derivable from a tag without a network read. Two answers were available:
+#   (a) assert only the TAG counterpart in-tree, and let `--expect-base` keep
+#       catching the mismatch case it already catches;
+#   (b) resolve the base live and reconcile all three.
+# ⭐ THIS FILE CHOOSES (a), and the reason is a property this file declares about
+# ITSELF in its own header: "NO NETWORK … which is what lets the workflow put it
+# in front of the clone rather than after it". `chromium-upstream-watch.yml` runs
+# this suite BEFORE any network work precisely so a broken judgement is caught
+# without spending a clone — `test_workflow_runs_the_selftest_before_the_network`
+# asserts that ordering. Option (b) would make this file's verdict depend on
+# GitHub being reachable, so a rate-limited or offline run would turn a
+# reconciliation question into an outage — and a gate that answers differently
+# depending on the network is not a gate.
+#
+# What (a) gives up is stated rather than hidden: nothing in-tree notices if the
+# two siblings ever pin DIFFERENT bases at a future tag pairing. That case is
+# already covered, by the guard the ticket forbids weakening — the probe exits 2
+# on the mismatch, and `REBASING.md` records the standing instruction to leave
+# `--expect-base` set. So the base has a live guard and the tag had none; this
+# closes the tag half and leaves the base half where it already works.
+
+
+def _windows_workflow_text():
+    return WINDOWS_WORKFLOW.read_text(encoding="utf-8")
+
+
+# ⛔ THESE TWO READERS ARE DELIBERATELY TEXT, NOT `yaml.safe_load`, AND THAT IS
+# NOT LAZINESS. PyYAML is declared in NONE of requirements.txt,
+# requirements-dev.txt or pyproject.toml — it reaches CI transitively through
+# `uvicorn[standard]`, and the sibling suite guards its own yaml import with
+# `pytest.importorskip`. A skip is a check that DID NOT RUN while the summary
+# line stays green, which is the precise failure shape this whole file exists to
+# refuse: `test_workflow_runs_the_selftest_before_the_network` puts this suite in
+# front of the clone so a broken judgement is CAUGHT, and a judgement that
+# quietly opts out of running catches nothing.
+#
+# The cost of the text read is that it must locate its own site. Both readers
+# therefore FAIL LOUDLY when the shape they expect is gone, rather than
+# returning None and letting the caller compare against nothing — an absent
+# match must never wear the colour of a pass.
+
+
+def _windows_env_default(name):
+    """The raw `${{ … }}` expression for one workflow-level `env:` key."""
+    m = re.search(
+        r"^env:\n((?:[ \t]+\S.*\n|[ \t]*\n)+)", _windows_workflow_text(), re.M
+    )
+    assert m, (
+        "no workflow-level `env:` block in %s — the arm's fallbacks have moved. "
+        "On the pull_request trigger `inputs.*` is empty, so if the fallbacks "
+        "are gone the arm clones whatever a bare `--tag \"\"` resolves to."
+        % WINDOWS_WORKFLOW.name
+    )
+    entry = re.search(r"^[ \t]+%s:[ \t]*(.+?)[ \t]*$" % re.escape(name), m.group(1), re.M)
+    assert entry, (
+        "the workflow-level env: block does not define %r (it defines %r) — "
+        "this reader is anchored on a key that no longer exists" % (
+            name,
+            re.findall(r"^[ \t]+(\w+):", m.group(1), re.M),
+        )
+    )
+    return entry.group(1)
+
+
+def _windows_dispatch_default(input_name):
+    """The `workflow_dispatch` input default a human reads in the GitHub UI."""
+    text = _windows_workflow_text()
+    m = re.search(
+        r"^      %s:\n(.*?)(?=^      \w+:\n|^  \w)" % re.escape(input_name),
+        text,
+        re.M | re.S,
+    )
+    assert m, (
+        "no `workflow_dispatch` input named %r in %s — this reader is anchored "
+        "on an input that no longer exists, so it can no longer check the "
+        "default a human dispatches with" % (input_name, WINDOWS_WORKFLOW.name)
+    )
+    default = re.search(r'^\s+default:\s*"?([^"\n]+)"?\s*$', m.group(1), re.M)
+    assert default, (
+        "the `%s` input carries no `default:` — a required input with no "
+        "default is not a pin, but it is also not what this arm documents"
+        % input_name
+    )
+    return default.group(1).strip()
+
+
+def test_windows_counterpart_is_derived_not_concatenated(watch):
+    """AC1. The `-1` -> `-1.1` rule lives in ONE named function.
+
+    `scripts/ps299_rebase_probe.py` explains at length why the two grammars
+    cannot share a regex; the same reasoning says the derivation must not be
+    open-coded at each reader. Assert the helper exists and is correct, so the
+    rule has a single home a future grammar change can be found in.
+    """
+    assert watch.windows_counterpart_tag("152.0.7977.75-1") == "152.0.7977.75-1.1"
+    assert watch.windows_counterpart_tag("144.0.7559.132-1") == "144.0.7559.132-1.1"
+    # It must REFUSE a non-tag rather than hand back a plausible-looking string
+    # that clones nothing — the "an absent path is not a deleted path" habit
+    # this repo's probe already carries.
+    for junk in ("", "main", "152.0.7977.75", "152.0.7977.75-1.1"):
+        with pytest.raises(ValueError):
+            watch.windows_counterpart_tag(junk)
+
+
+def test_windows_arm_env_tag_is_the_counterpart_of_current_tag(watch):
+    """AC2. The Windows arm's `env:` fallback must track `CURRENT_TAG.txt`.
+
+    This is the default the AUTO-FIRING path uses: on `pull_request` the
+    `inputs.*` context is empty, so a rebase PR — which by definition edits
+    `engine/patches/fingerprint/*.patch`, one of the trigger's `paths:` — runs
+    the arm against whatever is written here.
+    """
+    tag = watch.read_current_tag()
+    want = watch.windows_counterpart_tag(tag)
+    expr = _windows_env_default("UNGOOGLED_TAG")
+    assert want in expr, (
+        "the Windows arm still targets %s while %s says %s — move BOTH in the "
+        "same change.\n"
+        "  %s\n"
+        "    env: UNGOOGLED_TAG  must fall back to %r\n"
+        "  a rebase PR edits engine/patches/fingerprint/*.patch, which is on "
+        "this arm's pull_request paths: list, and on that trigger inputs.* is "
+        "empty — so the arm runs on the fallback above and reports GREEN about "
+        "the tag we are leaving.\n"
+        "  --expect-base cannot catch this: a stale tag with its own stale base "
+        "is CONSISTENT, and that guard only sees a mismatch." % (
+            expr, watch.CURRENT_TAG_REL, tag,
+            ".github/workflows/engine-trial-build-windows.yml", want,
+        )
+    )
+
+
+def test_windows_arm_dispatch_default_is_the_counterpart_of_current_tag(watch):
+    """AC2, second site. The `workflow_dispatch` input default is what a HUMAN
+    reads in the GitHub UI when they dispatch this arm by hand.
+
+    Asserted separately from the `env:` fallback because they are two different
+    strings serving two different readers, and a bump that moves one and not the
+    other leaves a person hand-dispatching the stale tag while CI uses the fresh
+    one — a disagreement neither reader can see.
+    """
+    tag = watch.read_current_tag()
+    want = watch.windows_counterpart_tag(tag)
+    default = _windows_dispatch_default("ungoogled_tag")
+    assert default == want, (
+        "the Windows arm's hand-dispatch default still offers %s while %s says "
+        "%s — move both together. A human dispatching this arm from the GitHub "
+        "UI reads THIS string, so a stale default is a stale measurement "
+        "nobody asked for.\n"
+        "  %s -> on.workflow_dispatch.inputs.ungoogled_tag.default\n"
+        "    is %r, must be %r" % (
+            default, watch.CURRENT_TAG_REL, tag,
+            ".github/workflows/engine-trial-build-windows.yml", default, want,
+        )
+    )
+
+
+def test_the_windows_arms_two_tag_defaults_agree_with_each_other(watch):
+    """Belt and braces, and cheap: the arm's own two copies must not drift.
+
+    The two assertions above each anchor a site to `CURRENT_TAG.txt`, so this is
+    implied — but it is the assertion that still fires if a future change swaps
+    one of them for a different mechanism, and it names the arm's INTERNAL
+    disagreement rather than sending the reader to a third file.
+    """
+    expr = _windows_env_default("UNGOOGLED_TAG")
+    default = _windows_dispatch_default("ungoogled_tag")
+    assert default in expr, (
+        "the Windows arm's dispatch default (%r) is not the fallback its env: "
+        "uses (%r) — a hand-dispatched run and a PR run would measure different "
+        "tags" % (default, expr)
+    )
+
+
+def test_the_windows_base_default_is_left_to_expect_base_deliberately():
+    """AC3, made visible rather than left as an absence.
+
+    This file reconciles the TAG and deliberately does not reconcile the BASE —
+    see the section comment above for the argument. The base is not
+    unreconciled-and-forgotten: the probe's `--expect-base` asserts it live, at
+    the only moment it can be checked honestly, and this asserts that the wiring
+    which makes that true is still present.
+
+    ⛔ If a future change removes `--expect-base` from the arm, this file's
+    choice to skip the base becomes wrong and this test is where that is said.
+    """
+    # Text, not `yaml.safe_load`, for the same reason as the readers above: the
+    # `--expect-base` flag is a literal in a `run:` block, so a plain substring
+    # over the whole file answers the question without a skippable import. The
+    # comment blocks that DISCUSS the flag are all above `jobs:`, so scope the
+    # search to the job graph and the answer is about the wiring, not the prose.
+    text = _windows_workflow_text()
+    assert "\njobs:\n" in text, (
+        "%s has no `jobs:` block — the arm's shape has changed beyond what this "
+        "reader can speak about" % WINDOWS_WORKFLOW.name
+    )
+    job_graph = text.split("\njobs:\n", 1)[1]
+    assert "--expect-base" in job_graph, (
+        "this file reconciles the Windows TAG against CURRENT_TAG.txt and "
+        "leaves the BASE to the probe's --expect-base assertion, because a "
+        "40-char sha is not derivable from a tag without a network read and "
+        "this suite declares itself NO NETWORK (it runs before the clone). "
+        "--expect-base has disappeared from the arm, so nothing checks the base "
+        "any more — either restore it or reconcile the base here instead."
+    )
+    env_expr = _windows_env_default("EXPECT_BASE")
+    assert "||" in env_expr and re.search(r"[0-9a-f]{40}", env_expr), (
+        "EXPECT_BASE's workflow-level expression (%r) carries no literal "
+        "fallback commit. On the pull_request trigger `inputs.*` is EMPTY, so "
+        "this resolves to the empty string — and a blank expect_base DISABLES "
+        "the base assertion on the one trigger that fires automatically. That "
+        "is the trigger a rebase PR fires." % (env_expr,)
+    )
+
+
+def test_the_bump_checklist_names_the_windows_arm(watch):
+    """AC5. The CLEAN report is the "To act on this:" list a human reads.
+
+    ⭐ THIS IS THE HALF THAT ACTUALLY CHANGES BEHAVIOUR. The tests above catch a
+    bump that forgot the Windows arm AFTER it is written; this is what stops it
+    being forgotten in the first place, because the filed issue is where the
+    person doing the bump learns what moves. Before PS-390 the list was two
+    steps, both Linux-only, and the word "windows" appeared in the whole watcher
+    exactly once — in a cp1252 decoding comment.
+
+    Asserted on the rendered text so the step cannot be silently dropped.
+    """
+    body = watch.render_report({
+        "current_tag": "152.0.7977.75-1",
+        "newest_tag": "152.0.7977.82-1",
+        "status": watch.CLEAN,
+        "probe_exit": 0,
+        "measured_at": "2026-09-10T00:00:00Z",
+    })
+    assert "windows" in body.lower(), (
+        "the bump checklist does not mention Windows at all — a human following "
+        "it will move the Linux pin and leave the Windows arm on the old tag"
+    )
+    assert "engine-trial-build-windows.yml" in body, (
+        "name the FILE that has to change; 'the windows arm' is not a path"
+    )
+    # The counterpart tag, DERIVED for the tag actually being reported on — not
+    # a hardcoded example, which would go stale and teach the wrong tag.
+    assert "152.0.7977.82-1.1" in body, (
+        "the checklist must name the windows COUNTERPART of the tag it is "
+        "reporting on, derived — a human should not have to work out the "
+        "grammar from prose"
+    )
+    assert "UNGOOGLED_TAG" in body and "EXPECT_BASE" in body, (
+        "name both env fallbacks — the tag alone leaves the base behind"
+    )
+    assert "expect_base" in body and "ungoogled_tag" in body, (
+        "name the workflow_dispatch input defaults too: they are what a human "
+        "sees in the GitHub UI, and they are a SECOND pair of places"
+    )
+
+
+def test_the_bump_checklist_does_not_claim_the_base_is_derivable(watch):
+    """The one thing the checklist must not teach.
+
+    The tag counterpart IS a naming rule and is derived for the reader. The base
+    is a 40-char submodule sha that is not derivable from a tag by any rule, and
+    a checklist that implied otherwise would send someone to invent one.
+    """
+    body = watch.render_report({
+        "current_tag": "152.0.7977.75-1",
+        "newest_tag": "152.0.7977.82-1",
+        "status": watch.CLEAN,
+        "probe_exit": 0,
+        "measured_at": "2026-09-10T00:00:00Z",
+    })
+    assert "not derivable from" in body.lower()
+    assert "git ls-tree" in body, (
+        "tell the reader HOW to obtain the base, not merely that they must"
+    )
+
+
+def test_a_report_for_an_underivable_tag_does_not_traceback(watch):
+    """render_report is the LAST thing that runs, so it must never raise.
+
+    Same argument as `invalid_tag_result` one layer up: an uncaught raise here
+    is red and SILENT — no issue filed, no $GITHUB_OUTPUT written, nothing
+    uploaded. The counterpart derivation is the newest thing that can raise on
+    this path, so drive it with a newest_tag that is not a tag.
+    """
+    for junk in (None, "", "main", "not-a-tag"):
+        body = watch.render_report({
+            "current_tag": "152.0.7977.75-1",
+            "newest_tag": junk,
+            "status": watch.CLEAN,
+            "probe_exit": 0,
+            "measured_at": "2026-09-10T00:00:00Z",
+        })
+        assert "engine-trial-build-windows.yml" in body, (
+            "the windows step must survive an underivable tag, %r" % (junk,)
+        )
+        assert "append `.1`" in body, (
+            "and it must say what the reader should do instead of printing a "
+            "fabricated counterpart, %r" % (junk,)
+        )
+
+
+def test_rebasing_doc_pin_drift_warning_names_the_windows_arm():
+    """AC7. The paragraph that tells a human which places move together.
+
+    `REBASING.md` already warns that CURRENT_TAG.txt and its own "Current
+    target" line must move together. Since PS-361 that list is INCOMPLETE: it
+    named two of the places the pin is written, and the Windows arm added four
+    more. A human following an incomplete list follows it correctly and still
+    leaves the arm stale.
+
+    Scoped to the WARNING'S OWN NEIGHBOURHOOD rather than to the whole document,
+    because the doc mentions the Windows arm elsewhere (the hand-run command
+    line, the cross-platform symmetry section) and a whole-file `in` check would
+    pass on those and assert nothing about the warning.
+    """
+    doc = REBASING.read_text(encoding="utf-8")
+    # The warning's stable anchor: the sentence naming the two Linux places.
+    marker = 'move together.** A test asserts they agree'
+    assert marker in doc, (
+        "the pin-drift warning in REBASING.md has moved or been reworded — find "
+        "it and make sure it still names the Windows arm (this test anchors on "
+        "%r)" % marker
+    )
+    # Everything from the warning up to the next `###` heading. Generous, and
+    # bounded: it must not reach the cross-platform section far below.
+    neighbourhood = doc.split(marker, 1)[1].split("\n### ", 1)[0]
+    assert "engine-trial-build-windows.yml" in neighbourhood, (
+        "REBASING.md's pin-drift warning names only the Linux pair "
+        "(CURRENT_TAG.txt and the \"Current target\" line). The Windows arm "
+        "carries its own copy of the tag in FOUR places and nothing in this "
+        "paragraph says so — a human following it moves two of six."
+    )
+    assert "UNGOOGLED_TAG" in neighbourhood and "EXPECT_BASE" in neighbourhood, (
+        "name the env fallbacks; 'the windows arm' is not something a reader "
+        "can grep for"
+    )
+    assert "-1.1" in neighbourhood, (
+        "the grammar difference has to be in the paragraph that tells someone "
+        "to move the tag, or they move it verbatim and the clone fails"
     )
 
 

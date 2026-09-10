@@ -49,6 +49,7 @@ included.
 """
 
 import importlib.util
+import re
 import shutil
 import sys
 import urllib.error
@@ -62,6 +63,12 @@ STAGE = REPO_ROOT / "scripts" / "ps218_stage_patches.sh"
 WINDOWS_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "engine-trial-build-windows.yml"
 LINUX_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "engine-trial-build.yml"
 PATCH_DIR = REPO_ROOT / "engine" / "patches" / "fingerprint"
+# PS-390. The arm's tag default is the COUNTERPART of the pin in
+# `CURRENT_TAG.txt`, and the derivation lives in ONE named place — the watcher,
+# which already owns `read_current_tag()`. Importing it here rather than
+# re-implementing `tag + ".1"` is deliberate: a second copy of a naming rule is
+# a second place a grammar change has to be found.
+WATCH = REPO_ROOT / "scripts" / "ps342_chromium_watch.py"
 
 yaml = pytest.importorskip("yaml", reason="PyYAML is needed to parse the workflow")
 
@@ -77,6 +84,29 @@ def load_probe():
 
 def windows_workflow():
     return yaml.safe_load(WINDOWS_WORKFLOW.read_text(encoding="utf-8"))
+
+
+def load_watch():
+    """The watcher module, for its `read_current_tag` / `windows_counterpart_tag`."""
+    spec = importlib.util.spec_from_file_location("ps342_watch_ps361", WATCH)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["ps342_watch_ps361"] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def expected_windows_tag():
+    """The tag this arm must default to: the counterpart of our pinned target.
+
+    ⛔ PS-390 — DERIVED, NOT A LITERAL. This used to be the string
+    `"152.0.7977.75-1.1"` written here, and that was wrong in BOTH directions: a
+    correct rebase (which moves `CURRENT_TAG.txt` and this arm together) went RED
+    for the wrong reason, and a stale arm left behind by a Linux-only bump stayed
+    GREEN. A check that flags every correct bump is worse than no check, because
+    it teaches the next person to edit the assertion.
+    """
+    watch = load_watch()
+    return watch.windows_counterpart_tag(watch.read_current_tag())
 
 
 # ── 1. the parameterisation is ADDITIVE ──────────────────────────────────────
@@ -449,8 +479,39 @@ def test_inputs_have_workflow_level_fallbacks_because_a_pr_run_has_no_inputs():
     """
     wf = windows_workflow()
     env = wf["env"]
-    assert "152.0.7977.75-1.1" in env["UNGOOGLED_TAG"]
-    assert "cacf0f0" in env["EXPECT_BASE"]
+    # ⛔ PS-390 — DERIVED FROM `CURRENT_TAG.txt`, NOT A LITERAL.
+    #
+    # This assertion's JOB is "the fallbacks exist and the steps read the
+    # resolved variables rather than `inputs.*`", and that job is unchanged. What
+    # changed is what it compares the tag against. Pinned to the string
+    # `"152.0.7977.75-1.1"` it also — silently, and as a side effect nobody
+    # chose — pinned the arm to ONE TAG FOREVER: a coherent bump that moved
+    # `CURRENT_TAG.txt` and this arm together failed HERE, while a Linux-only
+    # bump that left the arm stale passed. Both directions wrong, and the red one
+    # is the more dangerous, because a red on every correct rebase teaches the
+    # next person that editing the assertion is part of the procedure.
+    want_tag = expected_windows_tag()
+    assert want_tag in env["UNGOOGLED_TAG"], (
+        "the Windows arm's env fallback is %r but CURRENT_TAG.txt's counterpart "
+        "is %r — move the pin and this arm in the SAME change (see "
+        "engine/patches/fingerprint/REBASING.md, \"the pin is written on a "
+        "second platform\")" % (env["UNGOOGLED_TAG"], want_tag)
+    )
+    # The BASE is deliberately NOT derived: it is a 40-char submodule sha and no
+    # rule turns a tag into one. What is asserted is that the fallback is WIRED
+    # and holds a real commit — a blank would disable `--expect-base` on the
+    # pull_request trigger, which is the trigger that fires automatically. The
+    # base's live correctness is the probe's `--expect-base` assertion, which
+    # exits 2 on a mismatch; see `tests/test_ps342_chromium_watch.py`'s PS-390
+    # section for why that split is the choice rather than an omission.
+    base_default = (
+        wf[True] if True in wf else wf["on"]
+    )["workflow_dispatch"]["inputs"]["expect_base"]["default"]
+    assert base_default in env["EXPECT_BASE"], (
+        "the env fallback (%r) does not carry the same base commit as the "
+        "workflow_dispatch default (%r) — a PR run and a hand-dispatched run "
+        "would assert DIFFERENT bases" % (env["EXPECT_BASE"], base_default)
+    )
     assert "'none'" in env["FALSIFY"], (
         "falsify must fall back to 'none' so a PR run measures the REAL thing "
         "and can never go red for a breakage nobody asked for"
@@ -504,11 +565,31 @@ def test_the_linux_workflow_is_not_modified_by_the_windows_arm():
 def test_base_commit_assertion_is_wired_and_defaults_to_the_shared_base():
     """The symmetry argument — our patches overlap only the SHARED base layer —
     holds only while both siblings pin the same base commit. Guard, not comment.
+
+    ⛔ PS-390 — THE SHAPE ASSERTED, NOT THE VALUE. This read
+    `default.startswith("cacf0f0")`, which pinned the arm to the base of ONE
+    tag: a coherent bump to a new tag pairing (whose siblings pin a different
+    shared commit) failed here, correctly moving the arm and being told it was
+    wrong. That is the same defect as the tag literal above and the same remedy.
+
+    The base is NOT derived — a 40-char submodule sha follows from no rule about
+    a tag, and deriving it would need a network read this suite deliberately does
+    not make. So what is asserted is what CAN be asserted in-tree: the assertion
+    exists, it is wired into the run, and the default is a real full commit sha
+    rather than a placeholder or a blank (a blank DISABLES the assertion, which
+    the input's own description says to do only deliberately). Whether that sha
+    is the RIGHT one is the probe's `--expect-base` question, answered live at
+    the only moment it can be answered honestly: it exits 2 on a mismatch, which
+    the arm reports as "nothing was measured" rather than as a pass.
     """
     wf = windows_workflow()
     triggers = wf[True] if True in wf else wf["on"]
     default = triggers["workflow_dispatch"]["inputs"]["expect_base"]["default"]
-    assert default.startswith("cacf0f0")
+    assert re.fullmatch(r"[0-9a-f]{40}", default or ""), (
+        "expect_base's default is %r — it must be a full 40-char commit sha. A "
+        "blank disables the base assertion, and an abbreviated one is not what "
+        "the probe compares against." % (default,)
+    )
 
     run_text = "\n".join(
         s.get("run", "")
