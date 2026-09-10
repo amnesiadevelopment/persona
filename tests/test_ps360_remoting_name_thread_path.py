@@ -23,22 +23,39 @@ these tests were written; each one is a test rather than a claim.
 
 ## ⛔ Bounds — what these tests do NOT establish
 
-No browser is launched. ``invisible_playwright`` is absent in this container
-and ``DISPLAY`` is unset, so ``_launch_and_watch`` is driven up to its engine
-import (which is the statement immediately AFTER the write) and fails there.
-That means the mutation under test is the real shipped one, executed — but the
-assertion is on **the value a starting engine would read**, not on what a live
-Firefox does with it. Whether a live engine reads the variable at that instant
-is not measured here.
+⚠️ **CORRECTION, and it is the reason this harness has a seam at all.** An
+earlier revision of this file claimed the engine import *fails* here, so
+``_launch_and_watch`` stopped one statement after the write. **That was false**,
+and it was false in the way that matters: ``invisible_playwright`` IS installed
+on CI (every leg) and in this container, the import SUCCEEDS, and the real
+function went on to spawn a real Firefox. On Linux with no ``DISPLAY`` that
+Firefox died in ~2s and the tests passed for a reason that had nothing to do
+with the property under test; on macOS and Windows runners, which HAVE a window
+server, the launch proceeded and five tests hung to the 120s ``pytest-timeout``.
+The bound was a property of *this host*, stated as a property of the code path.
+
+So the engine is now held off by a **seam**, not by an accident of provisioning:
+``_stub_the_engine_enter`` replaces ``_enter_on_worker`` / ``_enter_with_timeout``
+— the two functions that actually start a browser — while the rest of the real
+shipped ``_launch_and_watch`` runs, mutation included. Measured: **0.19s and no
+process spawned**, against 2.44s and a real ``firefox`` before. The stub asserts
+it was CALLED (see ``test_the_engine_seam_is_really_stubbed``), so a renamed
+seam goes red rather than quietly launching browsers again.
+
+What that costs: the assertion is on **the value a starting engine would read**,
+not on what a live Firefox does with it. Whether a live engine reads the
+variable at that instant is not measured here, on any platform.
 
 This is NOT an Invariant #0 concern and none is claimed: ``MOZ_APP_REMOTINGNAME``
 is a Wayland app_id / DBus name, not a JS-visible surface. Nothing a page
 observes changes. The property is measurement integrity in the recorder lane.
 """
 
+import ast
 import json
 import os
 import pathlib
+import select
 import threading
 
 import pytest
@@ -56,9 +73,51 @@ requires_fork = pytest.mark.skipif(
 )
 
 
+ENTERED: dict = {"thread": 0, "fork": 0}
+
+
+def _stub_the_engine_enter(monkeypatch):
+    """Hold the ENGINE off while the real ``_launch_and_watch`` runs.
+
+    ⭐ THE SEAM IS CHOSEN, NOT CONVENIENT. ``_enter_on_worker`` (thread arm) and
+    ``_enter_with_timeout`` (fork arm) are the two functions that actually
+    start a browser, and they sit BELOW every statement this file asserts on —
+    so the real shipped function executes the mutation under test, decides its
+    guard, builds its ``extra_args``, and only then finds no engine to enter.
+    Returning the "every attempt overran" value each one already documents
+    (``None`` / ``(None, None)``) drives the shipped ``if ctx is None`` arm, so
+    the function still unwinds through its own code rather than an exception.
+
+    ⚠️ Why not patch ``_launch_and_watch`` itself, or copy the two-line body?
+    A copied statement tests the copy. The sibling
+    ``tests/test_browser_env_policy.py:_child_environ_after_fork`` faces the
+    same problem one level UP and substitutes the launch there; this is that
+    same move at the level this file needs.
+
+    The counters make the substitution ASSERTED rather than assumed — see
+    ``test_the_engine_seam_is_really_stubbed``. If either name is refactored
+    away, the stub silently stops applying and the harness goes back to
+    launching real browsers on every developer desktop; that test is what
+    turns such a rename into a red run instead.
+    """
+    ENTERED["thread"] = ENTERED["fork"] = 0
+
+    def _no_worker_enter(*_a, **_kw):
+        ENTERED["thread"] += 1
+        return None  # "every attempt overran or STOP cancelled"
+
+    def _no_timeout_enter(*_a, **_kw):
+        ENTERED["fork"] += 1
+        return None, None  # "every attempt timed out"
+
+    monkeypatch.setattr(il, "_enter_on_worker", _no_worker_enter)
+    monkeypatch.setattr(il, "_enter_with_timeout", _no_timeout_enter)
+
+
 @pytest.fixture(autouse=True)
 def _linux_and_clean(monkeypatch):
-    """Hold ``IS_LINUX`` TRUE throughout, and start from a clean variable.
+    """Hold ``IS_LINUX`` TRUE throughout, start from a clean variable, and keep
+    the engine out of the process.
 
     ⭐ IS_LINUX is deliberately forced TRUE even on a non-Linux runner. That is
     what ISOLATES the ``in_thread`` half of the guard: a fix that guarded on
@@ -69,6 +128,7 @@ def _linux_and_clean(monkeypatch):
     """
     monkeypatch.setattr(il._platform, "IS_LINUX", True)
     monkeypatch.delenv(VAR, raising=False)
+    _stub_the_engine_enter(monkeypatch)
     yield
 
 
@@ -77,8 +137,9 @@ def _run_thread_path(tmp_path, profile_name):
     manager's own ``os.environ`` before and after.
 
     Deliberately not a reproduction of the line's body: a copied statement
-    tests the copy. This calls the shipped function, which reaches the write
-    and then fails at its engine import one statement later.
+    tests the copy. This calls the shipped function; the engine ENTER beneath
+    it is stubbed (see ``_stub_the_engine_enter``), so no browser starts on any
+    platform.
     """
     profile_dir = pathlib.Path(tmp_path) / ".invisible-profile"
     profile_dir.mkdir(parents=True, exist_ok=True)
@@ -93,6 +154,26 @@ def _run_thread_path(tmp_path, profile_name):
         True,  # in_thread
     )
     return before, os.environ.get(VAR), emitted
+
+
+def test_the_engine_seam_is_really_stubbed(tmp_path):
+    """⭐ THE HARNESS'S OWN CONTROL, and the one this file previously lacked.
+
+    Every other test here would pass just as well if the stub silently stopped
+    applying — they would simply take 2s (Linux, no DISPLAY) or 120s (a runner
+    with a window server) and spawn a Firefox each. This asserts the seam was
+    ENTERED, so a rename of ``_enter_on_worker`` turns that into a red run.
+    """
+    _b, _a, emitted = _run_thread_path(tmp_path, "Acme Bank")
+    assert ENTERED["thread"] == 1, (
+        "the thread-arm engine seam was not reached through the stub. Either "
+        "`_enter_on_worker` was renamed (patch the new name) or the function "
+        "returned before it — in which case nothing below is measuring the "
+        "shipped path."
+    )
+    assert ENTERED["fork"] == 0, "the thread arm must not enter via the fork seam"
+    # The shipped `if ctx is None` arm ran, rather than an exception escaping.
+    assert emitted == ["LAUNCH_FAILED: launch timed out", "BROWSER_CLOSED"]
 
 
 # --------------------------------------------------------------------------
@@ -299,6 +380,19 @@ def test_the_forked_child_gets_the_name_and_the_parent_does_not(tmp_path):
     That asymmetry is the entire justification for the line existing at all,
     and it is what the thread path cannot provide — which is why the thread
     path is now guarded out instead of imitated.
+
+    ⚠️ THE CHILD RE-APPLIES THE ENGINE SEAM EXPLICITLY rather than leaning on
+    inheriting it across the fork. It DOES inherit it — ``monkeypatch`` has
+    already rebound the module attributes by the time ``os.fork`` runs — but a
+    fork inside a multi-threaded pytest process that then entered a real engine
+    is its own hazard, and an earlier revision of this test came back with an
+    EMPTY report on macOS for exactly that reason. Restating the substitution
+    here costs two lines and makes the child's independence from fixture
+    ordering readable at the site.
+
+    The report is written in a ``finally`` and the parent's read is BOUNDED, so
+    a child that dies mid-launch produces a failed assertion with a message
+    rather than a suite that hangs until the job timeout.
     """
     profile_dir = pathlib.Path(tmp_path) / ".invisible-profile"
     profile_dir.mkdir(parents=True, exist_ok=True)
@@ -306,9 +400,13 @@ def test_the_forked_child_gets_the_name_and_the_parent_does_not(tmp_path):
 
     pid = os.fork()
     if pid == 0:  # pragma: no cover - runs in the forked child
+        report: dict = {"error": "the child never reached its report"}
         try:
             os.close(report_r)
             il._platform.IS_LINUX = True
+            # Belt and braces — see the docstring. No engine, in the child too.
+            il._enter_on_worker = lambda *_a, **_kw: None
+            il._enter_with_timeout = lambda *_a, **_kw: (None, None)
             il._launch_and_watch(
                 {"profile_name": "Acme Bank", "profile_dir": str(profile_dir)},
                 str(profile_dir),
@@ -317,22 +415,34 @@ def test_the_forked_child_gets_the_name_and_the_parent_does_not(tmp_path):
                 None,  # no stop_event: the fork arm
                 False,  # in_thread=False
             )
-            with os.fdopen(report_w, "w", encoding="utf-8") as fh:
-                fh.write(json.dumps({VAR: os.environ.get(VAR)}))
-        except BaseException:
+            report = {VAR: os.environ.get(VAR)}
+        except BaseException as exc:
+            report = {"error": f"{type(exc).__name__}: {exc}"}
+        finally:
             try:
-                os.close(report_w)
+                with os.fdopen(report_w, "w", encoding="utf-8") as fh:
+                    fh.write(json.dumps(report))
             except OSError:
                 pass
-        os._exit(0)
+            os._exit(0)
 
     os.close(report_w)
+    # BOUNDED. A wedged child must fail this test, not hang the job.
+    payload = ""
     with os.fdopen(report_r, encoding="utf-8") as fh:
-        payload = fh.read()
+        ready, _, _ = select.select([fh], [], [], 60)
+        if ready:
+            payload = fh.read()
     os.waitpid(pid, 0)
 
-    assert payload, "the forked child reported no environment"
+    assert payload, (
+        "the forked child reported no environment within 60s — it died or "
+        "wedged before its `finally` could write. Nothing below is measured."
+    )
     child_env = json.loads(payload)
+    assert "error" not in child_env, (
+        f"the forked child failed before reporting: {child_env['error']}"
+    )
     assert child_env[VAR] == app_id_for("Acme Bank"), (
         "the FORKED child did not get its remoting name — the fork path is "
         "the one path where this write is correct, and it must keep working"
@@ -359,16 +469,59 @@ def test_the_name_launch_argument_is_unaffected_on_the_thread_path(tmp_path):
 
     A source assertion rather than a behavioural one, and deliberately so:
     ``extra_args`` is local to ``_launch_and_watch`` and is consumed by the
-    engine constructor, which cannot be reached in this container. A source
-    read is a weaker instrument than the environ assertions above, and is
-    labelled as such rather than dressed up — its job is to make a future
-    edit to that guard a deliberate act.
+    engine constructor, which this harness holds off on purpose. A source read
+    is a weaker instrument than the environ assertions above, and is labelled
+    as such rather than dressed up — its job is to make a future edit to that
+    guard a deliberate act.
+
+    ⚠️ DERIVED BY AST, NOT BY SUBSTRING. An earlier revision matched the guard
+    line PLUS the first line of the comment beneath it, so rewording a comment
+    broke this test with a message about the X11 taskbar icon and sent the
+    reader looking in the wrong place. The property is about the ``if`` that
+    ENCLOSES the ``extra_args.append``, so it is now read off the tree: prose
+    above, beside or inside it is free to change.
     """
     source = pathlib.Path(il.__file__).read_text(encoding="utf-8")
-    assert 'extra_args.append(f"--name={_remoting_name(name)}")' in source
-    marker = "if name and _platform.IS_LINUX:\n        # --name sets the X11"
-    assert marker in source, (
-        "the --name guard changed shape. If `not in_thread` was added to it, "
-        "the X11 taskbar icon is now lost on the thread path too — which is a "
-        "real behaviour change and needs its own decision, not a tidy-up."
+    tree = ast.parse(source)
+    fn = next(
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "_launch_and_watch"
     )
+
+    # Find the `--name=` append, and the `if` statement lexically enclosing it.
+    def _appends_the_name_arg(node):
+        return (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "append"
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "extra_args"
+            and "--name=" in ast.unparse(node)
+        )
+
+    guards = [
+        stmt
+        for stmt in ast.walk(fn)
+        if isinstance(stmt, ast.If)
+        and any(_appends_the_name_arg(n) for n in ast.walk(stmt))
+    ]
+    assert guards, (
+        "the `--name=` launch argument is gone from `_launch_and_watch`, or "
+        "is no longer built through `extra_args.append`. The X11 WM_CLASS "
+        "half of the taskbar identity is what this test tracks."
+    )
+    # The INNERMOST enclosing `if` is the guard on that append.
+    guard = min(guards, key=lambda s: s.end_lineno - s.lineno)
+    names_in_test = {
+        n.id for n in ast.walk(guard.test) if isinstance(n, ast.Name)
+    }
+    assert "in_thread" not in names_in_test, (
+        "the `--name` guard gained an `in_thread` term. The X11 taskbar icon "
+        "is now lost on the thread path too — which is a real behaviour "
+        "change and needs its own decision, not a tidy-up. Only the WAYLAND "
+        "half (the environ write) is deliberately absent there (PS-360)."
+    )
+    # ...and it is still the platform guard it always was, so this test is
+    # not passing merely because the `if` disappeared.
+    assert "name" in names_in_test and "_platform" in ast.unparse(guard.test)

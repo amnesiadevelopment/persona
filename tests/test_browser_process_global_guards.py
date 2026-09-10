@@ -93,6 +93,17 @@ GUARD_PARAM = "in_thread"
 # the test keeps measuring the same thing after this branch merges.
 _PRE_FIX_REV = "360c4881fcf8145340f6fdf998c00be41eb97681"
 
+# ...and the blob itself, committed, because CI's `actions/checkout` is a
+# SHALLOW clone and cannot reach that SHA — so reading it with `git show` made
+# the strongest falsification skip on every leg on every platform, forever. Its
+# provenance is verified against git wherever git CAN reach the revision
+# (`test_the_pre_fix_fixture_is_the_real_historical_blob`).
+_PRE_FIX_FIXTURE = (
+    pathlib.Path(__file__).resolve().parent
+    / "fixtures"
+    / "ps360_pre_fix_launch_child.py.txt"
+)
+
 
 # ---------------------------------------------------------------------------
 # THE OPERATOR SET — the one remembered list in this file, kept visible.
@@ -492,7 +503,7 @@ def test_gate_catches_the_non_subscript_environ_forms(launch_source):
         assert unguarded, f"the gate did not see {snippet.strip()!r}"
 
 
-def test_gate_names_the_real_pre_fix_defect(launch_source):
+def test_gate_names_the_real_pre_fix_defect():
     """⭐ THE STRONGEST FALSIFICATION AVAILABLE, and it needs no synthetic
     sabotage at all: run this gate against the ACTUAL SOURCE AS IT SHIPPED
     BEFORE PS-360, and confirm it names the real defect at its real line.
@@ -502,30 +513,22 @@ def test_gate_names_the_real_pre_fix_defect(launch_source):
     one proves it would have caught the historical bug, which is the only
     claim that matters.
 
-    Skipped rather than failed when the pre-fix blob cannot be reached (a
-    shallow clone, an exported tree, no git). An absence declared out loud,
-    per tests/KNOWN_SKIPS.md.
+    ⚠️ IT NOW RUNS EVERYWHERE, AND THAT IS THE POINT OF THE FIXTURE. An earlier
+    revision read the blob with ``git show <sha>``, which meant it SKIPPED on
+    every CI leg on every platform, permanently — ``actions/checkout`` is a
+    shallow clone and cannot reach a pre-branch commit. The one test whose
+    whole claim is "this gate would have caught the bug" was the one test CI
+    never ran. A skip is the absence of a message (tests/KNOWN_SKIPS.md), so
+    the evidence is committed instead: ``tests/fixtures/`` holds the two
+    functions verbatim.
+
+    ⛔ A COMMITTED FIXTURE CAN BE DOCTORED, and a falsification run against
+    doctored evidence proves nothing — so provenance is VERIFIED against git
+    whenever git can reach the blob (every full clone, including every
+    developer machine and this container). That check skips on a shallow
+    clone; the falsification itself does not.
     """
-    import subprocess
-
-    try:
-        result = subprocess.run(
-            ["git", "show", f"{_PRE_FIX_REV}:src/services/browser/invisible_launch.py"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            cwd=str(LAUNCH_FILE.parents[3]),
-            timeout=30,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:  # pragma: no cover
-        pytest.skip(f"git unavailable for the pre-fix blob: {exc}")
-    if result.returncode != 0 or not result.stdout:  # pragma: no cover
-        pytest.skip(
-            f"the pre-fix revision {_PRE_FIX_REV} is not in this checkout "
-            "(shallow clone or exported tree)"
-        )
-
-    pre_fix = result.stdout
+    pre_fix = _PRE_FIX_FIXTURE.read_text(encoding="utf-8")
     assert 'os.environ["MOZ_APP_REMOTINGNAME"]' in pre_fix
     _guarded, unguarded = _scan(pre_fix)
 
@@ -552,6 +555,64 @@ def test_gate_names_the_real_pre_fix_defect(launch_source):
     assert len(unguarded) == 1, (
         "the gate accused a correctly-guarded sibling on the pre-fix source: "
         f"{unguarded}"
+    )
+
+
+def test_the_pre_fix_fixture_is_the_real_historical_blob():
+    """⛔ THE FIXTURE'S OWN PROVENANCE. The falsification above is only worth
+    anything if its input is genuinely what shipped, so the two functions are
+    re-extracted from git and compared BYTE FOR BYTE with the committed copy.
+
+    Skipped — not failed — where git cannot reach the pre-fix revision, which
+    is every shallow CI checkout. That inverts the old arrangement in the way
+    that matters: the FALSIFICATION now runs everywhere and only this
+    provenance CHECK is environment-bound, where before it was the other way
+    round. Declared in tests/KNOWN_SKIPS.md.
+    """
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["git", "show", f"{_PRE_FIX_REV}:src/services/browser/invisible_launch.py"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            cwd=str(LAUNCH_FILE.parents[3]),
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:  # pragma: no cover
+        pytest.skip(f"git unavailable for the pre-fix blob: {exc}")
+    if result.returncode != 0 or not result.stdout:  # pragma: no cover
+        pytest.skip(
+            f"the pre-fix revision {_PRE_FIX_REV} is not in this checkout "
+            "(shallow clone or exported tree)"
+        )
+
+    original = result.stdout
+    lines = original.splitlines(keepends=True)
+    tree = ast.parse(original)
+    spans = {
+        fn.name: (fn.lineno, fn.end_lineno)
+        for fn in ast.walk(tree)
+        if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and fn.name in GUARDED_FUNCTIONS
+    }
+    assert set(spans) == set(GUARDED_FUNCTIONS)
+    extracted = (
+        "".join(lines[spans["_child"][0] - 1 : spans["_child"][1]])
+        + "\n\n"
+        + "".join(
+            lines[
+                spans["_launch_and_watch"][0] - 1 : spans["_launch_and_watch"][1]
+            ]
+        )
+    )
+
+    committed = _PRE_FIX_FIXTURE.read_text(encoding="utf-8")
+    assert committed.endswith(extracted), (
+        f"{_PRE_FIX_FIXTURE.name} is NOT the historical source at "
+        f"{_PRE_FIX_REV}. The falsification above is running against doctored "
+        "evidence and proves nothing. Re-extract the two functions verbatim."
     )
 
 

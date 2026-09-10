@@ -42,6 +42,8 @@ needs a display to check a parser would simply be skipped everywhere it matters.
 
 from __future__ import annotations
 
+import ast
+
 import pytest
 
 from src.services.verify import launch_perimeter as LP
@@ -227,6 +229,15 @@ def test_the_thread_path_gaps_still_carry_their_guards_in_the_source() -> None:
     platform term at all, so a single total would blur three facts into one.
     See tests/test_browser_process_global_guards.py, which derives the whole
     set by AST rather than counting substrings.
+
+    ⚠️ THE SECOND COUNT IS NOW DERIVED, NOT COUNTED. It used to be
+    ``text.count("not in_thread") == 8``, a plain substring tally that included
+    the one occurrence sitting inside a COMMENT — so rewording a comment fired
+    a tripwire whose message talks about guards moving. The total is read off
+    the AST instead: every ``if``/``while`` test and every assigned expression
+    inside ``_child``/``_launch_and_watch`` whose source mentions ``in_thread``.
+    That counts CODE and only code, so prose is free to change and a guard is
+    not.
     """
     source = SCAN.repo_root() + "/src/services/browser/invisible_launch.py"
     with open(source, encoding="utf-8") as fh:
@@ -237,17 +248,69 @@ def test_the_thread_path_gaps_still_carry_their_guards_in_the_source() -> None:
         "RECORDS these gaps; it does not close them, and an inventory entry "
         "describing a guard that is gone is worse than no entry."
     )
-    assert text.count("not in_thread") == 8, (
-        "the total number of thread-path guards changed. Every one of them "
-        "is an absence on the thread path and needs an inventory entry or a "
-        "reason it needs none.\n"
-        "⚠️ This counts SUBSTRINGS, so it includes the one occurrence inside "
-        "a COMMENT (at the --name argument, explaining why that line is "
-        "deliberately NOT guarded). That is why the AST gate in "
-        "tests/test_browser_process_global_guards.py is the real instrument "
-        "and this is only a tripwire: a substring count cannot tell code from "
-        "prose, and must not be read as a census."
+
+    tree = ast.parse(text)
+    _rows = []
+    for fn in ast.walk(tree):
+        if not (
+            isinstance(fn, ast.FunctionDef)
+            and fn.name in ("_child", "_launch_and_watch")
+        ):
+            continue
+        for node in ast.walk(fn):
+            if isinstance(node, (ast.If, ast.While)):
+                expr = node.test
+            elif isinstance(node, ast.Assign):
+                expr = node.value
+            else:
+                continue
+            if any(
+                isinstance(n, ast.Name) and n.id == "in_thread"
+                for n in ast.walk(expr)
+            ):
+                _rows.append((node.lineno, ast.unparse(expr), expr))
+    in_thread_expressions = [(ln, src) for ln, src, _e in _rows]
+
+    assert len(in_thread_expressions) == 9, (
+        "the number of CODE expressions reading `in_thread` in the launch "
+        "child changed. Every one of them is a fork/thread split, and a new "
+        "one is an absence on the thread path that needs an inventory entry "
+        "or a reason it needs none:\n"
+        + "\n".join(f"  line {ln}  {src}" for ln, src in in_thread_expressions)
     )
+    # ⭐ NINE, WHICH IS NOT THE OLD SUBSTRING TALLY OF EIGHT AND SHOULD NOT BE.
+    # The old count was `text.count("not in_thread")`, so it (a) INCLUDED one
+    # occurrence in a comment and (b) EXCLUDED the POSITIVE-form reads
+    # (`if in_thread:`) that pick the thread arm's own behaviour — the worker
+    # enter seam and the thread close-watch. Both directions of the split are
+    # code, both are thread-path facts, and only one of them was being
+    # counted. Split by shape so a change says WHICH kind moved.
+    #
+    # ⚠️ Split on the TREE, not on the unparsed text: `ast.unparse` renders the
+    # third guard as `name and (not in_thread) and _platform.IS_LINUX`, so a
+    # substring split re-introduces exactly the code-vs-prose confusion this
+    # rewrite removed. A guard is "fork-only" iff `in_thread` appears under a
+    # `not`.
+    def _reads_in_thread_negated(expr) -> bool:
+        for node in ast.walk(expr):
+            if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+                if any(
+                    isinstance(n, ast.Name) and n.id == "in_thread"
+                    for n in ast.walk(node.operand)
+                ):
+                    return True
+        return False
+
+    negative = [(ln, s) for ln, s, e in _rows if _reads_in_thread_negated(e)]
+    positive = [(ln, s) for ln, s, e in _rows if not _reads_in_thread_negated(e)]
+    # SEVEN fork-only guards (`not in_thread`, in three shapes — the bare `if`,
+    # the `and IS_LINUX` form, and the computed booleans) and TWO thread-arm
+    # branches (`if in_thread:` — the worker enter seam at the launch, and the
+    # thread close-watch). Only FOUR of the seven are the perimeter entries the
+    # test above censuses; the other three guard state this inventory does not
+    # track. Both numbers are asserted so neither direction is silent.
+    assert len(negative) == 7, f"the fork-only guards changed: {negative}"
+    assert len(positive) == 2, f"the thread-arm branches changed: {positive}"
 
 
 # --- the scanner discriminates ----------------------------------------------
