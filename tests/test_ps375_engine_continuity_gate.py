@@ -1194,3 +1194,17 @@ def test_every_result_resolve_can_return_carries_a_known_status(runner, v, fake_
         seen.add(result["status"])
         assert result["status"] in v.EXIT_FOR_STATUS, result["status"]
     assert len(seen) >= 4, seen
+
+
+def test_the_workflows_no_predecessor_echo_matches_the_report_body():
+    """FINDING 5, one surface further out. The report body was corrected to stop
+    asserting "only one engine release is published" on a manual run that named
+    the oldest of several — the workflow's own echo said the same thing and
+    would have contradicted the summary printed beside it."""
+    runs = workflow_run_blocks()
+    assert "only one engine release is published" not in runs.lower(), (
+        "the scheduled path's assumption must not be echoed for a dispatched "
+        "oldest-version run, which reaches the same status for a different "
+        "reason"
+    )
+    assert "no published predecessor" in runs
