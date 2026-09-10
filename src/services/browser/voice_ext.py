@@ -12,7 +12,7 @@ locale-matched entry, so a scanner reads a normal Windows machine.
 import json
 import pathlib
 
-from .worker_wrap import realm_bootstrap_js, realm_guard_js
+from .worker_wrap import chromium_leaf_cloak_js, realm_bootstrap_js, realm_guard_js
 
 # A stock Windows 10/11 SAPI5 voice set (what Edge/Chrome expose on Windows),
 # plus a voice for the spoofed language so the list agrees with navigator.language.
@@ -26,6 +26,7 @@ function applyVoicePatch(G) {
  try {
   if (!G || !G.speechSynthesis) return;
 __REALM_GUARD__
+__LEAF_CLOAK__
   const LANG = %LANG%;
   const OS = "%OS%";  // "windows" | "macos" | "linux" | "android"
   const base = (LANG.split('-')[0] || 'en');
@@ -170,8 +171,14 @@ __REALM_GUARD__
   // (unlike a wrapped built-in's arity) because this override IS the reference
   // implementation — there is no original whose arity could differ.
   const gv = ({ getVoices() { return voices.slice(); } }).getVoices;
-  // Read as native under the native_ext Function.prototype.toString patch.
-  try { Object.defineProperty(gv, '__pnaName', {value: 'getVoices'}); } catch (e) {}
+  // Read as native under THIS LEAF's own toString cloak (spliced above).
+  //
+  // ⛔ THE MARK GOES IN A CLOSURE WEAKMAP, NOT AN OWN PROPERTY (PS-368). The
+  // old `__pnaName` own property was read by native_ext's cross-script reader,
+  // which is what made it a protocol — and what made this wrapper own a third
+  // name that `Object.getOwnPropertyNames(speechSynthesis.getVoices)` reads in
+  // one line, identifying persona specifically.
+  __pncMark(gv, 'getVoices');
   try { Object.defineProperty(gv, 'name', {value: 'getVoices'}); } catch (e) {}
   Object.defineProperty(ss, 'getVoices', {value: gv, configurable: true});
   // fire voiceschanged so late listeners re-read the spoofed list
@@ -233,6 +240,7 @@ def build_voice_extension(
         .replace("%OS%", os_norm)
         .replace("__REALM_BOOTSTRAP__", realm_bootstrap_js("applyVoicePatch"))
         .replace("__REALM_GUARD__", realm_guard_js("voice", indent=2))
+        .replace("__LEAF_CLOAK__", chromium_leaf_cloak_js(2))
     )
     (ext_dir / "voices.js").write_text(js, encoding="utf-8")
     (ext_dir / "manifest.json").write_text(json.dumps(MANIFEST, indent=2), encoding="utf-8")

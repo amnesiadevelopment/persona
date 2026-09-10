@@ -359,11 +359,21 @@ _JS_FNSRC = (
 # its source, however perfect its `toString` cloak is. `own` is returned sorted
 # so a reading is comparable across runs and engines.
 #
-# `__pnaName` is EXPECTED in this set on the Chromium path: native_ext's
-# toString patch reads the marker as an own property (`this.__pnaName`), so a
-# wrapper the cloak can serve necessarily owns it. Its presence is a fact to
-# record, not a defect to hide — the recorded baseline is what makes a CHANGE
-# in the set visible, which is the point of the probe.
+# ⭐ `__pnaName` IS NO LONGER EXPECTED IN THIS SET, AND ITS ABSENCE IS THE
+# READING (PS-368). Until then, native_ext's toString patch read the marker as
+# an own property (`this.__pnaName`) — a CROSS-SCRIPT protocol, which is what
+# let one reader serve twelve content scripts with no shared closure, and what
+# made every wrapper the cloak could serve necessarily own a third name. The
+# baseline recorded here said so, on the reasoning that a recorded fact is what
+# makes a CHANGE visible.
+#
+# Measured on the wrappers against a native-shaped control, that trade did not
+# survive: `Object.getOwnPropertyNames(fn)` read the third name in ONE line and
+# `"__pnaName" in fn` was positive identification of persona SPECIFICALLY, both
+# entirely independent of the toString cloak the marker existed to serve. Every
+# module now carries its own closure-WeakMap cloak, so a wrapper reads exactly
+# ["length","name"] and a `__pnaName` appearing in a live reading is a
+# REGRESSION rather than the expected baseline.
 _JS_FNSHAPE = (
     "(function(f){"
     "if(typeof f!=='function')return 'absent:'+(typeof f);"

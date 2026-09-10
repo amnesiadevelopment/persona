@@ -84,7 +84,11 @@ from ...models.os_type import RECOGNISED_OS_TYPES as _RECOGNISED_OS_TYPES
 from ...models.os_type import canonical_os_type
 from .engine_platform import ENGINE_HONOURED_PLATFORMS as _ENGINE_HONOURED_PLATFORMS
 from .engine_platform import engine_honours
-from .worker_wrap import realm_bootstrap_js, realm_guard_js
+from .worker_wrap import (
+    chromium_leaf_cloak_js,
+    realm_bootstrap_js,
+    realm_guard_js,
+)
 
 
 @dataclass(frozen=True)
@@ -473,6 +477,7 @@ _CONTENT_SCRIPT = r"""
    try {
     if (!G) return;
 __REALM_GUARD__
+__LEAF_CLOAK__
     var SEED = __SEED__;
     var OS = "__OS__";
     // The profile's frozen hardware generation. A GPU is only visible to a
@@ -532,20 +537,24 @@ __REALM_GUARD__
       // which would go stale silently against a future engine.
       Object.defineProperty(shell, 'length', { value: orig.length });
       Object.defineProperty(shell, 'name', { value: orig.name });
-      // Mark for the native_ext Function.prototype.toString patch so a detector
-      // calling Function.prototype.toString.call(replacement) reads native. A
-      // plain replacement.toString override is bypassed by that .call form.
-      //
-      // This marker is READ AS AN OWN PROPERTY (`this.__pnaName`, see
-      // native_ext.py's applyNativePatch), so a Chromium wrapper the cloak can
-      // serve necessarily owns it and the best achievable shape here is
-      // ["__pnaName","length","name"]. That is a deliberate trade, not an
-      // oversight: it drops the three ENGINE-shaped leaks that identify a
-      // wrapper generically. The Firefox helper carries its marker in a WeakMap
-      // and therefore does reach the exact native set.
-      Object.defineProperty(shell, '__pnaName', { value: orig.name });
     } catch (e) {}
-    return shell;
+    // Register for THIS LEAF's own Function.prototype.toString cloak (spliced
+    // above) so a detector calling
+    // Function.prototype.toString.call(replacement) reads native. A plain
+    // replacement.toString override is bypassed by that .call form.
+    //
+    // ⛔ THE MARK LIVES IN A CLOSURE WEAKMAP, NOT AN OWN PROPERTY (PS-368).
+    // This used to pin `__pnaName`, read cross-script by native_ext's
+    // applyNativePatch — which is what made a marker work at all across twelve
+    // content scripts with no shared closure, and what made every wrapper own
+    // ["__pnaName","length","name"] where a native function owns two names.
+    // That third name was readable in one line by
+    // `Object.getOwnPropertyNames(fn)`, entirely independently of the toString
+    // cloak it existed to serve, and it identified persona SPECIFICALLY rather
+    // than a wrapper generically. It was recorded here as a deliberate trade;
+    // measurement on the wrappers refuted the trade, and this leaf now carries
+    // its own cloak so the marker has nothing left to buy.
+    return __pncMark(shell, orig.name);
   }
 
   var WIN_GPUS = __WIN_GPUS__;
@@ -1358,6 +1367,7 @@ def build_gpu_extension(
         .replace("__LINUX_GPUS__", _render_pool(GPU_POOLS["LINUX_GPUS"]))
         .replace("__REALM_BOOTSTRAP__", realm_bootstrap_js("applyGpuPatch"))
         .replace("__REALM_GUARD__", realm_guard_js("gpu"))
+        .replace("__LEAF_CLOAK__", chromium_leaf_cloak_js(4))
     )
     (ext_dir / "gpu.js").write_text(script, encoding="utf-8")
     (ext_dir / "manifest.json").write_text(

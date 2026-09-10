@@ -624,7 +624,13 @@ _NOT_OUR_ENGINE_NAME = {
     "services/browser/device_ext.py",
     "services/browser/gpu_ext.py",
     "services/browser/voice_ext.py",
-    "services/browser/webgl_ext.py",
+    # ⭐ `services/browser/webgl_ext.py` LEFT THIS SET IN PS-368, and its removal
+    # is this test working exactly as designed rather than a loosening. Its only
+    # qualifying literal was the marker-trade note inside `_CHROMIUM_NATIVE_WRAP`
+    # ("so a Chromium wrapper the cloak can serve necessarily owns it"), which
+    # documented the `__pnaName` own property that ticket removed. With the note
+    # gone the file has no matching literal, so the entry became a STALE standing
+    # excuse — precisely what the assertion below refuses to let accumulate.
     "services/browser/worker_wrap.py",
     # MEASUREMENT PROVENANCE, explicitly deferred by the PS-318 ticket: these
     # values are written into committed reading artifacts, and changing one

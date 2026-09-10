@@ -845,16 +845,43 @@ def test_the_derived_wrapper_set_actually_covers_the_new_wrappers():
         )
 
 
-def test_chromiums_bootstrap_keeps_its_marker():
-    """The other side of the seam: Chromium's wrappers MUST keep ``__pnaName``.
+def test_chromiums_bootstrap_keeps_its_own_cloak_and_its_own_engine_form():
+    """The other side of the seam: the Firefox fix must not touch Chromium's arm.
 
-    That marker is not incidental there — ``native_ext.py`` installs the single
-    ``Function.prototype.toString`` patch that reads it, so dropping it would
-    uncloak every Chromium wrapper. Pins that the Firefox fix did not "clean up"
-    the shared default, which is the way this refactor would most plausibly break
-    the engine it was told not to touch.
+    ⭐ THIS ASSERTION MOVED IN PS-368, from the MECHANISM to the OBSERVABLE, and
+    the move is the point rather than a loosening. It used to read
+    ``assert '"__pnaName"' in code`` — Chromium's wrappers MUST keep that marker,
+    because native_ext installed the single ``Function.prototype.toString`` patch
+    that read it and dropping it would uncloak every Chromium wrapper.
+
+    That was true and is now false, by measurement rather than by preference: an
+    own ``__pnaName`` made every wrapper read a third name under
+    ``Object.getOwnPropertyNames``, which is persona identification in one line
+    and independent of the toString cloak the marker existed to serve. Each
+    module now carries its own closure-WeakMap cloak, so the marker is gone from
+    the Chromium arm too — and a test pinning its PRESENCE would have gone red
+    for the strictly-better implementation, which is the exact failure shape
+    ``tests/native_mask_probe.py`` catalogues at length.
+
+    So this pins what the old assertion was a proxy for: Chromium's bootstrap
+    still installs a cloak of its OWN, emitting V8's form, and is NOT handed
+    Firefox's. Both halves are asserted as CODE (comments stripped), because the
+    prose around either seam names the other.
     """
     code = _code_only(realm_bootstrap_js("applyWebglPatch"))
-    assert '"__pnaName"' in code, "Chromium's bootstrap lost its cloak marker"
-    # and the Firefox form must NOT be what Chromium gets
+    # Chromium's own cloak: the `__hnm` WeakMap and its self-registering `__hts`.
+    assert "__hnm" in code, "Chromium's bootstrap lost its cloak registry"
+    assert '__hnm.set(__hts, "toString")' in code, (
+        "Chromium's bootstrap cloak no longer registers ITSELF — a detector "
+        "stringifies Function.prototype.toString to catch exactly this trick"
+    )
+    # ...and its shape is DERIVED off a native function, never Firefox's literal.
+    assert "hasOwnProperty" in code
+    # the Firefox form must NOT be what Chromium gets
     assert "__bcloak" not in code
+    # ...and the marker is gone from this arm too (PS-368), not merely from
+    # Firefox's. Asserted as CODE so the explanation above does not satisfy it.
+    assert "__pnaName" not in code, (
+        "the Chromium bootstrap stamps `__pnaName` again — that own property is "
+        "a one-line tell, and PS-368 moved this wrapper into the `__hnm` map"
+    )

@@ -326,20 +326,64 @@ def assert_reads_native_in_child_realm(
     )
 
 
+def strip_leaf_cloak(js: str) -> str:
+    """Return `js` with THIS leaf's own toString-cloak install line removed.
+
+    The counterfactual for the post-PS-368 world. Until that ticket the witness
+    was `install_native=False` — drop native_ext's content script and a marked
+    wrapper stops reading native, because native_ext's single
+    `Function.prototype.toString` patch was the ONE reader of the `__pnaName`
+    own-property marker every leaf pinned.
+
+    ⛔ THAT COUNTERFACTUAL NO LONGER FALSIFIES ANYTHING, and leaving it in place
+    would have been the worst outcome here: it would still RUN, still be green,
+    and witness nothing. PS-368 removed the marker (an own property is a one-line
+    `Object.getOwnPropertyNames` tell, and it identified persona specifically),
+    so each leaf now carries its OWN closure WeakMap and its own chained cloak —
+    a WeakMap is reachable only from the closure that declares it, which is
+    precisely why it is not a cross-script protocol. A leaf therefore reads
+    native with native_ext absent, correctly, and the old arm passes for a reason
+    that has nothing to do with the leaf's cloak working.
+
+    So the mutation moved to where the mechanism moved: strip the leaf's own
+    install line and the wrapper is registered in a map nothing consults, so its
+    source leaks. The anchor is asserted present, so a source edit that renames
+    or moves it fails LOUDLY rather than silently neutering the falsification.
+    """
+    anchor = (
+        "if (__pncF && __pncF.prototype) { __pncF.prototype.toString = __pncTs; }"
+    )
+    found = js.count(anchor)
+    assert found >= 1, (
+        f"FALSIFICATION BROKEN: the leaf-cloak anchor {anchor!r} does not occur "
+        f"in this generated script, so stripping it is a no-op and the "
+        f"counterfactual always passes. Update the anchor to match "
+        f"worker_wrap._CHROMIUM_LEAF_CLOAK."
+    )
+    return js.replace(anchor, "")
+
+
 def assert_reads_native(tmp_path, scripts, stubs, probe, name, *, native_first=True):
     """Assert the wrapper `probe` selects stringifies natively — AND that it does
-    so BECAUSE of native_ext's patch.
+    so BECAUSE of this leaf's own toString cloak.
 
     Both halves are load-bearing. The first pins the invariant. The second is the
     counterfactual (AC#3): with the cloak absent the same probe must NOT read
     native, which is what binds this test to the mechanism instead of merely
     executing code that happens to be green.
 
-    `probe` must select a wrapper a real extension installs. Do NOT mark a
-    hand-rolled function with the marker here: that would hardcode the mechanism
-    into the test, so it would go red for a mechanism RENAME rather than for a
-    masking regression — the exact defect class PS-17 exists to remove. The marker
-    protocol stays private to src/.
+    ⚠️ THE COUNTERFACTUAL CHANGED IN PS-368 and the reason is recorded on
+    `strip_leaf_cloak` — the witness is no longer "native_ext's script absent"
+    but "this leaf's own cloak install removed", because the cross-script
+    `__pnaName` own-property protocol is gone and each leaf now serves its own
+    wrappers out of a closure WeakMap. native_ext stays INSTALLED in both arms,
+    so the RED below can only be the leaf's own cloak.
+
+    `probe` must select a wrapper a real extension installs. Do NOT register a
+    hand-rolled function here: that would hardcode the mechanism into the test,
+    so it would go red for a mechanism RENAME rather than for a masking
+    regression — the exact defect class PS-17 exists to remove. The registry
+    stays private to src/.
     """
     masked = stringify_in_realm(
         tmp_path, scripts, stubs, probe,
@@ -350,13 +394,27 @@ def assert_reads_native(tmp_path, scripts, stubs, probe, name, *, native_first=T
         f"Function.prototype.toString.call: {masked!r}"
     )
 
+    decloaked = pathlib.Path(tmp_path) / "decloaked"
+    decloaked.mkdir(parents=True, exist_ok=True)
+    stripped = []
+    for s in scripts:
+        src = pathlib.Path(s)
+        dst = decloaked / src.name
+        dst.write_text(
+            strip_leaf_cloak(src.read_text(encoding="utf-8")), encoding="utf-8"
+        )
+        stripped.append(dst)
+
     unmasked = stringify_in_realm(
-        tmp_path, scripts, stubs, probe,
-        install_native=False, native_first=native_first,
+        tmp_path, stripped, stubs, probe,
+        install_native=True, native_first=native_first,
     )
     assert unmasked != native_form(name), (
-        "FALSIFICATION FAILED: the wrapper read as native with native_ext's patch "
-        "NOT installed, so this test does not actually witness the cloak."
+        "FALSIFICATION FAILED: the wrapper read as native with this leaf's OWN "
+        "toString cloak stripped out, so this test does not actually witness "
+        "the cloak. Since PS-368 the leaf serves its own wrappers from a closure "
+        "WeakMap — if something else is serving them, the cross-script marker "
+        "protocol (and its own-property tell) has come back."
     )
 
 

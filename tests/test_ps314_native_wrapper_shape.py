@@ -37,20 +37,49 @@ at all. Measured against such a baseline, a wrapper "leaking" proves nothing —
 the leak was already there. `test_the_native_baseline_is_itself_native_shaped`
 pins the control so this file cannot silently start measuring nothing.
 
-THE TWO ENGINES REACH DIFFERENT SETS, AND THAT IS DELIBERATE (AC6)
-──────────────────────────────────────────────────────────────────
-Chromium's toString cloak reads its marker as an OWN property
-(`this.__pnaName`, native_ext.py's applyNativePatch), so any Chromium wrapper
-the cloak can serve necessarily owns it:
+THE TWO ENGINES REACHED DIFFERENT SETS UNTIL PS-368; THEY NO LONGER DO
+──────────────────────────────────────────────────────────────────────
+This file used to define, and assert at nine sites:
 
-    Chromium  ["__pnaName","length","name"]
-    Firefox   ["length","name"]              (marker lives in a WeakMap)
+    CHROMIUM_SHAPE = ["__pnaName", "length", "name"]
 
-Both drop the three ENGINE-shaped names, which are what identify a wrapper
-generically. Removing `__pnaName` would break the toString cloak (PS-131,
-PS-16/17) and is explicitly out of scope. The Firefox arm is the proof that the
-shape fix itself is complete: where the marker is not an own property, the set
-is exactly native.
+with the reasoning that Chromium's toString cloak read its marker as an OWN
+property (`this.__pnaName`, native_ext.py's applyNativePatch), so any Chromium
+wrapper the cloak could serve necessarily owned it — a deliberate trade that
+bought the toString cloak in exchange for one extra own name, and that dropped
+the three ENGINE-shaped names (prototype/arguments/caller) which identify a
+wrapper generically. Firefox, whose marker lives in a WeakMap, reached the exact
+native set and stood here as proof that the SHAPE fix itself was complete.
+
+⛔ THE TRADE WAS REFUTED BY MEASUREMENT ON THE WRAPPERS (PS-368), and this file
+records the refutation as the reason its constant moved. Read out of a realm
+after the real generated scripts ran, against this file's own native-shaped
+control:
+
+    NATIVE   Array.prototype.map          ["length","name"]
+    CHROMIUM wrapper (own-property tell)  ["length","name","__pnaName"]  ← DETECTED
+    FIREFOX  wrapper (WeakMap marker)     ["length","name"]
+
+`Object.getOwnPropertyNames(fn)` read that third name in ONE line, and
+`"__pnaName" in fn` was positive identification of persona SPECIFICALLY rather
+than of a wrapper generically — cheaper for a detector to run than the toString
+comparison the marker existed to satisfy, and entirely independent of it. The
+marker was load-bearing while it lasted (disabling only native_ext's reader
+decloaked every leaf instantly), so the fix was not to strip it: each of the
+twelve modules now carries its OWN closure-WeakMap cloak
+(`worker_wrap.chromium_leaf_cloak_js`) and registers its wrappers there.
+
+⚠️ THE REFUTATION IS ABOUT THE WRAPPERS, NOT ABOUT `Function.prototype.toString`.
+That function's own shape is native in the shipped artifact and was never the
+defect — PS-215's `__hts` overwrites native_ext's older expression-shaped
+`patched`, and `test_ps215_tostring_chain.py` pins it at the real 14-deep chain.
+Do not read this note as saying otherwise.
+
+So both engines now reach the SAME set, and `CHROMIUM_SHAPE` is retained as an
+alias of `NATIVE_SHAPE` rather than deleted: the nine sites that name it are
+asserting a Chromium-arm property, and keeping the name is what makes the
+refutation legible at each of them instead of silently absorbing them into the
+Firefox constant.
 """
 
 from __future__ import annotations
@@ -83,8 +112,12 @@ pytestmark = pytest.mark.skipif(
 
 # The exact set a native function owns. Anything else is a tell.
 NATIVE_SHAPE = ["length", "name"]
-# What a Chromium wrapper can reach while its cloak reads an own-property marker.
-CHROMIUM_SHAPE = ["__pnaName", "length", "name"]
+# What a Chromium wrapper reaches. ⭐ EQUAL TO `NATIVE_SHAPE` SINCE PS-368 — see
+# the module docstring for the measurement that refuted the marker trade. The
+# name is kept rather than folded away so each of the nine Chromium-arm
+# assertions still says which engine's arm it is, and so a regression that
+# re-introduces an own marker fails at the site that names the engine.
+CHROMIUM_SHAPE = NATIVE_SHAPE
 
 
 def _run(js: str) -> dict:
@@ -330,7 +363,10 @@ def test_chromium_audio_leaves_read_in_the_chromium_native_shape():
 
 # ─────────────────────────────────────────────────────────────────────────────
 # AC1 + AC5 — THE FIREFOX ARM. The marker is a WeakMap here, so this arm must
-# reach the EXACT native set. It is the proof the shape fix is complete.
+# reach the EXACT native set. It WAS the proof the shape fix is complete, back
+# when the Chromium arm could not reach that set; since PS-368 both arms do, and
+# the Firefox arm is instead the ENGINE-FORM control — it is where a cloak
+# emitting V8's one-line native string on SpiderMonkey would go red.
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -406,7 +442,11 @@ def test_firefox_webgl_readpixels_reads_in_the_EXACT_native_shape():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# AC3 — the def() accessors: `.name` pinned as a PAIR with `__pnaName`
+# AC3 — the def() accessors: `.name` is its own axis.
+#
+# `.name` used to be pinned as a PAIR with the `__pnaName` marker; PS-368 removed
+# the marker, and `.name` is asserted here on its own terms — it is a SECOND axis
+# the toString cloak cannot reach, whatever the cloak's registry is made of.
 # ─────────────────────────────────────────────────────────────────────────────
 
 

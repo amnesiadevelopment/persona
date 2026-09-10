@@ -1,7 +1,7 @@
 import json
 import pathlib
 
-from .worker_wrap import realm_bootstrap_js, realm_guard_js
+from .worker_wrap import chromium_leaf_cloak_js, realm_bootstrap_js, realm_guard_js
 
 # The script is wrapped in an IIFE so none of its names land in the page's global
 # scope. It runs in the MAIN world on every frame; a bare top-level const/function
@@ -23,6 +23,7 @@ CONTENT_SCRIPT = r"""
    try {
     if (!G || !G.navigator) return;
 __GEO_REALM_GUARD__
+__GEO_LEAF_CLOAK__
     var LAT = __LAT__;
     var LON = __LON__;
     var ACC = 100;
@@ -47,8 +48,14 @@ __GEO_REALM_GUARD__
       return { code: 1, message: "User denied Geolocation",
                PERMISSION_DENIED: 1, POSITION_UNAVAILABLE: 2, TIMEOUT: 3 };
     }
-    // Mark each override for the native_ext Function.prototype.toString patch so
-    // a detector calling Function.prototype.toString.call(fn) reads native code.
+    // Mark each override for THIS LEAF's own toString cloak (spliced above) so
+    // a detector calling Function.prototype.toString.call(fn) reads native.
+    //
+    // ⛔ THE MARK GOES IN A CLOSURE WEAKMAP, NOT AN OWN PROPERTY (PS-368). The
+    // old `__pnaName` own property was read by native_ext's cross-script
+    // reader, which is what made it a protocol — and what made every wrapper
+    // own a third name that `Object.getOwnPropertyNames` reads in one line.
+    // `__pncMark` registers the same fact where a page cannot enumerate it.
     //
     // Also RE-HOUSE the caller's function expression inside a real method
     // shorthand: an expression owns `prototype`/`arguments`/`caller` and a
@@ -65,9 +72,8 @@ __GEO_REALM_GUARD__
         shell = ({ m() { return fn.apply(this, arguments); } }).m;
         Object.defineProperty(shell, "length", { value: fn.length });
       } catch (e) { shell = fn; }
-      try { Object.defineProperty(shell, "__pnaName", { value: name }); } catch (e) {}
       try { Object.defineProperty(shell, "name", { value: name }); } catch (e) {}
-      return shell;
+      return __pncMark(shell, name);
     }
     var geo = G.navigator.geolocation;
     if (geo) {
@@ -126,6 +132,7 @@ def build_geo_extension(
         .replace("__LON__", json.dumps(lon))
         .replace("__GEO_REALM_BOOTSTRAP__", realm_bootstrap_js("applyGeoPatch"))
         .replace("__GEO_REALM_GUARD__", realm_guard_js("geo"))
+        .replace("__GEO_LEAF_CLOAK__", chromium_leaf_cloak_js(4))
     )
     (ext_dir / "geo.js").write_text(js, encoding="utf-8")
     (ext_dir / "manifest.json").write_text(

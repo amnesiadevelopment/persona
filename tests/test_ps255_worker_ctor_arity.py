@@ -69,9 +69,10 @@ _FIREFOX = realm_bootstrap_js("applyPatch", firefox_worker_cloak())
 _LANG = il._language_override_script("pl-PL")
 
 # The arity pin, per seam, exactly as each generator emits it. Stripping only
-# this is what reproduces the pre-PS-255 defect — `name`, `prototype`,
-# `__pnaName` and the toString registration all survive the mutation, so a RED
-# arm can only be the arity.
+# this is what reproduces the pre-PS-255 defect — `name`, `prototype` and the
+# toString registration all survive the mutation, so a RED arm can only be the
+# arity. (Before PS-368 the Chromium seam's `__pnaName` own property survived it
+# too; that marker is gone and the WeakMap registration took its place.)
 _CHROMIUM_PIN = (
     '        try { Object.defineProperty(W, "length", '
     "{ value: Orig.length, configurable: true }); } catch (e) {}"
@@ -273,13 +274,30 @@ def test_name_prototype_and_tostring_are_untouched_by_the_arity_pin(seam, tmp_pa
     assert r["workerName"] == "Worker"
     assert r["sharedName"] == "SharedWorker"
     assert r["prototypeIsOriginals"] is True
+    # ⭐ BOTH ENGINES NOW CLOAK THROUGH A CLOSURE WEAKMAP AND ADD NO MARKER
+    # (PS-368). This used to branch: Chromium asserted `workerPnaName ==
+    # "Worker"`, because its extension-side `Function.prototype.toString` patch
+    # read a `__pnaName` OWN PROPERTY off the wrapper — the cross-script protocol
+    # that let one reader serve twelve content scripts with no shared closure.
+    #
+    # That marker made `Worker` own a third name, readable by
+    # `Object.getOwnPropertyNames(self.Worker)` and by `"__pnaName" in
+    # self.Worker` — one line, no call, and positive identification of persona
+    # SPECIFICALLY rather than of a wrapper generically. `W` needed no new
+    # machinery to stop paying it: it is built inside `__pnaInstall`, where the
+    # DOM inserters' `__hnm` WeakMap already lives, so it simply registers there.
+    #
+    # Chromium's wrapper is therefore cloaked IN-PAGE now, exactly as Firefox's
+    # is, and both arms read the same. The two engines' native FORMS still
+    # differ (V8 one line, SpiderMonkey three), which is why the expected
+    # strings below do not merge.
+    assert r["workerPnaName"] is None, (
+        f"{seam}: the wrapper carries a `__pnaName` own property again — that "
+        f"is the PS-368 tell coming back"
+    )
     if seam == "chromium_bootstrap":
-        # Chromium's extension-side toString patch reads this marker; the
-        # wrapper is not cloaked in-page, so its source text is its own.
-        assert r["workerPnaName"] == "Worker"
+        assert r["workerToString"] == "function Worker() { [native code] }"
     else:
-        # Firefox cloaks through a closure WeakMap and adds no marker.
-        assert r["workerPnaName"] is None
         assert r["workerToString"] == "function Worker() {\n    [native code]\n}"
 
 
@@ -323,8 +341,14 @@ def test_falsification_chromium_without_the_pin_reports_two(tmp_path):
     assert r["origWorkerLength"] == 1
     assert r["workerLength"] == 2 and r["sharedLength"] == 2
     # ...and everything else the seam guarantees survived the mutation, so the
-    # RED above can only be the arity.
-    assert r["workerName"] == "Worker" and r["workerPnaName"] == "Worker"
+    # RED above can only be the arity. PS-368 replaced the `__pnaName` own
+    # property with a registration in the bootstrap's own closure WeakMap, so
+    # the surviving guarantee is now read as the OBSERVABLE (the wrapper still
+    # stringifies native) rather than as the marker's presence — which is the
+    # stronger witness anyway: a marker can be present while the cloak is dead.
+    assert r["workerName"] == "Worker"
+    assert r["workerToString"] == "function Worker() { [native code] }"
+    assert r["workerPnaName"] is None
 
 
 def test_falsification_firefox_bootstrap_without_the_pin_reports_two(tmp_path):

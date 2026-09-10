@@ -19,6 +19,7 @@ import pathlib
 from .worker_wrap import (
     CHROMIUM_WORKER_CLOAK,
     WorkerCloak,
+    chromium_leaf_cloak_js,
     firefox_native_wrap_js,
     firefox_worker_cloak,
     realm_bootstrap_js,
@@ -84,7 +85,10 @@ _BUDGET = 512
 # tests/test_webgl_ext.py. Chromium's readback is the baseline every prior
 # reading was taken against (PS-78 boundary: "Chromium is unchanged"), so this
 # seam must reproduce it EXACTLY, not merely equivalently.
-_CHROMIUM_NATIVE_WRAP = r"""  function nativeWrap(orig, replacement) {
+_CHROMIUM_NATIVE_WRAP = (
+    chromium_leaf_cloak_js(2)
+    + "\n"
+    + r"""  function nativeWrap(orig, replacement) {
     // RE-HOUSE the caller's function EXPRESSION inside a real method shorthand.
     //
     // A sloppy-mode function expression owns `prototype`, `arguments` and
@@ -112,21 +116,26 @@ _CHROMIUM_NATIVE_WRAP = r"""  function nativeWrap(orig, replacement) {
       // which would go stale silently against a future engine.
       Object.defineProperty(shell, 'length', { value: orig.length });
       Object.defineProperty(shell, 'name', { value: orig.name });
-      // Mark for the native_ext Function.prototype.toString patch so a detector
-      // calling Function.prototype.toString.call(replacement) reads native. A
-      // plain replacement.toString override is bypassed by that .call form.
-      //
-      // This marker is READ AS AN OWN PROPERTY (`this.__pnaName`, see
-      // native_ext.py's applyNativePatch), so a Chromium wrapper the cloak can
-      // serve necessarily owns it and the best achievable shape here is
-      // ["__pnaName","length","name"]. That is a deliberate trade, not an
-      // oversight: it drops the three ENGINE-shaped leaks that identify a
-      // wrapper generically. The Firefox helper carries its marker in a WeakMap
-      // and therefore does reach the exact native set.
-      Object.defineProperty(shell, '__pnaName', { value: orig.name });
     } catch (e) {}
-    return shell;
+    // Register for THIS LEAF's own Function.prototype.toString cloak (spliced
+    // above it) so a detector calling
+    // Function.prototype.toString.call(replacement) reads native. A plain
+    // replacement.toString override is bypassed by that .call form.
+    //
+    // ⛔ THE MARK LIVES IN A CLOSURE WEAKMAP, NOT AN OWN PROPERTY (PS-368).
+    // This used to pin `__pnaName`, read cross-script by native_ext's
+    // applyNativePatch — which is what made a marker work at all across twelve
+    // content scripts with no shared closure, and what made every wrapper own
+    // ["__pnaName","length","name"] where a native function owns two names.
+    // That third name was readable in one line by
+    // `Object.getOwnPropertyNames(fn)`, entirely independently of the toString
+    // cloak it existed to serve, and it identified persona SPECIFICALLY rather
+    // than a wrapper generically. It was recorded here as a deliberate trade;
+    // measurement on the wrappers refuted the trade, and this leaf now carries
+    // its own cloak so the marker has nothing left to buy.
+    return __pncMark(shell, orig.name);
   }"""
+)
 
 _CONTENT_SCRIPT = r"""
 (function () {

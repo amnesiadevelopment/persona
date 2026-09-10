@@ -27,7 +27,12 @@ throbber that also blocked every Sheets popover/overlay from painting.
 import json
 import pathlib
 
-from .worker_wrap import realm_bootstrap_js, realm_guard_js, realm_slot_js
+from .worker_wrap import (
+    chromium_leaf_cloak_js,
+    realm_bootstrap_js,
+    realm_guard_js,
+    realm_slot_js,
+)
 
 # The same noise repair must hold in a fresh child frame and in a Web Worker's
 # OffscreenCanvas measureText, else a scanner measuring text in a pristine realm
@@ -59,6 +64,7 @@ CONTENT_SCRIPT = r"""
     if ((!proto || !proto.measureText) && (!off || !off.measureText)) return;
 __MT_REALM_GUARD__
 __MT_REALM_SLOT__
+__MT_LEAF_CLOAK__
 
     // One-shot, un-noised true width of `text` in `font`, via a throwaway DOM
     // node measured and removed immediately (the bounding-rect read is not
@@ -154,12 +160,19 @@ __MT_REALM_SLOT__
         var shell = ({ m() { return inner.apply(this, arguments); } }).m;
         Object.defineProperty(shell, 'length', { value: orig.length });
         Object.defineProperty(shell, 'name', { value: 'measureText' });
-        Object.defineProperty(shell, '__pnaName', { value: 'measureText' });
+        // ⛔ THE MARK GOES IN A CLOSURE WEAKMAP, NOT AN OWN PROPERTY (PS-368).
+        // This used to pin `__pnaName` for native_ext's cross-script reader,
+        // which made every wrapper own a third name that
+        // `Object.getOwnPropertyNames(ctx.measureText)` reads in one line —
+        // persona identification independent of the toString cloak the marker
+        // existed to serve. This leaf now carries its own cloak (spliced above)
+        // and registers the same fact where a page cannot enumerate it.
+        __pncMark(shell, 'measureText');
         measureText = shell;
       } catch (e) {
         try {
           Object.defineProperty(measureText, 'name', { value: 'measureText' });
-          Object.defineProperty(measureText, '__pnaName', { value: 'measureText' });
+          __pncMark(measureText, 'measureText');
         } catch (e2) {}
       }
       try { target.measureText = measureText; } catch (e) {}
@@ -196,6 +209,8 @@ def build_measuretext_extension(base_dir: str) -> str:
     ext_dir = pathlib.Path(base_dir)
     ext_dir.mkdir(parents=True, exist_ok=True)
     js = CONTENT_SCRIPT.replace(
+        "__MT_LEAF_CLOAK__", chromium_leaf_cloak_js(4)
+    ).replace(
         "__MT_REALM_BOOTSTRAP__", realm_bootstrap_js("applyMtPatch")
     ).replace(
         "__MT_REALM_GUARD__", realm_guard_js("measuretext")

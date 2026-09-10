@@ -338,7 +338,18 @@ def test_the_marker_set_is_a_strict_subset_and_gains_no_new_name(shipped, realm)
     # `__pnaRealm` stays allowed and that bound is inherited, not closed: it
     # hangs off `Object`, so a detector walking getOwnPropertyNames(Object)
     # still finds it. worker_wrap.py states that in place.
-    allowed = {"__pnaName", "__pnaRealm"}
+    #
+    # ⭐ `__pnaName` LEFT THIS SET IN PS-368 rather than being tolerated
+    # indefinitely. It was excused here because it is per-FUNCTION rather than a
+    # global, and this file's scope is global names — a correct carve-out at the
+    # time. Measurement on the wrappers then refuted the trade it rested on:
+    # `Object.getOwnPropertyNames(<any spoofed wrapper>)` read a third name where
+    # a native function reads two, and `"__pnaName" in fn` was persona
+    # identification in one line. Every module now carries its own closure-WeakMap
+    # cloak, so the name is not merely un-excused here — it exists nowhere a page
+    # can reach, and `tests/test_ps368_marker_weakmap.py` asserts that positively
+    # on the wrappers themselves, which is where the property actually lived.
+    allowed = {"__pnaRealm"}
     unexpected = [m for m in shipped[realm] if m not in allowed]
     assert not unexpected, (
         f"{realm}: unexpected persona-family global(s) {unexpected}; the guard "

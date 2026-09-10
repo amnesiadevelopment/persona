@@ -1,7 +1,11 @@
 import json
 import pathlib
 
-from .worker_wrap import realm_bootstrap_js, realm_guard_js
+from .worker_wrap import (
+    chromium_leaf_cloak_js,
+    realm_bootstrap_js,
+    realm_guard_js,
+)
 
 # Injected in the MAIN world at document_start. Wrapped in an IIFE so no injected
 # name leaks as a page global (a page redeclaring the same const would throw and
@@ -29,35 +33,28 @@ __LOCALE_REALM_GUARD__
     // Make our wrapped built-ins read as native in THIS realm (page or worker):
     // a masking detector (creepjs) calls Function.prototype.toString on Intl in a
     // Web Worker and, seeing our wrapper source, marks the Timezone/Intl
-    // component "rejected". native_ext also patches this per realm via the shared
-    // registry, but load order between the two leaves isn't guaranteed — so
-    // re-apply the same __pnaName-aware toString here.
+    // component "rejected". Every other leaf now installs the same cloak, and
+    // load order between them is not guaranteed — so this one applies its own
+    // and CHAINS, exactly as they do.
     //
-    // CHAIN onto whatever is installed; do NOT guard on a shared global. The two
-    // scripts used to coordinate through `G.__pnaToStringPatched` so that at most
-    // one wrapped a realm — an enumerable global under persona's own prefix,
-    // which `Object.keys(window)` found in one line in every realm. Delegating to
-    // `_ots` (the engine's toString, or native_ext's patch) makes the two compose
-    // with no shared name, and keeps the property the flag protected: whichever
-    // patch ends up outermost answers a `__pnaName` hit itself and never reaches
-    // the one below, so a marked wrapper renders the native form EXACTLY once, in
-    // either load order. See native_ext.py's applyNativePatch and
-    // worker_wrap.py:28-32 for the same idiom.
-    try {
-      const FP = G.Function && G.Function.prototype;
-      if (FP) {
-        const _ots = FP.toString;
-        const _pts = function () {
-          try { const n = this && this.__pnaName;
-            if (typeof n === "string") return "function " + n + "() { [native code] }";
-          } catch (e) {}
-          return _ots.apply(this, arguments);
-        };
-        try { Object.defineProperty(_pts, "__pnaName", { value: "toString" }); } catch (e) {}
-        try { Object.defineProperty(_pts, "name", { value: "toString" }); } catch (e) {}
-        FP.toString = _pts;
-      }
-    } catch (e) {}
+    // ⛔ THIS BLOCK USED TO BE A SECOND, HAND-ROLLED COPY of native_ext's
+    // marker-reading `patched`, pinning `__pnaName` on itself and reading
+    // `this.__pnaName` off every wrapper. It is now the SHARED emitter
+    // (`chromium_leaf_cloak_js`), which is the one source of that text — the
+    // twelve `realm_guard` copies are the in-tree lesson about what a pasted
+    // twin costs. Two behaviours it keeps and one it drops:
+    //
+    //   * CHAIN, don't flag-guard. The two scripts used to coordinate through
+    //     `G.__pnaToStringPatched` so at most one wrapped a realm — an
+    //     enumerable global under persona's own prefix that `Object.keys(window)`
+    //     found in one line, in every realm. Delegating instead composes with
+    //     no shared name at all, in either load order.
+    //   * The patch reads as native ITSELF (`__pncMark(__pncTs, "toString")`).
+    //   * DROPPED: the own-property marker. See the note beside
+    //     `_CHROMIUM_LEAF_CLOAK` in worker_wrap.py — an own `__pnaName` made
+    //     every wrapper read a third name under `Object.getOwnPropertyNames`,
+    //     which is persona identification in one line.
+__LOCALE_LEAF_CLOAK__
     const Intl = G.Intl, Dp = G.Date && G.Date.prototype;
     if (!Intl) return;
     const _resolved = function (orig) {
@@ -71,9 +68,10 @@ __LOCALE_REALM_GUARD__
         return Reflect.construct(Ctor, [locales || LOCALE, options], W);
       };
       W.prototype = Ctor.prototype;
-      // Read as native under Function.prototype.toString (native_ext patch), so
-      // a masking detector doesn't see the wrapper source.
-      try { Object.defineProperty(W, "__pnaName", { value: name }); } catch (e) {}
+      // Read as native under Function.prototype.toString (this leaf's own cloak,
+      // spliced above), so a masking detector doesn't see the wrapper source.
+      // ⛔ WeakMap, not an own `__pnaName` (PS-368).
+      __pncMark(W, name);
       try { Object.defineProperty(W, "name", { value: name }); } catch (e) {}
       if (Ctor.supportedLocalesOf) W.supportedLocalesOf = Ctor.supportedLocalesOf.bind(Ctor);
       if (Ctor.prototype && Ctor.prototype.resolvedOptions) {
@@ -103,9 +101,11 @@ __LOCALE_REALM_GUARD__
         // keeps the platform's own reading rather than the wrapper's.
         if (orig) Object.defineProperty(shell, "length", { value: orig.length });
       } catch (e) { shell = fn; }
-      try { Object.defineProperty(shell, "__pnaName", { value: name }); } catch (e) {}
       try { Object.defineProperty(shell, "name", { value: name }); } catch (e) {}
-      return shell;
+      // ⛔ WeakMap, not an own `__pnaName` (PS-368): a native Date method owns
+      // exactly ["length","name"], so a third name here was readable in one
+      // line and identified persona specifically.
+      return __pncMark(shell, name);
     };
     if (Dp) {
       ["toLocaleString", "toLocaleDateString", "toLocaleTimeString"].forEach(function (n) {
@@ -171,6 +171,8 @@ def build_locale_extension(locale: str, base_dir: str) -> str:
     ext_dir = pathlib.Path(base_dir)
     ext_dir.mkdir(parents=True, exist_ok=True)
     js = CONTENT_SCRIPT.replace("%LOCALE%", json.dumps(locale)).replace(
+        "__LOCALE_LEAF_CLOAK__", chromium_leaf_cloak_js(4)
+    ).replace(
         "__LOCALE_REALM_BOOTSTRAP__", realm_bootstrap_js("applyLocalePatch")
     ).replace(
         "__LOCALE_REALM_GUARD__", realm_guard_js("locale")
