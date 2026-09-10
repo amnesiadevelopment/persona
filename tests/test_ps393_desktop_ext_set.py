@@ -94,6 +94,73 @@ EXPECTED_PERSONA_COUNT = 33
 ENGINE_COUNT_REAL_HARDWARE = 35
 ENGINE_COUNT_GPULESS_VM = 36
 
+#: ⛔ THE SIXTEEN WEBGL1 EXTENSIONS THAT WEBGL2 PROMOTED INTO CORE.
+#:
+#: A conforming WebGL2 context CANNOT list any of them — the functionality is in
+#: the core API, so there is no extension object left to hand out. That makes
+#: this a CATEGORY error rather than a MAGNITUDE one: a wrong count needs a
+#: baseline to detect, while `webgl2` reporting `ANGLE_instanced_arrays` is a
+#: one-line positive identification on any hardware.
+#:
+#: ⭐ NOT TRANSCRIBED FROM A REVIEW COMMENT — `test_the_promoted_set_is_the_same_
+#: sixteen_from_two_independent_sources` re-derives this tuple from the corpus
+#: AND from this module's own iOS pair, which are different hosts with different
+#: totals (36/30 vs a WebKit device reading). Both produce exactly these sixteen,
+#: because the set is a property of the WebGL2 spec rather than of a GPU.
+PROMOTED_TO_WEBGL2_CORE = (
+    "ANGLE_instanced_arrays",
+    "EXT_blend_minmax",
+    "EXT_disjoint_timer_query",
+    "EXT_frag_depth",
+    "EXT_sRGB",
+    "EXT_shader_texture_lod",
+    "OES_element_index_uint",
+    "OES_fbo_render_mipmap",
+    "OES_standard_derivatives",
+    "OES_texture_float",
+    "OES_texture_half_float",
+    "OES_texture_half_float_linear",
+    "OES_vertex_array_object",
+    "WEBGL_color_buffer_float",
+    "WEBGL_depth_texture",
+    "WEBGL_draw_buffers",
+)
+
+#: The WebGL2-ONLY extensions the liaison measured on the owner's real Windows
+#: host. ⛔ These appear in NO WebGL1 list and cannot be derived from one: the
+#: GL1 array minus the promoted sixteen is 17 entries where the engine reports
+#: 32, and these are the other half.
+#:
+#: Two of them (`KHR_parallel_shader_compile`, `WEBGL_blend_func_extended`) are
+#: also the WebGL1 arm's two stated residuals. That is NOT a contradiction —
+#: the engine reports them on both contexts, and each list is derived from its
+#: OWN reading. Carrying a GL1 omission onto GL2 would be deriving one list from
+#: the other, which is the thing this file forbids.
+WEBGL2_ONLY = (
+    "EXT_color_buffer_float",
+    "EXT_conservative_depth",
+    "EXT_disjoint_timer_query_webgl2",
+    "EXT_render_snorm",
+    "EXT_texture_norm16",
+    "KHR_parallel_shader_compile",
+    "NV_shader_noperspective_interpolation",
+    "OES_draw_buffers_indexed",
+    "OES_sample_variables",
+    "OES_shader_multisample_interpolation",
+    "OVR_multiview2",
+    "WEBGL_blend_func_extended",
+    "WEBGL_clip_cull_distance",
+    "WEBGL_provoking_vertex",
+    "WEBGL_stencil_texturing",
+)
+
+#: The WebGL2 count this rework claims, stated as a constant for the same reason
+#: EXPECTED_PERSONA_COUNT is: so the PR's falsifiable claim and the guard are one
+#: value. It equals the engine's own measured WebGL2 count on the owner's host.
+EXPECTED_PERSONA_GL2_COUNT = 32
+ENGINE_GL2_COUNT_REAL_HARDWARE = 32
+ENGINE_GL2_COUNT_GPULESS_VM = 30
+
 
 def _literal(name: str) -> list[str]:
     """The JS array as WRITTEN in the source, order preserved.
@@ -319,4 +386,265 @@ def test_the_list_is_still_replaced_wholesale_not_filtered() -> None:
         "getSupportedExtensions no longer returns the hardcoded list wholesale. "
         "If it now filters the host's real set, re-derive this file's premise: "
         "the literal would no longer be what the page reads."
+    )
+
+
+# --- the SECOND context, which is where the rework happened ----------------
+#
+# ⛔ THE GAP THIS BLOCK CLOSES, STATED PLAINLY. The first version of this file
+# was 322 lines and nine tests, and NOT ONE of them mentioned `webgl2` / `GL2`.
+# It was green while `gpu_ext.py` served the WebGL1 array verbatim to a WebGL2
+# context, so the suite reported 33 as correct for the one context it looked at
+# while the other advertised sixteen impossible entries. Green CI and a correct
+# change are independent facts; a guard that inspects 1/N of a change is
+# evidence about 1/N of it.
+
+
+def test_the_webgl2_arm_no_longer_falls_through_to_the_webgl1_list() -> None:
+    """⛔ THE BLOCKING DEFECT, pinned at the selection itself.
+
+    Before the rework::
+
+        var EXTS_GL2 = (OS === "ios") ? IOS_GL2_EXTS : STABLE_EXTS;
+
+    Only the iOS arm split; every other platform handed the SAME array to both
+    ``installOn`` call sites. This asserts on the source text of the selection
+    rather than on the arrays, because it is the fall-through — not any
+    particular list's contents — that is the defect.
+    """
+    src = GPU_EXT_SOURCE.read_text(encoding="utf-8")
+    match = re.search(r"var EXTS_GL2 = ([^;]+);", src)
+    assert match, "the EXTS_GL2 selection is no longer a var declaration"
+    selection = " ".join(match.group(1).split())
+    assert "STABLE_EXTS" not in selection or "STABLE_GL2_EXTS" in selection, (
+        "EXTS_GL2 falls through to the WebGL1 list again:\n"
+        f"  {selection}\n"
+        "A WebGL2 context served the WebGL1 array advertises the sixteen "
+        "extensions WebGL2 promoted into core, which is impossible in every "
+        "browser that has ever shipped — a positive identification needing no "
+        "baseline. Give the arm its own measured GL2 list."
+    )
+
+
+@pytest.mark.parametrize(
+    "name", ["DESKTOP_GL2_EXTS", "APPLE_GL2_EXTS", "ANDROID_GL2_EXTS"]
+)
+def test_no_core_promoted_extension_appears_on_any_webgl2_list(name: str) -> None:
+    """⭐ THE ONE GUARD THAT NEEDS NO HOST, AND THE ONE THAT WAS MISSING.
+
+    This assertion outlives any particular count. Counts move with hardware —
+    35 on the owner's card, 36 on the GPU-less VM — but no hardware anywhere
+    makes a promoted extension reachable on a WebGL2 context, so this binds on
+    every arm including the two for which no WebGL2 reading exists.
+
+    Parametrised across all three non-iOS arms deliberately: the defect was that
+    ONE shared array reached both contexts, and a guard covering only the arm
+    that happened to be measured would let the next arm re-create it.
+    """
+    gl2 = set(_literal(name))
+    impossible = gl2 & set(PROMOTED_TO_WEBGL2_CORE)
+    assert not impossible, (
+        f"{name} advertises extensions a conforming WebGL2 context CANNOT "
+        f"expose, because WebGL2 promoted them into core: {sorted(impossible)}. "
+        "This is a category error, not a magnitude one — a detector needs no "
+        "baseline and no host knowledge to read it, unlike a wrong count."
+    )
+
+
+def test_the_promoted_set_is_the_same_sixteen_from_two_independent_sources() -> None:
+    """⭐ THE CONSTANT IS DERIVED, NOT TRANSCRIBED FROM A REVIEW COMMENT.
+
+    ``PROMOTED_TO_WEBGL2_CORE`` is the load-bearing input to the guard above, so
+    a typo in it would silently weaken that guard rather than fail. This
+    re-derives it from two sources that share no provenance:
+
+      * the in-tree corpus, GPU-LESS VM, engine layer OFF (36 GL1 / 30 GL2);
+      * this module's OWN measured iOS pair, read from WebKit's hand-written
+        macro sequences on a real device (39 GL1 / 36 GL2).
+
+    Different engines, different hosts, different totals. If the same sixteen
+    fall out of both, the set is a property of the WebGL2 SPECIFICATION rather
+    than of any GPU — which is exactly the claim the guard above rests on.
+
+    ⚠️ The iOS pair is asserted as a SUBSET, not an equality, and that is not a
+    weakening. Safari does not ship `EXT_disjoint_timer_query` on either
+    context (see the IOS_GL*_EXTS note: timer queries are a timing-attack
+    surface), so it can appear in neither difference. An entry absent from both
+    of a pair's lists says nothing about promotion, and demanding equality here
+    would assert something the iOS reading cannot answer.
+    """
+    corpus_gl1 = set(_corpus_list("windows", "off", "webgl1"))
+    corpus_gl2 = set(_corpus_list("windows", "off", "webgl2"))
+    assert corpus_gl1 - corpus_gl2 == set(PROMOTED_TO_WEBGL2_CORE), (
+        "the corpus' own GL1-minus-GL2 difference is no longer the sixteen this "
+        "file calls the promoted set:\n"
+        f"  corpus says: {sorted(corpus_gl1 - corpus_gl2)}\n"
+        f"  we say:      {sorted(PROMOTED_TO_WEBGL2_CORE)}"
+    )
+
+    ios_only_gl1 = set(_literal("IOS_GL1_EXTS")) - set(_literal("IOS_GL2_EXTS"))
+    assert ios_only_gl1 <= set(PROMOTED_TO_WEBGL2_CORE), (
+        "this module's own iOS pair drops an extension from WebGL2 that the "
+        f"promoted set does not name: {sorted(ios_only_gl1 - set(PROMOTED_TO_WEBGL2_CORE))}. "
+        "Either the iOS pair or the promoted set is wrong; both are measured, "
+        "so find out which before editing either."
+    )
+
+
+def test_the_webgl2_count_is_the_number_the_PR_claims() -> None:
+    """The second falsifiable claim, pinned as a constant like the first.
+
+    The liaison reads this number back off the host directly, so it lives here
+    as a value rather than as a sentence in a PR body that can drift from the
+    code.
+    """
+    gl2 = _literal("DESKTOP_GL2_EXTS")
+    assert len(gl2) == EXPECTED_PERSONA_GL2_COUNT, (
+        f"DESKTOP_GL2_EXTS has {len(gl2)} entries; this slice claims "
+        f"{EXPECTED_PERSONA_GL2_COUNT}, which is also what the engine reports "
+        "on the owner's host. Update the claim deliberately, in the PR and "
+        "here, rather than letting the two drift."
+    )
+    assert len(set(gl2)) == len(gl2), f"DESKTOP_GL2_EXTS has duplicates: {gl2}"
+
+
+def test_the_webgl2_only_extensions_are_present_and_could_not_have_been_derived() -> None:
+    """⛔ THE HALF A SUBTRACTION CANNOT PRODUCE.
+
+    Removing the promoted sixteen from the 33-entry WebGL1 list leaves 17. The
+    engine reports 32. The difference is these WebGL2-only extensions, which
+    appear in NO WebGL1 list on any arm — so a rework that had merely subtracted
+    would have traded sixteen impossible entries for fifteen absences and looked
+    complete.
+
+    Asserting both halves: that each is present in the GL2 list, and that none
+    of them is in the GL1 list (which is what makes them underivable).
+    """
+    gl2 = set(_literal("DESKTOP_GL2_EXTS"))
+    gl1 = set(_literal("DESKTOP_EXTS"))
+    for ext in WEBGL2_ONLY:
+        assert ext in gl2, (
+            f"{ext} is missing from DESKTOP_GL2_EXTS. The engine reports it on "
+            "its WebGL2 context, and it exists in no WebGL1 list — so it can "
+            "only come from the measured GL2 reading."
+        )
+        assert ext not in gl1, (
+            f"{ext} is in DESKTOP_EXTS (the WebGL1 list). If a measurement now "
+            "says the engine reports it on WebGL1 too, cite it — but note that "
+            "would mean this file's 'underivable' argument needs re-deriving."
+        )
+
+    survivors = gl1 - set(PROMOTED_TO_WEBGL2_CORE)
+    assert len(survivors) == 17, (
+        f"the GL1 list minus the promoted set is now {len(survivors)}, not 17. "
+        "The arithmetic in this file's reasoning (17 + 15 = 32) is stale; "
+        "re-derive it before trusting the counts around it."
+    )
+    assert gl2 == survivors | set(WEBGL2_ONLY), (
+        "DESKTOP_GL2_EXTS is no longer exactly the surviving GL1 entries plus "
+        "the measured WebGL2-only set:\n"
+        f"  unexpected: {sorted(gl2 - (survivors | set(WEBGL2_ONLY)))}\n"
+        f"  missing:    {sorted((survivors | set(WEBGL2_ONLY)) - gl2)}"
+    )
+
+
+def test_the_mobile_gles_families_stay_absent_from_the_desktop_webgl2_set() -> None:
+    """⛔ THE REFUSAL APPLIES TO BOTH CONTEXTS, NOT JUST THE ONE IT WAS WRITTEN FOR.
+
+    The VM corpus lists astc/etc/etc1 on its WebGL2 context too, for the same
+    reason it lists them on WebGL1: SwiftShader advertises everything. A guard
+    that refused them on WebGL1 only would let the software-rasteriser signature
+    in through the second context.
+    """
+    gl2 = set(_literal("DESKTOP_GL2_EXTS"))
+    for ext in MOBILE_GLES:
+        assert ext not in gl2, (
+            f"{ext} was added to DESKTOP_GL2_EXTS. A claimed Direct3D11 "
+            "renderer advertising the mobile GLES compression families is the "
+            "software-rasteriser signature audit7 #3 exists to catch — on "
+            "either context."
+        )
+
+
+def test_the_unmeasured_arms_got_the_subtraction_and_nothing_invented() -> None:
+    """⚠️ THE WEAKER CLAIM, PINNED AS THE WEAKER CLAIM.
+
+    No WebGL2 reading exists for macOS or Android, so their GL2 lists are their
+    GL1 lists minus the promoted sixteen and NOTHING ELSE. That is deliberate
+    and this test exists to keep it honest in BOTH directions: a future edit
+    that pads them toward a plausible length by copying the desktop arm's
+    WebGL2-only extensions would be inventing values for hardware nobody
+    measured, and a real reading should replace this assertion rather than
+    quietly satisfy it.
+    """
+    for gl1_name, gl2_name in (
+        ("APPLE_EXTS", "APPLE_GL2_EXTS"),
+        ("ANDROID_EXTS", "ANDROID_GL2_EXTS"),
+    ):
+        gl1 = _literal(gl1_name)
+        gl2 = _literal(gl2_name)
+        expected = [e for e in gl1 if e not in set(PROMOTED_TO_WEBGL2_CORE)]
+        assert gl2 == expected, (
+            f"{gl2_name} is not exactly {gl1_name} minus the promoted set:\n"
+            f"  ours:     {gl2}\n"
+            f"  expected: {expected}\n"
+            "No WebGL2 reading exists for this arm. If one now does, cite it "
+            "here and replace this assertion with the measured list — do not "
+            "pad toward a plausible length from an arm claiming different "
+            "hardware."
+        )
+
+
+def test_the_two_contexts_are_not_byte_identical_on_any_arm() -> None:
+    """⭐ THE MEASURED SYMPTOM, ASSERTED DIRECTLY.
+
+    The liaison's reading was ``33 for both webgl and webgl2, byte-identical``
+    where the engine reports ``35 and 32 with different contents``. A script
+    that asks both contexts and observes they match has a tell WITHOUT knowing
+    the correct contents of either — so pin the inequality itself, at the level
+    a page would see it, rather than only pinning the contents that happen to
+    produce it today.
+    """
+    for gl1_name, gl2_name in (
+        ("DESKTOP_EXTS", "DESKTOP_GL2_EXTS"),
+        ("APPLE_EXTS", "APPLE_GL2_EXTS"),
+        ("ANDROID_EXTS", "ANDROID_GL2_EXTS"),
+        ("IOS_GL1_EXTS", "IOS_GL2_EXTS"),
+    ):
+        gl1 = _literal(gl1_name)
+        gl2 = _literal(gl2_name)
+        assert gl1 != gl2, (
+            f"{gl1_name} and {gl2_name} are byte-identical. Real browsers never "
+            "return the same extension list for a WebGL1 and a WebGL2 context, "
+            "so two matching arrays are a tell regardless of their contents."
+        )
+
+
+def test_the_emitted_script_serves_a_different_list_to_each_context(tmp_path) -> None:
+    """End to end through the real builder, on the arm that was broken.
+
+    The source-literal tests above cannot see a selection that is correct in the
+    literals and wrong at the call site. This runs the actual builder and reads
+    the emitted script's own selection lines.
+    """
+    path = build_gpu_extension(
+        1337,
+        "windows",
+        str(tmp_path / "w"),
+        0,
+        engine_platform=engine_platform_for("windows", "desktop"),
+    )
+    js = (pathlib.Path(path) / "gpu.js").read_text(encoding="utf-8")
+
+    rendered = re.search(r"var DESKTOP_GL2_EXTS = \[(.*?)\];", js, re.S)
+    assert rendered, "DESKTOP_GL2_EXTS never reached the emitted script"
+    entries = re.findall(r'"([^"]+)"', rendered.group(1))
+    assert len(entries) == EXPECTED_PERSONA_GL2_COUNT
+    assert not (set(entries) & set(PROMOTED_TO_WEBGL2_CORE)), (
+        "the emitted script's WebGL2 list carries core-promoted extensions"
+    )
+
+    assert "var EXTS_GL2 = (OS === \"ios\") ? IOS_GL2_EXTS : STABLE_GL2_EXTS;" in js, (
+        "the emitted script's EXTS_GL2 selection is not the per-context one; "
+        "the desktop arm may be falling through to the WebGL1 list again"
     )
