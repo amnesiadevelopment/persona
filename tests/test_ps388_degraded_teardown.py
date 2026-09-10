@@ -40,6 +40,7 @@ import os
 import signal
 import subprocess
 import sys
+import textwrap
 import time
 
 import pytest
@@ -334,20 +335,90 @@ def test_the_degradation_is_anchored_on_the_group_never_on_a_name() -> None:
 
 
 @POSIX_ONLY
-def test_the_undo_refuses_to_signal_our_own_group() -> None:
-    """The self-kill guard is REUSED rather than restated, and it holds.
+def test_the_undo_is_not_gated_on_the_guard_that_defines_its_reason_to_exist() -> None:
+    """⛔⛔ THE PATH THE UNDO WAS WRITTEN FOR, DRIVEN RATHER THAN REASONED ABOUT.
 
-    A SIGCONT to our own group is harmless; the point is that `_resume_group`
-    goes through `signallable_group`, so the same refusal that protects the
-    sweep protects this. If it ever stopped doing so, the symptom would appear
-    on the SIGKILL side, where it is not harmless at all.
+    `_resume_group` exists for the paths where `_sweep_group` is a NO-OP — a
+    `signallable_group` refusal, or a `killpg` that fails and is swallowed by
+    the sweep's own `contextlib.suppress`. An earlier revision of this arm
+    gated the resume on the SAME `signallable_group` call as the sweep, which
+    made the two bodies identical modulo the signal number: when the guard
+    refused, BOTH returned without signalling and the tree was left alive AND
+    stopped. That is AC4's stated failure mode arriving through the function
+    written to prevent it, and NO source-ordering assertion can see it — the
+    call is still there, still first, and still does nothing.
+
+    So this drives the refusal for real: `signallable_group` is forced to
+    refuse (exactly as it does for our own group, or on a platform with no
+    `killpg`), and the wedge must STILL be undone.
+    """
+    pytest.importorskip("psutil")
+    proc, pgid = _spawn_stopped_group()
+    try:
+        behaviour_checks._stop_group_or_refuse(pgid)
+        assert _status(proc.pid) == "stopped"
+
+        import src.services.browser.process_group as process_group
+
+        original = process_group.signallable_group
+        process_group.signallable_group = lambda _pgid: None  # the refusal
+        try:
+            behaviour_checks._resume_group(pgid)
+        finally:
+            process_group.signallable_group = original
+
+        for _ in range(20):
+            if _status(proc.pid) != "stopped":
+                break
+            time.sleep(0.05)
+        assert _status(proc.pid) != "stopped", (
+            "with the group guard REFUSING, the undo left the tree stopped. "
+            "That is the exact state `_resume_group` exists to prevent: a "
+            "sweep that is a no-op on the same condition leaves a SIGSTOPped "
+            "tree alive, unreapable, invisible to any CPU sampler, holding its "
+            "RSS indefinitely — the leak this whole direction watches for, "
+            "arriving through the gate that watches for it."
+        )
+    finally:
+        behaviour_checks._resume_group(pgid)
+        proc.kill()
+        proc.wait(timeout=5)
+
+
+def test_the_undo_does_not_reuse_the_sweeps_group_guard_as_its_own_gate() -> None:
+    """The structural half of the test above: the per-pid leg is UNCONDITIONAL.
+
+    Stated as source because the behavioural test can only prove the undo works
+    on ONE forced refusal, while the defect it replaces was a *shape*: the undo
+    early-returning on the guard, so that every no-op path of the sweep was
+    also a no-op path of the undo.
     """
     source = inspect.getsource(behaviour_checks._resume_group)
-    assert "signallable_group" in source, (
-        "the undo signals a group without consulting the self-kill guard"
+    assert "_degradable_pids(pgid)" in source, (
+        "the undo does not resolve per-pid targets from the recorded group, so "
+        "it can only ever act when `killpg` is available and permitted — which "
+        "is exactly the case where the sweep already handles it"
     )
-    # Our own group must be refused: the call is a no-op rather than a signal.
-    behaviour_checks._resume_group(os.getpgrp())  # must not raise
+    guard_index = source.index("signallable_group(pgid)")
+    perpid_index = source.index("_degradable_pids(pgid)")
+    between = source[guard_index:perpid_index]
+    assert "return" not in between, (
+        "the undo RETURNS between consulting the group guard and its per-pid "
+        "leg, so a refusal skips the only leg that can act on a refusal"
+    )
+
+
+def test_the_undo_is_safe_against_our_own_group() -> None:
+    """A SIGCONT to our own group is harmless, and this proves it in situ.
+
+    ⚠️ NOT a claim that the undo REFUSES our own group — it deliberately does
+    not, because refusing is what made it inert (see above). The self-kill
+    hazard `signallable_group` guards is a SIGKILL hazard; every member of our
+    own group is running by construction (we are executing), so a SIGCONT to it
+    is a no-op at the kernel level rather than a danger.
+    """
+    behaviour_checks._resume_group(os.getpgrp())  # must not raise, must not stop us
+    assert True  # reaching this line IS the assertion: we are still running
 
 
 # --- the falsification is the SHIPPED shape ---------------------------------
@@ -361,18 +432,46 @@ def test_the_falsification_signals_the_held_pid_not_the_handle() -> None:
     `proc.terminate()` would tear the whole group down, report a comfortable
     zero survivors, and certify nothing. Section 8's falsification records this
     in capitals; this arm inherits the shape rather than re-deriving it.
+
+    ⚠️ THE EXECUTABLE BODY, NOT THE DOCSTRING OR THE COMMENTS. Both of those
+    NAME the forbidden calls in order to forbid them, so a substring search
+    over raw source fails on the very prose that gets this right.
+
+    ⛔ AND THE OBVIOUS WAY TO STRIP THE DOCSTRING IS VERSION-DEPENDENT — this
+    test failed on all three CI platforms while passing locally for exactly
+    that reason, so the mechanism is recorded rather than left to be
+    rediscovered. `source.replace(fn.__doc__, "")` works on <=3.12 and SILENTLY
+    NO-OPS on 3.13+: gh-81283 made the compiler DEDENT docstrings, so `__doc__`
+    is no longer a substring of the source it came from and the replace removes
+    nothing. A strip that quietly stops stripping leaves the prose in the
+    haystack, and the assertion then fires on the sentence forbidding the call.
+    So the body is extracted from the AST instead, which drops the docstring
+    AND the comments by construction and depends on no version's formatting.
     """
-    source = inspect.getsource(
-        behaviour_checks._falsify_no_process_survives_a_degraded_session
+    import ast
+
+    source = textwrap.dedent(
+        inspect.getsource(
+            behaviour_checks._falsify_no_process_survives_a_degraded_session
+        )
     )
-    # ⚠️ THE BODY, NOT THE DOCSTRING. The docstring NAMES the forbidden call in
-    # order to forbid it, so a naive substring search over the whole source
-    # fails on the very sentence that gets this right — measured, on the first
-    # run of this test.
-    body = source.replace(
-        behaviour_checks._falsify_no_process_survives_a_degraded_session.__doc__
-        or "",
-        "",
+    fn_node = ast.parse(source).body[0]
+    statements = fn_node.body
+    if (
+        statements
+        and isinstance(statements[0], ast.Expr)
+        and isinstance(statements[0].value, ast.Constant)
+        and isinstance(statements[0].value.value, str)
+    ):
+        statements = statements[1:]
+    assert statements, "the falsification has no body once its docstring is dropped"
+    body = "\n".join(ast.unparse(node) for node in statements)
+
+    # The strip must be REAL: the docstring names the forbidden call, so if it
+    # survived, the assertions below would be reading prose rather than code.
+    assert "would be measuring the fix" not in body, (
+        "the docstring survived the AST extraction, so every assertion below "
+        "is searching the very sentence that forbids the call"
     )
     assert "os.kill(proc.pid" in body, (
         "the falsification does not signal the HELD PID directly"
@@ -464,14 +563,50 @@ def test_the_arm_reports_its_teardown_timing_on_every_verdict() -> None:
     state, by something the record cannot name. A pass that does not say how
     long the teardown took cannot distinguish "escalated promptly" from "took
     four seconds of a five-second grace".
+
+    ⚠️ ASSERTED ON THE BEHAVIOUR, NOT ON THE SPELLING. An earlier revision of
+    this test counted the substring "timing" in the source, which passes when
+    the word appears in a comment and fails on an innocuous rename — a tally
+    over source text is exactly the brittle instrument the rest of this file
+    avoids. What must hold is that BOTH `Outcome` branches carry the timing
+    into their `evidence`, so this walks the function's syntax tree and reads
+    the `evidence=` list of every `Outcome(...)` it constructs.
     """
-    source = inspect.getsource(
-        behaviour_checks._run_no_process_survives_a_degraded_session
+    import ast
+
+    source = textwrap.dedent(
+        inspect.getsource(behaviour_checks._run_no_process_survives_a_degraded_session)
     )
+    tree = ast.parse(source)
+
+    evidence_lists: "list[list[str]]" = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if not (isinstance(node.func, ast.Name) and node.func.id == "Outcome"):
+            continue
+        for kw in node.keywords:
+            if kw.arg == "evidence":
+                assert isinstance(kw.value, ast.List), (
+                    "an Outcome's evidence is not a literal list, so this test "
+                    "cannot read what it carries"
+                )
+                evidence_lists.append([ast.unparse(e) for e in kw.value.elts])
+
+    assert len(evidence_lists) == 2, (
+        "expected exactly two Outcome branches (PASS and FINDING); found "
+        f"{len(evidence_lists)}"
+    )
+    for entries in evidence_lists:
+        assert "timing" in entries, (
+            "one of the arm's verdicts does not carry the teardown timing into "
+            "its evidence, so AC7's report is missing on that branch. PS-349's "
+            "finding was a 95s reap; a verdict that does not say how long the "
+            "teardown took cannot carry a timing finding at all."
+        )
+
+    # And the timing itself must be stated against the grace rather than bare.
     assert "teardown_seconds" in source
-    assert source.count("timing") >= 3, (
-        "the timing is not carried into BOTH the PASS and the FINDING evidence"
-    )
     assert "_TEARDOWN_GRACE" in source
 
 

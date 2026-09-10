@@ -1298,6 +1298,19 @@ _TREE_GROW_TIMEOUT = 90.0
 #: rather than mid-exit.
 _TEARDOWN_GRACE = 5.0
 
+#: How long `_stop_group_or_refuse` waits for a SIGSTOP it already sent to show
+#: up as state ``stopped`` in the process table.
+#:
+#: ⚠️ A GENEROUS BOUND, NOT A MEASUREMENT — stated plainly because every other
+#: constant in this block IS measured and an unlabelled literal here would read
+#: as one. Signal delivery to a live process is prompt (the kernel stops it at
+#: the next scheduling point), so the honest expectation is that the first
+#: sample already sees it; this exists only so that a loaded runner cannot turn
+#: a real wedge into a CANNOT_RUN. It bounds the INSTRUMENT's patience, never
+#: the product's behaviour: nothing about the teardown is measured from it, and
+#: widening it can only ever turn a spurious refusal into a real verdict.
+_DEGRADE_CONFIRM_TIMEOUT = 2.0
+
 #: THE PROFILE NAMES THIS CHECK LAUNCHES CHROMIUM UNDER — named here, once,
 #: because they are the only names in this module whose LENGTH is a
 #: correctness property rather than a label.
@@ -1889,16 +1902,37 @@ def _resume_group(pgid: "int | None") -> None:
     BECAUSE THE OBVIOUS READING IS THAT IT IS REDUNDANT. `_sweep_group` sends
     SIGKILL, which a SIGSTOPped process DOES receive — the kernel does not
     require a stopped process to be running to kill it — so on the paths that
-    reach the sweep, this is not what removes the tree. It is here for the
-    paths that DO NOT:
+    reach a WORKING sweep, this is not what removes the tree. It is here for
+    the paths where the sweep is a NO-OP:
 
-      * a `signallable_group` refusal (our own group, no ``killpg``) makes
-        `_sweep_group` a no-op, and a no-op sweep over a SIGSTOPped tree
-        leaves a tree that is stopped AND unreaped;
-      * `os.killpg(SIGKILL)` failing with EPERM is swallowed by the sweep's
-        own `contextlib.suppress`, with the same result;
-      * a process that has already been reparented out of the group between
-        the degradation and the sweep is reachable by neither.
+      * a `signallable_group` refusal (our own group, or a platform with no
+        ``killpg``) makes `_sweep_group` return without signalling anything,
+        and a no-op sweep over a SIGSTOPped tree leaves a tree that is stopped
+        AND unreaped;
+      * `os.killpg(SIGKILL)` failing (EPERM, a group that emptied and was
+        recycled, anything else) is swallowed by the sweep's own
+        `contextlib.suppress`, with the same result.
+
+    ⛔⛔ SO THIS FUNCTION MUST NOT SHARE `_sweep_group`'s GROUP GUARD, AND THAT
+    IS THE WHOLE POINT OF THE PER-PID LOOP BELOW. An earlier revision of this
+    arm gated the resume on `signallable_group` exactly as the sweep does, and
+    it was measured INERT on precisely the paths above: when the guard refuses,
+    both functions return without signalling, so the tree is left alive AND
+    stopped — the worst outcome available here, arriving through the function
+    written to prevent it. The guard exists to stop a SIGKILL reaching our own
+    group; a SIGCONT to our own group is HARMLESS (every member of it is
+    already running, by construction — we are executing), so the guard buys
+    nothing here and costs everything.
+
+    The per-pid targets come from `_degradable_pids`, i.e. from the RECORDED
+    GROUP — never from a name match. `_sweep_group`'s rule is untouched.
+
+    ⚠️ AND A CORRECTION TO THE MECHANISM AN EARLIER DOCSTRING NAMED: a
+    reparented process is NOT a third path. Reparenting changes a process's
+    PARENT, not its process GROUP; POSIX group membership survives the death of
+    the leader and of any intermediate parent, which is the entire reason this
+    module anchors on a pgid rather than on a process tree. A reparented member
+    is reachable by ``killpg`` exactly as before, and needs no separate undo.
 
     A leaked RUNNING process is a bug this project has measured. A leaked
     STOPPED one is worse: it consumes its RSS forever (PS-349 measured ~1.2 GB
@@ -1912,11 +1946,28 @@ def _resume_group(pgid: "int | None") -> None:
 
     from ..browser.process_group import signallable_group
 
+    sigcont = getattr(signal, "SIGCONT", 18)
+
+    # 1. The cheap, whole-group attempt, when the guard admits it. This is the
+    #    fast path and it reaches members `_degradable_pids` may have missed
+    #    (a process that joined the group between the two reads).
     target = signallable_group(pgid)
-    if target is None:
-        return
+    if target is not None:
+        with contextlib.suppress(Exception):
+            os.killpg(target, sigcont)
+
+    # 2. ⛔ THE LOAD-BEARING LEG. Unconditional, and deliberately NOT behind the
+    #    guard above: this is the only thing that acts when the killpg is
+    #    refused or fails, which is the exact condition this function exists
+    #    for. `_degradable_pids` raises when it cannot look at the group at
+    #    all — an undo that cannot resolve its targets must not pretend to have
+    #    run — but this is a `finally` helper that promises never to raise, so
+    #    the refusal is swallowed HERE rather than allowed to mask the real
+    #    exception the caller is already unwinding with.
     with contextlib.suppress(Exception):
-        os.killpg(target, getattr(signal, "SIGCONT", 18))
+        for pid in _degradable_pids(pgid):
+            with contextlib.suppress(Exception):
+                os.kill(pid, sigcont)
 
 
 def _stop_group_or_refuse(pgid: int) -> "list[int]":
@@ -1975,7 +2026,7 @@ def _stop_group_or_refuse(pgid: int) -> "list[int]":
         ) from exc
 
     stopped: "list[int]" = []
-    deadline = time.monotonic() + 2.0
+    deadline = time.monotonic() + _DEGRADE_CONFIRM_TIMEOUT
     while time.monotonic() < deadline:
         stopped = []
         for pid in targets:
@@ -2099,10 +2150,11 @@ def _run_no_process_survives_a_degraded_session(ctx: Context) -> Outcome:
     finally:
         # ⛔ UNDO FIRST, THEN SWEEP, ON EVERY PATH OUT — including the ones
         # that are the INSTRUMENT failing rather than the product, which is
-        # where a stopped tree would otherwise escape (`_resume_group` lists
-        # the three). `_launch_and_grow` guards its own failing paths and none
-        # of them can have degraded anything, so this `finally` covers exactly
-        # the window in which a wedge exists.
+        # where a stopped tree would otherwise escape (`_resume_group` names
+        # the paths where the sweep is a no-op, and acts PER-PID so that it is
+        # not a no-op on the same ones). `_launch_and_grow` guards its own
+        # failing paths and none of them can have degraded anything, so this
+        # `finally` covers exactly the window in which a wedge exists.
         _resume_group(pgid)
         _sweep_group(pgid)
 
