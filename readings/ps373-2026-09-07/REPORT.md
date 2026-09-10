@@ -3,6 +3,109 @@
 **Date:** 2026-09-07 · **Branch:** `feature/PS-373-canvas-probe-guards` off `main` `649f6ae`
 **Seat:** worker · **Layer:** the C++ patch series. No JS masking layer involved.
 
+---
+
+> # ⛔ CORRECTION — 2026-09-10, from real hardware. Read before quoting anything below.
+>
+> The host-liaison rebuilt the Windows engine on the owner's real hardware and ran
+> the live checkers. **One central claim of this report is wrong**, and it is
+> corrected here rather than in the sections themselves, which are left standing as
+> the dated record of what was believed on 2026-09-07.
+>
+> ## ⛔ THE FALSE CLAIM — the 70×5 probe NEVER FIRED
+>
+> This report treats the RE'd **70×5** pixelscan probe geometry as the thing our
+> noise tripped on. **It never was.**
+>
+> **70×5 is skipped by the pre-existing `w<8||h<8` early return in
+> `ShuffleSubchannelColorData`** — a guard that predates this branch entirely. A
+> 70×5 buffer has `h=5`, so the function returns before any of the arithmetic below
+> runs. Measured on real hardware, it reads back **byte-exact on all three
+> binaries, including the shipped one**.
+>
+> So §2's *"CONFIRMED — we fail a reference-equality probe, at every seed"* is
+> **withdrawn**. We did not fail it. There was nothing to fail: the function had
+> already returned.
+>
+> ## ⭐ WHY THE HARNESS SAID OTHERWISE — checkable in this tree, no hardware needed
+>
+> This is the instructive part, and a reader can confirm it here without a build.
+>
+> `artifacts/extract_shuffle.py` sets `START_MARKER = "auto max_pixels = (w * h) / 128;"`
+> and begins collecting `+` lines from there. **The dimension guard sits ABOVE that
+> marker, in unchanged upstream code** — visible in
+> `012-canvas-get-image-data.patch` only as the bare context lines `    return;` /
+> `  }` under the hunk header `@@ -132,15 +136,12 @@`, with its *condition* not
+> shown at all because no `+`/`-` line touches it.
+>
+> The extractor collects added lines only, so **the guard was never compiled into
+> the harness.** Every 70×5 figure in this report was therefore produced by a
+> program that skipped the branch a real binary takes first. The harness was
+> faithful to the patch's *added* lines — which is exactly what it claims to be —
+> and that is precisely why it could not see this.
+>
+> ⭐ **The `8x8` row at §3 corroborates it and was hiding in plain sight.** `8` is
+> not `< 8`, so an 8×8 canvas is correctly NOT skipped by the dimension guard and
+> the harness's `mod(ship) = 1` for it is right. 70×5 has `h = 5`. The report's own
+> table contains both sides of the discriminator.
+>
+> ## ⚠️ AND §4's NUMBER WAS RIGHT FOR THE WRONG REASON
+>
+> `:119` records `70x5 modified = 0 (byte-exact)` on the *unmodified* patch and
+> attributes it to the `isEdge` condition (`*current != *right || *current != *bottom`)
+> having nothing to fire on in a single-colour buffer. **That reasoning is wrong for
+> this geometry.** The real cause is the dimension guard, which returns before
+> `isEdge` is ever evaluated — and which makes a 70×5 byte-exact at *any* colour
+> count, not just at one. The number agreed with reality; the mechanism did not.
+>
+> ⚠️ The wider §4 finding — that a *uniform* render is left byte-exact by the
+> `isEdge` structure — is **not** withdrawn: it still holds for the `280x60` and
+> `256x256` rows, which clear the dimension guard.
+>
+> ## ⭐ WHAT THE GUARD ACTUALLY DOES — measured live, 2026-09-10
+>
+> The `kMaxRefColors` guard's real effect is on **LARGER reference renders**, not on
+> 70×5:
+>
+> ```
+> 200x200 @  8 distinct colours : noised BEFORE the guard -> byte-exact AFTER
+> 200x200 @ 16 distinct colours : noised BEFORE the guard -> byte-exact AFTER
+> ```
+>
+> **The threshold behaves as specified**, and this is A/B 8's prediction (§9)
+> discharged on real hardware:
+>
+> ```
+> <= 16 distinct colours : byte-exact
+> >= 17 distinct colours : still noised
+> antialiased text canvases (342-447 distinct colours) : still noised
+> ```
+>
+> ⭐ **The guard costs no protection.** The population it exempts and the population
+> it noises are separated on real hardware, not only in the model.
+>
+> **creepjs is unchanged by the guard** — `0% headless, 0% stealth, 25% like-headless`
+> on **both** binaries. The guard neither helps nor harms that surface.
+>
+> ## ⛔ NOTHING SHIPS THIS — no release claim may rest on the above
+>
+> The liaison **hand-built a `chrome.dll`** and **restored the owner's engine
+> afterwards**. Nothing is live. **The guard exists in no shippable artifact.**
+> A proper CI build is required before any release claim is made on this basis, and
+> the live-checker numbers above describe a hand-built binary that no longer exists
+> on that machine.
+>
+> ## What still stands
+>
+> The distinct-colour ceiling remains the right *shape* of guard, and §6's refusal
+> of feder's size floor is untouched — a size floor still exempts a real 100×30
+> canvas. What changes is the **motivating example**: the guard was justified by a
+> 70×5 probe it never had any effect on, and is vindicated by the 200×200 renders
+> measured above. ⚠️ Whether any of this clears the pixelscan badge is **still not
+> established** — see §9's standing warning, which applies with full force.
+
+---
+
 > ## Read this first — what is MEASURED and what is not
 >
 > This ticket's three prior rounds were **source reading**, and the ticket says
@@ -25,6 +128,17 @@
 ---
 
 ## The answer in one paragraph
+
+> ⛔ **2026-09-10 — THE FIRST SENTENCE OF THIS PARAGRAPH IS WITHDRAWN.** It is the
+> most quotable line in the report and it is the false one: our patch does **not**
+> modify a 70×5 reference render, at any seed. The pre-existing `w<8||h<8` early
+> return skips that geometry on **all three binaries, the shipped one included**.
+> Round 3's finding is therefore **not** confirmed — the harness that "confirmed"
+> it never compiled the guard. **The rest of the paragraph stands**: the three
+> corrections to round 3 hold, the size floor is still the wrong shape and still
+> costs protection, and the distinct-colour ceiling is still the right guard — now
+> evidenced by 200×200 renders measured on real hardware rather than by a 70×5 that
+> never fired. See the correction block at the top.
 
 Round 3's **finding** is confirmed by execution: our canvas patch modifies a
 14-colour 70×5 reference render at every seed tested, so it fails a byte-exact
@@ -60,7 +174,15 @@ self-test: PASS` on every run in `artifacts/`.
 
 ---
 
-## 2. CONFIRMED — we fail a reference-equality probe, at every seed
+## 2. ~~CONFIRMED~~ ⛔ **WITHDRAWN 2026-09-10** — this probe never fired
+
+> ⛔ **CORRECTED — see the correction block at the top of this report.** 70×5 is
+> skipped by the pre-existing `w<8||h<8` early return (`h = 5`), so the numbers
+> below describe **a probe that never fired**. They were produced by a harness
+> whose extraction window opens *below* that guard, so it was never compiled in.
+> On real hardware a 70×5 reads back **byte-exact on all three binaries, the
+> shipped one included**. The section is kept as the dated record of what was
+> believed; **do not quote it as a finding.**
 
 `artifacts/probe-harness-before.txt`, section A, against the shipped patch:
 
@@ -76,6 +198,12 @@ self-test: PASS` on every run in `artifacts/`.
 probe is a *binary equality check*; one modified pixel fails it exactly as hard as
 a thousand. So every "tune the density" lever on this ticket is dead — not
 deprioritised, dead — and round 3 was right about that.
+
+> ⛔ **2026-09-10:** the *first* sentence above is withdrawn — nothing was settled,
+> because the harness never ran the branch a real binary takes. The rest still
+> holds on its own terms: a byte-exact equality probe genuinely cannot be passed by
+> tuning a noise budget. That reasoning was sound; the geometry it was applied to
+> was not ours to fail.
 
 ---
 
@@ -97,6 +225,13 @@ the clause deleted — and the budget is **2 either way**:
    15x15      225      2          1          2         1         YES   (area 225)
    8x8        64       2          0          1         0         YES   (area 64)
 ```
+
+> ⛔ **2026-09-10 — the `70x5` row describes a probe that never fired** (the
+> `w<8||h<8` guard returns first; `h = 5`). The row's `mod(ship) = 1` is a harness
+> artefact, not engine behaviour. ⭐ **The `8x8` row is correct and is the
+> discriminator**: `8` is not `< 8`, so an 8×8 canvas genuinely is not skipped.
+> ⚠️ **The section's own claim survives intact** — the `< 2` clamp really is
+> innocent, and that verdict rests on the `15x15` and `8x8` rows, not on `70x5`.
 
 The clamp only fires below `w*h = 256`. The probe's area is 350.
 
@@ -120,6 +255,16 @@ section C, on the *unmodified* patch, every size byte-exact:
    280x60       modified = 0  (byte-exact)
    256x256      modified = 0  (byte-exact)
 ```
+
+> ⚠️ **2026-09-10 — RIGHT NUMBER, WRONG MECHANISM, and this is the correction that
+> matters most here.** The `70x5` row is byte-exact because the `w<8||h<8` guard
+> returns before `isEdge` is ever evaluated — **not** because a uniform buffer has
+> no edge pixel. A 70×5 is byte-exact at *any* colour count, uniform or not, so
+> this row evidences nothing about the `isEdge` structure and **describes a probe
+> that never fired**. ⭐ **The section's conclusion still stands on the other two
+> rows**: `280x60` and `256x256` clear the dimension guard, so their byte-exactness
+> genuinely is the `isEdge` effect, and the "our implicit tolerance is exactly one
+> distinct colour" reading is unaffected.
 
 The reason is structural: our loop only writes where `isEdge` holds
 (`*current != *right || *current != *bottom`), and a single-colour buffer has no
@@ -172,6 +317,12 @@ size floor to `ShuffleSubchannelColorData` (skip `< 64*64*4`) and rebuild"*.
    64x64        16384      7          no      (exactly at floor)
 ```
 
+> ⛔ **2026-09-10 — the `70x5` row describes a probe that never fired**; its
+> `modified = 1` is a harness artefact (the `w<8||h<8` guard returns first).
+> ⭐ **The section's verdict is untouched and does not need that row**: the refusal
+> of feder's size floor rests on **`100x30`**, a real fingerprinting canvas that
+> sits under the floor and would lose its masking. That measurement stands.
+
 ⛔ **`100x30` is under the floor.** That is a small but entirely real fingerprinting
 canvas, and a size floor would switch its masking off. The ticket's standing trap
 is explicit — *"any recommendation must preserve or improve what is masked"* — so
@@ -217,6 +368,23 @@ only already-reference-like renders are scanned in full.
    same seed reproduces       : yes OK
    70x5 / 14 colours modified = 0   OK (passes equality probe)
 ```
+
+> ⛔ **2026-09-10 — the `70x5 / 14 colours` line describes a probe that never
+> fired**, and it is the one place in this report where that matters for the
+> *verdict* rather than only for the narrative: it was read as "the guard makes the
+> probe pass", when a 70×5 already passed on the shipped binary via `w<8||h<8`.
+> **This line is not evidence that the guard works.**
+>
+> ⭐ **The guard's effect IS established, on real hardware, by different geometry**
+> (see the correction block at the top): `200x200` at **8** and at **16** distinct
+> colours were **noised before the guard and are byte-exact after it**, and the
+> threshold discriminates — `≤16` byte-exact, `≥17` still noised, antialiased text
+> at 342–447 colours still noised. **So the guard is real and costs no protection;
+> only this line's demonstration of it was vacuous.**
+>
+> ⚠️ **The four `realistic fp canvas` rows above are unaffected** — all clear the
+> dimension guard — and the three-orders-of-magnitude separation they establish is
+> now corroborated by the live 342–447-colour text measurement.
 
 ⭐ **Three orders of magnitude of separation** between the two populations
 (6,224–45,551 vs a ceiling of 16). No plausible modelling error closes that gap.
@@ -287,6 +455,17 @@ branch, render a canvas with a **known** number of distinct colours either side 
 16 and read `getImageData` back.
 > **Prediction: ≤16 colours byte-exact, ≥17 modified.** This tests the *threshold*
 > rather than the badge, so it can localise a failure that A/B 6′ can only report.
+
+> ✅ **2026-09-10 — A/B 8 WAS RUN on real hardware, and the prediction HELD.**
+> `≤16` distinct colours byte-exact, `≥17` still noised; antialiased text canvases
+> (342–447 colours) still noised; `200x200` at 8 and 16 colours noised before the
+> guard and byte-exact after. **creepjs unchanged on both binaries** (0% headless,
+> 0% stealth, 25% like-headless).
+> ⛔ **A/B 6′ was NOT settled by this** — whether the pixelscan badge clears remains
+> open, and the 70×5 chain this report built A/B 6′ on is now known to be the wrong
+> mechanism (the probe never fired). ⛔ **And nothing shipped**: the liaison
+> hand-built a `chrome.dll` and restored the owner's engine afterwards, so a proper
+> CI build is required before any release claim rests on these numbers.
 
 ⚠️ **The standing warning applies to my own most attractive finding.** feder's own
 source records that he *previously* believed a canvas rationale here and later
