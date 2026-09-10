@@ -1,0 +1,389 @@
+name: published-engine-verdict
+
+# Do the fingerprint patches still FUNCTION in the engine our users download?
+#
+# WHY THIS JOB EXISTS (PS-370, wiring PS-344's instrument).
+# PS-344 built the reading: a three-arm harness that runs the PUBLISHED
+# Personium AppImage — the bytes `updater` hands the operator's app — against a
+# version-matched stock Chrome for Testing control, plus a falsification arm,
+# and a judge (`scripts/ps344_verdict.py`) that turns the 44-row table into an
+# exit code. It came back clean on `personium-152.0.7977.75`.
+#
+# ⭐ AND THEN NOTHING CALLED IT. Measured, not inferred:
+# `git grep -l "ps344" -- .github/` returned ZERO, while the positive controls
+# in the same probe shape fired (engine_gpu_variance 1, behaviour_cli 4,
+# engine_gate 3, ps307_verify_patches_in_tree 1). So the only check that has
+# ever asked whether the patches ACTUALLY FUNCTION in a shipped binary was a
+# file with no callers, pinned by its own defaults to one release.
+#
+# WHAT MAKES THAT URGENT RATHER THAN TIDY. `app.py` `_check_engines_periodic()`
+# polls HOURLY, unattended, no spinner, and ends at `_auto_update_engine()`.
+# `src/services/engine/policy.py` ships `KNOWN_BAD_VERSIONS = frozenset()` and
+# no ceiling. A newly published engine therefore reaches operators' machines
+# within the hour with no human in the loop — and until this workflow, nothing
+# re-verified it.
+#
+# ---------------------------------------------------------------------------
+# WHY THIS IS A SEPARATE JOB AND NOT A STEP IN AN EXISTING WORKFLOW
+# ---------------------------------------------------------------------------
+# Each alternative was read at the commit this was written on rather than
+# assumed, in the register the two neighbouring gates already use:
+#
+#   * NOT `ci.yml`. A patch that stops functioning in a published engine is not
+#     caused by our pull requests — it is caused by UPSTREAM PUBLISHING a new
+#     build. A PR trigger is the wrong EVENT for the risk, and `ci.yml`'s
+#     `tests` job is a 6-instance matrix (3 OS x 2 shards), so a step appended
+#     there would pay ~400 MB of downloads and twelve headed browser launches
+#     SIX TIMES PER PULL REQUEST to re-measure a build nobody changed.
+#
+#   * NOT `engine-autoupdate.yml`. That job bumps the FIREFOX engine and only
+#     Firefox: `engine-baseline.txt` is `firefox-20` and both of its
+#     provisioning steps import `src.services.engine.firefox`. Wiring a
+#     Chromium check into a Firefox bump builds a gate that cannot fire on the
+#     event it exists to catch.
+#
+#   * NOT `engine-gpu-variance.yml`, even though that job reads the SAME
+#     artifact. It covers ONE vector — `UNMASKED_VENDOR_WEBGL` /
+#     `UNMASKED_RENDERER_WEBGL` — and asks a different question of it (does the
+#     GPU identity VARY BY SEED across a population). This asks whether ten
+#     signals are present and functioning at all. A release that lost patch 018
+#     (timezone) or patch 014 (client rects) entirely would pass that job
+#     GREEN. Folding them together would give one job two unrelated failure
+#     modes, so a red run would no longer say which property is in trouble, and
+#     the cheap daily reading would start paying this one's download bill.
+#
+#   * NOT `chromium-upstream-watch.yml`. That job looks UPSTREAM at
+#     ungoogled-chromium, at something nobody has received. This measures what
+#     has already shipped. Opposite ends of the pipeline.
+#
+# ---------------------------------------------------------------------------
+# CADENCE AND COST — THE CHOICE, AND WHY
+# ---------------------------------------------------------------------------
+# MEASURED SHAPE: `SEEDS = (24601, 5150)` x layers `[True, False]` = 4 cells per
+# arm x 3 arms = 12 HEADED browser launches, plus TWO ~200 MB downloads (the
+# Personium AppImage and the Chrome for Testing zip). The calibration point is
+# `engine-gpu-variance.yml`: 45 minutes for 15 launches and one 188 MB
+# download.
+#
+# ⭐ WEEKLY, NOT DAILY, AND THE REASON IS THE EVENT RATE RATHER THAN THE PRICE.
+# This reads a PUBLISHED ENGINE RELEASE, and engine tags are infrequent —
+# `personium-152.0.7977.75` (2026-09-06) is the only one in the recent release
+# list. The measured object does not change between releases, so re-measuring
+# an unchanged binary daily buys nothing at ~400 MB and 12 launches a day. The
+# daily neighbour is daily for a different reason: it samples a POPULATION for
+# a statistical property, where more readings are worth something.
+#
+# ⚠️ WHAT WEEKLY COSTS, STATED RATHER THAN GLOSSED: detection can lag a bad
+# release by up to seven days, and the operator's app installs it within the
+# hour. That gap is REAL and is not closed here. It is bounded by two things
+# that already exist: `engine-gpu-variance.yml` reads the same artifact DAILY on
+# its own vector, and the release-day arm below (`workflow_dispatch`) is the
+# gesture for a human who has just published an engine. The remedy for a red
+# run — naming the tag in `policy.KNOWN_BAD_VERSIONS` — needs a person either
+# way, so a shorter cadence would shorten the machine's half of a wait whose
+# other half is human.
+#
+# ⛔ THIS DOES NOT PREVENT, IT DETECTS. Blocking an unattended install on a
+# 12-launch measurement of a build that is not installed yet is circular (you
+# cannot launch a binary you have not installed) and would wedge the app. The
+# response to a red run is `policy.KNOWN_BAD_VERSIONS`, which every chromium
+# install already passes through and which refuses a build BY NAME without
+# waiting for a persona release.
+#
+# ---------------------------------------------------------------------------
+# WHAT THIS COVERS AND WHAT IT DOES NOT — STATED, NOT IMPLIED
+# ---------------------------------------------------------------------------
+# ⛔ LINUX x86_64 ONLY. PS-344's reading was Linux and this gate inherits that
+# bound exactly. `runs-on: ubuntu-24.04`, the control is Chrome for Testing's
+# `linux64` build, and `xvfb` is Linux-only. macOS and Windows are UNMEASURED
+# and a green here says NOTHING about them. (PS-343 additionally recorded that
+# the macOS asset tagged `.75` contains `152.0.7977.64`; untouched here.)
+# PS-361 owns the Windows build arm.
+#
+# NOT a build attestation: this shows the shipped binary BEHAVES as a patched
+# engine, not that it was built from this tree. NOT a live-checker run: the
+# probe page is served from 127.0.0.1 and no third party is contacted. The
+# masking layer is not evaluated — every required signal is read layer-OFF, on
+# purpose, because a layer-ON difference could be the extension rather than the
+# engine and would hide an unpatched shipped binary behind our own JS.
+
+on:
+  schedule:
+    # Weekly, Mondays at 08:10 UTC. After the 06:00 engine-autoupdate slot, the
+    # 06:40 engine-gpu-variance slot and the 07:20 behaviour-launch-lane slot,
+    # so the four do not contend for a runner. Nothing here depends on any of
+    # them. See the cadence block above for why this is weekly and they are not.
+    - cron: "10 8 * * 1"
+  # THE RELEASE-DAY ARM. A human who has just published an engine tag runs this
+  # rather than waiting up to a week — and it is also how a red run is re-read
+  # after a fix.
+  workflow_dispatch:
+    inputs:
+      engine_version:
+        description: >-
+          Measure this exact engine version (e.g. 152.0.7977.75) instead of
+          whatever is newest. FOR A MANUAL RE-READ ONLY — the scheduled run is
+          deliberately unpinned. The named release is READ like any other (same
+          `fetch_release_full` path, same digest) and passes through
+          `policy.check` exactly as a resolved one does: a tag someone has just
+          blocklisted comes back exit 4 ENGINE_REFUSED_BY_POLICY rather than
+          being measured, and there is deliberately no override for that.
+        required: false
+        type: string
+  # THE PR ARM, DELIBERATELY NARROW: the instrument, the judge and this venue.
+  # A change to any of those is the change most likely to break the gate and
+  # the one a weekly cron would notice up to seven days late. Everything else
+  # waits for the cron rather than paying ~400 MB per pull request.
+  #
+  # ⚠️ THE FILTER IS A COST CONTROL, NOT A COMPLETENESS CLAIM. The verdict reads
+  # through `scripts/ps301_engine_launch` and the whole chromium launch stack,
+  # so a change under `src/services/browser/` can absolutely move this reading
+  # and will NOT trigger this arm. That gap is covered by the cron.
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "scripts/ps344_launch_published.py"
+      - "scripts/ps344_verdict.py"
+      - "scripts/ps301_engine_launch.py"
+      - "scripts/ps301_compare.py"
+      - ".github/scripts/ps344_gate_plan.py"
+      - ".github/scripts/ps344_run_verdict.py"
+      - ".github/workflows/published-engine-verdict.yml"
+
+permissions:
+  contents: read          # reads the tree and the public upstream releases only
+
+concurrency:
+  group: published-engine-verdict-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verdict:
+    name: published engine — are the patches functioning? (gating)
+    # LINUX ONLY, and stated rather than implied. See the coverage block above.
+    runs-on: ubuntu-24.04
+    # 12 headed launches at ~6s settle each, two ~200 MB downloads, plus
+    # dependency installation. `engine-gpu-variance.yml` budgets 45 for 15
+    # launches and one 188 MB download; 60 leaves headroom for the second
+    # download and a slow upstream without letting a genuinely wedged browser
+    # launch hang for hours.
+    timeout-minutes: 60
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      # PROVE THE JUDGE CAN STILL GO RED, BEFORE SPENDING 400 MB ON A GREEN.
+      #
+      # This needs no engine and no display. The live reading below can only
+      # ever demonstrate the outcome today's engine happens to produce — which
+      # is a pass — and a check only ever observed passing is not coverage.
+      # These 11 tests drive synthesised readings (stock-as-product, a
+      # one-realm-one-seed partial leak, a constant fake, a moving negative
+      # control, an errored cell) through the SAME judge the live check gates
+      # on, and assert each lands on the exit code and the NAMED row it must.
+      #
+      # Placed before provisioning on purpose, exactly as
+      # `engine-gpu-variance.yml` places its selftest: if the judgement is
+      # broken, two 200 MB downloads to produce a meaningless green are wasted,
+      # and the red this job would report would be the wrong red.
+      - name: Prove the verdict can still go red
+        run: |
+          python -m pip install --upgrade pip
+          # PyYAML too, and NOT incidentally: six of the workflow-shape
+          # tests below parse THIS FILE through `pytest.importorskip("yaml")`,
+          # and requirements.txt is not installed until the next step. The
+          # first CI run reported "34 passed, 6 SKIPPED" — the six that assert
+          # this job cannot be hollowed out were inert in the job they guard.
+          # `-p no:randomly --strict-markers` is not used here; `-ra` is, so
+          # any future skip is NAMED in the log rather than being a number.
+          pip install --prefer-binary pytest PyYAML
+          python -m pytest tests/test_ps344_published_engine_verdict.py \
+                           tests/test_ps370_published_engine_gate.py -q -ra
+
+      - name: Provision a display, the project and the engine driver
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb
+          pip install --prefer-binary -r requirements.txt
+          # The driver + the core it must ship with, at the pins THIS TREE
+          # carries. Read out of pyproject because that is the only file that
+          # declares invisible_core at all — requirements.txt does not, so
+          # nothing else installs it. Same approach engine-gpu-variance.yml
+          # and engine-autoupdate.yml use.
+          pin="$(python -c "import re,pathlib; print(re.search(r'invisible_playwright @ git\+[^\"]+', pathlib.Path('pyproject.toml').read_text()).group(0))")"
+          core="$(python -c "import re,pathlib; print(re.search(r'invisible_core==[0-9][0-9.]*', pathlib.Path('pyproject.toml').read_text()).group(0))")"
+          echo "driver: $pin"
+          echo "core  : $core"
+          pip install "$pin"
+          pip install "$core"
+
+      # THE UNPINNED RESOLUTION. This is the point of the job: the tag is
+      # whatever upstream published, resolved through `fetch_latest_checked` —
+      # the same call the operator's app makes, which already applies
+      # `policy.check` so a build persona already refuses is not measured. The
+      # tag is ECHOED so a red run NAMES the build that was bad; the remedy is
+      # naming a tag in `policy.KNOWN_BAD_VERSIONS` and that is impossible if
+      # the run does not print it.
+      #
+      # ⚠️ AND DELIBERATELY NOT PINNED, on `engine-gpu-variance.yml`'s recorded
+      # reasoning: the RISK IS WHATEVER THE NEWEST PUBLISHED ENGINE RELEASE IS,
+      # which is exactly what a pin hides. A gate on a pinned build stays green
+      # forever while the build users actually receive goes bad. The
+      # `engine_version` dispatch input exists for a MANUAL re-read and is
+      # empty on every scheduled run.
+      #
+      # The plan's three non-zero outcomes are NAMED rather than collapsed into
+      # a colour — see .github/scripts/ps344_gate_plan.py:
+      #   exit 2  CANNOT_PLAN              the release list or the CfT index
+      #                                    could not be read. Nothing claimed.
+      #   exit 3  NO_MATCHED_CONTROL       Chrome for Testing published nothing
+      #                                    in this engine's Chromium build line,
+      #                                    so there is no version-matched
+      #                                    control and therefore no comparison.
+      #   exit 4  ENGINE_REFUSED_BY_POLICY persona itself will not install this
+      #                                    build. The refusal is correct and
+      #                                    this job must not re-litigate it.
+      # A bare `run:`, so each reaches the runner unmodified.
+      - name: Resolve the newest published engine and its version-matched control
+        id: plan
+        run: |
+          python .github/scripts/ps344_gate_plan.py \
+            --out /tmp/ps370/plan.json \
+            ${{ inputs.engine_version && format('--engine-version {0}', inputs.engine_version) || '' }}
+
+      # THE READING AND THE VERDICT, in one child so the falsification arm and
+      # the product arm cannot be separated by a later edit.
+      #
+      # NOT `continue-on-error`, and NOT `|| true`, and no `if` branching on the
+      # code. A non-zero exit fails this job, which is the entire point:
+      #   exit 0 = PATCHES LIVE, and the falsification arm came back RED
+      #   exit 1 = FINDING — a required signal is absent in the shipped binary,
+      #            a negative control moved, or the falsification arm failed to
+      #            go red (which condemns the run just as loudly)
+      #   exit 2 = INDETERMINATE — an arm could not be produced or read
+      #
+      # ⚠️ EXIT 2 FAILS THIS JOB TOO, and that is deliberate. "We failed to
+      # look" must never wear the colour of "we looked and it was fine". The
+      # judge refuses to call an unreadable arm a pass, and the wiring here must
+      # not launder it into one by checking only for 1. Letting a bare `run:`
+      # propagate the child's code is what keeps that true — any branching on
+      # the code here is where the laundering would sneak back in.
+      #
+      # ⛔ `--skip-falsification` is NOT passed and must never be. It exists on
+      # the launcher so a re-run can RESUME, not so the falsification can be
+      # waived: the day the red arm stops running is the day the green one
+      # stops meaning anything.
+      - name: Run the three arms and both verdicts
+        env:
+          # PS-344's recipe records this: the runner may have no FUSE, and the
+          # AppImage runtime consumes the flag itself.
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+          # Staged under the name `_engine_binary()` expects, via the documented
+          # override. The resolver's refusal to fall back to a chromium on PATH
+          # is a real guard and is NOT edited.
+          PERSONA_ENGINE_DIR: /tmp/ps370/engine-published
+        run: |
+          xvfb-run -a python .github/scripts/ps344_run_verdict.py \
+            --plan /tmp/ps370/plan.json \
+            --work /tmp/ps370 \
+            --out /tmp/ps370/artifacts
+
+      # On a red run these files are the whole evidence base for deciding what
+      # to blocklist, and they live on a runner about to be destroyed. They
+      # carry the binary provenance (resolved path, sha256, version string),
+      # every per-seed per-realm reading, and the plan that named them.
+      - name: Keep the readings when the gate goes red
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: published-engine-verdict-readings
+          path: |
+            /tmp/ps370/artifacts
+            /tmp/ps370/plan.json
+          if-no-files-found: warn
+
+      - name: Say what a red run means and what to do about it
+        if: failure()
+        env:
+          TAG: ${{ steps.plan.outputs.engine_tag }}
+          OUTCOME: ${{ steps.plan.outputs.outcome }}
+          # The control's match quality reaches the READINGS via the arm label,
+          # and the readings only survive on failure() — which is exactly when
+          # a reader needs to know how hard to press on a finding. A NEAREST
+          # control means the arms differ by a patch level as well as by the
+          # patch set, so it belongs beside the tag rather than one artifact
+          # download away.
+          CONTROL_MATCH: ${{ steps.plan.outputs.control_match }}
+          CONTROL_VERSION: ${{ steps.plan.outputs.control_version }}
+        run: |
+          echo "::error::Published engine ${TAG:-<unresolved>} did not clear the patch-behaviour verdict (plan outcome: ${OUTCOME:-<none>})."
+          echo "control: Chrome for Testing ${CONTROL_VERSION:-<none>} (match: ${CONTROL_MATCH:-<none resolved>})"
+          cat <<EOF
+          READ THE EXIT CODE ABOVE BEFORE ACTING — these mean opposite things.
+
+          IF THE CONTROL MATCH ABOVE READS "nearest"
+            The stock control is NOT the same Chromium patch level as the
+            engine, so PS-344's central claim — "a difference between the arms
+            is the patch set or it is nothing" — is WEAKER on this run. A
+            FINDING below is still worth acting on, but read the arm labels in
+            the uploaded readings before blocklisting on the strength of it.
+
+          FROM THE PLAN STEP
+            exit 2  CANNOT_PLAN. The release list, the named release, or the
+                    Chrome for Testing index could not be read. NOTHING was
+                    measured. Usually transient; re-dispatch before reading
+                    anything into it. ⚠️ ON A DISPATCHED RUN it also means the
+                    tag you named does not resolve to a published ENGINE
+                    release — yanked, never published, or an application tag.
+                    The reason line above names which.
+            exit 3  NO_MATCHED_CONTROL. Chrome for Testing published no build
+                    in engine ${TAG:-<the tag>}'s Chromium line, so there is no
+                    version-matched control. THIS IS NOT A FINDING ABOUT THE
+                    ENGINE and it is not a pass — it means the comparison could
+                    not be set up. Decide deliberately: measure against the
+                    nearest line and say so, or wait for CfT to publish.
+            exit 4  ENGINE_REFUSED_BY_POLICY. persona itself will not install
+                    this build (KNOWN_BAD_VERSIONS, or an operator ceiling).
+                    The refusal is CORRECT — nothing here should re-litigate
+                    it. Expect this after someone blocklists a bad tag —
+                    including on a DISPATCHED run naming that tag, which is
+                    deliberate: measuring a build persona refuses is the wrong
+                    question whoever asked it, and this job's own remedy must
+                    not be undoable by this job's own re-run switch.
+
+          FROM THE VERDICT STEP
+            exit 1  A FINDING about the SHIPPED binary: a required signal is
+                    absent or not seed-derived, a negative control MOVED
+                    (instrument suspect), or the falsification arm failed to go
+                    red. Read the uploaded readings before acting — the
+                    verdict names every row it failed on.
+            exit 2  INDETERMINATE. An arm could not be produced or could not be
+                    read (a cell errored, a realm timed out, the display or the
+                    engine failed to come up). NOTHING WAS CERTIFIED. This is
+                    NOT a pass and must not be read as one.
+
+          WHAT TO DO ABOUT A FINDING
+            1. A bad build is remediated BY NAME, without waiting for a release:
+               add "${TAG:-<the tag>}" to KNOWN_BAD_VERSIONS in
+               src/services/engine/policy.py, with a comment saying WHAT it
+               broke. Every chromium install passes through policy.check(), so
+               that refusal reaches operators' machines.
+            2. If the patch set genuinely regressed upstream, the engine needs
+               rebuilding — see engine-trial-build.yml and RELEASING.md. This
+               job reports; it does not fix.
+
+          ⛔ DO NOT "fix" a red run by pinning the engine, by passing
+          --skip-falsification, by adding a '|| true', or by letting exit 2 pass.
+          Each of those turns this back into a gate that reports a verdict it
+          has not earned, which is the entire defect this venue was built to
+          close.
+          EOF
