@@ -162,6 +162,25 @@ def cores_memory_for_generation(generation: int) -> list[tuple[int, int]]:
 #: Changing this value re-rolls the (cores, RAM) pair of every existing profile.
 CORES_MEMORY_SALT = 0xC0DE5
 
+#: The engine build every "measured" claim in the media-query parser inside
+#: :data:`_CONTENT_SCRIPT` was read off — the `(bogus: 1)` Kleene table, the
+#: dpcm band edges, the `1x` alias, the unprefixed `device-pixel-ratio` rows,
+#: the comment-is-whitespace rows and the `<media-type> and not (…)` validity
+#: rows.
+#:
+#: ⛔ IT LIVES HERE, IN PYTHON, RATHER THAN BESIDE THE ROWS IT DATES. That
+#: template is emitted VERBATIM into ``device.js`` and shipped to every page, so
+#: a comment naming the engine and its build hands a free version string to
+#: anyone who reads the extension — the same reasoning that keeps the
+#: ``deviceMemory`` rationale in the module docstring, and the fence
+#: ``tests/test_ps224_engine_name.py`` enforces. The emitted comments therefore
+#: say "the engine"; this constant says WHICH.
+#:
+#: ⚠️ A READING IS ONLY AS GOOD AS ITS BUILD. Re-measure the rows above against
+#: a new build before assuming they carry forward — the dpcm band in particular
+#: is a measured tolerance, not a derivation from Blink's source.
+MEDIA_QUERY_ORACLE_BUILD = "152.0.7977.82"
+
 
 def _h32(seed: int, salt: int) -> int:
     """The emitted script's ``h32``, in Python.
@@ -699,14 +718,23 @@ __SCREEN_LEAF_CLOAK__
       var mm = G.matchMedia;
       if (mm) {
         // ── VALUES ───────────────────────────────────────────────────────
+        // ⛔ EVERY "measured" CLAIM BELOW NAMES "the engine", NOT A VERSION,
+        // AND THAT IS DELIBERATE RATHER THAN VAGUE. This template is emitted
+        // VERBATIM into `device.js` and shipped to every page, so a comment
+        // here naming the engine and its build is a free version string for
+        // anyone who reads the extension — and the repo guards against exactly
+        // that (`tests/test_ps224_engine_name.py`). The build every one of
+        // these rows was read off is recorded in Python, in
+        // `MEDIA_QUERY_ORACLE_BUILD` above, where it cannot ship.
         // A resolution literal in any of its equivalent spellings. `x` is the
-        // unitless alias and IS valid (Chromium 152.0.7977.82: `(resolution:
-        // 1x)` answers true at dpr 1, and serializes back as `(resolution:
-        // 1x)`), which is why it cannot be treated as a bare number.
+        // unitless alias and IS valid (measured on the bare engine:
+        // `(resolution: 1x)` answers true at dpr 1, and serializes back as
+        // `(resolution: 1x)`), which is why it cannot be treated as a bare
+        // number.
         var RESU = { dppx: 1, x: 1, dpi: 1 / 96, dpcm: 2.54 / 96 };
         // ⚠️ dpcm COMPARES OVER A BAND WHERE dpi AND dppx COMPARE EXACTLY, and
         // this asymmetry is MEASURED, not derived from Blink's source. At dpr 1
-        // on 152.0.7977.82: 37.607dpcm..37.982dpcm answer TRUE while 37.605 and
+        // on the oracle build: 37.607dpcm..37.982dpcm answer TRUE while 37.605 and
         // 37.985 answer FALSE (a half-width of ~0.00496 dppx), yet 96.001dpi
         // and 1.0001dppx both answer FALSE. Comparing dpcm exactly would make
         // `(resolution: 37.795dpcm)` disagree with `(resolution: 96dpi)` — i.e.
@@ -758,7 +786,7 @@ __SCREEN_LEAF_CLOAK__
         };
 
         // ── THREE-VALUED LOGIC ───────────────────────────────────────────
-        // ⛔ MEASURED, NOT ASSUMED: Chromium 152.0.7977.82 evaluates media
+        // ⛔ MEASURED, NOT ASSUMED: the bare engine evaluates media
         // queries in MQ4 THREE-VALUED (Kleene) logic. An unrecognised feature
         // is UNKNOWN, and unknown is NOT false. Every row below was read off
         // the bare engine, and the two `not` rows are what force the model:
@@ -820,7 +848,7 @@ __SCREEN_LEAF_CLOAK__
         // dpr. So `mm(Q)` and `mm(Q + "/**/")` disagreed, and the disagreement
         // handed over the host's scale: a two-line probe needing no baseline.
         //
-        // Measured on stock Chromium 152.0.7977.82 — a comment SEPARATES
+        // Measured on the bare engine — a comment SEPARATES
         // tokens exactly as whitespace does and never JOINS them, which is why
         // it is emitted as a `ws` token rather than skipped:
         //
@@ -844,7 +872,7 @@ __SCREEN_LEAF_CLOAK__
             c = s.charAt(i);
             if (c === '/' && s.charAt(i + 1) === '*') {
               j = s.indexOf('*/', i + 2);
-              // Unterminated: Chromium runs it to end-of-input rather than
+              // Unterminated: the engine runs it to end-of-input rather than
               // rejecting the query — measured above.
               j = j < 0 ? n : j + 2;
               if (out.length && out[out.length - 1].t === 'ws' &&
@@ -902,7 +930,7 @@ __SCREEN_LEAF_CLOAK__
 
         // ── FEATURES ─────────────────────────────────────────────────────
         // ⛔ UNPREFIXED `device-pixel-ratio` IS ABSENT FROM THIS TABLE ON
-        // PURPOSE. Chromium 152 supports it in NO form — `(device-pixel-ratio:
+        // PURPOSE. The engine supports it in NO form — `(device-pixel-ratio:
         // 1)` AND `(device-pixel-ratio >= 0.5)` are both unknown — so it is
         // delegated and the engine answers unknown for free. The previous
         // range branch claimed it and answered TRUE, which is a wrong-TRUE
@@ -1143,7 +1171,7 @@ __SCREEN_LEAF_CLOAK__
         //                | `<condition>`
         var _query = function (src) {
           var s = String(src);
-          // Chromium tolerates an unclosed feature — `(resolution: 96dpi`
+          // The engine tolerates an unclosed feature — `(resolution: 96dpi`
           // parses and answers true. Balance it so the same input reaches this
           // parser as a feature rather than falling through and leaking.
           //
