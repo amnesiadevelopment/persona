@@ -121,10 +121,15 @@ class CoresMemoryEntry:
 
 
 # navigator.hardwareConcurrency / navigator.deviceMemory pairs. This pool is the
-# SINGLE source of truth for both realms: the page-realm pick and the worker-realm
-# twin inside applyHwPatch are both rendered from this list, so they cannot drift
-# apart. They used to be two hand-maintained JS literals that had to be kept in
-# sync by eye, and the worker copy silently shadowed the page copy.
+# SINGLE source of truth for both properties. It used to be rendered into the
+# emitted JS as well — a page-realm pick plus a worker-realm twin inside
+# applyHwPatch — and before that it was two hand-maintained JS literals kept in
+# sync by eye, with the worker copy silently shadowing the page copy.
+#
+# ⛔ THE JS SIDE IS GONE (PS-392): the engine authors both properties in every
+# realm, so this pool now has exactly ONE consumer — the Python resolver below,
+# which feeds the --fingerprint-hardware-concurrency and
+# --fingerprint-device-memory switches. Nothing is substituted into device.js.
 #
 # ADDING ONE: give it `since=<CURRENT_HARDWARE_GENERATION after you bump it>` and
 # leave every entry below untouched. Order is free to stay readable — the
@@ -142,15 +147,19 @@ CORES_MEMORY: list[CoresMemoryEntry] = [
 def cores_memory_for_generation(generation: int) -> list[tuple[int, int]]:
     """The (cores, GB-RAM) pool a profile of ``generation`` picks from.
 
-    The emitted JS divides by the length of THIS, never of the whole list —
-    taking the whole list's length is the original defect.
+    :func:`cores_memory_pick` divides by the length of THIS, never of the whole
+    list — taking the whole list's length is the original defect. (The emitted
+    JS used to do the same division; since PS-392 it carries no pool at all, so
+    the Python resolver is the only divider left.)
     """
     return [e.pair for e in visible_entries(CORES_MEMORY, generation)]
 
 
-#: The salt the emitted page script uses when it picks from the cores/RAM pool
-#: (``pick(HCMEM, 0xc0de5)``). Named here so the Python resolver below and the
-#: JS cannot drift to two different constants.
+#: The salt used when picking from the cores/RAM pool. It was shared with the
+#: emitted page script (``pick(HCMEM, 0xc0de5)``) and named here so the Python
+#: resolver and the JS could not drift to two different constants. ⛔ Since
+#: PS-392 there is no JS side: :func:`cores_memory_pick` is the sole consumer.
+#: Changing this value re-rolls the (cores, RAM) pair of every existing profile.
 CORES_MEMORY_SALT = 0xC0DE5
 
 
@@ -169,13 +178,27 @@ def _h32(seed: int, salt: int) -> int:
     mask silently diverges on large seeds, which is the whole reason this is
     written out rather than approximated.
 
-    ⚠️ THIS IS A SECOND IMPLEMENTATION OF A RULE THAT ALREADY EXISTS IN JS, and
-    that is a drift hazard by construction. It is justified only because the
+    ⚠️ THIS IS A SECOND IMPLEMENTATION OF A RULE THAT USED TO EXIST IN JS, and
+    it is a drift hazard by construction. It is justified only because the
     ENGINE needs the answer before any JS runs (see
-    :func:`hardware_concurrency_for`). ``test_ps354_service_worker_cores.py``
-    pins the two against each other by executing the REAL emitted script in
-    node and comparing, over many seeds and every generation — so a change to
-    either side fails rather than producing two quietly different profiles.
+    :func:`hardware_concurrency_for`).
+
+    ⛔ THE JS SIDE IS GONE, AND WITH IT THE GUARD THIS DOCSTRING USED TO NAME.
+    The pixelscan port (PS-392) deleted both `hardwareConcurrency` installs —
+    the top-level one and the shadowing private copy inside `applyHwPatch` —
+    because the engine authors that property in every realm via
+    `NavigatorConcurrentHardware` on the shared `NavigatorBase`. With the
+    installs went `pick`, and with `pick` went the `__HCMEM__` substitution:
+    `CORES_MEMORY` is no longer rendered into the emitted script at all. So
+    ``test_ps354_service_worker_cores.py`` can no longer execute a twin and
+    compare — it is REPOINTED, and its own docstring records that reduction.
+
+    ⚠️ NOTHING NOW CHECKS THIS PORT AGAINST AN INDEPENDENT ORACLE. A bug in
+    ``_h32``/:func:`cores_memory_pick` reaches the engine flag unchallenged by
+    any second implementation, so the 32-bit masking below is load-bearing and
+    must stay exact: a Python ``*`` or ``>>`` without the mask silently
+    diverges on large seeds and no test will catch it. If a JS author ever
+    returns, restore the node cross-check in the same change.
     """
     h = (seed ^ (salt & 0xFFFFFFFF)) & 0xFFFFFFFF
     h = ((h ^ (h >> 16)) * 0x85EBCA6B) & 0xFFFFFFFF
