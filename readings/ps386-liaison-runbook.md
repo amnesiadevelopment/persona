@@ -75,52 +75,95 @@ CI run must never be reported as "the app launches".
 This is the one step whose answer the agent could only infer. Everything else
 was settled from Linux by set-difference; **this observes it.**
 
+### ⛔ IT MUST BE RUN AT THE MERGE-BASE, NOT ON THIS BRANCH
+
+This branch's `pyproject.toml` now carries `[tool.flet.macos.entitlement]` with
+`get-task-allow = false`, and that block is a **live merge seam** — flet merges
+it over its own five defaults, so a `flet build macos` **on this branch** writes
+a generated `Release.entitlements` that already mentions the key. That is not a
+baseline: it is our own commit showing up in the reading.
+
+The question Step 0 exists to answer is *"does ad-hoc `codesign` inject
+`get-task-allow` when **nothing** declares it?"* — and that reading is only
+obtainable on a tree where nothing declares it.
+
 ```bash
 cd <persona repo>
-git rev-parse --short HEAD        # expect the PS-386 branch tip
+# A separate checkout at the merge-base, so the branch stays intact.
+git worktree add /tmp/ps386-base d300635
+cd /tmp/ps386-base
+git rev-parse --short HEAD        # expect d300635
+grep -n "flet.macos" pyproject.toml || echo "no [tool.flet.macos] — correct baseline"
 
-# Build ONCE without the hardening, to capture the baseline the ticket cites.
 ver="$(python3 -c "import re,pathlib; print(re.search(r'APP_VERSION\s*=\s*\"([^\"]+)\"', pathlib.Path('src/services/app_update/updater.py').read_text()).group(1))")"
 flet build macos -v --no-rich-output --build-version "$ver"
 
 APP="$(find build/macos -maxdepth 3 -name '*.app' | head -1)"; echo "$APP"
 
-# ⭐ THE ORIGIN QUESTION: does the GENERATED plist carry get-task-allow?
-cat build/flutter/macos/Runner/Release.entitlements 2>/dev/null \
-  || find build -name "Release.entitlements" -exec cat {} \;
+# ⭐ THE ORIGIN QUESTION, asked where it can be answered:
+#    does the GENERATED plist carry get-task-allow when nothing declared it?
+find build -name "Release.entitlements" -exec sh -c 'echo "--- {}"; cat {}' \;
 
 # ...and does the SIGNED binary carry it?
 codesign -d --entitlements :- "$APP" 2>/dev/null
 codesign -dvvv "$APP" 2>&1 | grep -i "flags\|Authority"
 ```
 
-**What to report:** whether `get-task-allow` appears in the *generated file* or
-only in the *signed binary*.
+**The discriminator, stated for what will actually be on screen at `d300635`:**
 
-- **Only in the binary** → confirms the set-difference: it is injected by ad-hoc
-  `codesign`, and the re-sign step is the correct seam. **This is the expected
-  result.**
-- **In the generated file too** → the set-difference is wrong somewhere. **Stop
-  and report that** — it would mean a source contributes the key and the seam
+- **ABSENT from the generated plist, PRESENT AND TRUE in the signed binary** →
+  origin confirmed as **signing-time injection** by ad-hoc `codesign`. The
+  re-sign is the correct seam. **This is the expected result**, and it is what
+  the set-difference predicts.
+- **PRESENT in the generated plist** → the set-difference is wrong somewhere: a
+  source contributes the key after all. **Stop and report that** — the seam
   choice needs revisiting.
 
-Expect `flags=0x2(adhoc)` and no `runtime` in the baseline.
+Expect `flags=0x2(adhoc)` and no `runtime` in this baseline. Keep this `$APP`
+around: it is the "before" side of Step 3.
+
+Then return to the branch for Steps 1–4:
+
+```bash
+cd <persona repo>          # the PS-386 branch checkout
+git worktree remove /tmp/ps386-base --force   # when you are done with it
+```
 
 ---
 
-## Step 1 — baseline reading
+## Step 1 — baseline reading, on the branch
 
 ```bash
+cd <persona repo>            # the PS-386 branch
+ver="$(python3 -c "import re,pathlib; print(re.search(r'APP_VERSION\s*=\s*\"([^\"]+)\"', pathlib.Path('src/services/app_update/updater.py').read_text()).group(1))")"
+flet build macos -v --no-rich-output --build-version "$ver"
+APP="$(find build/macos -maxdepth 3 -name '*.app' | head -1)"
+
 python3 scripts/ps386_macos_harden.py --check-pyproject   # sanity, runs anywhere
 python3 scripts/ps386_macos_harden.py --app "$APP" --dry-run
 python3 scripts/ps386_verify_posture.py --app "$APP"      # expect FAIL — the baseline
 ```
 
-`--dry-run` lists which items would be re-signed and which are **left alone**
-because they carry a real third-party identity (Node.js Foundation's `node` is
-the known one). **Report those two counts** — the "ours vs theirs" split is the
-figure that keeps the target honest at *every slice we build* rather than a
-misleading bundle-wide `225/225`.
+`--dry-run` reports **three** counts, and the third is the one to read carefully:
+
+| bucket | meaning |
+|---|---|
+| `OURS` | ad-hoc/unsigned — will be re-signed |
+| `THIRD_PARTY` | a real certificate signed it; **named**, so you can see whose |
+| `UNREADABLE` | `codesign` could not tell us — **left alone, but this is not a third-party skip** |
+
+⚠️ **`UNREADABLE` is not a synonym for `THIRD_PARTY`.** Both are skipped, so the
+signing decision is the same, but an unreadable slice is one we might have been
+able to harden and did not. **Report the count.** A non-zero one means the final
+"re-signed N" line is complete over what the run could classify, not over the
+bundle — and the verifier in Step 3 will fail on any such slice that ships
+without the runtime flag, which is the intended way for the shortfall to
+surface.
+
+Expect exactly **one** `THIRD_PARTY`: Node.js Foundation's `node`, vendored under
+playwright's driver. (Microsoft's signed DLLs are real but live in the *Windows*
+engine zip — they are not in this bundle, and seeing them here would itself be a
+finding.)
 
 The verifier is **expected to exit 1 here.** That is the baseline, not an error.
 
@@ -226,8 +269,10 @@ rather than assuming; an unobserved path is unobserved.
 Paste into a comment on **PS-386** (new-ticket freeze is in force — findings go
 on the ticket):
 
-- **Step 0:** generated plist vs signed binary — where `get-task-allow` enters
-- **Step 1:** ours-vs-theirs counts from `--dry-run`; baseline verifier exit
+- **Step 0:** run **at the merge-base `d300635`**, not on the branch. Generated
+  plist vs signed binary — where `get-task-allow` enters
+- **Step 1:** the **three** counts from `--dry-run` (OURS / THIRD_PARTY /
+  UNREADABLE); baseline verifier exit
 - **Step 2:** exit code (and any seal/ordering complaint)
 - **Step 3:** `flags` before/after, `get-task-allow` before/after, both exits
 - **Step 4:** launched? engine spawned? if not — the log lines and the
