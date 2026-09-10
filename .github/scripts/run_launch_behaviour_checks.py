@@ -104,9 +104,31 @@ shrink-only, excluded-visibly, pin-a-reading-not-a-name, cite-a-file-and-a-quote
 ``tests/test_ps380_known_position.py``.
 
 ⚠️ WHEN PS-2 FIXES THE CANVAS COLLISION, delete the two ``KNOWN_POSITIONS``
-entries. The check goes green on all five pairs and nothing else changes —
-and if the entries are left behind, the split reports them as STALE and the
-lane goes red naming them, so that edit is prompted rather than remembered.
+entries. The check goes green on all five pairs and nothing else changes.
+
+⛔ AND THE PROMPT TO MAKE THAT EDIT IS **NOT THIS LANE GOING RED** — read this
+before assuming it is self-maintaining, because the difference is the whole
+design. A pin whose collision is GONE costs the verdict nothing on purpose:
+the pair rejoins the live comparison and gates normally, the dead pin is
+REPORTED, and the run stays GREEN. Failing here would turn the day the product
+got better into a red, which is "permanently red is as bad as permanently
+green" arriving by the back door. That is a property deliberately TRADED AWAY,
+not one this lane has.
+
+So the two things that do prompt the edit, stated so neither is over-read:
+
+* A REPORT LINE ON A GREEN RUN. ``_known_position_split`` emits
+  ``STALE PIN — DELETE IT`` into the outcome's evidence and the operator
+  report, on every run, naming the pair and the reading whose premise expired.
+  It is read by whoever reads the report — which is a real prompt, and a
+  weaker one than a red test.
+* ONE TEST THAT DOES GO RED, on its own evidence rather than on this lane's:
+  ``test_ps380_known_position.py::
+  test_a_firefox_canvas_arm_is_what_PROMPTS_deleting_the_pins`` fails the
+  moment a firefox canvas arm appears in ``invisible_launch.py`` — i.e. the
+  moment PS-2's fix lands in THIS tree. Its bound is equally explicit: it
+  watches OUR source, so a collision that stops because the ENGINE changed
+  underneath us is caught by the report line above and by nothing else.
 
 ⭐ THE REMAINING OMISSION, AND IT IS A DIFFERENT REASON — NOT A WIDENED CARVE-OUT
 ------------------------------------------------------------------------------

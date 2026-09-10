@@ -137,6 +137,38 @@ RETIRED_OMISSIONS = {
     ),
 }
 
+#: ⭐ WHICH PAIRS each retired omission's REASON ACTUALLY RESTED ON — and this
+#: is the record that makes shrink-only mean something at the granularity the
+#: rule is stated at.
+#:
+#: ⛔ THE ROUND-1 MISTAKE, WRITTEN DOWN SO IT IS NOT REPEATED. Rule 1 was
+#: enforced at CHECK granularity: a pinned pair was resolved to its owning
+#: check and that CHECK's name was required to be in DOCUMENTED_OMISSIONS ∪
+#: RETIRED_OMISSIONS. Since `two-profile-unlinkability` is permanently in the
+#: retired set, EVERY future pin on EVERY must-differ pair satisfied that for
+#: free — measured: adding a pin on `window/audio.digest`, a defended vector
+#: measured VARYING, left the guard PASSING. A rule stated per-pair and
+#: enforced per-check is a guard teaching its reader it is watching.
+#:
+#: A whole-check omission nominally "covered" all five pairs, so recording THAT
+#: as the covered set would be vacuous in exactly the same way. The covered set
+#: is therefore the pairs the omission's REASON rests on — the collisions PS-135
+#: §8 recorded and handed to PS-2 — and it is not trusted as a literal either:
+#: `tests/test_ps380_known_position.py::
+#: test_the_retired_omission_covers_exactly_the_pairs_its_evidence_recorded`
+#: re-derives this set by running the real comparator over the committed
+#: firefox-20 corpus, so a hand-widened entry is a test failure rather than a
+#: new permission.
+RETIRED_OMISSION_PAIRS = {
+    "two-profile-unlinkability": frozenset(
+        {"window/canvas.readback", "worker/canvas.readback"}
+    ),
+}
+
+#: The evidence `RETIRED_OMISSION_PAIRS` is re-derived from, named here so the
+#: two travel together: if the corpus moves, the derivation moves with it.
+RETIRED_OMISSION_PAIRS_EVIDENCE = "readings/ps135-2026-08-24"
+
 
 @pytest.fixture(scope="module")
 def workflow_yaml():

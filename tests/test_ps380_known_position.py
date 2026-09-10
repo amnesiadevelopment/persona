@@ -233,40 +233,189 @@ def test_every_pin_came_out_of_a_recorded_check_level_omission() -> None:
     `ci.yml` anti-allowlist stance refuses and what the noise-source rule warns
     a transplanted tolerance mechanism turns into.
 
-    Enforced against `test_ps336_launch_behaviour_venue.py`'s own record: a
-    pinned pair's check must appear in `RETIRED_OMISSIONS` (it came out of a
-    carve-out) or still be in `DOCUMENTED_OMISSIONS` (it is still inside one).
-    That is why `RETIRED_OMISSIONS` exists rather than the old entry simply
-    being deleted — a shrink-only rule is unverifiable once the thing it shrank
-    has been erased.
+    ⭐ ENFORCED PER-PAIR, BECAUSE THE RULE IS STATED PER-PAIR — and round 1 got
+    this wrong in a way worth recording. It resolved each pinned pair to its
+    OWNING CHECK and asserted that CHECK's name was in `DOCUMENTED_OMISSIONS` ∪
+    `RETIRED_OMISSIONS`. `two-profile-unlinkability` is permanently in the
+    retired set, so after this slice EVERY future pin on EVERY must-differ pair
+    satisfied it for free: measured, a pin added on `window/audio.digest` — a
+    DEFENDED vector measured VARYING — left that assertion PASSING. The rule's
+    precondition had become unsatisfiable and its test could no longer fail,
+    while the comment and the PR both presented it as live.
+
+    So a pinned pair must be in the covered set its check's retired omission
+    RECORDED (`RETIRED_OMISSION_PAIRS`), or the check must still be inside a
+    live `DOCUMENTED_OMISSIONS` carve-out (nothing has shrunk yet, so a pin is
+    a shrink by construction). A pair from neither is a new hole.
+
+    ⚠️ THE COVERED SET IS NOT TRUSTED AS A LITERAL either — widening it by hand
+    would re-open exactly this door one level down. It is re-derived from the
+    committed corpus by
+    `test_the_retired_omission_covers_exactly_the_pairs_its_evidence_recorded`.
     """
     from tests.test_ps336_launch_behaviour_venue import (
         DOCUMENTED_OMISSIONS,
+        RETIRED_OMISSION_PAIRS,
         RETIRED_OMISSIONS,
     )
 
     pinned_pairs = {kp.pair for kp in KNOWN_POSITIONS}
-    owning_checks = {
-        check.name
-        for check in behaviour_checks.CHECKS
-        for pair in pinned_pairs
-        if pair in _pairs_gated_by(check)
-    }
-    assert owning_checks, (
-        "no check gates any pinned pair, so the pins apply to nothing — either "
-        "the inventory moved or the pins are dead"
+    owners: dict[str, str] = {}
+    for check in behaviour_checks.CHECKS:
+        gated = _pairs_gated_by(check)
+        for pair in pinned_pairs & gated:
+            owners[pair] = check.name
+
+    unowned = pinned_pairs - set(owners)
+    assert not unowned, (
+        f"{sorted(unowned)} is pinned but no check gates it, so the pin applies "
+        "to nothing — either the inventory moved or the pin is dead"
     )
 
-    permitted = set(DOCUMENTED_OMISSIONS) | set(RETIRED_OMISSIONS)
-    for name in sorted(owning_checks):
-        assert name in permitted, (
-            f"{name!r} gates a KNOWN_POSITIONS pair but has NEVER been a "
+    for pair in sorted(pinned_pairs):
+        name = owners[pair]
+        if name in DOCUMENTED_OMISSIONS:
+            # Still inside a live whole-check carve-out: a per-pair pin is a
+            # shrink by construction, because the whole check is excluded today.
+            continue
+        assert name in RETIRED_OMISSIONS, (
+            f"{name!r} gates the pinned pair {pair!r} but has NEVER been a "
             "documented check-level omission. Rule 1: a known position may "
             "only SHRINK an existing exclusion, never create one. This pin is "
             "carving a hole in a check that was being fully gated.\n"
             f"  pinned pairs: {sorted(pinned_pairs)}\n"
-            f"  recorded omissions (live + retired): {sorted(permitted)}"
+            f"  recorded omissions: live={sorted(DOCUMENTED_OMISSIONS)} "
+            f"retired={sorted(RETIRED_OMISSIONS)}"
         )
+        covered = RETIRED_OMISSION_PAIRS.get(name, frozenset())
+        assert covered, (
+            f"{name!r} is a retired omission but records no covered pairs, so "
+            "rule 1 cannot be checked at the granularity it is stated at. Add "
+            f"its entry to RETIRED_OMISSION_PAIRS."
+        )
+        assert pair in covered, (
+            f"{pair!r} is pinned as a known position, but the retired "
+            f"check-level omission on {name!r} did NOT rest on it — it rested "
+            f"on {sorted(covered)}. Rule 1 is per-PAIR: a vector may only move "
+            "OUT of an exclusion that actually covered it. This pin is a NEW "
+            "permission to hide, wearing the retired omission's clothes.\n"
+            f"  pinned pairs: {sorted(pinned_pairs)}"
+        )
+
+
+def test_the_retired_omission_covers_exactly_the_pairs_its_evidence_recorded() -> None:
+    """⛔ THE COVERED SET IS A MEASUREMENT, NOT A LITERAL SOMEBODY WIDENED.
+
+    `RETIRED_OMISSION_PAIRS` is what makes rule 1 enforceable per-pair, so a
+    hand-edited entry there re-opens the same door one level down: add
+    `window/audio.digest` to the covered set and a pin on a defended vector
+    becomes admissible again, with every guard green.
+
+    It is therefore re-derived here by running the REAL comparator over the
+    committed firefox-20 corpus — the same evidence the omission's reason cites
+    (PS-135 §8) — and set-equality is asserted in BOTH directions: a widened
+    entry fails, and so does one that quietly dropped a pair it did cover.
+
+    ⚠️ WHAT THIS DOES NOT CLAIM. The corpus is `('window', 'worker')` only —
+    no committed recording carries a `child_frame` realm (BASELINE_REALMS, and
+    widening it is PS-316) — so a pair in an unrecorded realm reads
+    INCONCLUSIVE here and is correctly NOT in the covered set. That is the safe
+    direction: an unmeasured pair cannot buy itself a pin.
+    """
+    import itertools
+    import json
+
+    from src.services.verify.diff import compare_profiles
+    from tests.test_ps336_launch_behaviour_venue import (
+        RETIRED_OMISSION_PAIRS,
+        RETIRED_OMISSION_PAIRS_EVIDENCE,
+    )
+
+    corpus = REPO_ROOT / RETIRED_OMISSION_PAIRS_EVIDENCE
+    assert corpus.is_dir(), (
+        f"{RETIRED_OMISSION_PAIRS_EVIDENCE} is gone, so the covered set rests "
+        "on nothing. Re-derive it before trusting rule 1."
+    )
+
+    by_profile: dict[str, dict] = {}
+    for path in sorted(corpus.glob("reading.firefox.*.json")):
+        snapshot = json.loads(path.read_text(encoding="utf-8"))
+        if snapshot.get("engine_build") != BUILD:
+            continue
+        by_profile.setdefault(snapshot.get("profile"), snapshot)
+
+    assert len(by_profile) >= 2, (
+        f"the {BUILD} corpus carries {len(by_profile)} distinct profile(s); a "
+        "cross-profile collision cannot be derived from fewer than two"
+    )
+
+    # A pair counts as covered only if it collides in EVERY pairing — one
+    # pairing's agreement is a coincidence, not a recorded position.
+    derived: set[str] | None = None
+    for a, b in itertools.combinations(sorted(by_profile), 2):
+        colliding = {
+            f"{e['realm']}/{e['probe_id']}"
+            for e in compare_profiles(by_profile[a], by_profile[b])
+            if e.get("status") == "colliding"
+        }
+        derived = colliding if derived is None else (derived & colliding)
+
+    assert RETIRED_OMISSION_PAIRS["two-profile-unlinkability"] == derived, (
+        "the recorded covered set does not match what the committed corpus "
+        f"actually shows colliding on {BUILD}.\n"
+        f"  recorded: {sorted(RETIRED_OMISSION_PAIRS['two-profile-unlinkability'])}\n"
+        f"  corpus:   {sorted(derived or ())}\n"
+        "A WIDENED set admits a pin on a vector the omission never rested on, "
+        "which is rule 1 defeated one level down."
+    )
+
+
+def test_rule_1_REFUSES_a_pin_on_a_pair_the_omission_never_covered() -> None:
+    """⭐ THE GUARD IS SHOWN CAPABLE OF FAILING — the round-1 defect, pinned.
+
+    Round 1's rule-1 test could not fail for any value once
+    `two-profile-unlinkability` was retired, and nothing said so. This drives
+    the same assertion over a pin on `window/audio.digest` — a DEFENDED vector,
+    measured VARYING on firefox-20, gated by the same check — and requires it
+    to be REFUSED. If this test ever passes trivially, rule 1 has gone vacuous
+    again.
+    """
+    from tests.test_ps336_launch_behaviour_venue import (
+        DOCUMENTED_OMISSIONS,
+        RETIRED_OMISSION_PAIRS,
+        RETIRED_OMISSIONS,
+    )
+
+    intruder = KnownPosition(
+        realm="window",
+        probe_id="audio.digest",
+        digest=1234567890,
+        build=BUILD,
+        owner="nobody — this pin is the attack",
+        reason_path="readings/ps135-2026-08-24/EVIDENCE.md",
+        reason_quote="two profiles agree, so the two-profile unlinkability check will",
+    )
+
+    owner = next(
+        c.name
+        for c in behaviour_checks.CHECKS
+        if intruder.pair in _pairs_gated_by(c)
+    )
+    assert owner not in DOCUMENTED_OMISSIONS, (
+        f"{owner!r} is back inside a live whole-check omission, so this attack "
+        "is admitted for a legitimate reason and proves nothing. Re-derive it."
+    )
+    assert owner in RETIRED_OMISSIONS, (
+        "the attack rests on the check being a RETIRED omission — the exact "
+        "state that made round 1's check-granular assertion vacuous"
+    )
+
+    covered = RETIRED_OMISSION_PAIRS[owner]
+    assert intruder.pair not in covered, (
+        f"{intruder.pair!r} is now recorded as covered by {owner!r}'s retired "
+        "omission, so rule 1 would ADMIT a pin on a vector persona ships a "
+        "firefox spoof for. That is the hole, not the guard."
+    )
 
 
 def _pairs_gated_by(check) -> set[str]:
@@ -375,6 +524,49 @@ def test_the_firefox_spoofs_the_unpinned_vectors_rest_on_are_still_installed() -
         "a firefox canvas arm now exists, so the premise of the canvas pins "
         "(PS-135 §8: canvas 2D is not spoofed on firefox) may have expired. "
         "Re-measure; if the collision is gone, DELETE the pins."
+    )
+
+
+def test_a_firefox_canvas_arm_is_what_PROMPTS_deleting_the_pins() -> None:
+    """⭐ THE PREMISE-EXPIRY PROMPT, AND IT IS A TEST RATHER THAN A RED LANE.
+
+    The lane deliberately stays GREEN when a pinned collision vanishes: the
+    pair rejoins the live comparison and gates normally, and failing on it
+    would turn the day PS-2 ships its fix into a red — "permanently red is as
+    bad as permanently green" arriving by the back door. That is a
+    self-maintaining property traded away on purpose, so the prompt to delete
+    a dead pin has to live somewhere that CAN fail. This is that somewhere.
+
+    The pins' premise is one sentence: canvas 2D has no firefox spoof arm, so
+    two profiles share its readback. The moment PS-2 installs one, that
+    sentence is false and this test goes red naming the entries to delete —
+    the same shape as `test_every_recorded_reason_is_still_in_the_tree`, which
+    fails when a cited record is reworded away.
+
+    ⚠️ ITS BOUND, STATED SO A GREEN HERE IS NOT OVER-READ. It watches OUR
+    source. A collision that stops because the ENGINE changed underneath us
+    leaves this test green, and is caught only by the split's
+    `STALE PIN — DELETE IT` report line on a passing run. So this prompt covers
+    the expected way the premise expires, not every way.
+    """
+    source = (REPO_ROOT / "src/services/browser/invisible_launch.py").read_text(
+        encoding="utf-8"
+    )
+    canvas_pins = sorted(kp.pair for kp in KNOWN_POSITIONS if "canvas" in kp.probe_id)
+    assert canvas_pins, (
+        "no canvas pin is left, so this prompt guards nothing — if the pins "
+        "were deleted, delete this test with them"
+    )
+
+    assert '_install_spoof("canvas"' not in source and "firefox_canvas" not in source, (
+        "A FIREFOX CANVAS ARM NOW EXISTS. The premise the canvas known "
+        "positions rest on (PS-135 §8: canvas 2D is not spoofed on firefox, so "
+        "two profiles share its readback) has expired.\n"
+        f"  DELETE these KNOWN_POSITIONS entries: {canvas_pins}\n"
+        "  and their RETIRED_OMISSION_PAIRS covered-set entry with them.\n"
+        "Then re-measure: if the collision is genuinely gone, the pairs gate "
+        "normally and this lane watches all five. Do NOT re-pin them at a new "
+        "digest to keep this green — that is rule 3 defeated by hand."
     )
 
 
@@ -507,6 +699,42 @@ def test_an_UNRECOGNISED_BUILD_is_pinned_by_nothing() -> None:
     # And the same digest on the build it WAS recorded on is still excluded, so
     # the above is the build axis working rather than the pin being inert.
     assert len(behaviour_checks._known_position_split(_colliding_canvas(), BUILD)[1]) == 2
+
+
+def test_two_pins_on_the_SAME_pair_and_build_are_REFUSED(monkeypatch) -> None:
+    """A silent collapse in a structure whose whole value is legibility.
+
+    `_known_position_split` keys its lookup on the pair, so two entries pinning
+    the same pair on the same build would collapse to the LAST one: the first's
+    digest could never match, and the entry would sit in `KNOWN_POSITIONS`
+    being reported to a reader as if it were doing something. That is the
+    quietest possible way for this set to stop meaning what it says.
+
+    Cannot happen today (two entries, two pairs) and this is not a live defect
+    — it is the failure mode named and made loud, because the alternative is a
+    reader trusting a pin that is inert.
+    """
+    twin = KnownPosition(
+        realm="window",
+        probe_id="canvas.readback",
+        digest=999_999_999,
+        build=BUILD,
+        owner="the duplicate",
+        reason_path="readings/ps135-2026-08-24/EVIDENCE.md",
+        reason_quote="two profiles agree, so the two-profile unlinkability check will",
+    )
+    monkeypatch.setattr(
+        behaviour, "KNOWN_POSITIONS", KNOWN_POSITIONS + (twin,), raising=True
+    )
+
+    with pytest.raises(behaviour.BehaviourCheckError) as excinfo:
+        behaviour_checks._known_position_split(_colliding_canvas(), BUILD)
+
+    message = str(excinfo.value)
+    assert twin.pair in message and str(twin.digest) in message, (
+        "the refusal does not name the pair and the conflicting readings, so a "
+        "reader cannot tell which entry to delete"
+    )
 
 
 def test_an_unpinned_collision_always_reaches_the_verdict() -> None:
@@ -738,6 +966,54 @@ def test_the_report_states_the_known_positions(monkeypatch) -> None:
     assert "never adjudicated" in report, (
         "the report does not say that a known position is EXCLUDED rather than "
         "FORGIVEN, which is the distinction a reader needs to trust the green"
+    )
+
+
+def test_the_report_does_not_claim_a_VANISHED_collision_is_a_finding(
+    monkeypatch,
+) -> None:
+    """⛔ THE REPORT MUST DESCRIBE THE BRANCH IT ACTUALLY TAKES.
+
+    Round 1's header read "A pair that collides at a DIFFERENT reading, or has
+    STOPPED colliding, is reported as a finding". The first half is true and
+    tested; the second is FALSE — a vanished collision leaves the verdict at
+    PASS by design. The conjunction is what made it dangerous: it welded a true
+    case and a false case onto one verb, so a reader who spot-checked the true
+    half came away confident about the false one — printed on every run, in the
+    report a human reads to decide whether to trust the green.
+
+    That matters more than ordinary comment drift, because the whole
+    admissibility argument for this mechanism is "excluding is visible in the
+    report; forgiving is invisible". The report is load-bearing EVIDENCE, so a
+    sentence in it that misdescribes the mechanism is a defect in the mechanism.
+
+    Driven against the behaviour rather than asserted as a string: the same
+    input that produces the header is shown producing a PASS.
+    """
+    stopped = _drive_check(monkeypatch, [])
+    assert stopped.status == PASS, (
+        "a vanished collision is not a PASS any more; the report's claim and "
+        "the code have swapped places rather than been reconciled"
+    )
+
+    report = behaviour.format_report([_drive_check(monkeypatch, _colliding_canvas())])
+    header = next(
+        line for line in report.splitlines() if line.startswith("KNOWN POSITIONS")
+    )
+    block = report[report.index(header) :]
+
+    assert "STOPPED colliding, is reported as a finding" not in block, (
+        "the report still claims a pair that stopped colliding is a FINDING. "
+        "It is not: the pair rejoins the live comparison, the dead pin is "
+        "reported, and the verdict is unaffected — measured one assertion up."
+    )
+    assert "has STOPPED colliding is NOT" in block, (
+        "the report does not state that a vanished collision is NOT a finding, "
+        "so a reader cannot tell what the green they are looking at means"
+    )
+    assert "DIFFERENT reading" in block and "FINDING" in block, (
+        "the report no longer states the case that IS a finding, so the "
+        "correction removed the true half along with the false one"
     )
 
 
