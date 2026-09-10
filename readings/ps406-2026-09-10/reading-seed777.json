@@ -1,0 +1,33 @@
+{
+  "on": {
+    "ref_hash": "b0becdc5",
+    "ref_colours": 15,
+    "fp_hash": "62388145",
+    "fp_colours": 1910,
+    "widths": {
+      "Personium measureText probe 12345": 298.4065517061501,
+      "W": 15.820328495260078,
+      "iiiii": 22.22658497235305,
+      "The quick brown fox": 161.6173509044174
+    }
+  },
+  "off": {
+    "ref_hash": "b0becdc5",
+    "ref_colours": 15,
+    "fp_hash": "77b3d0a8",
+    "fp_colours": 1904,
+    "widths": {
+      "Personium measureText probe 12345": 298.40625,
+      "W": 15.8203125,
+      "iiiii": 22.2265625,
+      "The quick brown fox": 161.6171875
+    }
+  },
+  "ref_modified_bytes": 0,
+  "fp_modified_bytes": 15,
+  "guard_present": true,
+  "protection_intact": true,
+  "widths_plausible": true,
+  "seed": 777,
+  "engine": "/tmp/ps406/enginedir/fpchrome.AppImage"
+}
