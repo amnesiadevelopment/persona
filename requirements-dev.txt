@@ -1,6 +1,35 @@
 pytest>=9.0
 pytest-timeout>=2.4
 
+# The parser every workflow-SHAPE guard reads its subject through (PS-389).
+#
+# DECLARED HERE BECAUSE IT WAS DECLARED NOWHERE. Until this line, PyYAML
+# appeared in none of requirements.txt, requirements-dev.txt or pyproject.toml,
+# and reached `ci.yml` / `release.yml` only as a TRANSITIVE dependency of
+# `uvicorn[standard]` under `pip install .` — a route nothing pinned for this
+# purpose and no test asserted. Four workflows that do not run `pip install .`
+# had each learned `pip install ... PyYAML` by hand, every one of them after
+# being bitten: `chromium-upstream-watch.yml`, `firefox-major-watch.yml`,
+# `published-engine-verdict.yml` and `engine-continuity.yml`.
+#
+# ⚠️ THIS LINE DOES NOT REPLACE THOSE FOUR, AND MUST NOT BE READ AS DOING SO.
+# They install requirements-dev.txt too, so this makes their explicit `PyYAML`
+# argument redundant — but four tests assert that argument is present by name
+# (test_ps342_chromium_watch.py, test_ps372_firefox_major_watch.py,
+# test_ps370_published_engine_gate.py, test_ps375_engine_continuity_gate.py),
+# and they are guarding the "never works" class where a clean `setup-python`
+# meets a bare `python -m pytest`. Belt and braces is correct here: this entry
+# is what makes the `yaml` capability in conftest.py HONOURABLE on every job,
+# and those arguments are what keep it honourable if this file's install line
+# is ever reordered behind the self-test.
+#
+# ⛔ A DECLARED DEPENDENCY IS NOT A POLICED ONE. If this line went missing, or
+# an install of it failed, the 97 workflow-shape guards it feeds would go back
+# to skipping SILENTLY — which is why the same commit that added this line
+# named `yaml` in conftest.py's CAPABILITIES table. The declaration is what
+# makes the absence loud; this line is what makes the declaration fair.
+PyYAML>=6.0
+
 # Type checker (PS-165). Declared here because it was previously installed by
 # nothing and invoked by nowhere — mypy.ini had sat in the repo unused, and the
 # ONLY reason it went unrun was this absence.

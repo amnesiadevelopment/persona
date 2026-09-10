@@ -318,6 +318,76 @@ CAPABILITIES: dict[str, Capability] = {
             "the engine driver is not installed",
         ),
     ),
+    # PyYAML — the parser every workflow-SHAPE guard reads its subject through.
+    #
+    # WHY THIS ENTRY IS DIFFERENT IN KIND FROM THE FIVE ABOVE, and why it is
+    # worth a name. The others police tests ABOUT the product: a browser did
+    # not launch, an engine package is missing. This one polices the tests that
+    # assert CI's own shape — including, by name,
+    # `test_ci_declares_the_browser_capability_rather_than_inferring_it` and
+    # `test_ci_declares_the_engine_capability_on_every_platform` in
+    # tests/test_ci_verification_gates.py. Without a name here, the guards
+    # asserting that the OTHER capability declarations exist are themselves
+    # outside the mechanism, so the suite stops policing its own policing and
+    # reports green while doing it.
+    #
+    # MEASURED, not argued (PS-389, at 9dad467, via a `sys.meta_path` blocker
+    # raising a genuine ModuleNotFoundError — an ImportError stub takes a
+    # different path and produces errors, not skips): with PyYAML absent, 97
+    # tests across 15 files decline to run, 37 of them in
+    # test_ci_verification_gates.py. Declaring ci.yml's OWN
+    # `PERSONA_REQUIRED_CAPABILITIES=browser,engine` over that run changed
+    # nothing — byte-identical to declaring nothing at all. That is the defect.
+    #
+    # THE LIVE INCIDENT, in-tree: .github/workflows/published-engine-verdict.yml
+    # records its first CI run reporting "34 passed, 6 SKIPPED" — the six that
+    # assert that job cannot be hollowed out were inert in the job they guard.
+    # Four workflows have since learned `pip install ... PyYAML` BY HAND, each
+    # after being bitten. A per-job remedy cannot make the class visible; a
+    # name here can.
+    #
+    # ⚠️ BOTH WORDINGS ARE LOAD-BEARING AND NEITHER CONTAINS THE OTHER. The
+    # guards split two ways and a pattern written against one leaves the other
+    # dark while the change LOOKS like it worked:
+    #   * bare `pytest.importorskip("yaml")`  -> "could not import 'yaml..."
+    #     (78 of the 97; the truncated stem is used so the module-name quoting
+    #     importorskip appends cannot matter)
+    #   * `reason="PyYAML is needed to parse the workflow"` — passed to
+    #     `importorskip` in 8 module-level files, and written as a BARE
+    #     `pytest.skip` in tests/test_ps372_firefox_major_watch.py's `workflow`
+    #     fixture, which is deliberately NOT an importorskip (a module-level
+    #     one would skip that whole file). A sweep looking only for
+    #     `importorskip` misses that site in both wordings; matching on the
+    #     REASON catches it, which is the property this table is built on.
+    # The stem is "pyyaml is needed" rather than the full sentence, so a guard
+    # that appends its own detail still classifies — the same environment-
+    # independent-stem rule `engine`'s third pattern records.
+    #
+    # PROVISIONED, MEASURED, AND THAT IS WHAT MAKES IT DECLARABLE. PyYAML was
+    # declared in NO dependency file until PS-389 — `requirements.txt`,
+    # `requirements-dev.txt` and `pyproject.toml` all had zero hits — and
+    # reached ci.yml and release.yml only as a transitive dependency of
+    # `uvicorn[standard]` that nothing pinned for this purpose and no test
+    # asserted. It is now a direct `requirements-dev.txt` entry, which every
+    # pytest-running job installs. Declaring a capability no job supplies would
+    # fail for want of provisioning rather than for want of correctness — the
+    # mistake `browser_chromium` is deliberately left out of the umbrella to
+    # avoid. This one is supplied, and the declaration and the provision landed
+    # in the same commit deliberately: the name alone would only convert 97
+    # silent skips into 97 loud failures.
+    "yaml": Capability(
+        name="yaml",
+        summary="PyYAML, which every workflow-shape guard parses its subject with",
+        provisioned_by=(
+            "`pip install -r requirements-dev.txt` (PyYAML is a direct entry "
+            "there). A workflow that installs neither it nor the project must "
+            "name PyYAML on its own pip line — four already do"
+        ),
+        reason_patterns=(
+            "could not import 'yaml",  # importorskip's own wording
+            "pyyaml is needed",        # the custom reason=, and ps372's bare skip
+        ),
+    ),
     # Driving persona's OWN flet UI (tests/test_ui_driven.py). Distinct from
     # "browser" above, which is about launching a browser as the PRODUCT does:
     # this one needs flet installed so the UI can be SERVED in web mode, plus a
@@ -680,6 +750,9 @@ def pytest_configure(config: pytest.Config) -> None:
         requested
     )
     config._persona_capability_failures = {}  # type: ignore[attr-defined]
+    # The collection hook has no config of its own — a CollectReport carries
+    # none — so stash it here, where the declaration is already resolved.
+    _COLLECT_CONFIG["config"] = config
 
 
 def _required(config: pytest.Config) -> list[str]:
@@ -834,6 +907,62 @@ def _skip_reason(report: pytest.TestReport) -> str:
     return re.sub(r"^Skipped:\s*", "", reason).strip()
 
 
+def pytest_collectreport(report: pytest.CollectReport) -> None:
+    """A WHOLE FILE that declines to collect, on a machine that declared it.
+
+    THE ITEM HOOK BELOW STRUCTURALLY CANNOT SEE THIS CASE, and it is the WORST
+    case rather than an edge one. `pytest_runtest_makereport` fires per test
+    ITEM; a module-level `pytest.importorskip` raises during COLLECTION, so no
+    item is ever created and there is nothing for that hook to convert. The run
+    prints one line — `SKIPPED [1] tests/foo.py:47: ...` — for a file that may
+    hold dozens of tests, and the summary counts it as ONE skip.
+
+    MEASURED, PS-389, at this commit: eight files guard yaml at module level,
+    and behind those eight lines sit 222 tests. Under the item hook alone a
+    declared run converted 90 of 97 reported skips and left those eight —
+    reading as "8 skipped" beside 222 tests that never existed. A mechanism
+    whose whole subject is "a check that reports success over something it did
+    not look at" cannot leave its own largest instance unpoliced.
+
+    Registered as a plain hook rather than a wrapper because a CollectReport
+    cannot be usefully turned into a "failed" test — there is no item to fail.
+    The consequence is delivered where the item hook's is: the offender is
+    recorded, `pytest_terminal_summary` names it under its capability, and the
+    session's exit status is non-zero. So the run says WHICH file vanished and
+    WHY, instead of printing a single quiet line.
+    """
+    if not report.skipped:
+        return
+    config = getattr(report, "_persona_config", None) or _COLLECT_CONFIG.get("config")
+    if config is None:  # pragma: no cover - configure always runs first
+        return
+    required = _required(config)
+    if not required:
+        return
+
+    reason = _skip_reason(report)
+    cap = next(
+        (c for c in capabilities_for_skip(reason) if c.name in required),
+        None,
+    )
+    if cap is None:
+        return
+
+    failures = config._persona_capability_failures  # type: ignore[attr-defined]
+    # Distinguished from an item nodeid on purpose: a reader must not mistake
+    # "this file did not collect" for "this one test skipped", because the
+    # blast radius is completely different.
+    failures.setdefault(cap.name, []).append(
+        f"{report.nodeid} (WHOLE FILE did not collect: {reason})"
+    )
+    config._persona_collect_capability_failed = True  # type: ignore[attr-defined]
+
+
+#: The config, stashed at configure time. A CollectReport carries no config of
+#: its own, and the collection hook needs the declaration to decide anything.
+_COLLECT_CONFIG: dict[str, pytest.Config] = {}
+
+
 @pytest.hookimpl(wrapper=True, trylast=True)
 def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo):
     report = yield
@@ -883,6 +1012,22 @@ def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo):
     return report
 
 
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    """A collection-level capability failure must move the EXIT STATUS.
+
+    An item-level one does so for free — the report is turned into a genuine
+    test failure, and pytest counts it. A COLLECTION-level one cannot be: there
+    is no item, so `pytest_collectreport` can only record the offender. Without
+    this, a declared run where a whole guarded FILE failed to collect would
+    print `FAILED yaml: ...` in the summary and still exit 0 — a red message on
+    a green run, which is worse than either, because the message trains the
+    reader and the exit code trains the machine.
+    """
+    if getattr(session.config, "_persona_collect_capability_failed", False):
+        if session.exitstatus == 0:
+            session.exitstatus = pytest.ExitCode.TESTS_FAILED
+
+
 def pytest_terminal_summary(
     terminalreporter, exitstatus, config: pytest.Config
 ) -> None:
@@ -897,9 +1042,14 @@ def pytest_terminal_summary(
         cap = CAPABILITIES[name]
         offenders = failures.get(name, [])
         if offenders:
+            # "test(s) or file(s)": a collection-level offender is a whole FILE
+            # that did not collect, and calling that "1 test skipped" would
+            # understate it by however many tests the file holds (measured at
+            # PS-389: eight such files, 222 tests behind them). The offender
+            # line itself says which case each one is.
             write(
-                f"FAILED {name}: {len(offenders)} test(s) skipped in an "
-                f"environment that declares {cap.summary}:",
+                f"FAILED {name}: {len(offenders)} test(s) or file(s) declined "
+                f"to run in an environment that declares {cap.summary}:",
                 red=True,
             )
             for nodeid in offenders:

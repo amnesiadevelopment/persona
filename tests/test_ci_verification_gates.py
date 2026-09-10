@@ -750,6 +750,120 @@ def test_the_engine_capability_the_workflow_declares_actually_exists() -> None:
     )
 
 
+def test_ci_declares_the_yaml_capability_on_every_platform(ci_yaml, ci_text) -> None:
+    """THE RECURSIVE ONE, and the reason it lives in THIS file rather than
+    beside the others.
+
+    Every workflow-shape test in this module — including
+    `test_ci_declares_the_browser_capability_rather_than_inferring_it` and
+    `test_ci_declares_the_engine_capability_on_every_platform` directly above —
+    reaches its subject through the module's `ci_yaml` fixture, which opens
+    with `pytest.importorskip("yaml")`. So on a runner without PyYAML the
+    guards asserting that the OTHER capability declarations exist are the ones
+    that decline to run, silently, while the job reports green. Measured at
+    PS-389: 97 tests across 15 files, 37 of them in this file.
+
+    ⚠️ THIS TEST CANNOT CATCH ITS OWN CASE, and that is not a defect to repair
+    here — it is the whole argument for the declaration. It takes `ci_yaml`
+    too, so with PyYAML absent it skips along with everything else. What makes
+    the absence loud is the DECLARATION in ci.yml plus the `yaml` entry in
+    conftest's table; this test is what stops that declaration from being
+    quietly dropped later.
+
+    Both copies are checked, for the reason PS-371 recorded on `engine`: the
+    matrix value reaches ubuntu only, and the fallback literal is what macOS
+    and Windows actually receive.
+    """
+    shards = ci_yaml["jobs"]["tests"]["strategy"]["matrix"]["shard"]
+    for shard in shards:
+        declared = str(shard.get("capabilities", ""))
+        assert "yaml" in declared.split(","), (
+            f"shard {shard.get('name')!r} declares {declared!r}, which does not "
+            "include 'yaml' — the workflow-shape guards, including the ones "
+            "asserting the other capability declarations exist, would decline "
+            "to run and this job would report green having checked nothing"
+        )
+
+    # ⚠️ SCANNED THROUGH `_effective_lines`, NOT RAW `ci_text` — see the same
+    # assertion on `engine` above for the measured reason: `re.search` takes
+    # the first match anywhere, and the comment explaining this directive
+    # contains a copy of the value, so a raw scan reads the prose and passes
+    # while the runner is handed something else.
+    fallback = re.search(
+        r"PERSONA_REQUIRED_CAPABILITIES:.*\|\|\s*'([^']*)'",
+        "\n".join(_effective_lines(ci_text)),
+    )
+    assert fallback, (
+        "could not find the non-ubuntu fallback declaration in the env "
+        "expression — if the expression was restructured, re-point this "
+        "assertion at whatever macOS and Windows now receive rather than "
+        "deleting it"
+    )
+    assert "yaml" in fallback.group(1).split(","), (
+        f"the non-ubuntu fallback declares {fallback.group(1)!r}, which does "
+        "not include 'yaml' — so the workflow-shape guards are policed on "
+        "ubuntu only, and can go dark on macOS and Windows without a word"
+    )
+
+
+def test_the_yaml_capability_the_workflow_declares_actually_exists() -> None:
+    """The declaration and the table entry are two halves of one guard, and
+    either alone enforces nothing — a name ci.yml declares that the harness
+    does not know is a hard UsageError that takes every tests job down.
+
+    BOTH WORDINGS ARE ASSERTED, and that is the load-bearing part. The guards
+    split two ways and neither string contains the other, so an entry written
+    against one alone leaves the other dark while looking correct:
+
+      * `pytest.importorskip("yaml")`               -> importorskip's own text
+      * `reason="PyYAML is needed to parse the workflow"` — passed by the 8
+        module-level guards, and written as a BARE `pytest.skip` in
+        tests/test_ps372_firefox_major_watch.py's `workflow` fixture (which is
+        deliberately not an importorskip, because a module-level one would skip
+        that entire file). That site is reachable only by matching the reason.
+    """
+    import conftest as persona_conftest
+
+    assert "yaml" in persona_conftest.CAPABILITIES, (
+        "ci.yml declares 'yaml', which is not a known capability — every "
+        "tests job would fail at startup with a UsageError"
+    )
+    for reason in (
+        "could not import 'yaml': No module named 'yaml'",
+        "PyYAML is needed to parse the workflow",
+    ):
+        cap = persona_conftest.capability_for_skip(reason)
+        assert cap is not None and cap.name == "yaml", (
+            f"{reason!r} does not classify as the 'yaml' capability, so "
+            "declaring it in ci.yml polices those guards not at all"
+        )
+
+
+def test_pyyaml_is_declared_in_a_requirements_file_not_only_transitively() -> None:
+    """Naming a capability no job supplies fails for want of PROVISIONING
+    rather than for want of correctness — the mistake `browser_chromium` is
+    deliberately left out of the umbrella to avoid.
+
+    Until PS-389, PyYAML was declared in NONE of requirements.txt,
+    requirements-dev.txt or pyproject.toml. It reached the two jobs that run
+    the suite only as a transitive dependency of `uvicorn[standard]` under
+    `pip install .` — a route nothing pinned for this purpose and no test
+    asserted, so the day it dropped out the declaration above would red CI for
+    a reason no operator had been told about. This is what makes the
+    declaration honourable, and it is asserted rather than left to a comment.
+    """
+    dev = (REPO_ROOT / "requirements-dev.txt").read_text(encoding="utf-8")
+    executable = [
+        line for line in dev.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    assert any("pyyaml" in line.lower() for line in executable), (
+        "PyYAML is declared in no executable line of requirements-dev.txt, so "
+        f"ci.yml's 'yaml' declaration rests on a transitive dependency. "
+        f"Lines: {executable!r}"
+    )
+
+
 def test_ci_states_the_measured_floor_for_every_platform(ci_text) -> None:
     """A floor is the sentence the next reader trusts when deciding whether
     their change broke something, so each platform's figure must be stated —

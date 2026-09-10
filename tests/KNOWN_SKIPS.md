@@ -309,10 +309,97 @@ what was missing and how to provision it. Declaring nothing changes nothing:
 an ordinary developer run still skips and still passes.
 
 Capabilities: `browser`, `browser_firefox`, `browser_chromium`, `node`,
-`engine`, `ui_driver` (see `conftest.py`). Multiple are comma- or
+`engine`, `yaml`, `ui_driver` (see `conftest.py`). Multiple are comma- or
 space-separated. A name that is not one of these is a hard error, not a silent
 no-op — a typo that quietly disabled the guard would be the original defect
 wearing a new hat.
+
+### `yaml` — the entry that polices the guards policing the declarations
+
+**Measured position, PS-389, at `9dad467` on this Linux container.** Every
+figure below came from a run, via a `sys.meta_path` blocker raising a genuine
+`ModuleNotFoundError` for `yaml` — *not* an `ImportError` stub, which takes a
+different path in `importorskip` and produces **errors**, not skips.
+
+With PyYAML absent, over the 15 yaml-touching test files:
+
+| file | dark tests |
+|---|---|
+| `test_ci_verification_gates.py` | **37** |
+| `test_ps336_launch_behaviour_venue.py` | 13 |
+| `test_ps372_firefox_major_watch.py` | 11 |
+| `test_ps370_published_engine_gate.py` | 9 |
+| `test_ps375_engine_continuity_gate.py` | 9 |
+| `test_ps315_behaviour_gate.py` | 6 |
+| `test_protocol_conformance_gate.py` | 4 |
+| 8 × module-level guards @ 1 each | 8 |
+| **TOTAL** | **97** |
+
+> ⚠️ **Earlier figures for this population were measured on older trees and are
+> lower — 65 (at `d300635`) and 84.** The count moves with the tree because
+> every new workflow-shape gate adds guards; `test_ps375_engine_continuity_gate.py`
+> did not exist when 65 was measured. Treat any number here as a reading of a
+> commit, which is this whole file's standing rule. **Read the population, not
+> the arithmetic**: the shape of the finding is what is stable.
+
+**The dark population is not ordinary tests.** 37 of the 97 are in
+`test_ci_verification_gates.py` — the file that asserts the OTHER capability
+declarations exist, by name
+(`test_ci_declares_the_browser_capability_rather_than_inferring_it`,
+`test_ci_declares_the_engine_capability_on_every_platform`). Without a `yaml`
+entry the suite stopped policing its own policing, and reported green doing it.
+
+**Two wordings, and neither contains the other.** A `reason_patterns` entry
+written against one alone leaves the rest dark while the change looks like it
+worked:
+
+| wording | how it arises | count |
+|---|---|---|
+| `could not import 'yaml': No module named 'yaml'` | bare `pytest.importorskip("yaml")` | 78 |
+| `PyYAML is needed to parse the workflow` | `reason=` on 8 module-level guards, **and** a bare `pytest.skip` in `test_ps372_firefox_major_watch.py`'s `workflow` fixture | 19 |
+
+> ⚠️ **That last site is a `pytest.skip`, not an `importorskip`, deliberately**
+> — a module-level `importorskip` there would skip the entire file, which the
+> file's own comment records having measured. So an AST sweep looking for
+> `importorskip` cannot see it in either wording. Matching on the **reason**
+> catches it, which is the property `conftest.CAPABILITIES` is built on.
+
+**It is declarable because it is PROVISIONED, and that landed in the same
+commit.** Until PS-389, PyYAML was declared in none of `requirements.txt`,
+`requirements-dev.txt` or `pyproject.toml`, and reached `ci.yml` / `release.yml`
+only as a transitive dependency of `uvicorn[standard]` under `pip install .` —
+a route nothing pinned for this purpose and no test asserted. It is now a direct
+`requirements-dev.txt` entry, pinned by
+`tests/test_ci_verification_gates.py::test_pyyaml_is_declared_in_a_requirements_file_not_only_transitively`.
+Naming the gap is not closing it: the entry alone would only have converted 97
+silent skips into 97 loud failures.
+
+**Four workflows had already learned it BY HAND**, each after being bitten —
+`chromium-upstream-watch.yml`, `firefox-major-watch.yml`,
+`published-engine-verdict.yml`, `engine-continuity.yml`. Those explicit
+`PyYAML` arguments are **kept**, not removed: they run *before* the self-test
+step and four in-tree tests assert them by name, guarding the separate
+"never works" class where a clean `setup-python` meets a bare `python -m
+pytest`. Solved-by-hand four times is the frequency argument for a name, not a
+substitute for one.
+
+> **There is no live gap today, and this ships no fix.** PyYAML is present in
+> every job that needs it — four by hand, two transitively — and the suite is
+> green. This is prevention against the day `uvicorn[standard]` drops PyYAML,
+> or a seventh workflow is written without the hand-learned line. The live
+> incident it generalises is in-tree:
+> `.github/workflows/published-engine-verdict.yml` records its first CI run
+> reporting **"34 passed, 6 SKIPPED"** — the six that assert that job cannot be
+> hollowed out were inert *in the job they guard*.
+
+**What this deliberately did NOT do.** The AST sweep in
+`tests/test_skip_visibility.py` is still **engine-scoped**. Widening it to yaml
+is a separate judgement about that instrument, not a consequence of the table
+gaining an entry. Its scope note previously used PyYAML as its example of "a
+reason that legitimately classifies as nothing"; that example was corrected in
+the same commit — the note's *rule* is intact and only the example moved,
+because the condition it named (*none is declared for them*) is precisely what
+changed.
 
 ### `browser` is an umbrella, and what it leaves out is the point
 
