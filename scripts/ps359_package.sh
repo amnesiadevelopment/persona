@@ -117,6 +117,102 @@
 # any of those. This produces an artifact attached to a run, and stops.
 set -euo pipefail
 
+# ─────────────────────────────────────────────────────────────────────────────
+# PORTABILITY — THE TOOLS BELOW ARE RESOLVED, NEVER ASSUMED
+# ─────────────────────────────────────────────────────────────────────────────
+# This script runs for real on a Linux self-hosted runner, and it is EXECUTED by
+# `tests/test_ps359_packaged_artifact.py` on all three merge-gate platforms. The
+# first draft used four GNU-only constructs — `stat -c`, `sha256sum`,
+# `find -printf` and `date -Is` — and `tests (macos-latest)` went red: BSD `stat`
+# has no `-c`, so under `set -euo pipefail` the script aborted at rc=1 and every
+# assertion about its behaviour became a report of a dead shell.
+#
+# ⛔ THE FIX IS NOT TO SKIP THE SUITE OFF-LINUX. `tests/posix_shell.py` exists
+# because a script under test that never executes makes every assertion about it
+# vacuous on that platform; skipping restores exactly that blindness. The four
+# call sites are resolved instead, so the tests keep running everywhere and keep
+# meaning something.
+#
+# The guarded idiom is already in a sibling script in this directory
+# (`ps218_build.sh:281`), and the digest ladder is already in another
+# (`ps218_host_id.sh:86-96`). Nothing here is invented.
+
+# ISO-8601 UTC, on any `date`. GNU has `-Is`; BSD `date` has no `-I` at all, and
+# an explicit format string is understood by both — so this is the portable form
+# rather than a fallback for one.
+now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+
+# Size of one file, in bytes.
+#
+# GNU coreutils spells this `stat -c %s`; BSD/macOS spells it `stat -f %z`. The
+# `wc -c` tail is POSIX and works where neither `stat` does — it costs a read of
+# the file, which against a multi-hour package step is nothing, and it means
+# this can never be the line that kills the script.
+file_bytes() {
+  stat -c %s "$1" 2>/dev/null \
+    || stat -f %z "$1" 2>/dev/null \
+    || wc -c < "$1" 2>/dev/null | tr -d ' '
+}
+
+# SHA-256 of one file, as bare hex.
+#
+# Same three-tool ladder `ps218_host_id.sh` resolves, and for the same reason:
+# `sha256sum` is GNU coreutils and is ABSENT on macOS, which ships `shasum`.
+# All three compute the same digest over the same bytes, so a record written on
+# one platform still compares equal to one read on another.
+#
+# THEIR OUTPUT FORMATS DIFFER, which is the trap:
+#     sha256sum       -> "<64 hex>  <file>"
+#     shasum -a 256   -> "<64 hex>  <file>"
+#     openssl dgst    -> "SHA2-256(<file>)= <64 hex>"
+# `cut -d' ' -f1` is right for the first two and silently WRONG for the third.
+# Extracting the hex run by pattern is format-independent.
+#
+# A host with none of the three records `unavailable` rather than aborting: the
+# digest is provenance ABOUT the artifact, not the artifact, and the record then
+# says so in the field itself instead of pretending to a value it does not have.
+file_sha256() {
+  local out="" hex=""
+  if command -v sha256sum >/dev/null 2>&1; then
+    out="$(sha256sum "$1" 2>/dev/null)" || true
+  elif command -v shasum >/dev/null 2>&1; then
+    out="$(shasum -a 256 "$1" 2>/dev/null)" || true
+  elif command -v openssl >/dev/null 2>&1; then
+    out="$(openssl dgst -sha256 "$1" 2>/dev/null)" || true
+  else
+    printf '%s' "unavailable (no sha256sum, shasum or openssl on this host)"
+    return 0
+  fi
+  hex="$(printf '%s' "$out" | grep -oE '[0-9a-f]{64}' | head -1)" || true
+  if [ -n "$hex" ]; then printf '%s' "$hex"; else printf '%s' "unavailable"; fi
+}
+
+# One line per entry of a directory: type, size, name — the columns GNU
+# `find -printf '%y %10s %f'` produces, assembled from portable parts.
+#
+# ⚠️ THE ORIGINAL GUARD HERE WAS WORSE THAN A CRASH, which is why this one is
+# built rather than tolerated. `find -printf` is GNU-only, and it was written
+# with `2>/dev/null || true`, so off-GNU the inventory silently produced NOTHING
+# WHILE THE REMOVAL BELOW STILL HAPPENED. "Nothing is destroyed unread" quietly
+# stopped being true, invisibly, on exactly the platform nobody was watching.
+# The caller now COUNTS the result against the directory and refuses to remove
+# anything it could not read.
+inventory_dir() {
+  local entry kind bytes
+  find "$1" -maxdepth 1 -mindepth 1 2>/dev/null | sort | while IFS= read -r entry; do
+    if [ -d "$entry" ]; then
+      kind="d"; bytes="-"
+    else
+      kind="f"; bytes="$(file_bytes "$entry" 2>/dev/null || echo '?')"
+    fi
+    printf '    %s %10s  %s\n' "$kind" "$bytes" "$(basename "$entry")"
+  done
+}
+
+count_entries() {
+  find "$1" -maxdepth 1 -mindepth 1 2>/dev/null | wc -l | tr -d ' '
+}
+
 TREE="${1:?usage: ps359_package.sh <unmodified|patched>}"
 UCPL_DIR="${UCPL_DIR:?UCPL_DIR must point at the ungoogled-chromium-portablelinux checkout}"
 UNGOOGLED_TAG="${UNGOOGLED_TAG:-unknown}"
@@ -146,7 +242,7 @@ SUBMODULE_DIR="${UCPL_ABS}/ungoogled-chromium"
   echo "# tree:      ${TREE}"
   echo "# tag:       ${UNGOOGLED_TAG}"
   echo "# run:       ${GITHUB_RUN_ID:-local} (attempt ${GITHUB_RUN_ATTEMPT:-1})"
-  echo "# recorded:  $(date -Is)"
+  echo "# recorded:  $(now_iso)"
   echo "#"
   echo "# No list of runtime files appears in this repository. Which files a"
   echo "# Chromium runtime tree needs is upstream's question, answered by"
@@ -181,10 +277,44 @@ say "driver:           ${DRIVER}"
 say ""
 say "## Pre-existing release directory (PS-307 preserves \`build/\` between dispatches)"
 if [ -d "$RELEASE_DIR" ]; then
+  # ⚠️ READ FIRST, AND ONLY REMOVE WHAT WAS READ.
+  #
+  # The inventory is recorded BEFORE removal so nothing is destroyed unread —
+  # that is hazard 4's whole promise, and the first draft broke it invisibly.
+  # `find -printf` is GNU-only and was guarded with `|| true`, so off-GNU the
+  # inventory came back EMPTY while the `rm -rf` below still ran: the removal
+  # kept working and the reading silently stopped. A guard that turns a loud
+  # failure into a quiet loss of evidence is worse than the failure.
+  #
+  # So the two are now COUPLED: the entries are counted independently of the
+  # inventory that describes them, and a mismatch REFUSES the removal rather
+  # than proceeding blind. The stale directory is left exactly where it is for
+  # a human to look at, which is strictly better than deleting it unread.
+  stale_count="$(count_entries "$RELEASE_DIR")"
+  stale_listing="$(inventory_dir "$RELEASE_DIR")"
+  if [ -n "$stale_listing" ]; then
+    listed_count="$(printf '%s\n' "$stale_listing" | wc -l | tr -d ' ')"
+  else
+    listed_count=0
+  fi
+
   say "state:            PRESENT before this run — inventory recorded, then REMOVED"
-  # Recorded before removal, so nothing is destroyed unread.
-  find "$RELEASE_DIR" -maxdepth 1 -mindepth 1 -printf '    %y %10s  %f\n' 2>/dev/null \
-    | sort >> "$REPORT" || true
+  say "entries:          ${stale_count} (inventory lines: ${listed_count})"
+  printf '%s\n' "$stale_listing" >> "$REPORT"
+
+  if [ "$listed_count" -ne "$stale_count" ]; then
+    say ""
+    say "verdict:          FAILED — the stale release directory could not be fully read"
+    say ""
+    say "⚠️ NOTHING WAS REMOVED. Hazard 4's promise is that a previous dispatch's"
+    say "   output is INVENTORIED before it is destroyed. ${stale_count} entries are"
+    say "   present and ${listed_count} could be described, so removing the directory"
+    say "   now would destroy evidence unread — which is the posture PS-244 and"
+    say "   PS-307 both refuse. The directory is left in place: read it by hand,"
+    say "   then re-dispatch."
+    exit 1
+  fi
+
   rm -rf "$RELEASE_DIR"
   say "removed:          yes — anything below is THIS run's by construction, not by inspection"
 else
@@ -199,7 +329,7 @@ fi
 say ""
 say "## Upstream's conditional submodule init"
 if [ -n "$(ls -A "$SUBMODULE_DIR" 2>/dev/null || true)" ]; then
-  say "submodule dir:    POPULATED ($(find "$SUBMODULE_DIR" -maxdepth 1 -mindepth 1 | wc -l) entries)"
+  say "submodule dir:    POPULATED ($(count_entries "$SUBMODULE_DIR") entries)"
   say "consequence:      upstream's \`git submodule update --init --recursive\` is a NO-OP"
   say "                  — the workflow's own \`submodules: recursive\` checkout already did it"
 else
@@ -283,8 +413,8 @@ while IFS= read -r src; do
   base="$(basename "$src")"
   dest="${STAGE}/ps218-${TREE}-${base}"
   cp -p "$src" "$dest"
-  bytes="$(stat -c %s "$dest")"
-  sha="$(sha256sum "$dest" | cut -d' ' -f1)"
+  bytes="$(file_bytes "$dest")"
+  sha="$(file_sha256 "$dest")"
   staged=$((staged + 1))
   total_bytes=$((total_bytes + bytes))
   say "  ${base}"
@@ -320,7 +450,7 @@ fi
   echo "github_run_id=${GITHUB_RUN_ID:-local}"
   echo "github_run_attempt=${GITHUB_RUN_ATTEMPT:-1}"
   echo "packaged_by=upstream package/docker-package.sh at tag ${UNGOOGLED_TAG}"
-  echo "packaged_at=$(date -Is)"
+  echo "packaged_at=$(now_iso)"
   echo "artifact_count=${staged}"
   echo "total_bytes=${total_bytes}"
 } > "${STAGE}/PROVENANCE.txt"

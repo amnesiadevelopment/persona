@@ -40,7 +40,9 @@ this file makes.
 
 from __future__ import annotations
 
+import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -570,3 +572,321 @@ def test_each_arm_stages_into_its_own_directory(tmp_path, tree):
     assert not (ws / "package-out" / other).exists(), (
         f"packaging the {tree} arm must not touch the {other} arm's output"
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PORTABILITY — the script must RUN on every platform that executes it
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# THE DEFECT THESE PIN. The first draft of `ps359_package.sh` used four GNU-only
+# constructs — `stat -c %s`, `sha256sum`, `find -printf` and `date -Is`. Under
+# `set -euo pipefail` the first of those ABORTED THE SCRIPT on macOS:
+#
+#     stat: illegal option -- c
+#
+# and five tests in this file went red. They went red rather than vacuously
+# green only because they assert on `returncode == 0` and on the script's own
+# output — the property `tests/posix_shell.py` was written to protect.
+#
+# ⛔ THE FIX WAS NOT TO SKIP OFF-LINUX. The script runs for real on a Linux
+# self-hosted runner, so skipping elsewhere would be defensible-sounding and
+# would restore exactly the blindness `posix_shell.py` exists to end: a script
+# under test that never executes makes every assertion about it vacuous.
+#
+# ⚠️ AND ONE OF THE FOUR WAS WORSE THAN A CRASH. `find -printf` was written with
+# `2>/dev/null || true`, so off-GNU it produced NOTHING while the `rm -rf` below
+# it still ran. The stale-release INVENTORY silently vanished while the REMOVAL
+# kept working — hazard 4's "nothing is destroyed unread" quietly stopped being
+# true, invisibly, on the platform nobody was watching. A guard that converts a
+# loud failure into a quiet loss of evidence is worse than the failure, so the
+# repair COUPLES the two: entries are counted independently of the inventory
+# describing them, and a mismatch refuses the removal.
+#
+# These tests force the non-GNU branches ON A LINUX RUNNER, by constructing a
+# PATH — the same technique `test_ps249_host_identity_scrub.py` uses to pin the
+# digest ladder in `ps218_host_id.sh`, and for the same reason: a Linux-only run
+# structurally cannot see a macOS-only defect, so it must be provoked.
+
+# Enough of a toolchain for the script to run at all, so a restricted PATH can
+# hide a specific tool without breaking everything around it.
+_SHELL_ESSENTIALS = (
+    "bash", "sh", "cat", "head", "tail", "grep", "sed", "awk", "cut", "tr",
+    "sort", "wc", "mkdir", "rm", "cp", "mv", "ls", "chmod", "env", "printf",
+    "basename", "dirname", "tee", "find", "date", "stat", "touch", "uname",
+)
+
+# The GNU-only spellings, and what a BSD/macOS host offers instead.
+_BSD_STAT = """#!/bin/bash
+# BSD/macOS `stat`, which has no `-c`. Reproduces the macOS failure verbatim.
+for a in "$@"; do
+  case "$a" in
+    -c*) echo "stat: illegal option -- c" >&2
+         echo "usage: stat [-FLnq] [-f format | -l | -r | -s | -x] [file ...]" >&2
+         exit 1 ;;
+  esac
+done
+if [ "${1:-}" = "-f" ] && [ "${2:-}" = "%z" ]; then shift 2; exec REAL_STAT -c %s "$@"; fi
+exec REAL_STAT "$@"
+"""
+
+_BSD_DATE = """#!/bin/bash
+# BSD `date`, which has no `-I` in any form.
+for a in "$@"; do
+  case "$a" in -I*) echo "date: illegal option -- I" >&2; exit 1 ;; esac
+done
+exec REAL_DATE "$@"
+"""
+
+_BSD_FIND = """#!/bin/bash
+# BSD `find`, which has no `-printf`.
+for a in "$@"; do
+  case "$a" in -printf) echo "find: -printf: unknown primary or operator" >&2; exit 1 ;; esac
+done
+exec REAL_FIND "$@"
+"""
+
+
+def _bsd_path(tmp_path: Path, *, digest_tools: tuple[str, ...]) -> str:
+    """A PATH shaped like a macOS host: BSD stat/date/find, and no `sha256sum`.
+
+    `digest_tools` names which digest commands are visible, because their
+    ABSENCE is what the resolver branches on — a failing stub would still be
+    found by `command -v` and would exercise the wrong path entirely.
+    """
+    binroot = tmp_path / "bsdbin"
+    binroot.mkdir(parents=True, exist_ok=True)
+
+    shadowed = {"stat", "date", "find"}
+    for tool in _SHELL_ESSENTIALS:
+        if tool in shadowed:
+            continue
+        found = shutil.which(tool)
+        if found and not (binroot / tool).exists():
+            (binroot / tool).symlink_to(found)
+
+    for tool in digest_tools:
+        found = shutil.which(tool)
+        if found and not (binroot / tool).exists():
+            (binroot / tool).symlink_to(found)
+
+    for name, body, real in (
+        ("stat", _BSD_STAT, "REAL_STAT"),
+        ("date", _BSD_DATE, "REAL_DATE"),
+        ("find", _BSD_FIND, "REAL_FIND"),
+    ):
+        underlying = shutil.which(name)
+        if not underlying:
+            pytest.skip(f"no real {name} on this host to wrap")
+        stub = binroot / name
+        stub.write_text(body.replace(real, underlying), encoding="utf-8")
+        stub.chmod(0o755)
+
+    return str(binroot)
+
+
+def _run_on_bsd_path(ws: Path, bsd_path: str, tree: str = "patched"):
+    shell = find_posix_shell()
+    return subprocess.run(
+        [shell, str(PACKAGE_SCRIPT), tree],
+        cwd=ws,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env={
+            "PATH": bsd_path,
+            "UCPL_DIR": "ucpl",
+            "UNGOOGLED_TAG": "152.0.7977.75-1",
+            "GITHUB_RUN_ID": "BSDSIM",
+        },
+    )
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="the BSD stubs are POSIX shell scripts wrapping real GNU tools; the "
+    "Windows lane already executes the script itself through Git Bash",
+)
+@pytest.mark.parametrize(
+    "digest_tools",
+    [
+        pytest.param(("shasum",), id="macos-shasum-only"),
+        pytest.param(("openssl",), id="openssl-only"),
+        pytest.param((), id="no-digest-tool-at-all"),
+    ],
+)
+def test_the_script_completes_on_a_host_without_gnu_coreutils(tmp_path, digest_tools):
+    """The blocker itself: no `stat -c`, no `date -I`, no `find -printf`, no `sha256sum`.
+
+    A macOS runner has all four of those absences at once, and the first draft
+    died on the first one. Each digest case is parametrised separately because
+    the ladder has three rungs and only the one this host happens to have would
+    otherwise ever be exercised.
+
+    The no-digest case asserts the script still SUCCEEDS: a digest is provenance
+    ABOUT the artifact rather than the artifact, so a host that cannot compute
+    one must record that it could not — never abort a completed package over it,
+    and never write a value it does not have.
+    """
+    ws = _fixture_tree(tmp_path, GOOD_STUB)
+    result = _run_on_bsd_path(ws, _bsd_path(tmp_path, digest_tools=digest_tools))
+
+    assert result.returncode == 0, (
+        "the script must run on a host without GNU coreutils.\n"
+        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    )
+    assert "stat: illegal option" not in result.stderr
+    assert "verdict:          PACKAGED" in result.stdout
+
+    staged = sorted(p.name for p in (ws / "package-out" / "patched").iterdir())
+    assert staged == [
+        "PROVENANCE.txt",
+        "ps218-patched-ungoogled-chromium-152.0.7977.75-1-x86_64.AppImage",
+        "ps218-patched-ungoogled-chromium-152.0.7977.75-1-x86_64_linux.tar.xz",
+    ], staged
+
+    report = (ws / "record" / "package-patched.txt").read_text(encoding="utf-8")
+
+    # A real byte count, not the `?` the fallbacks emit when every rung fails.
+    assert "bytes:      9" in report, report
+
+    if digest_tools:
+        assert "unavailable" not in report, (
+            f"a host with {digest_tools} must produce a real digest, not a placeholder"
+        )
+    else:
+        assert "unavailable" in report, (
+            "a host with no digest tool must SAY it could not compute one, "
+            "rather than omitting the field or inventing a value"
+        )
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="see above")
+def test_the_stale_inventory_survives_a_host_without_gnu_find(tmp_path):
+    """The subtle one, and the reason a crash would have been the kinder failure.
+
+    `find -printf` is GNU-only and was guarded with `|| true`, so off-GNU the
+    stale-release inventory produced NOTHING while the removal below it still
+    ran. Hazard 4's promise — that a previous dispatch's output is read before it
+    is destroyed — silently stopped holding, on the one platform where nobody was
+    looking, with no error anywhere to say so.
+
+    So this asserts the inventory is REAL on a BSD-shaped host, not merely that
+    the script survives it. A test that only checked the exit code would have
+    passed against the broken version.
+    """
+    ws = _fixture_tree(tmp_path, GOOD_STUB)
+    stale_dir = ws / "ucpl" / "build" / "release"
+    stale_dir.mkdir(parents=True)
+    (stale_dir / "ungoogled-chromium-999.9.9-1-x86_64.AppImage").write_text(
+        "BYTES FROM A PREVIOUS DISPATCH\n", encoding="utf-8"
+    )
+    (stale_dir / "leftover-scratch").mkdir()
+
+    result = _run_on_bsd_path(ws, _bsd_path(tmp_path, digest_tools=("sha256sum",)))
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    report = (ws / "record" / "package-patched.txt").read_text(encoding="utf-8")
+    assert "ungoogled-chromium-999.9.9-1-x86_64.AppImage" in report, (
+        "the stale artifact was destroyed WITHOUT being inventoried on a host "
+        "with BSD find — the exact silent-evidence-loss the `|| true` guard caused"
+    )
+    assert "leftover-scratch" in report, (
+        "a leftover directory must be inventoried too; `find -printf %y` "
+        "distinguished file from directory and the replacement must as well"
+    )
+    # And the stale artifact must not have reached this run's output.
+    staged = sorted(p.name for p in (ws / "package-out" / "patched").iterdir())
+    assert not any("999.9.9" in name for name in staged), staged
+
+
+def test_the_inventory_and_the_removal_are_coupled(tmp_path):
+    """Removal is REFUSED when the directory could not be fully described.
+
+    The repair is not merely "use a portable inventory" — it is that an
+    unreadable inventory can no longer coexist with a successful removal. Forced
+    by sabotaging `inventory_dir` alone, leaving the independent count honest:
+    exactly the shape `find -printf || true` produced on a BSD host.
+
+    Without this, a future portability slip in the inventory would silently
+    reintroduce the same evidence loss, and every other test here would pass.
+    """
+    ws = _fixture_tree(tmp_path, GOOD_STUB)
+    stale_dir = ws / "ucpl" / "build" / "release"
+    stale_dir.mkdir(parents=True)
+    stale = stale_dir / "ungoogled-chromium-999.9.9-1-x86_64.AppImage"
+    stale.write_text("BYTES FROM A PREVIOUS DISPATCH\n", encoding="utf-8")
+
+    body = PACKAGE_SCRIPT.read_text(encoding="utf-8")
+    assert "\ninventory_dir() {" in body, "inventory_dir must exist to be sabotaged"
+    sabotaged = body.replace(
+        "\ninventory_dir() {",
+        "\ninventory_dir() { printf ''; return 0; }\n_dead_inventory_dir() {",
+        1,
+    )
+    saboteur = tmp_path / "sabotaged.sh"
+    saboteur.write_text(sabotaged, encoding="utf-8")
+
+    shell = find_posix_shell()
+    result = subprocess.run(
+        [shell, str(saboteur), "patched"],
+        cwd=ws,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env={**shell_env(), "UCPL_DIR": "ucpl", "UNGOOGLED_TAG": "t", "GITHUB_RUN_ID": "SAB"},
+    )
+
+    assert result.returncode != 0, (
+        "an unreadable inventory must REFUSE the removal, not proceed blind"
+    )
+    assert "NOTHING WAS REMOVED" in result.stdout, result.stdout
+    assert stale.is_file(), (
+        "the stale artifact was destroyed despite being unreadable — hazard 4's "
+        "promise is that nothing is destroyed unread"
+    )
+
+
+def test_no_gnu_only_construct_returns_to_this_script():
+    """A ratchet, in the spirit of the repo's existing encoding ratchet.
+
+    Each of these is a real failure that reached the merge gate once. The point
+    is not that these four spellings are uniquely dangerous, but that reaching
+    for one is the natural thing to do while editing a Linux-targeted script —
+    and the consequence is invisible until a non-Linux lane runs it.
+
+    SCOPED TO THE CALL SITES, NOT THE WHOLE FILE. The four resolvers at the top
+    are the sanctioned home for these spellings — `file_bytes` NAMES `stat -c`
+    as its first rung, and naming it there is the fix rather than the defect. So
+    the resolver block is excluded and everything below it is scanned: what this
+    forbids is a GNU-only construct in the script's BODY, which is where every
+    one of the four failures actually lived.
+    """
+    body = PACKAGE_SCRIPT.read_text(encoding="utf-8")
+
+    marker = "\nTREE=\"${1:?usage:"
+    assert marker in body, "the resolver block's end marker moved; re-anchor this test"
+    resolvers, _, main = body.partition(marker)
+
+    # The resolvers must actually be the resolvers, or excluding them would
+    # excuse the very thing this test forbids.
+    for required in ("now_iso()", "file_bytes()", "file_sha256()", "inventory_dir()"):
+        assert required in resolvers, f"{required} must be defined in the resolver block"
+
+    # Comments explain WHY each is forbidden and must stay readable, so only
+    # executable lines are scanned.
+    code = [
+        line for line in main.replace("\\\n", " ").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+
+    forbidden = {
+        "stat -c": "GNU-only; BSD is `stat -f %z`. Use file_bytes().",
+        "stat -f": "BSD-only. Use file_bytes(), which tries both.",
+        "-printf": "GNU-only find. Use inventory_dir().",
+        "date -I": "GNU-only. Use now_iso().",
+        "sha256sum": "GNU coreutils; absent on macOS. Use file_sha256().",
+        "shasum": "BSD-only. Use file_sha256(), which resolves the ladder.",
+    }
+    for needle, why in forbidden.items():
+        offenders = [ln for ln in code if needle in ln]
+        assert not offenders, f"{needle}: {why}\noffending lines: {offenders}"
