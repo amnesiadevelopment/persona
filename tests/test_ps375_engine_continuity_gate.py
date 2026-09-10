@@ -1136,6 +1136,83 @@ def test_the_failing_leg_is_named_rather_than_guessed(
     assert "truncated transfer" in result["error"]
 
 
+def test_a_raising_read_pair_is_recorded_as_UNREADABLE_never_as_a_difference(
+        runner, v, tmp_path):
+    """⛔ AC3's non-waivable clause, on the path `read_pair`'s own contract misses.
+
+    `read_pair` returns None for the ONE failure it anticipates (no
+    DevToolsActivePort in time). Everything after that — sync_playwright,
+    connect_over_cdp, contexts[0], new_page, evaluate — RAISES, and `run()`
+    catches StagingError and nothing else. So a refused CDP connect produced no
+    report, no verdict.json and no step outputs: the same silent-red outcome
+    finding 3 removed from the staging leg, on the step this job spends its
+    whole budget to reach.
+
+    The raise must land in `seeds_unreadable` and be EXCLUDED from the
+    moved/same tally — never scored as a difference, which is the false-8/8
+    shape PS-341's own instrument history warns about.
+    """
+    class _Raising:
+        def read_pair(self, binary, seed, **kw):
+            raise RuntimeError("connect_over_cdp: connection refused")
+
+    reading = runner.read_both(_Raising(), "/tmp/new", "/tmp/old", [1, 2, 3])
+    rows = reading["rows"]
+
+    assert len(rows) == 3, "a raise discarded rows instead of recording them"
+    for row in rows:
+        assert row["readable"] is False
+        assert row["moved"] is None, (
+            "an exception was scored as a DIFFERENCE — that is the false-8/8 "
+            "shape AC3 forbids"
+        )
+        assert row["new"] is None and row["old"] is None
+
+    # And the tally excludes them rather than counting them as moves.
+    counted = v.tally(rows)
+    assert counted["seeds_unreadable"] == 3
+    assert counted["moved"] == 0 and counted["same"] == 0
+
+
+def test_one_seeds_raise_does_not_discard_the_seeds_already_read(
+        runner, v, tmp_path):
+    """The guard is PER SEED, not around the loop.
+
+    Sixteen headful launches on a CI runner is exactly where a flaky launch is
+    expected. A loop-level try would salvage 0 rows from a failure on the last
+    seed — measured — throwing away readings that cost real download and launch
+    time and turning a partial reading into no reading at all.
+    """
+    class _FlakyOnSecond:
+        def __init__(self):
+            self.calls = 0
+
+        def read_pair(self, binary, seed, **kw):
+            self.calls += 1
+            if seed == 2:
+                raise OSError("browser died after writing its port file")
+            # The real read_pair answers a (vendor, renderer) pair of strings;
+            # `scorable` requires that shape, so a bare string would be counted
+            # unreadable for the wrong reason and the test would pass vacuously.
+            return ["Google Inc. (NVIDIA)", "ANGLE (%s, seed %s)" % (binary, seed)]
+
+    reading = runner.read_both(_FlakyOnSecond(), "/tmp/new", "/tmp/old", [1, 2, 3])
+    rows = {row["seed"]: row for row in reading["rows"]}
+
+    assert len(rows) == 3, "the whole reading was discarded by one bad seed"
+    assert rows[1]["readable"] is True, "a seed read BEFORE the failure was lost"
+    assert rows[3]["readable"] is True, "a seed read AFTER the failure was lost"
+    assert rows[2]["readable"] is False and rows[2]["moved"] is None
+
+    counted = v.tally(reading["rows"])
+    assert counted["seeds_unreadable"] == 1
+    assert counted["seeds_scored"] == 2, (
+        "the surviving seeds must still be scored; a partial reading is worth "
+        "more than none"
+    )
+    assert counted["seeds_attempted"] == 3
+
+
 def test_a_resolution_failure_also_reaches_emit_rather_than_raising(
         runner, v, fake_updater, tmp_path):
     """The property the three findings share, asserted end to end: EVERY
