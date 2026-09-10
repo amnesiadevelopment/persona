@@ -32,6 +32,8 @@ WHAT WOULD GO RED, AND WHEN
    produced FROM THOSE FLAGS. Drop them and `languages` silently falls back to
    the host's locale — the leak PS-124 measured on the Firefox arm, arriving on
    Chromium with no override left to catch it.
+4. `test_the_scan_covers_every_extension_spawn_browser_builds` — red the moment
+   the product grows an extension this file is not pointed at. See below.
 
 ⚠️ WHY THERE IS NO "RED ON CURRENT CODE" TEST HERE, STATED RATHER THAN OMITTED.
 The ticket asks for a test that would go RED on the current code *if porting*.
@@ -42,13 +44,34 @@ honest equivalent, and what this file does instead, is a REGRESSION FENCE around
 the measured state: every test here is red on any tree where the finding is
 false, and green on this one.
 
-⛔ AND THE FENCE IS ITSELF FENCED. `test_the_override_probe_can_see_an_override`
-installs a `languages` override deliberately and asserts the scanner FINDS it.
-Without that, test 1 is indistinguishable from a scanner that reports "clean"
-unconditionally — which is the same class of dead instrument the reading's own
-reveal-control arm exists to rule out.
+⛔ AND THE FENCE IS ITSELF FENCED, TWICE OVER — because the first revision of
+this file was fenced only ONCE and that was measurably not enough.
+
+  * `test_the_override_probe_can_see_an_override` installs a `languages`
+    override deliberately and asserts the scanner FINDS it. Without that, test 1
+    is indistinguishable from a scanner that reports "clean" unconditionally —
+    the same class of dead instrument the reading's own reveal-control arm
+    exists to rule out. That covers the MATCHER.
+  * ⭐ `test_the_scan_covers_every_extension_spawn_browser_builds` covers the
+    thing the matcher is POINTED AT, which is where this file actually failed.
+    The first revision scanned `build_chromium_layer`'s 11 desktop extensions
+    and claimed that covered the product; `masking_layer.py` excludes
+    `search_ext` and `mobile_ext` by its own stated decision, so a worker-realm
+    `G.navigator` override planted in `mobile_ext`'s emitted script left the
+    file at 11 PASSED with the defect live. A live matcher aimed at the wrong
+    directory set is as green as a dead one, and only this second fence can tell
+    them apart. It derives the product's extension set BY AST FROM
+    `spawn_browser` ITSELF, so the coverage property is checked rather than
+    asserted.
+
+⚠️ AND THE BOUND THAT REMAINS, STATED. This file scans the mobile extension's
+BYTES, but every arm of the live reading in `readings/ps397-2026-09-10/` ran a
+DESKTOP profile. So the JS-override half of the finding covers mobile and the
+live-reading half does not — see §6 bound 6 of EVIDENCE.md. A question about
+`navigator.languages` ON a mobile profile needs the reading re-taken there.
 """
 
+import ast
 import inspect
 import json
 import os
@@ -75,21 +98,117 @@ PROP = "languages"
 # ---------------------------------------------------------------------------
 
 
-def _build_layer(tmp_path, *, locale="en-US"):
-    """persona's REAL chromium masking layer, via the product's own builder.
+def _product_extension_dirs_from_source() -> "set[str]":
+    """The `.persona-*-ext` directory names `spawn_browser` ITSELF builds.
 
-    ⛔ NOT a hand-picked subset of extensions. `build_chromium_layer` walks
-    `_chromium_builders`, which is maintained to mirror `process.py`'s own
-    append order, so a NEW extension added to the product is scanned by this
-    test automatically. A hand-listed set would silently stop covering the thing
-    it was written to cover.
+    ⛔ DERIVED BY AST FROM THE SHIPPING FUNCTION, not listed here. This is the
+    fence's own completeness oracle: `_build_layer` below must cover every name
+    this returns, so adding a 14th `build_*_extension` call to `spawn_browser`
+    turns this file RED until the new extension is scanned — which is exactly
+    the property the previous revision of this docstring CLAIMED and did not
+    have.
+
+    ⚠️ Why an AST walk and not a grep or a hand list. The names are string
+    literals in the call, so a hand list is a second copy that drifts silently
+    (the failure this whole port keeps hitting), and a grep over the file would
+    also pick up the `--load-extension` join and the profile-dir cleanup paths.
+    The walk is scoped to `spawn_browser`'s own body, so it answers precisely
+    "what does the launcher build".
     """
+    tree = ast.parse(
+        (REPO / "src" / "services" / "browser" / "process.py").read_text(
+            encoding="utf-8"
+        )
+    )
+    names: "set[str]" = set()
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.FunctionDef) and node.name == "spawn_browser"):
+            continue
+        for call in ast.walk(node):
+            if not isinstance(call, ast.Call):
+                continue
+            fn = call.func
+            if not isinstance(fn, ast.Name):
+                continue
+            if not (fn.id.startswith("build_") and fn.id.endswith("_extension")):
+                continue
+            for lit in ast.walk(call):
+                if (
+                    isinstance(lit, ast.Constant)
+                    and isinstance(lit.value, str)
+                    and lit.value.startswith(".persona-")
+                ):
+                    names.add(lit.value)
+    return names
+
+
+def _build_layer(tmp_path, *, locale="en-US"):
+    """EVERY extension `spawn_browser` builds, as built bytes on disk.
+
+    ⛔ THIS IS DELIBERATELY WIDER THAN `build_chromium_layer`, AND THE REASON IS
+    THE WHOLE POINT OF THIS HELPER. `build_chromium_layer` is a DESKTOP CHECKER
+    TIER: `masking_layer.py`'s own docstring states that it excludes
+    `build_search_extension` ("a settings override rather than masking") and
+    `build_mobile_extension` ("belongs to a mobile profile which a checker run
+    is not"). Those exclusions are correct for that module's purpose and are
+    not this file's business to change.
+
+    They are fatal for a COMPLETENESS FENCE, and measurably so. An earlier
+    revision of this file borrowed that harness and asserted it covered the
+    product; a `G.navigator` `languages` override planted in `mobile_ext`'s
+    emitted script — the WORKER-REALM shape this port's ticket spends its
+    longest section warning about, and the shape slice 2 found for deviceMemory
+    — was not seen, and the file passed 11/11 with the defect live. `mobile_ext`
+    is a real product configuration, built by `process.py`'s `spawn_browser` for
+    EVERY mobile profile in place of `device_ext`.
+
+    So this scans the product's own set: the 11 desktop dirs from the shipped
+    builder, PLUS `search_ext` and both arms of `mobile_ext` (Android and iOS
+    emit different scripts — the iOS arm drops the whole userAgentData branch,
+    so one of them is not a sample of the other). Coverage is then ASSERTED
+    against `_product_extension_dirs_from_source`, so this list cannot silently
+    fall behind `spawn_browser` either.
+    """
+    from src.services.browser.device_presets import pick_preset, pick_touch_points
+    from src.services.browser.mobile_ext import build_mobile_extension
+    from src.services.browser.search_ext import build_search_extension
     from src.services.verify.masking_layer import build_chromium_layer
 
-    dirs, _report = build_chromium_layer(
-        str(tmp_path), 20260910, os_type="windows", locale=locale, include_geo=True
+    seed = 20260910
+    desktop = tmp_path / "desktop"
+    dirs = list(
+        build_chromium_layer(
+            str(desktop), seed, os_type="windows", locale=locale, include_geo=True
+        )[0]
     )
-    return list(dirs)
+
+    # `search_ext` emits no .js today (a manifest-only settings override), but it
+    # is scanned rather than reasoned about: "it cannot carry one" is exactly the
+    # claim that stopped being true for `mobile_ext`.
+    dirs.append(
+        build_search_extension("duckduckgo", str(tmp_path / ".persona-search-ext"))
+    )
+
+    for os_family, sub in (("android", "mobile-android"), ("ios", "mobile-ios")):
+        preset = pick_preset(seed, os_family, 0)
+        dirs.append(
+            build_mobile_extension(
+                str(tmp_path / sub / ".persona-mobile-ext"),
+                is_ios=(os_family == "ios"),
+                platform=preset.platform,
+                model=preset.model,
+                chromium_version=ChromiumVersion("152.0.7977.75"),
+                css_width=preset.width,
+                css_height=preset.height,
+                dpr=preset.dpr,
+                device_memory=preset.device_memory,
+                hardware_concurrency=preset.hardware_concurrency,
+                touch_points=(
+                    5 if os_family == "ios" else pick_touch_points(seed, 0)
+                ),
+            )
+        )
+    return dirs
 
 
 def _defines_languages(js: str) -> "list[str]":
@@ -123,11 +242,18 @@ def _defines_languages(js: str) -> "list[str]":
 
 
 def _scan_layer(dirs) -> "dict[str, list[str]]":
+    """Every `.js` AND `.json` under `dirs`, scanned for a `languages` definition.
+
+    ⚠️ `.json` is scanned because the EVIDENCE.md §1 census reports a `.json`
+    figure and the claim has to be true, not because a manifest can define a JS
+    property — it cannot. It costs one `endswith` and closes the gap between
+    what this fence does and what the reading says it did.
+    """
     found = {}
     for d in dirs:
         for root, _sub, files in os.walk(d):
             for name in files:
-                if not name.endswith(".js"):
+                if not (name.endswith(".js") or name.endswith(".json")):
                     continue
                 path = os.path.join(root, name)
                 js = pathlib.Path(path).read_text(encoding="utf-8", errors="replace")
@@ -145,18 +271,20 @@ def _scan_layer(dirs) -> "dict[str, list[str]]":
 def test_no_chromium_extension_defines_navigator_languages(tmp_path):
     """THE FINDING. persona's Chromium layer must not override `languages`.
 
-    Measured 2026-09-10 across all 11 built extensions: the only locale-family
-    hits anywhere in the layer are `voice_ext` READING `navigator.language` to
-    pick a matching speech voice. Nothing DEFINES `languages`.
+    Measured 2026-09-10 across all 13 extensions `spawn_browser` builds — the 11
+    desktop ones, `search_ext`, and BOTH arms of `mobile_ext`: the only
+    locale-family hits anywhere in the layer are `voice_ext` READING
+    `navigator.language` to pick a matching speech voice. Nothing DEFINES
+    `languages`.
 
     ⭐ This is asserted against the BUILT BYTES, not against the builder source,
     because a value assembled at build time would not show up in a grep of the
     Python. These are the bytes that actually reach the browser.
     """
     dirs = _build_layer(tmp_path)
-    assert len(dirs) >= 10, (
-        f"expected the product's full chromium layer, got {len(dirs)} extension "
-        "dirs — the builder changed shape and this scan may no longer cover it"
+    assert len(dirs) >= 14, (
+        f"expected the product's full extension set, got {len(dirs)} dirs — "
+        "the builders changed shape and this scan may no longer cover them"
     )
     found = _scan_layer(dirs)
     assert found == {}, (
@@ -172,6 +300,90 @@ def test_no_chromium_extension_defines_navigator_languages(tmp_path):
         "readings/ps397-2026-09-10/ (the reveal-control arm). If a real reason "
         "to override has appeared, re-open the reading — do not just delete "
         "this test."
+    )
+
+
+def test_the_scan_covers_every_extension_spawn_browser_builds(tmp_path):
+    """⛔ THE COVERAGE ORACLE. A completeness fence must prove its own completeness.
+
+    The previous revision of this file asserted that `build_chromium_layer`
+    covers the product automatically. It does not, and it says so itself:
+    `masking_layer.build_chromium_layer`'s docstring EXCLUDES
+    `build_search_extension` and `build_mobile_extension` on stated grounds (a
+    settings override; a mobile profile a desktop checker run is not). Both
+    exclusions are right for that module and wrong for a fence — the fence
+    borrowed the harness and inherited a hole it never declared.
+
+    ⚠️ SO THE HOLE IS NOT PATCHED BY WIDENING THE LIST AND HOPING. This asserts
+    the scanned dirs against the set derived BY AST from `spawn_browser` itself,
+    so a 14th `build_*_extension` call added to the product turns this red until
+    someone points the scanner at it. That is the property the old docstring
+    claimed; this is what makes it true.
+    """
+    declared = _product_extension_dirs_from_source()
+    assert len(declared) >= 13, (
+        f"only {len(declared)} extension dirs found in spawn_browser's own "
+        "source — the AST oracle stopped seeing the builders, so its coverage "
+        "claim is worthless; fix the oracle before trusting any test here"
+    )
+    scanned = {os.path.basename(d) for d in _build_layer(tmp_path)}
+    missing = sorted(declared - scanned)
+    assert not missing, (
+        "these extensions are BUILT BY spawn_browser and are NOT scanned by "
+        f"this fence: {missing}\n\n⛔ PS-397's finding is 'no chromium "
+        "extension defines navigator.languages'. An unscanned extension is a "
+        "place that claim was never checked — and the one that was missed "
+        "(.persona-mobile-ext) writes to `G.navigator`, the worker-realm shape "
+        "this port's ticket names as its recurring trap. Add it to "
+        "`_build_layer` rather than narrowing this assertion."
+    )
+
+
+def test_the_mobile_extension_is_scanned(tmp_path):
+    """The specific escape that got this file rejected, pinned as its own case.
+
+    ⭐ NOT a duplicate of the oracle above. That one asserts the DIRECTORY is in
+    the scanned set; this one asserts the scanner reads the mobile extension's
+    real emitted bytes and would FIRE on an override placed there — the two fail
+    for different reasons, and only this one catches a mobile arm that builds an
+    empty or unreadable script.
+
+    Measured escape, 2026-09-10: injecting
+
+        (function(G){Object.defineProperty(G.navigator,'languages',
+          {get:function(){return ['zz-ZZ'];}});})(self);
+
+    into `mobile_ext`'s emitted script left the whole file at 11 passed.
+    """
+    dirs = [d for d in _build_layer(tmp_path) if d.endswith(".persona-mobile-ext")]
+    assert dirs, "no mobile extension was built — the scanned set lost it again"
+
+    scripts = [
+        p
+        for d in dirs
+        for p in pathlib.Path(d).rglob("*.js")
+        if p.read_text(encoding="utf-8", errors="replace").strip()
+    ]
+    assert scripts, (
+        "the mobile extension built no non-empty .js — the directory is in the "
+        "scanned set but there are no bytes to scan, so its coverage is nominal"
+    )
+
+    # And the scanner really fires on THIS extension's bytes: append the exact
+    # worker-realm override the reviewer demonstrated the escape with, to a copy
+    # of the real emitted script, and require a hit.
+    planted = tmp_path / "mobile-planted"
+    planted.mkdir()
+    (planted / "mobile.js").write_text(
+        "(function(G){Object.defineProperty(G.navigator,'languages',"
+        "{get:function(){return ['zz-ZZ'];}});})(self);\n"
+        + scripts[0].read_text(encoding="utf-8", errors="replace"),
+        encoding="utf-8",
+    )
+    assert _scan_layer([str(planted)]), (
+        "the scanner did not fire on a worker-realm languages override placed "
+        "in the mobile extension's OWN emitted script — the exact defect that "
+        "escaped this fence before"
     )
 
 
