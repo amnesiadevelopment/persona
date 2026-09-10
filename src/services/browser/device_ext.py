@@ -1,7 +1,8 @@
 """MAIN-world extension that gives each profile a believable, deterministic
 screen geometry and mediaDevices set.
 
-The engine spoofs deviceMemory/hardwareConcurrency but not the screen
+The engine spoofs hardwareConcurrency and (since the pixelscan port's slice 2)
+deviceMemory, but not the screen
 (screen.width/height/availWidth/availHeight, colorDepth, devicePixelRatio) nor
 navigator.mediaDevices.enumerateDevices(). On a VM the screen is the host's and
 identical across every profile, and enumerateDevices() returns a bare,
@@ -10,6 +11,29 @@ camera => server/VM"). This extension picks, deterministically from the
 profile seed, a common real desktop resolution (with a realistic taskbar-inset
 availHeight) and a plausible device list with stable per-profile deviceId /
 groupId hashes.
+
+⛔ ``navigator.deviceMemory`` IS NOT AUTHORED IN THIS FILE ANY MORE, AND MUST
+NOT COME BACK (pixelscan port, slice 2). It used to be declared TWICE here —
+once in the page realm and once in the worker-realm twin inside
+``applyHwPatch`` — as ``Math.min(HM[1], 8)``. Both were deleted when the engine
+gained ``--fingerprint-device-memory``
+(``005-hardware-concurrency-fingerprint.patch``), for two reasons:
+
+* a JS ``defineProperty`` getter is the DETECTABLE surface the port exists to
+  remove, while an engine switch is not observable from the page at all; and
+* the switch reaches the ``ServiceWorkerGlobalScope`` realm, which neither of
+  persona's JS identity authors can enter — the same gap PS-354 closed for
+  ``hardwareConcurrency``.
+
+⚠️ The rationale lives HERE, in Python, rather than as a comment inside
+``_CONTENT_SCRIPT``: that template is emitted verbatim into ``device.js`` and
+shipped to every page, so a comment mentioning the property would both leak the
+intent to anyone reading the extension and trip the guard that greps the
+emitted file for the name (``tests/test_ps_device_memory_native.py``).
+
+``hardwareConcurrency`` is deliberately UNCHANGED and still authored here in
+both realms — it shares this file's pool, hash and salt with deviceMemory, so
+it is the thing a careless deletion takes with it.
 """
 
 import json
@@ -146,6 +170,65 @@ def hardware_concurrency_for(seed: int, generation: int) -> int:
     salt, rather than restating a number that happens to match today.
     """
     return cores_memory_pick(seed, generation)[0]
+
+
+#: The ONLY values ``navigator.deviceMemory`` may take. The Device Memory API
+#: reports the host's RAM in GiB rounded DOWN to a power of two and clamped to
+#: [0.25, 8], so this list is exhaustive — anything else is a value no real
+#: browser produces, which makes it a tell rather than a disguise.
+LEGAL_DEVICE_MEMORY: tuple[float, ...] = (0.25, 0.5, 1.0, 2.0, 4.0, 8.0)
+
+
+def spec_device_memory(memory_gb: float) -> float:
+    """``memory_gb`` as the Device Memory API would report it.
+
+    ⭐ THE CAP IS THE SPEC, NOT A DISGUISE, AND THAT IS THE WHOLE POINT OF THIS
+    FUNCTION EXISTING. A 16 GB machine and an 8 GB machine BOTH report ``8``
+    — the API deliberately discards the difference — so collapsing the pool's
+    16s onto 8 is not information being thrown away by persona, it is what
+    every real browser on a 16 GB host does.
+
+    ⛔ SO DO NOT "RESTORE THE ENTROPY". The pool's RAM axis is {8, 16}, and
+    both rungs map to 8: measured over 4000 seeds, ``deviceMemory`` is ``8`` for
+    every profile persona can generate. That is CORRECT. Making this vary per
+    seed would publish a number contradicting the profile's own claimed RAM and
+    would not match the capping behaviour a checker can reproduce on its own
+    hardware — a louder tell than the constant it replaced, not a quieter one.
+
+    The value is still authored per profile rather than hardcoded, because the
+    pool is what decides it and the pool may gain a sub-8 entry later; at that
+    point this function starts returning something other than 8 with no further
+    change.
+    """
+    value = float(memory_gb)
+    if not value > 0:
+        return LEGAL_DEVICE_MEMORY[-1]
+    best = LEGAL_DEVICE_MEMORY[0]
+    for rung in LEGAL_DEVICE_MEMORY:
+        if rung <= value:
+            best = rung
+    return best
+
+
+def device_memory_for(seed: int, generation: int) -> float:
+    """The value to pass the ENGINE as ``--fingerprint-device-memory``.
+
+    The deviceMemory twin of :func:`hardware_concurrency_for`, and it exists for
+    the same reason: the ServiceWorker realm has no JS author, so a value that
+    only JS sets is absent exactly where we cannot look.
+
+    ⛔ THE PAIR IS ONE MACHINE. ``cores_memory_pick`` returns ``(cores, GB)``
+    together, and this reads the SAME pick through the SAME hash and salt that
+    :func:`hardware_concurrency_for` reads. Resolving the two independently — a
+    second pool, a second salt, a constant — would let a profile publish cores
+    from one machine and RAM from another, which is a tell that no single value
+    reveals on its own.
+
+    The result is passed through :func:`spec_device_memory`, so the launcher
+    hands the engine an ALREADY-LEGAL figure rather than a raw pool value the
+    engine has to know how to cap.
+    """
+    return spec_device_memory(cores_memory_pick(seed, generation)[1])
 
 
 @dataclass(frozen=True)
@@ -626,7 +709,7 @@ __DEVICES_LEAF_CLOAK__
   }
 __DEVICES_REALM_BOOTSTRAP__
 
-  // --- navigator.hardwareConcurrency / deviceMemory ---
+  // --- navigator.hardwareConcurrency ---
   // fingerprint-chromium leaves these at the host's real values on a desktop
   // profile (only the mobile presets set them), so a VM host leaked cores: 18 /
   // ram: 8 under a Windows identity — an obvious tell (creepjs "device"
@@ -643,15 +726,13 @@ __DEVICES_REALM_BOOTSTRAP__
     var HCMEM = __HCMEM__;
     HM = pick(HCMEM, 0xc0de5);
     def(navigator, 'hardwareConcurrency', HM[0]);
-    // deviceMemory is a coarse power-of-two-ish bucket the browser caps at 8.
-    def(navigator, 'deviceMemory', Math.min(HM[1], 8));
   } catch (e) {}
 
   // screen geometry + devicePixelRatio ride applyScreenPatch on the shared
   // recursive registry (defined above), so they reach every nested realm
   // (page / iframe / grandchild iframe) — not a one-level getter here.
 
-  // Carry hardwareConcurrency/deviceMemory into Web/Shared Workers, where
+  // Carry hardwareConcurrency into Web/Shared Workers, where
   // navigator.hardwareConcurrency otherwise reports the real host cores (a
   // worker/page mismatch is a tell — a VM host leaked 32 in a worker while the
   // page reported 12). SEED lives inside so applyHwPatch.toString() re-derives
@@ -672,7 +753,6 @@ __HW_LEAF_CLOAK__
     var P=__HCMEM__; var m=P[h(0xc0de5)%P.length];
     var def=function(o,k,val){try{var g=Object.getOwnPropertyDescriptor({get m(){return val;}},'m').get;try{Object.defineProperty(g,'name',{value:'get '+k});}catch(e){}__pncMark(g,'get '+k);Object.defineProperty(o,k,{get:g,configurable:true,enumerable:true});}catch(e){}};
     def(G.navigator,'hardwareConcurrency',m[0]);
-    def(G.navigator,'deviceMemory',Math.min(m[1],8));
    } catch (e) {}
   }
 __HW_REALM_BOOTSTRAP__

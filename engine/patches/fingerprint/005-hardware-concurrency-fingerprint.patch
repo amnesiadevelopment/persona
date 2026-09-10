@@ -34,13 +34,76 @@ diff --git a/third_party/blink/renderer/core/frame/navigator_device_memory.cc b/
 index 05fa33e456..792ee43f32 100644
 --- a/third_party/blink/renderer/core/frame/navigator_device_memory.cc
 +++ b/third_party/blink/renderer/core/frame/navigator_device_memory.cc
-@@ -12,7 +12,8 @@
+@@ -6,5 +6,10 @@
+ 
+ #include "third_party/blink/renderer/core/frame/navigator_device_memory.h"
+ 
++#include <cstdlib>
++#include <string>
++
++#include "base/command_line.h"
+ #include "third_party/blink/public/common/device_memory/approximated_device_memory.h"
++#include "components/ungoogled/ungoogled_switches.h"
+ 
+@@ -12,7 +14,60 @@
  namespace blink {
  
++namespace {
++
++// The Device Memory API admits ONLY these values: the reported figure is the
++// host's RAM in GiB rounded DOWN to a power of two and clamped to [0.25, 8].
++// A value outside that set is not merely unusual, it is IMPOSSIBLE — so an
++// out-of-range switch must never reach a page. The launcher already passes a
++// legal value (device_ext.spec_device_memory); this is the defensive floor so
++// no path can publish an illegal one.
++float ClampToLegalDeviceMemory(double value) {
++  static const float kLegal[] = {0.25f, 0.5f, 1.0f, 2.0f, 4.0f, 8.0f};
++  if (!(value > 0.0)) {
++    return 8.0f;
++  }
++  // Largest legal rung not exceeding the request: >=8 saturates at 8, and
++  // anything under 0.25 floors at 0.25 rather than reporting a 0.
++  float best = kLegal[0];
++  for (float rung : kLegal) {
++    if (static_cast<double>(rung) <= value) {
++      best = rung;
++    }
++  }
++  return best;
++}
++
++}  // namespace
++
  float NavigatorDeviceMemory::deviceMemory() const {
 -  return ApproximatedDeviceMemory::GetApproximatedDeviceMemory();
-+  return 8;
-+  // return ApproximatedDeviceMemory::GetApproximatedDeviceMemory();
++  const base::CommandLine* command_line =
++      base::CommandLine::ForCurrentProcess();
++
++  if (command_line->HasSwitch(switches::kFingerprintDeviceMemory)) {
++    std::string value =
++        command_line->GetSwitchValueASCII(switches::kFingerprintDeviceMemory);
++    if (!value.empty()) {
++      char* end = nullptr;
++      double parsed = std::strtod(value.c_str(), &end);
++      if (end != value.c_str() && parsed > 0.0) {
++        return ClampToLegalDeviceMemory(parsed);
++      }
++    }
++  }
++
++  if (command_line->HasSwitch(switches::kFingerprint)) {
++    std::string fingerprint_str =
++        command_line->GetSwitchValueASCII(switches::kFingerprint);
++    uint32_t fingerprint = static_cast<uint32_t>(std::stoull(fingerprint_str));
++    // 4 or 8 GiB, the two rungs a consumer desktop actually reports. This is a
++    // FALLBACK for a launch that passed --fingerprint but not the memory flag;
++    // persona's own launcher always passes the flag.
++    return (fingerprint % 2 == 0) ? 8.0f : 4.0f;
++  }
++
++  // ⛔ NEVER ApproximatedDeviceMemory::GetApproximatedDeviceMemory() here: that
++  // is the HOST's real RAM, and reporting it is the leak this patch closes.
++  return 8.0f;
  }
  
  }  // namespace blink

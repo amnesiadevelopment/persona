@@ -51,14 +51,25 @@ def test_script_spoofs_screen_and_mediadevices(tmp_path):
 
 
 def test_spoofs_hardware_concurrency_and_device_memory(tmp_path):
-    # fingerprint-chromium leaves hardwareConcurrency/deviceMemory at the host's
-    # real values on a desktop profile (18 cores / 8 GB on a VM host), an obvious
-    # tell under a consumer-Windows identity. The script must pin a plausible pair.
+    # fingerprint-chromium leaves hardwareConcurrency at the host's real value on
+    # a desktop profile (18 cores on a VM host), an obvious tell under a
+    # consumer-Windows identity. The script must pin a plausible value.
+    #
+    # ⛔ deviceMemory IS NO LONGER PART OF THIS CLAIM (pixelscan port, slice 2).
+    # It moved to a native engine switch (`--fingerprint-device-memory`) and
+    # BOTH JS sites were deleted, because a defineProperty getter is the
+    # detectable surface that port removes. Asserting its presence here would
+    # now assert that the slice had been reverted, so the assertion is INVERTED
+    # rather than dropped — see tests/test_ps_device_memory_native.py for the
+    # full guard.
     js = pathlib.Path(
         build_device_extension(1, str(tmp_path / "dev"), 0) + "/device.js"
     ).read_text(encoding="utf-8")
     assert "hardwareConcurrency" in js
-    assert "deviceMemory" in js
+    assert "deviceMemory" not in js, (
+        "device.js authors navigator.deviceMemory again — the engine is the "
+        "sole author now, and a JS descriptor restores the detectable getter"
+    )
 
 
 def test_carries_hardware_into_workers(tmp_path):

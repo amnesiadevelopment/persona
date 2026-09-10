@@ -2,7 +2,7 @@ diff --git a/components/ungoogled/ungoogled_switches.cc b/components/ungoogled/u
 index c2f9515e91..49f325e01c 100644
 --- a/components/ungoogled/ungoogled_switches.cc
 +++ b/components/ungoogled/ungoogled_switches.cc
-@@ -15,4 +15,40 @@ const char kFingerprintingCanvasMeasureTextNoise[] = "fingerprinting-canvas-meas
+@@ -15,4 +15,45 @@ const char kFingerprintingCanvasMeasureTextNoise[] = "fingerprinting-canvas-meas
  // Enable fingerprinting deception for Canvas image data
  const char kFingerprintingCanvasImageDataNoise[] = "fingerprinting-canvas-image-data-noise";
  
@@ -30,6 +30,11 @@ index c2f9515e91..49f325e01c 100644
 +// Specify the number of CPU cores
 +const char kFingerprintHardwareConcurrency[] = "fingerprint-hardware-concurrency";
 +
++// Specify navigator.deviceMemory (GiB). The Device Memory API caps this at 8
++// and admits only 0.25/0.5/1/2/4/8, so the launcher passes an already-legal
++// value and the consumer clamps defensively.
++const char kFingerprintDeviceMemory[] = "fingerprint-device-memory";
++
 +// Specify the operating system type
 +const char kFingerprintPlatform[] = "fingerprint-platform";
 +
@@ -47,7 +52,7 @@ diff --git a/components/ungoogled/ungoogled_switches.h b/components/ungoogled/un
 index 7dace11f70..2ec06c3acd 100644
 --- a/components/ungoogled/ungoogled_switches.h
 +++ b/components/ungoogled/ungoogled_switches.h
-@@ -15,6 +15,18 @@ COMPONENT_EXPORT(UNGOOGLED) extern const char kFingerprintingClientRectsNoise[];
+@@ -15,6 +15,19 @@ COMPONENT_EXPORT(UNGOOGLED) extern const char kFingerprintingClientRectsNoise[];
  COMPONENT_EXPORT(UNGOOGLED) extern const char kFingerprintingCanvasMeasureTextNoise[];
  COMPONENT_EXPORT(UNGOOGLED) extern const char kFingerprintingCanvasImageDataNoise[];
  
@@ -59,6 +64,7 @@ index 7dace11f70..2ec06c3acd 100644
 +COMPONENT_EXPORT(UNGOOGLED) extern const char kFingerprintScreenHeight[];
 +COMPONENT_EXPORT(UNGOOGLED) extern const char kFingerprintDeviceScaleFactor[];
 +COMPONENT_EXPORT(UNGOOGLED) extern const char kFingerprintHardwareConcurrency[];
++COMPONENT_EXPORT(UNGOOGLED) extern const char kFingerprintDeviceMemory[];
 +COMPONENT_EXPORT(UNGOOGLED) extern const char kFingerprintPlatform[];
 +COMPONENT_EXPORT(UNGOOGLED) extern const char kFingerprintPlatformVersion[];
 +COMPONENT_EXPORT(UNGOOGLED) extern const char kFingerprintLocation[];
@@ -70,7 +76,7 @@ diff --git a/content/browser/renderer_host/render_process_host_impl.cc b/content
 index c7d0fc0072..f5d2cc3684 100644
 --- a/content/browser/renderer_host/render_process_host_impl.cc
 +++ b/content/browser/renderer_host/render_process_host_impl.cc
-@@ -3724,6 +3724,18 @@ void RenderProcessHostImpl::PropagateBrowserCommandLineToRenderer(
+@@ -3724,6 +3724,19 @@ void RenderProcessHostImpl::PropagateBrowserCommandLineToRenderer(
        switches::kFingerprintingClientRectsNoise,
        switches::kFingerprintingCanvasMeasureTextNoise,
        switches::kFingerprintingCanvasImageDataNoise,
@@ -82,6 +88,7 @@ index c7d0fc0072..f5d2cc3684 100644
 +      switches::kFingerprintScreenHeight,
 +      switches::kFingerprintDeviceScaleFactor,
 +      switches::kFingerprintHardwareConcurrency,
++      switches::kFingerprintDeviceMemory,
 +      switches::kFingerprintPlatform,
 +      switches::kFingerprintPlatformVersion,
 +      switches::kFingerprintLocation,
