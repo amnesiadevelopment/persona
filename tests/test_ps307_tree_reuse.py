@@ -368,7 +368,18 @@ def _verify(workdir: Path, mode: str, tree: str = "patched") -> subprocess.Compl
     )
 
 
-def _claims_for(patch_path: Path, max_per_file: int = 3) -> list[tuple[str, str, str]]:
+#: The measured set of lines unmodified upstream already writes (PS-408). The
+#: verifier passes this to the extractor on every real run, so a helper that
+#: omitted it would report claims the verifier never acts on — a test asserting
+#: about a situation that does not arise.
+UPSTREAM_LINES = PATCH_DIR / "UPSTREAM_LINES.txt"
+
+
+def _claims_for(
+    patch_path: Path,
+    max_per_file: int = 3,
+    upstream_lines: Path | None = UPSTREAM_LINES,
+) -> list[tuple[str, str, str]]:
     """Run the evidence extractor over one patch and return its CHECKABLE claims.
 
     `(relative_path, kind, text)` triples, with the `noevidence` diagnostics
@@ -385,6 +396,10 @@ def _claims_for(patch_path: Path, max_per_file: int = 3) -> list[tuple[str, str,
         [
             "awk",
             "-v", f"MAX_PER_FILE={max_per_file}",
+            # `""` makes filter 5 inert, which is what a caller asking about the
+            # UNFILTERED candidate set wants (the upstream sweep does exactly
+            # this, so it cannot confirm its own output).
+            "-v", f"UPSTREAM_LINES={upstream_lines or ''}",
             "-f", str(EVIDENCE_AWK),
             str(patch_path), str(patch_path),
         ],
@@ -406,6 +421,23 @@ def _claims_for(patch_path: Path, max_per_file: int = 3) -> list[tuple[str, str,
             continue
         claims.append((parts[0], parts[1], parts[2]))
     return claims
+
+
+def _known_upstream_lines() -> set[str]:
+    """The vendored set of lines unmodified upstream already writes (PS-408).
+
+    Parsed the same way the extractor parses it — blank lines and `#` comments
+    dropped, everything else stripped — so a test cannot disagree with the
+    filter about what the file says.
+    """
+    if not UPSTREAM_LINES.is_file():
+        return set()
+    out: set[str] = set()
+    for line in UPSTREAM_LINES.read_text(encoding="utf-8").splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        out.add(line.strip())
+    return out
 
 
 def _plan(workdir: Path, tree: str, tag: str = TAG) -> subprocess.CompletedProcess:
@@ -616,6 +648,45 @@ def _one_patch_control(root: Path, keep: str) -> Path:
     """
     others = {p.name for p in sorted(PATCH_DIR.glob("*.patch")) if p.name != keep}
     _build_ucpl(root, apply_ours=True, skip=others)
+    return root
+
+
+def _created_files_control(root: Path, keep: str) -> Path:
+    """A clean control into which ONLY the files `keep` CREATES have been planted.
+
+    ⛔ THIS IS A DIFFERENT CONTAMINATION SHAPE FROM `_one_patch_control`, not a
+    cheaper version of it, and PS-408 is the reason it exists. `newfile` claims
+    are the strongest evidence the extractor has — no coincidence can conjure a
+    file upstream does not ship — and they are also the claims a majority rule
+    dilutes hardest, because `011-gpu-info.patch` pairs its 4 created files with
+    18 `added` ones. A control carrying exactly those four files is therefore the
+    minimal case that a plain majority certifies clean, and it is what the first
+    cut of the PS-382 threshold actually shipped.
+
+    ⚠️ Built by PLANTING rather than by `_one_patch_control`'s apply-then-reverse,
+    for a mechanical reason: reversing the other fifteen patches out of a fully
+    patched tree fails on this fixture (a later patch's context lines are the
+    earlier patches' output). Planting the created files into a genuinely clean
+    tree isolates exactly the claims under test and nothing else.
+    """
+    _build_ucpl(root, apply_ours=False)
+    src = root / "ucpl" / "build" / "src"
+    created = [
+        rel for rel, kind, _ in _claims_for(PATCH_DIR / keep) if kind == "newfile"
+    ]
+    assert created, (
+        f"{keep} yields no `newfile` claims, so this fixture plants nothing and "
+        "the test built on it would assert about a contamination that never "
+        "occurred. Re-point it at a patch that creates files."
+    )
+    for rel in created:
+        f = src / rel
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(
+            "// planted by the PS-408 anti-false-negative fixture: this file\n"
+            "// exists in a Chromium tree ONLY because our patch creates it.\n",
+            encoding="utf-8",
+        )
     return root
 
 
@@ -1473,3 +1544,230 @@ def test_the_manifest_names_the_patch_presence_verdict(workflow: dict):
     assert "PATCHES_VERIFIED" in body
     manifest_step = _step_with(_steps(workflow, "patched"), "ps218_manifest.sh")
     assert "PATCHES_VERIFIED" in str(manifest_step.get("env", {}))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PS-408 — THE TWO DEFECTS THE PS-382 THRESHOLD LEFT, AND THE ONE IT CREATED
+# ─────────────────────────────────────────────────────────────────────────────
+# Run 34513197109 failed the whole engine-trial-build at "Verify our patches are
+# ABSENT from the control tree", reporting `014-client-rects.patch` as PRESENT
+# IN THE CONTROL on ONE claim out of sixteen. The control was clean; the line
+# was upstream Chromium's own, at `quad_f.cc:171` inside `QuadF::IntersectsRect`.
+#
+# Two defects compound there, and a third was introduced by the first attempt to
+# fix them:
+#
+#   1. THE THRESHOLD  — one holding claim condemned a tree (fixed by PS-382's
+#                       majority, which these tests inherit and keep).
+#   2. THE CLAIM      — a line unmodified upstream already writes is not
+#                       evidence of anything (fixed here, by filter 5).
+#   3. THE DILUTION   — the majority weighed `newfile` claims like text ones, so
+#                       a control carrying four files only our patch CREATES was
+#                       certified clean. A false NEGATIVE, and on a control that
+#                       is strictly worse than the false positive being fixed.
+#
+# ⭐ Ranking cannot reach defect 2, and that is the load-bearing discovery here:
+# the offending idiom is CODE (so PS-374's kind ranking never demotes it) and is
+# long enough to survive PS-382's length ranking. PR #316 appeared to fix it only
+# because a Chinese COMMENT out-ranked it by byte length — i.e. by promoting the
+# exact evidence PS-374 proved by sabotage is worthless.
+# ─────────────────────────────────────────────────────────────────────────────
+UPSTREAM_IDIOM = "const auto [min, max] = Extents();"
+
+
+def test_a_control_carrying_only_the_upstream_line_reads_absent(unmodified_tree: Path):
+    """ACCEPTANCE 1 — the exact tree that failed run 34513197109 must PASS.
+
+    A control that carries NONE of our patches, into which upstream's own
+    `QuadF::IntersectsRect` has been planted. This is not a stand-in: it is the
+    real function, holding the real line, verified present in chromium
+    152.0.7977.75 at `quad_f.cc:171` by fetching the file from googlesource.
+
+    The tree is clean. The verdict must be PASS, and — the part a bare exit code
+    cannot say — `014` must read a FULL score rather than squeaking under a
+    threshold, because after filter 5 the coincidence is not a claim at all.
+    """
+    src = unmodified_tree / "ucpl" / "build" / "src"
+    quad = src / "ui/gfx/geometry/quad_f.cc"
+    quad.write_text(
+        quad.read_text(encoding="utf-8")
+        + "\nbool QuadF::IntersectsRect(const RectF& rect) const {\n"
+        + f"  {UPSTREAM_IDIOM}\n"
+        + "  return true;\n}\n",
+        encoding="utf-8",
+    )
+
+    result = _verify(unmodified_tree, "absent", "unmodified")
+
+    assert result.returncode == 0, (
+        "a clean control carrying upstream's OWN line was reported as "
+        "contaminated. That is the defect PS-408 exists to close, and it blocks "
+        "every engine build: " + result.stdout + result.stderr
+    )
+    report = (unmodified_tree / "record" / "patch-presence-unmodified.txt").read_text(
+        encoding="utf-8"
+    )
+    assert "PRESENT IN THE CONTROL" not in report
+    # Not merely under the threshold — NOT A CLAIM. A run that passed at, say,
+    # 1/16 would still be one rebase away from failing for the same wrong reason.
+    assert "NOTED COINCIDENCE" not in report, (
+        "the upstream line is still being counted as a claim that HELD; it is "
+        "passing on the threshold rather than on the filter, so the underlying "
+        "non-discriminating claim is still in the evidence set:\n" + report
+    )
+
+
+def test_no_claim_in_the_patch_set_is_a_line_upstream_already_writes():
+    """ACCEPTANCE 3, AND THE SWEEP THE TICKET ASKED FOR ACROSS ALL SIXTEEN.
+
+    ⛔ `014` fired only because the threshold was wrong. A SECOND patch carrying
+    one non-discriminating claim would have been invisible until it too was the
+    only hit — so the question is asked of the whole set, not of the patch that
+    happened to fail.
+
+    ⚠️ THIS IS THE OFFLINE HALF. The authoritative answer needs upstream's source
+    and lives in `scripts/ps408_upstream_claim_sweep.sh`, which fetches every
+    touched file at the pinned tag; that sweep over all 16 patches found EXACTLY
+    ONE such line, which is what makes a vendored list the right shape rather
+    than a growing allowlist. What this test pins is that the measured answer is
+    actually WIRED: that no claim the verifier acts on is in the known-upstream
+    set. It cannot discover a NEW collision — only the sweep can — and it is not
+    a substitute for re-running it after a rebase.
+    """
+    known = _known_upstream_lines()
+    assert known, (
+        f"{UPSTREAM_LINES} yielded no entries, so this test asserts nothing. "
+        "If the sweep genuinely found no collisions the file should still carry "
+        "its header; an empty parse means the format changed."
+    )
+
+    offenders: list[str] = []
+    for patch in sorted(PATCH_DIR.glob("*.patch")):
+        for rel, kind, text in _claims_for(patch):
+            if text in known:
+                offenders.append(f"{patch.name}  {rel}  {text!r}")
+
+    assert not offenders, (
+        "these claims are lines unmodified upstream already writes, so they hold "
+        "against a perfectly clean control and prove nothing. On the absence "
+        "gate that fails a build for a reason that is not true:\n  "
+        + "\n  ".join(offenders)
+    )
+
+
+def test_the_upstream_filter_replaces_the_claim_rather_than_removing_the_evidence():
+    """⛔ THE FILTER MUST NOT BLIND THE INSTRUMENT AT THE SITE IT WATCHES.
+
+    The wrong fix for a false positive is to delete the failing claim or
+    allowlist the patch — both silently stop checking the one file that proved
+    it needed checking. So this asserts the SHAPE of the fix, not just its
+    effect: the idiom is gone, AND `quad_f.cc` still yields evidence, AND `014`
+    as a whole is no weaker than the rest of the set.
+    """
+    claims = _claims_for(PATCH_DIR / "014-client-rects.patch")
+    quad_claims = [t for rel, _, t in claims if rel.endswith("quad_f.cc")]
+
+    assert UPSTREAM_IDIOM not in quad_claims
+    assert quad_claims, (
+        "the quad_f.cc section now yields NO evidence. The claim was removed "
+        "rather than replaced, which blinds the check at exactly the file the "
+        "false positive came from — the allowlist trap, arrived at by a "
+        "different route."
+    )
+    # And the file is still pinned by something specific, not by whatever
+    # 30-character line happened to survive.
+    assert any("WithinEpsilon" in t or "QuadF::Offset" in t for t in quad_claims), (
+        "quad_f.cc's remaining claims no longer name anything our patch "
+        "distinctively adds:\n  " + "\n  ".join(quad_claims)
+    )
+
+
+def test_the_filter_is_inert_when_it_is_given_nothing():
+    """An INPUT, not a hardcoded table — so a caller that passes no list gets the
+    old behaviour exactly, and the file stays honest about what it was given.
+
+    This is also what lets `scripts/ps408_upstream_claim_sweep.sh` see the
+    UNFILTERED candidate set: a sweep fed its own output would confirm itself and
+    report a clean result forever, which is the false green this whole family of
+    scripts exists to stop.
+    """
+    unfiltered = _claims_for(PATCH_DIR / "014-client-rects.patch", upstream_lines=None)
+    texts = [t for _, _, t in unfiltered]
+    assert UPSTREAM_IDIOM in texts, (
+        "with no UPSTREAM_LINES the extractor still dropped the line, so the set "
+        "is hardcoded somewhere and the sweep can no longer see what it must see."
+    )
+
+
+def test_a_control_carrying_only_the_files_a_patch_creates_is_caught(tmp_path: Path):
+    """⛔ THE FALSE NEGATIVE THE FIRST CUT OF THIS FIX SHIPPED — measured, not feared.
+
+    `011-gpu-info.patch` yields 22 claims, FOUR of them `newfile`:
+    `gpu_fingerprint.{cc,h}` and `gpu_info.{cc,h}`, four files that exist in a
+    Chromium tree only because we create them. Under a plain majority those four
+    are diluted by the patch's own 18 `added` claims and land at 4/22 — under
+    the bar — so the control was certified `ABSENT ... NOTED COINCIDENCE` with
+    exit 0, where the pre-threshold code correctly FAILED it.
+
+    ⭐ The extractor's own header states the premise the majority violated: the
+    file existing "is unambiguous evidence, and it is the strongest kind we have
+    — no coincidence can conjure a file upstream does not ship." A threshold
+    exists to stop an ACCIDENTAL TEXT MATCH from condemning a clean tree; a
+    created file cannot be an accidental match, so it is decisive and not voted
+    on.
+
+    ⚠️ NONE of the four patches in the parametrize above can see this: every one
+    of them yields ZERO `newfile` claims, and all are planted WHOLE. The case was
+    invisible to the entire anti-false-negative suite.
+    """
+    control = _created_files_control(tmp_path, "011-gpu-info.patch")
+    result = _verify(control, "absent", "unmodified")
+
+    assert result.returncode != 0, (
+        "a control carrying four files that exist ONLY because our patch creates "
+        "them was certified clean. A contaminated control cannot attribute "
+        "anything, so this is a false NEGATIVE — strictly worse than the false "
+        "positive the threshold was relaxed to fix: " + result.stdout + result.stderr
+    )
+    report = (control / "record" / "patch-presence-unmodified.txt").read_text(
+        encoding="utf-8"
+    )
+    assert "011-gpu-info.patch" in report and "PRESENT IN THE CONTROL" in report
+    # ACCEPTANCE 4 — the verdict names WHICH rule fired, not merely that one did.
+    # "PRESENT" on its own is what sent a reader hunting for contamination that
+    # was not there; the ratio is what let the 1-of-16 misreading be caught.
+    assert "CREATES" in report, (
+        "the verdict does not say a created file decided it, so a reader sees "
+        "the same sentence a corroborated text majority produces:\n" + report
+    )
+
+
+def test_the_verdict_line_carries_the_ratio_in_both_directions(
+    tmp_path: Path, unmodified_tree: Path
+):
+    """ACCEPTANCE 4 — a bare PRESENT/ABSENT is what made this bug hard to read.
+
+    The liaison caught the misreading only by noticing `1 of 16` in the report.
+    Both the passing and the failing verdict must therefore carry the count, so
+    the next reader can tell a one-claim coincidence from a whole patch without
+    re-running anything.
+    """
+    passing = _verify(unmodified_tree, "absent", "unmodified")
+    assert passing.returncode == 0
+    report = (unmodified_tree / "record" / "patch-presence-unmodified.txt").read_text(
+        encoding="utf-8"
+    )
+    assert re.search(r"ABSENT\s+\(\d+/\d+ claims hold", report), (
+        "the passing verdict does not carry a ratio:\n" + report
+    )
+
+    control = _one_patch_control(tmp_path, "014-client-rects.patch")
+    failing = _verify(control, "absent", "unmodified")
+    assert failing.returncode != 0
+    freport = (control / "record" / "patch-presence-unmodified.txt").read_text(
+        encoding="utf-8"
+    )
+    assert re.search(r"PRESENT IN THE CONTROL \(\d+ of \d+ claims hold", freport), (
+        "the failing verdict does not carry a ratio, which is the field that "
+        "distinguishes a coincidence from a contamination:\n" + freport
+    )
