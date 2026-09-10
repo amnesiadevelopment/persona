@@ -234,9 +234,13 @@ jobs:
         # BYTE-IDENTICAL to declaring nothing at all.
         #
         # THIS IS DECLARABLE BECAUSE IT IS PROVISIONED, MEASURED NOT ASSUMED.
-        # The install step above runs `pip install -r requirements-dev.txt`
-        # before pytest (see the "Install dependencies" step), and PS-389
-        # declares PyYAML in that file directly. Before this commit it arrived
+        # The `Install deps` step above runs `pip install -r
+        # requirements-dev.txt`, and it is declared before the step that runs
+        # pytest — so the dependency is present by the time this declaration is
+        # in force. (The step is named `Install deps`; grep for that exact
+        # string. It is named rather than cited by line because this same
+        # commit adds lines above it.) PS-389 declares PyYAML in that file
+        # directly. Before this commit it arrived
         # only as a transitive dependency of `uvicorn[standard]` — a route that
         # nothing pinned for this purpose and no test asserted, which is
         # exactly the accident this declaration stops depending on.
