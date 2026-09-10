@@ -123,7 +123,11 @@ on:
         description: >-
           Measure this exact engine version (e.g. 152.0.7977.75) instead of
           whatever is newest. FOR A MANUAL RE-READ ONLY — the scheduled run is
-          deliberately unpinned.
+          deliberately unpinned. The named release is READ like any other (same
+          `fetch_release_full` path, same digest) and passes through
+          `policy.check` exactly as a resolved one does: a tag someone has just
+          blocklisted comes back exit 4 ENGINE_REFUSED_BY_POLICY rather than
+          being measured, and there is deliberately no override for that.
         required: false
         type: string
   # THE PR ARM, DELIBERATELY NARROW: the instrument, the judge and this venue.
@@ -312,15 +316,35 @@ jobs:
         env:
           TAG: ${{ steps.plan.outputs.engine_tag }}
           OUTCOME: ${{ steps.plan.outputs.outcome }}
+          # The control's match quality reaches the READINGS via the arm label,
+          # and the readings only survive on failure() — which is exactly when
+          # a reader needs to know how hard to press on a finding. A NEAREST
+          # control means the arms differ by a patch level as well as by the
+          # patch set, so it belongs beside the tag rather than one artifact
+          # download away.
+          CONTROL_MATCH: ${{ steps.plan.outputs.control_match }}
+          CONTROL_VERSION: ${{ steps.plan.outputs.control_version }}
         run: |
           echo "::error::Published engine ${TAG:-<unresolved>} did not clear the patch-behaviour verdict (plan outcome: ${OUTCOME:-<none>})."
+          echo "control: Chrome for Testing ${CONTROL_VERSION:-<none>} (match: ${CONTROL_MATCH:-<none resolved>})"
           cat <<EOF
           READ THE EXIT CODE ABOVE BEFORE ACTING — these mean opposite things.
 
+          IF THE CONTROL MATCH ABOVE READS "nearest"
+            The stock control is NOT the same Chromium patch level as the
+            engine, so PS-344's central claim — "a difference between the arms
+            is the patch set or it is nothing" — is WEAKER on this run. A
+            FINDING below is still worth acting on, but read the arm labels in
+            the uploaded readings before blocklisting on the strength of it.
+
           FROM THE PLAN STEP
-            exit 2  CANNOT_PLAN. The release list or the Chrome for Testing
-                    index could not be read. NOTHING was measured. Usually
-                    transient; re-dispatch before reading anything into it.
+            exit 2  CANNOT_PLAN. The release list, the named release, or the
+                    Chrome for Testing index could not be read. NOTHING was
+                    measured. Usually transient; re-dispatch before reading
+                    anything into it. ⚠️ ON A DISPATCHED RUN it also means the
+                    tag you named does not resolve to a published ENGINE
+                    release — yanked, never published, or an application tag.
+                    The reason line above names which.
             exit 3  NO_MATCHED_CONTROL. Chrome for Testing published no build
                     in engine ${TAG:-<the tag>}'s Chromium line, so there is no
                     version-matched control. THIS IS NOT A FINDING ABOUT THE
@@ -330,7 +354,11 @@ jobs:
             exit 4  ENGINE_REFUSED_BY_POLICY. persona itself will not install
                     this build (KNOWN_BAD_VERSIONS, or an operator ceiling).
                     The refusal is CORRECT — nothing here should re-litigate
-                    it. Expect this after someone blocklists a bad tag.
+                    it. Expect this after someone blocklists a bad tag —
+                    including on a DISPATCHED run naming that tag, which is
+                    deliberate: measuring a build persona refuses is the wrong
+                    question whoever asked it, and this job's own remedy must
+                    not be undoable by this job's own re-run switch.
 
           FROM THE VERDICT STEP
             exit 1  A FINDING about the SHIPPED binary: a required signal is

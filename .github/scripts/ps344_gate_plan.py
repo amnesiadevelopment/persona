@@ -74,11 +74,48 @@ USAGE
 ─────
     python3 .github/scripts/ps344_gate_plan.py --out /tmp/ps344-plan.json
 
-``--engine-version`` overrides the resolved tag (used by the tests to drive the
-wiring at a version other than 152 — see AC 5 of PS-370 — and available for a
-manual re-run of a specific build). It does NOT pin the scheduled job: the
+``--engine-version`` names ONE published build instead of resolving the newest
+— the release-day gesture for a human who has just published an engine tag, and
+how a red run is re-read after a fix. It does NOT pin the scheduled job: the
 workflow never passes it, because the risk is whatever the newest published
 engine release is, which is exactly what a pin hides.
+
+⭐ THAT FLAG RESOLVES A REAL RELEASE. IT USED NOT TO, AND THE ARM WAS INERT.
+────────────────────────────────────────────────────────────────────────────
+The first cut of this file treated an explicit version as "skip the release
+lookup": it derived the tag from the string and left ``engine_url`` and
+``engine_digest`` EMPTY while returning ``PLAN_OK``. That plan printed a
+correct-looking tag, control and filenames, spent the Chrome for Testing
+download, and then died inside the runner — ``updater.download_engine("")``
+returns False on its first statement, so the whole dispatch arm could only ever
+reach exit 2 INDETERMINATE. The two moments the workflow names as the reasons
+this arm exists (a fresh release; re-reading after a red) were exactly the two
+it could not serve, and it failed wearing the colour of a transient upstream
+flake.
+
+So an explicit version now goes through ``updater.fetch_release_full`` — THE
+SINGLE RELEASE-READING PATH, the same function ``fetch_latest_full`` reaches its
+own answer through, which accepts a bare version or a prefixed tag and returns
+the ``(version, url, digest)`` this branch needs. Two consequences are load-
+bearing rather than incidental:
+
+* ``('','','')`` is a REAL ANSWER from that function — the honest response to a
+  yanked or deleted release, a tag that never existed, or an APPLICATION tag
+  handed over by mistake. It lands on ``CANNOT_PLAN`` NAMING THE TAG, never on
+  a ``PLAN_OK`` whose URL is empty. A plan that says OK about something it did
+  not resolve is the precise failure mode this file exists to resist.
+* ``policy.check`` IS APPLIED HERE TOO. The scheduled arm gets it free from
+  ``fetch_latest_checked``; this branch calls it explicitly, so a dispatched tag
+  reaches ``ENGINE_REFUSED_BY_POLICY`` exactly as a resolved one does.
+
+  ⛔ AND THERE IS DELIBERATELY NO OVERRIDE FLAG. A human dispatching a specific
+  tag is the caller MOST likely to name a build that was just blocklisted —
+  because naming it in ``policy.KNOWN_BAD_VERSIONS`` is the documented remedy
+  for a red run here, so "re-read the tag I just blocklisted" is a natural next
+  gesture. Measuring a build persona refuses is the wrong question whoever
+  asked it, and a job whose own remedy can be un-done by its own re-run switch
+  would be re-litigating a refusal it exists to produce. An operator who really
+  wants that reading removes the tag from the list, which is a visible edit.
 """
 
 from __future__ import annotations
@@ -228,10 +265,26 @@ def _stock_label(control: dict, engine_version: str) -> str:
     )
 
 
+def _refusal(tag: str, version: str, verdict: str, message: str) -> dict:
+    return {
+        "outcome": "ENGINE_REFUSED_BY_POLICY",
+        "engine_tag": tag,
+        "engine_version": version,
+        "policy_verdict": verdict,
+        "reason": (
+            f"persona itself refuses to install {tag}: {message}. "
+            "Measuring a build persona will not install is the wrong "
+            "question — the refusal is the correct outcome."
+        ),
+    }
+
+
 def plan(
     *,
     engine_version: "str | None" = None,
     resolve_engine=None,
+    resolve_release=None,
+    policy_check=None,
     index_fetcher=None,
 ) -> "tuple[int, dict]":
     """Produce the run plan. Returns ``(exit_code, plan_dict)``.
@@ -240,22 +293,67 @@ def plan(
     other than 152 in a test WITHOUT a network call or a 200 MB download — which
     is the only way to prove the ids and filenames actually follow the resolved
     tag rather than merely containing an f-string.
+
+    ⚠️ ``engine_version`` IS NOT A TEST HOOK. It resolves a real release through
+    ``resolve_release``; a test that wants determinism injects that collaborator
+    rather than relying on the flag skipping the lookup. That collision — one
+    flag serving both "drive the wiring offline" and "measure this build" — is
+    exactly what let the dispatch arm ship returning ``PLAN_OK`` with an empty
+    URL, exercised by tests that never looked at the URL.
     """
-    from src.services.engine import updater
+    from src.services.engine import policy, updater
 
     resolve_engine = resolve_engine or (
         lambda: updater.fetch_latest_checked(timeout=30)
     )
+    resolve_release = resolve_release or (
+        lambda tag: updater.fetch_release_full(tag, timeout=30)
+    )
+    policy_check = policy_check or policy.check
     index_fetcher = index_fetcher or fetch_cft_index
 
     if engine_version:
-        # An explicit version still goes through the same derivation below; it
-        # skips only the release lookup.
-        version = updater.version_from_tag(engine_version)
+        # An explicit version still goes through the same derivation below, and
+        # through the SAME release lookup: the flag chooses WHICH release to
+        # read, never whether to read one. See the module docstring.
+        requested = updater.version_from_tag(engine_version)
+        try:
+            found_version, url, digest = resolve_release(requested)
+        except Exception as exc:  # noqa: BLE001
+            return CANNOT_PLAN, {
+                "outcome": "CANNOT_PLAN",
+                "engine_tag": updater.engine_tag(requested),
+                "engine_version": requested,
+                "reason": (
+                    f"could not read the release for {requested} — "
+                    f"{type(exc).__name__}: {exc}"
+                ),
+            }
+        if not found_version or not url:
+            # ('','','') is fetch_release_full's HONEST answer to a yanked or
+            # deleted release, a tag that never existed, or an APPLICATION tag
+            # handed over by mistake. None of those is a plan.
+            return CANNOT_PLAN, {
+                "outcome": "CANNOT_PLAN",
+                "engine_tag": updater.engine_tag(requested),
+                "engine_version": requested,
+                "reason": (
+                    f"no published engine release resolves for "
+                    f"{updater.engine_tag(requested)} — it may have been "
+                    "yanked or deleted, may never have existed, or may be an "
+                    "APPLICATION tag rather than an engine one. Nothing was "
+                    "measured and nothing is claimed."
+                ),
+            }
+        version = updater.version_from_tag(found_version)
         tag = updater.engine_tag(version)
-        digest = ""
-        url = ""
-        verdict, message = "ok", "(engine version supplied explicitly)"
+        # `fetch_latest_checked` gives the scheduled arm this for free; the
+        # dispatch arm must ask for it explicitly or a human could re-read the
+        # very build they just blocklisted. See the module docstring on why
+        # there is no override flag.
+        verdict, message = policy_check(version)
+        if verdict != policy.OK:
+            return ENGINE_REFUSED_BY_POLICY, _refusal(tag, version, verdict, message)
     else:
         try:
             raw_tag, url, digest, verdict, message = resolve_engine()
@@ -278,17 +376,33 @@ def plan(
         version = updater.version_from_tag(raw_tag)
         tag = updater.engine_tag(version)
         if verdict != "ok":
-            return ENGINE_REFUSED_BY_POLICY, {
-                "outcome": "ENGINE_REFUSED_BY_POLICY",
-                "engine_tag": tag,
-                "engine_version": version,
-                "policy_verdict": verdict,
-                "reason": (
-                    f"persona itself refuses to install {tag}: {message}. "
-                    "Measuring a build persona will not install is the wrong "
-                    "question — the refusal is the correct outcome."
-                ),
-            }
+            return ENGINE_REFUSED_BY_POLICY, _refusal(tag, version, verdict, message)
+
+    # ⭐ THE INVARIANT, ASSERTED ONCE FOR BOTH BRANCHES: a plan is a set of
+    # instructions the runner can ACT on, and an engine URL is the first of
+    # them. `ps344_run_verdict.stage_engine` hands this straight to
+    # `updater.download_engine`, whose first statement is `if not url: return
+    # False` — so an empty URL here does not fail loudly at plan time, it
+    # travels through a PLAN_OK, spends the Chrome for Testing download, and
+    # surfaces as INDETERMINATE, a word this vocabulary reserves for "an arm
+    # could not be produced or read". That is a plan lying about its own
+    # success, which is the one failure mode this file exists to resist.
+    #
+    # Placed AFTER the branch rather than inside either one on purpose: each
+    # branch already refuses its own known empty cases, and this catches the
+    # ones neither anticipated (an asset that stops matching, an upstream shape
+    # change) without either branch having to remember to.
+    if not url:
+        return CANNOT_PLAN, {
+            "outcome": "CANNOT_PLAN",
+            "engine_tag": tag,
+            "engine_version": version,
+            "reason": (
+                f"the release for {tag} resolved without a downloadable engine "
+                "asset for this platform, so there is nothing to measure. "
+                "NOTHING is claimed about the engine."
+            ),
+        }
 
     try:
         index = index_fetcher()
@@ -362,9 +476,12 @@ def main(argv: "list[str] | None" = None) -> int:
     ap.add_argument(
         "--engine-version",
         help=(
-            "Measure this engine version instead of resolving the newest "
-            "published release. NOT used by the scheduled job — see the module "
-            "docstring on why the gate is unpinned."
+            "Measure this published engine build instead of resolving the "
+            "newest. It is READ FROM THE RELEASE like any other — the flag "
+            "chooses which release, never whether to read one — and it passes "
+            "through policy.check exactly as the resolved path does. NOT used "
+            "by the scheduled job: see the module docstring on why the gate is "
+            "unpinned."
         ),
     )
     args = ap.parse_args(argv)
@@ -378,6 +495,7 @@ def main(argv: "list[str] | None" = None) -> int:
     print(f"engine tag     : {body.get('engine_tag', '<unresolved>')}")
     print(f"engine version : {body.get('engine_version', '<unresolved>')}")
     if code == PLAN_OK:
+        print(f"engine asset   : {body['engine_url']}")
         print(f"control        : Chrome for Testing {body['control_version']}")
         print(f"control match  : {body['control_match'].upper()}")
         print(f"product file   : {body['product_file']}")
