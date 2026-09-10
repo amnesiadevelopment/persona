@@ -133,10 +133,22 @@ def test_every_hunk_in_both_touched_patches_counts_its_own_lines():
     """A diff whose `@@` counts disagree with its body does not apply.
 
     Neither patch can be applied in this container (no chromium checkout), so
-    the arithmetic is checked directly. This is the one structural error that
-    would send the owner a patch that fails at `git apply` after a 3-minute
-    rebuild — the cheapest possible thing to get wrong and the most annoying to
-    receive.
+    the arithmetic is checked directly.
+
+    ⚠️ THIS IS NECESSARY AND NOT SUFFICIENT, and round 1 proved it the
+    expensive way. Correct arithmetic says nothing about whether the CONTEXT
+    LINES match the real upstream file — the first version of this patch had
+    perfectly consistent counts and still rejected on the Windows trial-build
+    lane, because its include hunk was written against a guessed one-include
+    block when upstream `navigator_device_memory.cc` carries four:
+
+        005-hardware-concurrency-fingerprint.patch   3 hunks  1 reject
+             Hunk #1 FAILED at 6.
+
+    The fix was to fetch the real file at the pinned tag and generate the body
+    with `diff -u` rather than hand-writing it. ⛔ IF YOU EDIT EITHER PATCH,
+    DO THE SAME — the context is ground truth you can download, never something
+    to reconstruct from memory.
     """
     for patch in (SWITCH_PATCH, MEMORY_PATCH):
         lines = patch.read_text(encoding="utf-8").splitlines()
