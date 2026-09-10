@@ -46,6 +46,25 @@ published engine, not merely the same major. So a difference between the arms
 cannot be a difference between two Chromium releases; it is the patch set or it
 is nothing.
 
+THE ARM IDS ARE PARAMETERS, NOT LITERALS (PS-370)
+--------------------------------------------------
+They used to be the literals ``published-152`` / ``stock-cft-152``, and the arm
+id IS the output filename (``readings-{engine_id}.json``), which IS the
+default ``--product`` / ``--control`` of ``scripts/ps344_verdict.py``. So the
+string ``152`` was load-bearing at three hops, and a caller measuring a
+different release would have written files the verdict could not find — or,
+worse, left last release's files in place for the verdict to read as if they
+described this one. ``--product-id`` / ``--control-id`` exist so a scheduled
+caller can derive both from the version it actually resolved.
+
+⚠️ THE DEFAULTS ARE DELIBERATELY THE OLD LITERALS. They are the names of the
+COMMITTED readings in ``readings/ps344-2026-09-07/artifacts/``, so the
+reproduction recipe in that REPORT.md still runs verbatim. They are a
+historical record, NOT a sensible default for a new reading: any caller
+measuring a release other than 152.0.7977.75 must pass both explicitly.
+``.github/workflows/published-engine-verdict.yml`` does, via
+``.github/scripts/ps344_gate_plan.py``.
+
 ⚠️ THE STOCK ARM IS A CONTROL AND IS NOT THE PRODUCT. Both arms are staged the
 same way — a directory holding a SYMLINK under the name ``_engine_binary()``
 expects — because the resolver's refusal to fall back to a chromium on PATH is a
@@ -154,6 +173,34 @@ def main(argv: "list[str] | None" = None) -> int:
     ap.add_argument("--published-label", required=True)
     ap.add_argument("--stock-label", required=True)
     ap.add_argument("-o", "--out", required=True)
+    # See the module docstring: the arm id IS the filename IS the verdict's
+    # default. These defaults name PS-344's COMMITTED readings so its recipe
+    # still runs verbatim; a caller measuring any other release must pass both.
+    ap.add_argument(
+        "--product-id",
+        default="published-152",
+        help=(
+            "Arm id for the PRODUCT arm; the reading is written to "
+            "readings-<id>.json and ps344_verdict.py must be pointed at that "
+            "same name. Default names PS-344's committed 152.0.7977.75 reading."
+        ),
+    )
+    ap.add_argument(
+        "--control-id",
+        default="stock-cft-152",
+        help=(
+            "Arm id for the version-matched STOCK CONTROL arm. Same "
+            "filename/verdict coupling as --product-id."
+        ),
+    )
+    ap.add_argument(
+        "--falsification-id",
+        default="stock-as-product",
+        help=(
+            "Arm id for the FALSIFICATION arm — the control run a second time "
+            "and labelled as if it were the product."
+        ),
+    )
     ap.add_argument("--seeds", default=",".join(str(s) for s in SEEDS))
     ap.add_argument("--timezone", default="America/Chicago")
     ap.add_argument(
@@ -179,13 +226,13 @@ def main(argv: "list[str] | None" = None) -> int:
     # across arms, so a difference cannot be a difference in what was served.
     with _serve_probe_page() as srv:
         arms = [
-            ("published-152", args.published_label, published_dir),
-            ("stock-cft-152", args.stock_label, stock_dir),
+            (args.product_id, args.published_label, published_dir),
+            (args.control_id, args.stock_label, stock_dir),
         ]
         if not args.skip_falsification:
             arms.append(
                 (
-                    "stock-as-product",
+                    args.falsification_id,
                     "FALSIFICATION ARM — the STOCK control run a second time and "
                     "labelled as if it were the product. Its table is what "
                     "'patches absent' looks like through this instrument.",
