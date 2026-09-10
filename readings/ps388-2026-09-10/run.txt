@@ -1,0 +1,82 @@
+PS-388 — drive the DEGRADED arm's whole sequence against a REAL process tree.
+
+⛔ READ THE BOUND FIRST. THE TREE IS NOT CHROMIUM. This container cannot launch
+the Personium chromium engine at all — unprivileged user namespaces are denied
+(`kernel.apparmor_restrict_unprivileged_userns=1`, and this user has no sudo),
+so the engine exits FATAL "No usable sandbox!" ~3s in and the settle guard
+correctly refuses to measure it. Measured here on BOTH survivor arms, which
+report the identical CANNOT RUN:
+
+    the launched group N never held a SETTLED tree of at least 3 live
+    processes (peak 1, last 0) within 90s
+
+So this probe substitutes `spawn_browser` with a REAL multi-process POSIX tree
+in its own session — a shell that forks four `sleep` children — and drives
+everything else unchanged:
+
+    _launch_and_grow      REAL (its own settle loop, its own sweep contract)
+    _stop_group_or_refuse REAL (a real SIGSTOP, read back from the process table)
+    terminate()           REAL — the PRODUCT's own teardown, unsubstituted:
+                          terminate -> reap_process_group ->
+                          terminate_process_group (SIGTERM -> wait -> SIGKILL
+                          on the GROUP)
+    _survivors_or_refuse  REAL (psutil over the live process table)
+    _resume_group         REAL
+    _sweep_group          REAL
+
+WHAT THAT DOES AND DOES NOT ESTABLISH, stated rather than blurred:
+
+  ✅ the arm's SEQUENCE works end to end on a real tree, and its verdict tracks
+     the product's teardown rather than a return value;
+  ✅ the RED arm goes to FINDING and the QUIET arm goes to PASS — the pair that
+     shows the arm DISCRIMINATES rather than merely FIRES;
+  ✅ the wedge is real: the members are confirmed STOPPED before the teardown;
+  ❌ NOTHING about a chromium wrapper tree's teardown. A `sleep` under a shell
+     is not `fpchrome.AppImage` above a zygote above renderers, and the shapes
+     differ in exactly the way PS-192 was about. The chromium verdict must come
+     from the launch lane.
+
+Run: `python3 readings/ps388-2026-09-10/probe.py`
+
+repo HEAD: 9dad4671c46b70058cc9c1333cbd7ecb75606fd4
+
+=== TIMING CONTROL: the SAME tree, NOT wedged ===
+  terminate() returned in 0.00s
+
+=== QUIET ARM (product teardown intact) ===
+  status:       pass
+  detail:       a real launch grew to 6 live processes in its own group (622274); 6 of them were confirmed STOPPED (alive, cannot answer), and the product's teardown left ZERO of the tree running — counted from the operating system's process table. ⭐ A PASS IS THE PREDICTED RESULT AND IS REPORTED AS ONE: terminate_process_group escalates to SIGKILL on the GROUP, which a stopped process cannot ignore. What this ar
+    | peak live tree: 6 process(es) in group 622274
+    | degraded: 6 member(s) confirmed STOPPED — pids [622274, 622276, 622277, 622278, 622279, 622280]
+    | survivors after terminate(): 0
+    | terminate() returned in 10.00s (grace 5.0s, handle timeout 10s)
+  falsification: a real 6-process tree, 6 of whose members were confirmed STOPPED (alive, cannot answer), torn down the pre-PS-192 way (the held pid only) leaves 5 process(es) alive, and the check's own predicate REPORTS them — so a returning leak is observable on a DEGRADED session rather than assumed absent
+  launches: 2   wall clock: 28.5s
+
+=== LEAK AUDIT after QUIET ARM ===
+  processes from this probe's trees still alive: 0
+  of those, STOPPED (the worst outcome):         0
+
+=== RED ARM (terminate sabotaged to the pre-PS-192 shape) ===
+  status:       finding
+  detail:       5 process(es) of a peak 6-process tree were STILL RUNNING 5s after the product's own teardown returned, on a session that had been SIGSTOPped and could not answer. A wedged session is the case PS-349 measured leaking: a 12-process tree outliving its session's last confirmed state by 95s, reparented to init and unreachable from any handle persona holds.
+    | launched group 622331: peak 6 live process(es)
+    | degraded: 6 member(s) confirmed STOPPED — pids [622331, 622333, 622334, 622335, 622336, 622337]
+    | after terminate(): 5 alive — pids [622333, 622334, 622335, 622336, 622337]
+    | terminate() returned in 10.00s (grace 5.0s, handle timeout 10s)
+  falsification: a real 6-process tree, 5 of whose members were confirmed STOPPED (alive, cannot answer), torn down the pre-PS-192 way (the held pid only) leaves 5 process(es) alive, and the check's own predicate REPORTS them — so a returning leak is observable on a DEGRADED session rather than assumed absent
+  launches: 2   wall clock: 34.2s
+
+=== LEAK AUDIT after RED ARM ===
+  processes from this probe's trees still alive: 0
+  of those, STOPPED (the worst outcome):         0
+
+========================================================================
+VERDICT
+========================================================================
+  QUIET arm: pass   (expected pass)
+  RED   arm: finding   (expected finding)
+  strays after QUIET: 0   after RED: 0
+  healthy teardown: 0.00s   (_TEARDOWN_GRACE = 5.0s)
+
+  DISCRIMINATES AND LEAKS NOTHING: True

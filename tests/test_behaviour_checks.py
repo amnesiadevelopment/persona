@@ -309,6 +309,13 @@ class TestRegistry:
             # looking measured, which is this check's own charter turned on
             # itself.
             "no-process-survives-a-closed-session",
+            # PS-388. The same pin for the DEGRADED arm, and it carries more
+            # weight here: the two entries are near-identical in shape, so
+            # deleting this one leaves a registry that still LOOKS like it
+            # covers survivors — the reader sees a survivor check and stops.
+            # What would actually be gone is the only arm that measures a
+            # teardown of a session that cannot ANSWER.
+            "no-process-survives-a-degraded-session",
         ):
             assert required in names, f"no check observes {required}"
 
@@ -1048,6 +1055,49 @@ class TestSingletonSocketBudget:
 
         assert "SOCKET_BOUND_PROFILE_NAMES" in source
         assert "SOCKET_BOUND_PROFILE_NAMES" in falsify
+
+    def test_the_degraded_arm_reads_its_profile_names_from_the_same_constant(
+        self,
+    ):
+        """PS-388's arm is a SECOND chromium launch and binds the same socket.
+
+        The budget is derived from `SOCKET_BOUND_PROFILE_NAMES` by
+        `longest_socket_bound_profile_name`, so a name hardcoded in this arm is
+        a name the scratch home was never sized against — and the symptom is
+        not a red test but a FATAL "Socket path too long" ~6s into the launch,
+        which reads from outside as a tree that started and vanished.
+
+        ⚠️ AND THE TWO ARMS MUST NOT SHARE A PROFILE. `run_check` runs
+        `falsify` and then `run` against the same Context, and the falsification
+        deliberately orphans a tree — reusing one name would have the verdict
+        arm launch into a profile directory whose previous session was killed
+        mid-write, and chromium's singleton would find a stale lock.
+        """
+        import inspect
+
+        from src.services.verify import behaviour_checks
+        from src.services.verify.behaviour_checks import SOCKET_BOUND_PROFILE_NAMES
+
+        source = inspect.getsource(
+            behaviour_checks._run_no_process_survives_a_degraded_session
+        )
+        falsify = inspect.getsource(
+            behaviour_checks._falsify_no_process_survives_a_degraded_session
+        )
+
+        assert "SOCKET_BOUND_PROFILE_NAMES" in source
+        assert "SOCKET_BOUND_PROFILE_NAMES" in falsify
+        assert len(set(SOCKET_BOUND_PROFILE_NAMES)) == len(
+            SOCKET_BOUND_PROFILE_NAMES
+        ), (
+            "two arms share a profile name, so one launches into a directory "
+            "the other's teardown has already destroyed"
+        )
+        assert len(SOCKET_BOUND_PROFILE_NAMES) >= 4, (
+            "there are two chromium checks and each needs its own run and "
+            "falsify profile, so four names is the floor — a shorter tuple "
+            "means an arm is naming a profile the home was not sized for"
+        )
 
 
 class TestTheCLIProvisionsALaunchableHome:

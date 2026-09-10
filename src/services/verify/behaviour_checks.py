@@ -1298,6 +1298,19 @@ _TREE_GROW_TIMEOUT = 90.0
 #: rather than mid-exit.
 _TEARDOWN_GRACE = 5.0
 
+#: How long `_stop_group_or_refuse` waits for a SIGSTOP it already sent to show
+#: up as state ``stopped`` in the process table.
+#:
+#: ⚠️ A GENEROUS BOUND, NOT A MEASUREMENT — stated plainly because every other
+#: constant in this block IS measured and an unlabelled literal here would read
+#: as one. Signal delivery to a live process is prompt (the kernel stops it at
+#: the next scheduling point), so the honest expectation is that the first
+#: sample already sees it; this exists only so that a loaded runner cannot turn
+#: a real wedge into a CANNOT_RUN. It bounds the INSTRUMENT's patience, never
+#: the product's behaviour: nothing about the teardown is measured from it, and
+#: widening it can only ever turn a spurious refusal into a real verdict.
+_DEGRADE_CONFIRM_TIMEOUT = 2.0
+
 #: THE PROFILE NAMES THIS CHECK LAUNCHES CHROMIUM UNDER — named here, once,
 #: because they are the only names in this module whose LENGTH is a
 #: correctness property rather than a label.
@@ -1305,15 +1318,29 @@ _TEARDOWN_GRACE = 5.0
 #: Chromium's process singleton binds a UNIX socket under the profile, and
 #: ``behaviour.SUN_PATH_LIMIT`` is a hard wall the engine enforces by exiting
 #: FATAL mid-launch. Every OTHER check here launches FIREFOX (see
-#: ``UNCOVERED_SURFACES``), which binds no such socket, so these two are the
+#: ``UNCOVERED_SURFACES``), which binds no such socket, so these are the
 #: names a scratch home has to leave room for.
 #:
-#: ⛔ LENGTHENING EITHER OF THESE IS A BEHAVIOUR CHANGE, NOT A RENAME. The
+#: ⛔ LENGTHENING ANY OF THESE IS A BEHAVIOUR CHANGE, NOT A RENAME. The
 #: budget is asserted against them by
 #: ``tests/test_behaviour_checks.py::TestSingletonSocketBudget``, so a name
 #: that no longer fits under the CLI's own default home turns that test red
 #: rather than turning this check into a silent CANNOT RUN.
-SOCKET_BOUND_PROFILE_NAMES: "tuple[str, ...]" = ("p347a", "p347b")
+#:
+#: ⭐ FOUR SINCE PS-388, AND THE LENGTH RULE IS WHY THEY LOOK LIKE THIS. The
+#: DEGRADED arm (section 8b) is a second registry entry, so it launches under
+#: its own two names — ``run`` and ``falsify`` must not share a profile, and
+#: ``p388a``/``p388b`` are the same 5 bytes as the pair above rather than the
+#: descriptive names they would otherwise have carried. The budget is derived
+#: from this tuple by :func:`longest_socket_bound_profile_name`, so adding
+#: them here is what keeps the scratch home sized for them; a name hardcoded
+#: in an arm would be a name the home was never sized against.
+SOCKET_BOUND_PROFILE_NAMES: "tuple[str, ...]" = (
+    "p347a",
+    "p347b",
+    "p388a",
+    "p388b",
+)
 
 
 def longest_socket_bound_profile_name() -> int:
@@ -1720,6 +1747,501 @@ def _falsify_no_process_survives_a_closed_session(ctx: Context) -> str:
         _sweep_group(pgid)
 
 
+# --- 8b. no process survives a closed session THAT CANNOT ANSWER ------------
+#
+# PS-388 / PS-8 DoD #1, and it is the SETUP that differs from section 8 rather
+# than the assertion. `_run_no_process_survives_a_closed_session` is three
+# steps — launch, settle, `terminate` — and NOTHING HAPPENS TO THE SESSION
+# BETWEEN THE SETTLE AND THE TEARDOWN. So the only teardown it has ever
+# exercised is the teardown of a browser answering normally. That is the
+# boundary its own header declares, not a defect in it.
+#
+# ⭐ WHY THAT BOUNDARY IS WORTH A SECOND ARM, AND IT IS A MEASUREMENT RATHER
+# THAN A WORRY. PS-349 (`readings/ps349-2026-09-09/`) wedged nine sessions and
+# watched their process trees. Eight of the nine recorded a `child_exit`; the
+# WEDGED one alone did not. Re-parsed from the committed artifact
+# (`jugwedge.txt`, 810 rows) rather than inherited:
+#
+#     t=121.5  nproc=12   <- the last moment the subject CONFIRMED its state
+#     t=123.5 .. t=216.9  <- 47 consecutive samples, nproc=12, rss ~1209 MB
+#     t=218.9  nproc=0    <- reaped by SOMETHING; the record cannot say what
+#
+# A 12-process engine tree outlived its session's last confirmed state by 95.4
+# seconds, and `post_state.py` caught the tearing-down process still in state
+# `R` at 100% CPU, age 1544s (~26 min), with ZERO engine processes attached —
+# a live CPU-burning process with no browser under it.
+#
+# ⚠️ AND THE READING'S OWN BOUND TRAVELS WITH IT. That observer never exited,
+# so its file folds in the NEXT FIVE ARMS' trees; `PROBE.md:565` says "only
+# t <= 121.5 is this arm". The 95s span ENDS at t=216.9 and the first
+# contaminating sample is t=234.9 — 18 seconds later — so the observation sits
+# entirely inside the clean span. ⛔ Do not quote that file's tail past
+# t=218.9: an earlier draft read those samples as teardown work when they are
+# other sessions, which inflated the wedged arm's CPU median to 101.8%.
+#
+# ⛔ WHAT THIS ARM IS NOT. PS-349's arms ran FIREFOX through PS-171's arm-F
+# harness (`ctx.new_page()`), and its own record forbids quoting them as a
+# measurement of the product: "attribution is NOT established… this says
+# nothing about the product's own teardown until someone runs the same wedge
+# through `spawn_browser`". This arm IS that run — Recommendation 5, verbatim
+# — but it runs CHROMIUM, because the survivor check's profile is chromium by
+# construction (`_survivor_profile`) and for a recorded reason. So this is NOT
+# a replication of PS-349's firefox observation and a result here must never
+# be presented as confirming or refuting it. It is the product-path
+# measurement PS-349 said it could not make, on a different engine.
+#
+# ⭐ WHY `SIGSTOP` AND NOT THE OTHER TWO GESTURES — the choice is forced.
+# PS-349's `jugwedge` gesture needs `ctx.new_page()`, and the eval hook the
+# product publishes is `{"eval": ..., "goto": ...}` (`invisible_launch.py`) —
+# no `ctx`. Reaching it would mean editing the product to make a session
+# easier to observe, which PS-349 declined and PS-1's charter forbids. That
+# leaves `sigstop` and `spin`. `spin` needs the same automation channel to put
+# a `while(true){}` on the page, so on this arm it is not reachable either;
+# `sigstop` needs no channel at all and its GROUND TRUTH IS CERTAIN
+# (`PROBE.md:165` — "alive, cannot answer"), which is exactly the state
+# section 8 cannot reach: a live, settled, multi-process tree that will not
+# answer a polite SIGTERM.
+#
+# ⚠️ THE PIDS ARE RESOLVED FROM THE RECORDED GROUP, NEVER FROM A NAME.
+# PS-349's harness could match on the engine's name because it launched
+# firefox in-process and knew its own pids; this arm launches the chromium
+# WRAPPER tree (fpchrome.AppImage -> browser -> zygote/gpu/renderers), and
+# `_sweep_group`'s own rule applies unchanged — PS-185 lost two cycles to a
+# `pkill -f chromium` that matched its own command line. `_survivors_or_refuse`
+# already returns exactly the list this arm signals.
+#
+# ⭐⭐ STATE THE EXPECTATION BEFORE RUNNING IT, so a green is a confirmation
+# rather than a relief. `terminate_process_group` is SIGTERM -> wait ->
+# SIGKILL ON THE GROUP, and a SIGSTOPped process cannot ignore SIGKILL — the
+# kernel delivers it whatever the process is doing. So THE HONEST EXPECTATION
+# IS THAT THIS ARM PASSES, and that is a delivered result rather than a
+# failure. The value is threefold and none of it depends on a red:
+#
+#   1. It goes RED when the escalation regresses. A `terminate` that stopped
+#      escalating to SIGKILL — or stopped aiming at the GROUP — still passes
+#      section 8, because a healthy browser exits on the SIGTERM alone. This
+#      arm is the one that would not.
+#   2. THE FINDING, IF THERE IS ONE, IS IN THE TIMING. PS-349's tree took 95s
+#      to be reaped by something unidentified. This arm reports its own
+#      teardown duration against `_TEARDOWN_GRACE` on every run, pass or not.
+#      ⛔ If a degraded teardown needs longer than a healthy one, that is a
+#      fact about the PRODUCT and belongs in a report — never absorbed by
+#      widening the grace.
+#
+#      ⭐⭐ AND IT DOES. MEASURED, AND THIS IS THIS SLICE'S ACTUAL FINDING.
+#      On a real multi-process POSIX tree in this container
+#      (`readings/ps388-2026-09-10/`), the SAME tree through the SAME
+#      `terminate()`:
+#
+#          healthy  (answering)      -> terminate() returned in 0.00s
+#          degraded (SIGSTOPped)     -> terminate() returned in 10.00s
+#
+#      Ten seconds is EXACTLY the `timeout` handed to `terminate`, and the
+#      mechanism is isolated rather than inferred: SIGTERM TO A STOPPED
+#      PROCESS IS QUEUED, NOT DELIVERED — the kernel holds it until the
+#      process is continued — so `terminate_process_group`'s
+#      `proc.wait(timeout=timeout)` between the SIGTERM and the SIGKILL blocks
+#      for the WHOLE timeout every time. Measured directly: `wait()` after a
+#      SIGTERM to a stopped group = 10.00s; after the SIGKILL = 0.00s.
+#
+#      ⛔ THE OUTCOME IS STILL CORRECT AND THE GRACE IS NOT WIDENED. The
+#      SIGKILL lands, the tree goes, survivors are zero. What is reported is
+#      the COST: every teardown of a wedged session pays the full timeout on
+#      a thread the caller is holding. `launcher.stop_profile` passes
+#      `timeout=1` on most paths and `terminate`'s own default is 5, so the
+#      figure an operator sees depends on the call site — but the SHAPE is the
+#      same everywhere: a wedged session's teardown is bounded by the timeout
+#      rather than by the browser. THIS IS NOT A LEAK AND NOT AN INVARIANT #0
+#      FINDING; it is a latency fact about the teardown path, reported here
+#      because AC7 requires it to be reported rather than absorbed.
+#      ⚠️ AND IT WAS MEASURED ON A `sleep` TREE, NOT ON CHROMIUM — the queued
+#      -SIGTERM mechanism is a kernel fact and does not depend on the engine,
+#      but the wall-clock a chromium wrapper produces is the launch lane's to
+#      report.
+#   3. The prediction in (0) is exactly what had never been tested. PS-349 ran
+#      a wedge and the teardown did NOT complete. The kernel argument says
+#      that cannot happen; the one time anyone looked, it did.
+#
+# ⛔ THIS ARM MEASURES A TEARDOWN. IT DOES NOT DETECT A DEGRADATION.
+# PS-349's Recommendation 1 is explicit and measured: the composite health
+# signal has a one-sample margin whose healthy side was set by choosing a load,
+# and `busymax` — a healthy session answering every ping in 0.02s — went BELOW
+# the wedged arm's context-switch floor. Nothing here watches a live session,
+# scores its health, or acts on one.
+#
+# ⛔ AND THE THREAD ARM IS NOT REACHABLE FROM HERE, AT ANY PARAMETER VALUE.
+# `InvisibleProcess.terminate()` — the branch that only sets a stop event, so
+# "a session that ignores it leaves a live browser thread behind while the
+# registry entry is wiped" (`baseline.py`'s own words) — exists on the FIREFOX
+# handle alone: `spawn_browser`'s `in_process` is "honoured by the FIREFOX path
+# only", and this check's profile is chromium, which returns a real
+# `subprocess.Popen`. THE NEXT SLICE IS A FIREFOX ARM, which this check does
+# not have at all and which needs its own profile; `baseline._teardown` is
+# where its anchor is already written.
+
+
+def _degradable_pids(pgid: int) -> "list[int]":
+    """The tree members this arm will SIGSTOP — read from the GROUP.
+
+    A thin wrapper over :func:`_survivors_or_refuse` and named separately for
+    one reason: it is the seam where a future reader is most tempted to
+    substitute a name match ("every process called chrome"), which is the one
+    thing `_sweep_group`'s docstring forbids in capitals. Anchoring the
+    DEGRADATION on the same group the sweep is anchored on is what makes the
+    undo below provably complete — a wedge planted over a wider set than the
+    sweep can reach is the leak this direction exists to prevent, arriving
+    through the gate that watches for it.
+    """
+    return _survivors_or_refuse(pgid)
+
+
+def _resume_group(pgid: "int | None") -> None:
+    """SIGCONT every member of ``pgid``. Never raises. Safe to call twice.
+
+    ⭐ BELT AND BRACES, DELIBERATELY, AND THE REASONING IS WORTH STATING
+    BECAUSE THE OBVIOUS READING IS THAT IT IS REDUNDANT. `_sweep_group` sends
+    SIGKILL, which a SIGSTOPped process DOES receive — the kernel does not
+    require a stopped process to be running to kill it — so on the paths that
+    reach a WORKING sweep, this is not what removes the tree. It is here for
+    the paths where the sweep is a NO-OP:
+
+      * a `signallable_group` refusal (our own group, or a platform with no
+        ``killpg``) makes `_sweep_group` return without signalling anything,
+        and a no-op sweep over a SIGSTOPped tree leaves a tree that is stopped
+        AND unreaped;
+      * `os.killpg(SIGKILL)` failing (EPERM, a group that emptied and was
+        recycled, anything else) is swallowed by the sweep's own
+        `contextlib.suppress`, with the same result.
+
+    ⛔⛔ SO THIS FUNCTION MUST NOT SHARE `_sweep_group`'s GROUP GUARD, AND THAT
+    IS THE WHOLE POINT OF THE PER-PID LOOP BELOW. An earlier revision of this
+    arm gated the resume on `signallable_group` exactly as the sweep does, and
+    it was measured INERT on precisely the paths above: when the guard refuses,
+    both functions return without signalling, so the tree is left alive AND
+    stopped — the worst outcome available here, arriving through the function
+    written to prevent it. The guard exists to stop a SIGKILL reaching our own
+    group; a SIGCONT to our own group is HARMLESS (every member of it is
+    already running, by construction — we are executing), so the guard buys
+    nothing here and costs everything.
+
+    The per-pid targets come from `_degradable_pids`, i.e. from the RECORDED
+    GROUP — never from a name match. `_sweep_group`'s rule is untouched.
+
+    ⚠️ AND A CORRECTION TO THE MECHANISM AN EARLIER DOCSTRING NAMED: a
+    reparented process is NOT a third path. Reparenting changes a process's
+    PARENT, not its process GROUP; POSIX group membership survives the death of
+    the leader and of any intermediate parent, which is the entire reason this
+    module anchors on a pgid rather than on a process tree. A reparented member
+    is reachable by ``killpg`` exactly as before, and needs no separate undo.
+
+    A leaked RUNNING process is a bug this project has measured. A leaked
+    STOPPED one is worse: it consumes its RSS forever (PS-349 measured ~1.2 GB
+    on a 12-process tree), it cannot be noticed by anything that samples CPU,
+    and no ordinary teardown will ever touch it again. So the undo runs FIRST
+    on every exit path and the sweep runs after it.
+    """
+    if pgid is None:
+        return
+    import signal
+
+    from ..browser.process_group import signallable_group
+
+    sigcont = getattr(signal, "SIGCONT", 18)
+
+    # 1. The cheap, whole-group attempt, when the guard admits it. This is the
+    #    fast path and it reaches members `_degradable_pids` may have missed
+    #    (a process that joined the group between the two reads).
+    target = signallable_group(pgid)
+    if target is not None:
+        with contextlib.suppress(Exception):
+            os.killpg(target, sigcont)
+
+    # 2. ⛔ THE LOAD-BEARING LEG. Unconditional, and deliberately NOT behind the
+    #    guard above: this is the only thing that acts when the killpg is
+    #    refused or fails, which is the exact condition this function exists
+    #    for. `_degradable_pids` raises when it cannot look at the group at
+    #    all — an undo that cannot resolve its targets must not pretend to have
+    #    run — but this is a `finally` helper that promises never to raise, so
+    #    the refusal is swallowed HERE rather than allowed to mask the real
+    #    exception the caller is already unwinding with.
+    with contextlib.suppress(Exception):
+        for pid in _degradable_pids(pgid):
+            with contextlib.suppress(Exception):
+                os.kill(pid, sigcont)
+
+
+def _stop_group_or_refuse(pgid: int) -> "list[int]":
+    """SIGSTOP the recorded group's members and PROVE at least one stopped.
+
+    Returns the pids observed in state ``stopped``. Raises
+    :class:`BehaviourCheckError` when none can be confirmed, which is
+    CANNOT_RUN — never a pass.
+
+    ⭐ THE VERIFICATION IS THE POINT, and it is this arm's whole claim to be
+    measuring anything. A `SIGSTOP` that silently reached nothing produces a
+    session that is perfectly healthy, a teardown that behaves exactly as
+    section 8's does, and a GREEN — a clean, confident and completely false
+    result of precisely the shape this project has recorded twice (PS-299's
+    rebase probe printing "81/81 hunks, 0 rejects" against an empty directory;
+    PS-341's `--dump-dom` reading "8 of 8 moved"). In both, the INSTRUMENT
+    produced the result and the subject was never touched. So the degradation
+    is READ BACK from the process table rather than assumed from a syscall
+    that raised nothing.
+
+    ⚠️ ONE stopped member is the bar rather than all of them, and the weaker
+    bar is the honest one: chromium's tree is racing us — a renderer can exit
+    between the survivor sample and the signal, and `os.kill` on a departed pid
+    raises ESRCH — so requiring every pid would make this arm flaky about the
+    engine's own churn rather than strict about the wedge. What the check
+    needs is a tree that CANNOT ANSWER, and a stopped browser process is that.
+    The count of stopped members is reported either way, so a partial
+    degradation is visible rather than rounded up.
+    """
+    import signal
+
+    sigstop = getattr(signal, "SIGSTOP", 19)
+    targets = _degradable_pids(pgid)
+    if not targets:
+        raise BehaviourCheckError(
+            f"the launched group {pgid} held a settled tree a moment ago and "
+            "holds nothing now, so there is nothing to degrade. Nothing was "
+            "measured."
+        )
+    for pid in targets:
+        with contextlib.suppress(Exception):
+            os.kill(pid, sigstop)
+
+    # Read the degradation back. `psutil` is the same instrument
+    # `process_group_survivors` uses, and it RAISES rather than reporting an
+    # empty list when it cannot look — "I could not check" must never render
+    # as "nothing stopped".
+    try:
+        import psutil
+    except Exception as exc:  # pragma: no cover - psutil is a declared dep
+        raise BehaviourCheckError(
+            "the degradation could not be verified: psutil is unavailable, so "
+            "'the tree is stopped' would be indistinguishable from 'I could "
+            "not look' — and an unverified wedge produces a green from a "
+            "session that was never degraded."
+        ) from exc
+
+    stopped: "list[int]" = []
+    deadline = time.monotonic() + _DEGRADE_CONFIRM_TIMEOUT
+    while time.monotonic() < deadline:
+        stopped = []
+        for pid in targets:
+            with contextlib.suppress(Exception):
+                if psutil.Process(pid).status() == psutil.STATUS_STOPPED:
+                    stopped.append(pid)
+        if stopped:
+            break
+        time.sleep(_SAMPLE_INTERVAL)
+
+    if not stopped:
+        raise BehaviourCheckError(
+            f"SIGSTOP was sent to all {len(targets)} member(s) of group {pgid} "
+            "and NOT ONE of them is in state 'stopped'. The session is "
+            "therefore still answering, so a teardown measured from here would "
+            "be section 8's measurement wearing this arm's name — a green from "
+            "a subject that was never degraded. Nothing was measured."
+        )
+    return sorted(stopped)
+
+
+def _run_no_process_survives_a_degraded_session(ctx: Context) -> Outcome:
+    """Section 8's sequence with ONE step inserted: the session is WEDGED.
+
+    launch -> settle -> **SIGSTOP the recorded group** -> `terminate()`.
+
+    Everything else is section 8's, deliberately and without a single
+    threshold moved: the same `_launch_and_grow` (so the settle precondition
+    is INHERITED, not relaxed), the same `_TEARDOWN_GRACE`, the same
+    `_survivors_or_refuse`, the same `_sweep_group`. The healthy arm is the
+    CONTROL for this one and is byte-identical.
+    """
+    from ..browser.process import terminate
+
+    name = SOCKET_BOUND_PROFILE_NAMES[2]
+    profile = _survivor_profile(ctx, name)
+    proc, pgid, peak = _launch_and_grow(ctx, profile)
+
+    stopped: "list[int]" = []
+    try:
+        # ⛔ THE DEGRADATION AND EVERYTHING AFTER IT IS INSIDE ONE `try`, and
+        # the `finally` UNDOES IT BEFORE SWEEPING — see `_resume_group` for
+        # why the sweep alone is not enough on every path.
+        stopped = _stop_group_or_refuse(pgid)
+
+        # THE PRODUCT'S OWN TEARDOWN, unchanged. Timed, because the timing is
+        # the half of this arm that a pass does not make uninteresting.
+        started = time.monotonic()
+        terminate(proc, name, timeout=10)
+        teardown_seconds = time.monotonic() - started
+
+        deadline = time.monotonic() + _TEARDOWN_GRACE
+        survivors = _survivors_or_refuse(pgid)
+        while survivors and time.monotonic() < deadline:
+            time.sleep(0.25)
+            survivors = _survivors_or_refuse(pgid)
+
+        timing = (
+            f"terminate() returned in {teardown_seconds:.2f}s "
+            f"(grace {_TEARDOWN_GRACE:.1f}s, handle timeout 10s)"
+        )
+        if survivors:
+            return Outcome(
+                name="no-process-survives-a-degraded-session",
+                surface=(
+                    "a closed session leaves no process running EVEN WHEN IT "
+                    "CANNOT ANSWER"
+                ),
+                status=FINDING,
+                detail=(
+                    f"{len(survivors)} process(es) of a peak {peak}-process "
+                    f"tree were STILL RUNNING {_TEARDOWN_GRACE:.0f}s after the "
+                    "product's own teardown returned, on a session that had "
+                    "been SIGSTOPped and could not answer. A wedged session is "
+                    "the case PS-349 measured leaking: a 12-process tree "
+                    "outliving its session's last confirmed state by 95s, "
+                    "reparented to init and unreachable from any handle "
+                    "persona holds."
+                ),
+                evidence=[
+                    f"launched group {pgid}: peak {peak} live process(es)",
+                    f"degraded: {len(stopped)} member(s) confirmed STOPPED — "
+                    f"pids {stopped}",
+                    f"after terminate(): {len(survivors)} alive — pids "
+                    f"{survivors}",
+                    timing,
+                ],
+                launches=1,
+            )
+        return Outcome(
+            name="no-process-survives-a-degraded-session",
+            surface=(
+                "a closed session leaves no process running EVEN WHEN IT "
+                "CANNOT ANSWER"
+            ),
+            status=PASS,
+            detail=(
+                f"a real launch grew to {peak} live processes in its own group "
+                f"({pgid}); {len(stopped)} of them were confirmed STOPPED "
+                "(alive, cannot answer), and the product's teardown left ZERO "
+                "of the tree running — counted from the operating system's "
+                "process table. ⭐ A PASS IS THE PREDICTED RESULT AND IS "
+                "REPORTED AS ONE: terminate_process_group escalates to SIGKILL "
+                "on the GROUP, which a stopped process cannot ignore. What "
+                "this arm adds is that the escalation is now OBSERVED on a "
+                "session that ignores the polite signal, so a regression to "
+                "single-pid or SIGTERM-only teardown goes red here while "
+                "section 8 stays green. NOTE: chromium on Linux only, and the "
+                "firefox in_process arm — where terminate() only sets a stop "
+                "event — is a different check that does not exist yet."
+            ),
+            evidence=[
+                f"peak live tree: {peak} process(es) in group {pgid}",
+                f"degraded: {len(stopped)} member(s) confirmed STOPPED — pids "
+                f"{stopped}",
+                "survivors after terminate(): 0",
+                timing,
+            ],
+            launches=1,
+        )
+    finally:
+        # ⛔ UNDO FIRST, THEN SWEEP, ON EVERY PATH OUT — including the ones
+        # that are the INSTRUMENT failing rather than the product, which is
+        # where a stopped tree would otherwise escape (`_resume_group` names
+        # the paths where the sweep is a no-op, and acts PER-PID so that it is
+        # not a no-op on the same ones). `_launch_and_grow` guards its own
+        # failing paths and none of them can have degraded anything, so this
+        # `finally` covers exactly the window in which a wedge exists.
+        _resume_group(pgid)
+        _sweep_group(pgid)
+
+
+def _falsify_no_process_survives_a_degraded_session(ctx: Context) -> str:
+    """Wedge a REAL tree, tear it down the pre-PS-192 way, require a survivor.
+
+    The same defect section 8's falsification models — signal only the pid we
+    hold and let every descendant be reparented — planted on a session that
+    has ALSO been SIGSTOPped, so the control is this arm's own subject rather
+    than the healthy one.
+
+    ⚠️ THE SIGNAL IS SENT WITH ``os.kill`` ON THE HELD PID, NOT WITH
+    ``proc.terminate()``, and this is inherited verbatim from section 8's
+    falsification rather than re-derived: on persona's Linux FORK path the
+    handle's own ``kill()`` is group-aware (it IS the PS-192 fix), so a
+    "pre-fix shape" control built on the handle would be measuring the fix,
+    return a comfortable zero, and certify nothing.
+
+    ⭐ AND THE WEDGE MAKES THE CONTROL STRICTLY STRONGER HERE THAN THERE, for
+    a reason worth stating: a SIGSTOPped wrapper cannot act on the SIGTERM at
+    all — it cannot flush, cannot forward the signal to its children, cannot
+    exit — so the descendants it orphans are orphaned by the KERNEL's
+    reparenting rather than by anything the browser chose. If a survivor is
+    observable at all on this path, it is observable on the worst version of
+    the defect.
+    """
+    import signal
+
+    name = SOCKET_BOUND_PROFILE_NAMES[3]
+    profile = _survivor_profile(ctx, name)
+    proc, pgid, peak = _launch_and_grow(ctx, profile)
+
+    stopped: "list[int]" = []
+    try:
+        stopped = _stop_group_or_refuse(pgid)
+
+        # The defect, exactly: the one pid we hold, and nothing else.
+        #
+        # ⚠️ SIGKILL DIRECTLY, WITHOUT THE SIGTERM SECTION 8's FALSIFICATION
+        # SENDS FIRST, and the divergence is deliberate rather than an
+        # oversight: SIGTERM TO A STOPPED PROCESS IS QUEUED, NOT DELIVERED —
+        # the kernel holds it until the process is continued — so the polite
+        # signal would do nothing here and the `wait()` after it would burn its
+        # whole timeout. Sending it anyway would make the arm slower and would
+        # make this a test of SIGSTOP's semantics rather than of the
+        # pre-PS-192 shape. SIGKILL is the leg that actually removes the
+        # wrapper on both arms, so it is the whole escalation on this one.
+        # Measured (`readings/ps388-2026-09-10/wait_isolation.txt`): after a
+        # SIGTERM to a stopped group, `wait()` = 10.00s; after the SIGKILL,
+        # 0.00s.
+        with contextlib.suppress(Exception):
+            os.kill(proc.pid, getattr(signal, "SIGKILL", 9))
+        with contextlib.suppress(Exception):
+            proc.wait(timeout=5)
+        time.sleep(_TEARDOWN_GRACE)
+
+        survivors = _survivors_or_refuse(pgid)
+        if not survivors:
+            raise BehaviourCheckError(
+                "signalling ONLY the held pid — the exact pre-PS-192 defect — "
+                f"left NOTHING alive in group {pgid} (peak {peak}, "
+                f"{len(stopped)} member(s) confirmed stopped). Either the "
+                "launch was not the wrapper, multi-process shape this check "
+                "believes it is driving, or the predicate cannot observe a "
+                "survivor. Its green would certify nothing either way."
+            )
+        return (
+            f"a real {peak}-process tree, {len(stopped)} of whose members were "
+            "confirmed STOPPED (alive, cannot answer), torn down the "
+            f"pre-PS-192 way (the held pid only) leaves {len(survivors)} "
+            "process(es) alive, and the check's own predicate REPORTS them — "
+            "so a returning leak is observable on a DEGRADED session rather "
+            "than assumed absent"
+        )
+    finally:
+        # Undo the wedge BEFORE the sweep, exactly as the run arm does, and
+        # for the same reason. This path deliberately created orphans — that
+        # IS its result — so it sweeps them itself, by GROUP and WITHOUT the
+        # reaper it is modelling the absence of. ⚠️ A stopped orphan is the
+        # worst thing this module could leave behind: invisible to anything
+        # sampling CPU, holding its RSS indefinitely, and reachable by no
+        # ordinary teardown ever again.
+        _resume_group(pgid)
+        _sweep_group(pgid)
+
+
 # --- 9. every out-of-perimeter launch artifact is enumerated ----------------
 #
 # PS-355 / PS-8 DoD#3. The ONLY check here that observes the TREE rather than a
@@ -2076,6 +2598,39 @@ CHECKS: tuple[Check, ...] = (
         needs_launch=True,
         run=_run_no_process_survives_a_closed_session,
         falsify=_falsify_no_process_survives_a_closed_session,
+    ),
+    Check(
+        name="no-process-survives-a-degraded-session",
+        surface=(
+            "a closed session leaves no process running EVEN WHEN IT CANNOT "
+            "ANSWER"
+        ),
+        # ⭐ A SEPARATE `Check` RATHER THAN A SECOND GESTURE INSIDE THE ONE
+        # ABOVE, and the reason is `run_check`'s own order rather than taste:
+        # it falsifies PER CHECK, once, and a check that fails its self-test
+        # never reaches its verdict. A degraded gesture folded into the entry
+        # above would ride on the HEALTHY arm's falsification — i.e. the one
+        # thing this arm exists to add would be the one thing never shown
+        # capable of failing. It would also make one verdict cover two
+        # surfaces, so a red could not say which teardown broke.
+        #
+        # ⚠️ THE COST IS PRICED RATHER THAN WAVED AT. `run_check` runs
+        # `falsify` FIRST and then `run`, so a registry entry is TWO real
+        # chromium launches, not one — and it needs its own two profile names
+        # (see SOCKET_BOUND_PROFILE_NAMES) plus an entry in the launch lane's
+        # SELECTED_CHECKS and EXPECTED_CHECKS. The launch lane was measured at
+        # 5 checks / 16 firefox launches + 2 chromium ones; this adds 2 more
+        # chromium launches, each bounded by `_TREE_GROW_TIMEOUT` (90s) and
+        # settling in ~7s in practice. Worst case moves ~7min -> ~10min
+        # against a 45-minute budget, which still holds with a wide margin.
+        #
+        # ⛔ NOT the needs_launch=False lane, for section 8's reason exactly:
+        # there is nothing to count without a real browser, and a survivor
+        # count taken with no launch is the vacuous zero both checks exist to
+        # refuse.
+        needs_launch=True,
+        run=_run_no_process_survives_a_degraded_session,
+        falsify=_falsify_no_process_survives_a_degraded_session,
     ),
     Check(
         name="launch-perimeter-inventory",

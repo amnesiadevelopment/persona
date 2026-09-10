@@ -1,0 +1,31 @@
+Isolate WHY a degraded teardown costs the full timeout — one mechanism, alone.
+
+The arm reports `terminate() returned in 10.00s` on a wedged session and
+`0.00s` on a healthy one. That is a MEASUREMENT, and this is the ISOLATION:
+which of the escalation's three legs spends the ten seconds, measured leg by
+leg rather than inferred from the total.
+
+Run: `python3 readings/ps388-2026-09-10/wait_isolation.py`
+
+
+=== HEALTHY — tree [622397, 622398, 622399, 622400, 622401] ===
+  killpg(SIGTERM): 0.00s
+  proc.wait(timeout=10): 0.00s
+  killpg(SIGKILL): 0.00s
+  proc.wait(timeout=5): 0.00s
+  survivors: []
+
+=== WEDGED (SIGSTOP) — tree [622408, 622409, 622410, 622411, 622412] ===
+  killpg(SIGTERM): 0.00s
+  proc.wait(timeout=10): raised TimeoutExpired
+  proc.wait(timeout=10): 10.00s
+  killpg(SIGKILL): 0.00s
+  proc.wait(timeout=5): 0.00s
+  survivors: []
+
+CONCLUSION: SIGTERM to a STOPPED process is QUEUED, not delivered —
+the kernel holds it until the process is continued — so the wait()
+between the SIGTERM and the SIGKILL blocks for the WHOLE timeout.
+The SIGKILL that follows lands immediately and the tree goes, so the
+OUTCOME is correct; what the wedge costs is LATENCY, bounded by the
+caller's own timeout rather than by the browser.
