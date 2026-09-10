@@ -750,6 +750,111 @@ def test_the_engine_capability_the_workflow_declares_actually_exists() -> None:
     )
 
 
+def test_ci_declares_the_yaml_capability_on_every_platform(ci_yaml, ci_text) -> None:
+    """PS-389 — the guards in THIS FILE are the ones that go dark without it.
+
+    ⭐ READ THIS AS RECURSIVE, because that is what makes it worth pinning
+    rather than noting. Every test in this module reaches its subject through
+    the `ci_yaml` / `release_yaml` fixtures, and both open with
+    ``pytest.importorskip("yaml")``. So when PyYAML is absent, the two tests
+    directly above this one — `test_ci_declares_the_browser_capability_rather_
+    than_inferring_it` and `test_ci_declares_the_engine_capability_on_every_
+    platform`, the ones asserting the OTHER declarations exist — do not fail.
+    They SKIP, and the run reports green. The mechanism stops policing its own
+    shape and says nothing about having stopped.
+
+    MEASURED, NOT ARGUED (PS-389, at 9dad467, via a `sys.meta_path` blocker
+    raising a genuine ``ModuleNotFoundError`` — an ``ImportError`` stub takes a
+    different path and produces errors rather than skips):
+
+        PyYAML absent, nothing declared     -> 89 tests silently skipped
+        PyYAML absent, `browser,engine`     -> 89 tests silently skipped
+          (this job's OWN declaration)         byte-identical to declaring
+                                               nothing at all
+
+    37 of those 89 are in this file.
+
+    WHY IT IS SAFE TO DECLARE, measured rather than assumed: the install step
+    runs ``pip install -r requirements-dev.txt`` before pytest on all three
+    runners, and PS-389 declares PyYAML in that file directly (pinned by
+    ``tests/test_skip_visibility.py::TestThePyYAMLGuardsAreReachableByADeclaration``).
+    With PyYAML present the 16 guarding files report 660 passed and ZERO skips,
+    so this declaration converts nothing that currently happens — which is
+    exactly what a guard is for.
+
+    ⚠️ CHECKS BOTH COPIES, for the same reason the engine test above does: the
+    matrix ``shard.capabilities`` value reaches the ubuntu legs, and the ``||``
+    fallback is what macOS and Windows actually receive. The guards this covers
+    are platform-independent — they parse a file in the repo — so unlike
+    ``ui_driver`` there is no platform on which skipping them is honest.
+    """
+    shards = ci_yaml["jobs"]["tests"]["strategy"]["matrix"]["shard"]
+    for shard in shards:
+        declared = str(shard.get("capabilities", ""))
+        assert "yaml" in declared.split(","), (
+            f"shard {shard.get('name')!r} declares {declared!r}, which does not "
+            "include 'yaml' — every workflow-shape test in this file parses "
+            "its subject through a PyYAML guard, so on a runner where PyYAML "
+            "failed to install they would all decline silently and this job "
+            "would report green"
+        )
+
+    # The fallback literal — what macOS and Windows are actually handed.
+    #
+    # ⚠️ SCANNED THROUGH `_effective_lines`, NOT RAW `ci_text`, and that is
+    # load-bearing rather than tidiness — the same trap the engine test above
+    # records. `re.search` takes the FIRST match anywhere in the text, and this
+    # directive sits under a comment block explaining that the value is a
+    # second copy that must be kept in step. Against raw text a maintainer who
+    # edited the directive and left the old value behind in the prose would
+    # have this assertion read the COMMENT and report fine.
+    fallback = re.search(
+        r"PERSONA_REQUIRED_CAPABILITIES:.*\|\|\s*'([^']*)'",
+        "\n".join(_effective_lines(ci_text)),
+    )
+    assert fallback, (
+        "could not find the non-ubuntu fallback declaration in the env "
+        "expression — if the expression was restructured, re-point this "
+        "assertion at whatever macOS and Windows now receive rather than "
+        "deleting it"
+    )
+    assert "yaml" in fallback.group(1).split(","), (
+        f"the non-ubuntu fallback declares {fallback.group(1)!r}, which does "
+        "not include 'yaml' — so the workflow-shape guards are policed on "
+        "ubuntu only, and go dark unnoticed on macOS and Windows"
+    )
+
+
+def test_the_yaml_capability_the_workflow_declares_actually_exists() -> None:
+    """A declaration naming a capability the harness does not know is a hard
+    usage error at startup, so a typo here would take the whole suite down
+    rather than silently doing nothing.
+
+    Asserts the name resolves AND that it classifies BOTH wordings the real
+    guards write. Those two strings share no substring, so an entry covering
+    only one leaves the other spelling dark while the change reports success —
+    the same asymmetry PS-371 measured for the engine, one capability over.
+    """
+    import conftest as persona_conftest
+
+    assert "yaml" in persona_conftest.CAPABILITIES, (
+        "ci.yml declares 'yaml', which is not a known capability — every "
+        "tests job would fail at startup with a UsageError"
+    )
+    for reason in (
+        # This file's own fixtures, at :45 and :51.
+        "could not import 'yaml': No module named 'yaml'",
+        # The 8 module-level guards, and test_ps372's plain `pytest.skip()`.
+        "PyYAML is needed to parse the workflow",
+    ):
+        cap = persona_conftest.capability_for_skip(reason)
+        assert cap is not None and cap.name == "yaml", (
+            f"{reason!r} — a real guard's own wording — classifies as "
+            f"{cap.name if cap else None}, so declaring 'yaml' in ci.yml "
+            "polices that guard not at all"
+        )
+
+
 def test_ci_states_the_measured_floor_for_every_platform(ci_text) -> None:
     """A floor is the sentence the next reader trusts when deciding whether
     their change broke something, so each platform's figure must be stated —
