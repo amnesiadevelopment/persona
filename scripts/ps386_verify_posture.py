@@ -210,6 +210,22 @@ def verdict(ours: list[dict]) -> tuple[bool, list[str]]:
     """Did every slice WE build reach the posture? Returns (ok, reasons)."""
     reasons: list[str] = []
 
+    # ⛔ ZERO OF OUR SLICES JUDGED IS NOT A PASS. Every other check below is a
+    # "no offenders found" test, and over an empty list every one of them is
+    # vacuously satisfied — so a bundle whose Mach-Os are ALL third-party would
+    # print `0/0` and exit 0, which reads as success and measured nothing. That
+    # is the exact shape this ticket's own AC forbids: "a guard only ever
+    # observed passing is indistinguishable from a broken one." It is
+    # unreachable for persona today (113 files, exactly one SIGNED_CMS), and it
+    # is refused anyway, because the reason it is unreachable is a fact about
+    # the bundle rather than about this function.
+    if not ours:
+        return False, [
+            "0 slices were judged as ours — every Mach-O read carried a "
+            "third-party CMS signature. That is not a pass: the posture was "
+            "never measured on anything we build."
+        ]
+
     unreadable = [r for r in ours if r["state"] == "UNREADABLE"]
     if unreadable:
         reasons.append(

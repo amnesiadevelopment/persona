@@ -24,7 +24,7 @@ report — and one of them is counter-intuitive:**
 | `scripts/ps386_macos_harden.py` | **new.** Re-signs *our* slices with `--options runtime` and the entitlements above |
 | `scripts/ps386_verify_posture.py` | **new.** Reads the produced bytes with PS-346's own readers and gates on them |
 | `.github/workflows/release.yml` → `build-macos` | **four new steps.** The scripts are actually invoked, and the frozen-bundle smoke test now runs a second time *after* hardening |
-| `tests/test_ps386_macos_harden.py` | **new.** 36 tests; every load-bearing one proven to fail against a deliberate mutant |
+| `tests/test_ps386_macos_harden.py` | **new.** 56 tests; every load-bearing one proven to fail against a deliberate mutant |
 
 ⛔ `scripts/ps346_signing_state.py` is **untouched** — it is the control for the
 before/after reading. Verify with `git diff --name-only` if you want to be sure.
@@ -154,15 +154,57 @@ the last is the one to read carefully:
 | `THIRD_PARTY` | ❌ | a real certificate signed it; **named**, so you can see whose |
 | `UNREADABLE` | ❌ | `codesign` could not tell us — **left alone, but this is not a third-party skip** |
 
+⛔ **THE TWO TOOLS COUNT DIFFERENT THINGS, AND THE TABLE ABOVE IS IN THE
+DRY-RUN'S UNIT.** Read this before you compare any number to PS-346:
+
+| counter | unit | why |
+|---|---|---|
+| `--dry-run`'s `ADHOC` / `UNSIGNED` / `THIRD_PARTY` / `UNREADABLE` | **ITEMS** — one per file or nested bundle directory | `classify()` is called once per *path* |
+| PS-346's `ADHOC=196, UNSIGNED=28, SIGNED_CMS=1` | **ARCH SLICES** — one per architecture inside a file | `macho_slices()` returns one entry per fat-binary arch |
+
+**A universal binary is one item and two slices.** The vocabulary is shared on
+purpose — the two tools name the same four states — but **the counts are not
+interchangeable and must be translated.**
+
 ⭐ **`UNSIGNED` must not be zero, and a zero there is a defect rather than good
-news.** PS-346 measured this bundle as `ADHOC=196, UNSIGNED=28, SIGNED_CMS=1`,
-and the 28 are the compiled Python extensions
+news.** PS-346 measured this bundle as `ADHOC=196, UNSIGNED=28, SIGNED_CMS=1`
+**slices**, and the 28 are the compiled Python extensions
 (`aiohttp/_http_parser.cpython-312-darwin.so` and siblings) — ours, shipped with
 no signature, and the slices most in need of the hardened runtime. They reach
 the classifier through a **non-zero `codesign` exit** (`code object is not
 signed at all`), which is an answer rather than an error; a version of this
 script that read it as an error skipped all 28 and then failed Step 3 on them.
 **If `UNSIGNED` reads 0, stop and report it** — do not proceed to Step 2.
+
+**Translating those slices into the items you will actually see** — stated as
+arithmetic, so that a *correct* reading is never mistaken for a broken
+classifier:
+
+```
+PS-346's committed artifact:  113 Mach-O files  ->  225 arch slices
+  113 x 2 = 226 vs 225 measured  =>  exactly ONE thin file
+  and it is `node`, the lone SIGNED_CMS.
+  So:  196/2 = 98 ADHOC  +  28/2 = 14 UNSIGNED  +  1 THIRD_PARTY  =  113  ✓ exact
+```
+
+⭐ **So expect `UNSIGNED` ≈ 14 items and `ADHOC` ≈ 98 items** — roughly half of
+PS-346's slice figures, because these binaries are universal (`arm64` +
+`x86_64`, ~2 slices per file).
+
+⚠️ **If you see `UNSIGNED` ≈ 28 and `ADHOC` ≈ 196 instead, that is ALSO correct**
+— it means this build is **thin-arch**, the ratio is 1:1, and item counts equal
+slice counts. Nothing is broken; report which one you saw.
+
+⛔ **The defect is a ZERO, and only a zero.** Neither ~14 nor ~28 is the stop
+condition. ⭐ **And one command settles the unit outright, in either direction:**
+
+```bash
+find "$APP" -type f -exec sh -c 'file "$1" | grep -q Mach-O && lipo -archs "$1" 2>/dev/null' _ {} \; | sort | uniq -c
+```
+
+Two archs per line → universal, expect the ~14 reading. One arch per line →
+thin, expect the ~28 reading. **Nobody has read this bundle's `lipo -archs`
+yet**, which is why both readings are written down rather than one.
 
 ⚠️ **`UNREADABLE` is not a synonym for `THIRD_PARTY`.** Both are skipped, so the
 signing decision is the same, but an unreadable slice is one we might have been
@@ -284,9 +326,13 @@ on the ticket):
 - **Step 0:** run **at the merge-base `d300635`**, not on the branch. Generated
   plist vs signed binary — where `get-task-allow` enters
 - **Step 1:** the **four** counts from `--dry-run` (ADHOC / UNSIGNED /
-  THIRD_PARTY / UNREADABLE); baseline verifier exit. ⭐ `UNSIGNED` should be
-  ~28 — a 0 there means the classifier stopped seeing the compiled Python
-  extensions
+  THIRD_PARTY / UNREADABLE); baseline verifier exit. ⭐ These are **ITEM**
+  counts, not PS-346's slice counts — expect `UNSIGNED` ≈ **14** and `ADHOC` ≈
+  **98** if the binaries are universal, or ≈ **28** / ≈ **196** if this build is
+  thin-arch. ⛔ **Either is correct; a `0` is the defect** — it means the
+  classifier stopped seeing the compiled Python extensions. Paste the
+  `lipo -archs` histogram from Step 1 so the unit is settled rather than
+  inferred.
 - **Step 2:** exit code (and any seal/ordering complaint)
 - **Step 3:** `flags` before/after, `get-task-allow` before/after, both exits
 - **Step 4:** launched? engine spawned? if not — the log lines and the

@@ -196,9 +196,19 @@ def is_macho(path: Path) -> bool:
 # ⭐ THE VOCABULARY IS DELIBERATELY THE CONTROL'S. `read_macho_slice` in
 # `scripts/ps346_signing_state.py` reports exactly these four states, and
 # PS-346's committed tally is stated in them (`ADHOC=196, UNSIGNED=28,
-# SIGNED_CMS=1, UNREADABLE=0`). Using the same words means this script's counts
-# can be read straight against that measured baseline instead of translated —
-# and a translation step is where an off-by-one population hides.
+# SIGNED_CMS=1, UNREADABLE=0`). Using the same words means a state here and a
+# state there mean the same thing, so a population cannot silently change
+# meaning between the two tools — and a vocabulary mismatch is where an
+# off-by-one population hides.
+#
+# ⛔ THE VOCABULARY IS SHARED; THE UNIT IS NOT, AND THE COUNTS THEREFORE DO NOT
+# COMPARE DIRECTLY. `classify` is called once per PATH, so this script's tallies
+# are ITEMS (a file, or a nested bundle directory). The control's `macho_slices`
+# returns one entry per architecture, so PS-346's tallies are ARCH SLICES. One
+# universal binary is 1 item here and 2 slices there. PS-346's own artifact
+# states both units in one line — `bundle Mach-O binaries (113 files)` … `arch
+# slices: … =225` — and the reconciliation is exact: 196/2 + 28/2 + 1 = 113.
+# So an UNSIGNED of ~14 items here IS PS-346's 28 slices, not half of them.
 OURS_STATES = ("ADHOC", "UNSIGNED")
 
 
@@ -475,11 +485,12 @@ def main() -> int:
     split = ", ".join(f"{state}={ours_by_state[state]}" for state in OURS_STATES)
     print(f"\n  {len(ours)} OURS ({split}) -> WILL be re-signed")
     # ⚠️ THE SPLIT IS PRINTED, NOT JUST THE TOTAL, and it is the number to read
-    # against PS-346's committed tally (`ADHOC=196, UNSIGNED=28, SIGNED_CMS=1`).
-    # An UNSIGNED count of zero on this bundle would mean the classifier has
-    # stopped seeing the 28 compiled Python extensions — which is precisely the
-    # regression this reporting exists to make visible, and a single OURS total
-    # cannot show it.
+    # against PS-346's committed tally (`ADHOC=196, UNSIGNED=28, SIGNED_CMS=1`)
+    # — ⛔ AFTER TRANSLATING THE UNIT. Those are arch SLICES; these are ITEMS,
+    # ~2 slices per universal file, so expect ~98 / ~14 here. An UNSIGNED count
+    # of ZERO on this bundle would mean the classifier has stopped seeing the
+    # compiled Python extensions — which is precisely the regression this
+    # reporting exists to make visible, and a single OURS total cannot show it.
     print(f"  {len(theirs)} THIRD_PARTY (a real certificate) -> LEFT ALONE")
     for path, detail in theirs:
         print(f"      skip: {path.relative_to(app)}")
