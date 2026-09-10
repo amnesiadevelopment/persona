@@ -572,6 +572,29 @@ def test_the_published_set_is_not_pinned(workflow_yaml):
             assert not found, (step.get("name"), key, found)
 
 
+def test_no_run_body_carries_an_unintended_expression_delimiter(workflow_yaml):
+    """⭐ MEASURED, NOT ANTICIPATED. The first push of this workflow FAILED TO
+    PARSE, with zero jobs and no log — GitHub expands expressions in a `run:`
+    body as TEXT before any shell sees it, so a `#` comment does NOT protect
+    one, and this file's own prose about not interpolating the dispatch input
+    was written using the literal delimiters.
+
+    A workflow that never executed is exactly the artifact class this job exists
+    to eliminate, so the regression is pinned rather than remembered. Every
+    interpolation this job actually needs lives in `env:`, where the value is
+    passed rather than pasted."""
+    delimiter = "$" + "{{"
+    for step in _steps(workflow_yaml):
+        run = step.get("run")
+        if not run:
+            continue
+        assert delimiter not in run, (
+            step.get("name"),
+            "an expression delimiter in a `run:` body is expanded as text even "
+            "inside a shell comment — pass the value through `env:` instead",
+        )
+
+
 def test_the_workflow_states_its_reasoning_its_cadence_its_cost_and_the_empty_reading(
     workflow_text, workflow_yaml
 ):
