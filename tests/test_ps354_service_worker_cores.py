@@ -32,11 +32,8 @@ checked. A hardcoded 8 would satisfy the live reading above and be wrong for
 every profile whose pool entry is not 8, which is most of them.
 """
 
-import json
 import os
 import pathlib
-import shutil
-import subprocess
 import tempfile
 
 os.environ.setdefault("PERSONA_HOME", tempfile.mkdtemp())
@@ -48,7 +45,6 @@ from src.models.hardware_generation import (  # noqa: E402
 )
 from src.services.browser.device_ext import (  # noqa: E402
     CORES_MEMORY,
-    CORES_MEMORY_SALT,
     build_device_extension,
     cores_memory_for_generation,
     cores_memory_pick,
