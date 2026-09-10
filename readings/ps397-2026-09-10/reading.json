@@ -1,0 +1,587 @@
+{
+  "arms": {
+    "bare": {
+      "argv": [
+        "/usr/bin/chromium",
+        "--user-data-dir=/tmp/ps397-bare-u5gbj6x5",
+        "--headless=new",
+        "--no-sandbox",
+        "--disable-gpu",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-search-engine-choice-screen",
+        "--remote-debugging-port=0",
+        "--remote-allow-origins=*",
+        "http://127.0.0.1:39303/"
+      ],
+      "channel": 2,
+      "env_locale": null,
+      "iframe": {
+        "language": "en-US",
+        "languages": [
+          "en-US",
+          "en"
+        ]
+      },
+      "intl": "en-US",
+      "label": "bare",
+      "page": {
+        "language": "en-US",
+        "languages": [
+          "en-US",
+          "en"
+        ],
+        "own_descriptor": null,
+        "proto_getter_source": "function get languages() { [native code] }"
+      },
+      "timezone": "UTC",
+      "wire_accept_language": [
+        {
+          "accept_language": "en-US,en;q=0.9",
+          "path": "/"
+        },
+        {
+          "accept_language": "en-US,en;q=0.9",
+          "path": "/sub.js"
+        },
+        {
+          "accept_language": "en-US,en;q=0.9",
+          "path": "/sub.png"
+        },
+        {
+          "accept_language": "en-US,en;q=0.9",
+          "path": "/favicon.ico"
+        },
+        {
+          "accept_language": "en-US,en;q=0.9",
+          "path": "/worker.js"
+        }
+      ],
+      "worker": {
+        "language": "en-US",
+        "languages": [
+          "en-US",
+          "en"
+        ]
+      }
+    },
+    "bare_moved_host": {
+      "argv": [
+        "/usr/bin/chromium",
+        "--user-data-dir=/tmp/ps397-bare_moved_host-6dta45xg",
+        "--headless=new",
+        "--no-sandbox",
+        "--disable-gpu",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-search-engine-choice-screen",
+        "--remote-debugging-port=0",
+        "--remote-allow-origins=*",
+        "http://127.0.0.1:39303/"
+      ],
+      "channel": 2,
+      "env_locale": "de_DE.UTF-8",
+      "iframe": {
+        "language": "en-US",
+        "languages": [
+          "en-US",
+          "en"
+        ]
+      },
+      "intl": "en-US",
+      "label": "bare_moved_host",
+      "page": {
+        "language": "en-US",
+        "languages": [
+          "en-US",
+          "en"
+        ],
+        "own_descriptor": null,
+        "proto_getter_source": "function get languages() { [native code] }"
+      },
+      "timezone": "UTC",
+      "wire_accept_language": [
+        {
+          "accept_language": "en-US,en;q=0.9",
+          "path": "/"
+        },
+        {
+          "accept_language": "en-US,en;q=0.9",
+          "path": "/sub.js"
+        },
+        {
+          "accept_language": "en-US,en;q=0.9",
+          "path": "/sub.png"
+        },
+        {
+          "accept_language": "en-US,en;q=0.9",
+          "path": "/favicon.ico"
+        },
+        {
+          "accept_language": "en-US,en;q=0.9",
+          "path": "/worker.js"
+        }
+      ],
+      "worker": {
+        "language": "en-US",
+        "languages": [
+          "en-US",
+          "en"
+        ]
+      }
+    },
+    "persona_flags": {
+      "argv": [
+        "/usr/bin/chromium",
+        "--user-data-dir=/tmp/ps397-persona_flags-xi1lthhf",
+        "--headless=new",
+        "--no-sandbox",
+        "--disable-gpu",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-search-engine-choice-screen",
+        "--remote-debugging-port=0",
+        "--remote-allow-origins=*",
+        "--lang=en-US",
+        "--accept-lang=en-US,en",
+        "http://127.0.0.1:39303/"
+      ],
+      "channel": 2,
+      "env_locale": null,
+      "iframe": {
+        "language": "en-US",
+        "languages": [
+          "en-US",
+          "en"
+        ]
+      },
+      "intl": "en-US",
+      "label": "persona_flags",
+      "page": {
+        "language": "en-US",
+        "languages": [
+          "en-US",
+          "en"
+        ],
+        "own_descriptor": null,
+        "proto_getter_source": "function get languages() { [native code] }"
+      },
+      "timezone": "UTC",
+      "wire_accept_language": [
+        {
+          "accept_language": "en-US,en;q=0.9",
+          "path": "/"
+        },
+        {
+          "accept_language": "en-US,en;q=0.9",
+          "path": "/sub.png"
+        },
+        {
+          "accept_language": "en-US,en;q=0.9",
+          "path": "/sub.js"
+        },
+        {
+          "accept_language": "en-US,en;q=0.9",
+          "path": "/favicon.ico"
+        },
+        {
+          "accept_language": "en-US,en;q=0.9",
+          "path": "/worker.js"
+        }
+      ],
+      "worker": {
+        "language": "en-US",
+        "languages": [
+          "en-US",
+          "en"
+        ]
+      }
+    },
+    "persona_flags_pl_on_de_host": {
+      "argv": [
+        "/usr/bin/chromium",
+        "--user-data-dir=/tmp/ps397-persona_flags_pl_on_de_host-1btixkn7",
+        "--headless=new",
+        "--no-sandbox",
+        "--disable-gpu",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-search-engine-choice-screen",
+        "--remote-debugging-port=0",
+        "--remote-allow-origins=*",
+        "--lang=pl-PL",
+        "--accept-lang=pl-PL,pl",
+        "http://127.0.0.1:39303/"
+      ],
+      "channel": 2,
+      "env_locale": "de_DE.UTF-8",
+      "iframe": {
+        "language": "pl-PL",
+        "languages": [
+          "pl-PL",
+          "pl"
+        ]
+      },
+      "intl": "en-US",
+      "label": "persona_flags_pl_on_de_host",
+      "page": {
+        "language": "pl-PL",
+        "languages": [
+          "pl-PL",
+          "pl"
+        ],
+        "own_descriptor": null,
+        "proto_getter_source": "function get languages() { [native code] }"
+      },
+      "timezone": "UTC",
+      "wire_accept_language": [
+        {
+          "accept_language": "pl-PL,pl;q=0.9",
+          "path": "/"
+        },
+        {
+          "accept_language": "pl-PL,pl;q=0.9",
+          "path": "/sub.js"
+        },
+        {
+          "accept_language": "pl-PL,pl;q=0.9",
+          "path": "/sub.png"
+        },
+        {
+          "accept_language": "pl-PL,pl;q=0.9",
+          "path": "/favicon.ico"
+        },
+        {
+          "accept_language": "pl-PL,pl;q=0.9",
+          "path": "/worker.js"
+        }
+      ],
+      "worker": {
+        "language": "pl-PL",
+        "languages": [
+          "pl-PL",
+          "pl"
+        ]
+      }
+    },
+    "persona_full_layer": {
+      "argv": [
+        "/usr/bin/chromium",
+        "--user-data-dir=/tmp/ps397-persona_full_layer-xs1wgk02",
+        "--headless=new",
+        "--no-sandbox",
+        "--disable-gpu",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-search-engine-choice-screen",
+        "--remote-debugging-port=0",
+        "--remote-allow-origins=*",
+        "--lang=en-US",
+        "--accept-lang=en-US,en",
+        "--disable-extensions-except=/tmp/ps397-layer-vt2t9bgc/.persona-native-ext,/tmp/ps397-layer-vt2t9bgc/.persona-locale-ext,/tmp/ps397-layer-vt2t9bgc/.persona-voice-ext,/tmp/ps397-layer-vt2t9bgc/.persona-stealth-ext,/tmp/ps397-layer-vt2t9bgc/.persona-measuretext-ext,/tmp/ps397-layer-vt2t9bgc/.persona-audio-ext,/tmp/ps397-layer-vt2t9bgc/.persona-device-ext,/tmp/ps397-layer-vt2t9bgc/.persona-webgl-ext,/tmp/ps397-layer-vt2t9bgc/.persona-gpu-ext,/tmp/ps397-layer-vt2t9bgc/.persona-canvas-ctx-ext,/tmp/ps397-layer-vt2t9bgc/.persona-geo-ext",
+        "--load-extension=/tmp/ps397-layer-vt2t9bgc/.persona-native-ext,/tmp/ps397-layer-vt2t9bgc/.persona-locale-ext,/tmp/ps397-layer-vt2t9bgc/.persona-voice-ext,/tmp/ps397-layer-vt2t9bgc/.persona-stealth-ext,/tmp/ps397-layer-vt2t9bgc/.persona-measuretext-ext,/tmp/ps397-layer-vt2t9bgc/.persona-audio-ext,/tmp/ps397-layer-vt2t9bgc/.persona-device-ext,/tmp/ps397-layer-vt2t9bgc/.persona-webgl-ext,/tmp/ps397-layer-vt2t9bgc/.persona-gpu-ext,/tmp/ps397-layer-vt2t9bgc/.persona-canvas-ctx-ext,/tmp/ps397-layer-vt2t9bgc/.persona-geo-ext",
+        "http://127.0.0.1:39303/"
+      ],
+      "channel": 2,
+      "env_locale": null,
+      "iframe": {
+        "language": "en-US",
+        "languages": [
+          "en-US",
+          "en"
+        ]
+      },
+      "intl": "en-US",
+      "label": "persona_full_layer",
+      "page": {
+        "language": "en-US",
+        "languages": [
+          "en-US",
+          "en"
+        ],
+        "own_descriptor": null,
+        "proto_getter_source": "function get languages() { [native code] }"
+      },
+      "timezone": "UTC",
+      "wire_accept_language": [
+        {
+          "accept_language": "en-US,en;q=0.9",
+          "path": "/"
+        },
+        {
+          "accept_language": "en-US,en;q=0.9",
+          "path": "/sub.png"
+        },
+        {
+          "accept_language": "en-US,en;q=0.9",
+          "path": "/sub.js"
+        },
+        {
+          "accept_language": "en-US,en;q=0.9",
+          "path": "/favicon.ico"
+        },
+        {
+          "accept_language": "en-US,en;q=0.9",
+          "path": "/worker.js"
+        }
+      ],
+      "worker": {
+        "language": "en-US",
+        "languages": [
+          "en-US",
+          "en"
+        ]
+      }
+    },
+    "persona_full_layer_pl": {
+      "argv": [
+        "/usr/bin/chromium",
+        "--user-data-dir=/tmp/ps397-persona_full_layer_pl-70nts3zy",
+        "--headless=new",
+        "--no-sandbox",
+        "--disable-gpu",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-search-engine-choice-screen",
+        "--remote-debugging-port=0",
+        "--remote-allow-origins=*",
+        "--lang=pl-PL",
+        "--accept-lang=pl-PL,pl",
+        "--disable-extensions-except=/tmp/ps397-layer-vt2t9bgc/pl/.persona-native-ext,/tmp/ps397-layer-vt2t9bgc/pl/.persona-locale-ext,/tmp/ps397-layer-vt2t9bgc/pl/.persona-voice-ext,/tmp/ps397-layer-vt2t9bgc/pl/.persona-stealth-ext,/tmp/ps397-layer-vt2t9bgc/pl/.persona-measuretext-ext,/tmp/ps397-layer-vt2t9bgc/pl/.persona-audio-ext,/tmp/ps397-layer-vt2t9bgc/pl/.persona-device-ext,/tmp/ps397-layer-vt2t9bgc/pl/.persona-webgl-ext,/tmp/ps397-layer-vt2t9bgc/pl/.persona-gpu-ext,/tmp/ps397-layer-vt2t9bgc/pl/.persona-canvas-ctx-ext,/tmp/ps397-layer-vt2t9bgc/pl/.persona-geo-ext",
+        "--load-extension=/tmp/ps397-layer-vt2t9bgc/pl/.persona-native-ext,/tmp/ps397-layer-vt2t9bgc/pl/.persona-locale-ext,/tmp/ps397-layer-vt2t9bgc/pl/.persona-voice-ext,/tmp/ps397-layer-vt2t9bgc/pl/.persona-stealth-ext,/tmp/ps397-layer-vt2t9bgc/pl/.persona-measuretext-ext,/tmp/ps397-layer-vt2t9bgc/pl/.persona-audio-ext,/tmp/ps397-layer-vt2t9bgc/pl/.persona-device-ext,/tmp/ps397-layer-vt2t9bgc/pl/.persona-webgl-ext,/tmp/ps397-layer-vt2t9bgc/pl/.persona-gpu-ext,/tmp/ps397-layer-vt2t9bgc/pl/.persona-canvas-ctx-ext,/tmp/ps397-layer-vt2t9bgc/pl/.persona-geo-ext",
+        "http://127.0.0.1:39303/"
+      ],
+      "channel": 2,
+      "env_locale": null,
+      "iframe": {
+        "language": "pl-PL",
+        "languages": [
+          "pl-PL",
+          "pl"
+        ]
+      },
+      "intl": "pl-PL",
+      "label": "persona_full_layer_pl",
+      "page": {
+        "language": "pl-PL",
+        "languages": [
+          "pl-PL",
+          "pl"
+        ],
+        "own_descriptor": null,
+        "proto_getter_source": "function get languages() { [native code] }"
+      },
+      "timezone": "UTC",
+      "wire_accept_language": [
+        {
+          "accept_language": "pl-PL,pl;q=0.9",
+          "path": "/"
+        },
+        {
+          "accept_language": "pl-PL,pl;q=0.9",
+          "path": "/sub.png"
+        },
+        {
+          "accept_language": "pl-PL,pl;q=0.9",
+          "path": "/sub.js"
+        },
+        {
+          "accept_language": "pl-PL,pl;q=0.9",
+          "path": "/favicon.ico"
+        },
+        {
+          "accept_language": "pl-PL,pl;q=0.9",
+          "path": "/worker.js"
+        }
+      ],
+      "worker": {
+        "language": "pl-PL",
+        "languages": [
+          "pl-PL",
+          "pl"
+        ]
+      }
+    },
+    "reveal_control": {
+      "argv": [
+        "/usr/bin/chromium",
+        "--user-data-dir=/tmp/ps397-reveal_control-marlv9hu",
+        "--headless=new",
+        "--no-sandbox",
+        "--disable-gpu",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-search-engine-choice-screen",
+        "--remote-debugging-port=0",
+        "--remote-allow-origins=*",
+        "--lang=en-US",
+        "--accept-lang=en-US,en",
+        "--disable-extensions-except=/tmp/ps397-layer-vt2t9bgc/.ps397-reveal",
+        "--load-extension=/tmp/ps397-layer-vt2t9bgc/.ps397-reveal",
+        "http://127.0.0.1:39303/"
+      ],
+      "channel": 2,
+      "env_locale": null,
+      "iframe": {
+        "language": "en-US",
+        "languages": [
+          "en-US",
+          "en"
+        ]
+      },
+      "intl": "en-US",
+      "label": "reveal_control",
+      "page": {
+        "language": "en-US",
+        "languages": [
+          "zz-ZZ",
+          "zz"
+        ],
+        "own_descriptor": null,
+        "proto_getter_source": "function () { return Object.freeze(['zz-ZZ', 'zz']); }"
+      },
+      "timezone": "UTC",
+      "wire_accept_language": [
+        {
+          "accept_language": "en-US,en;q=0.9",
+          "path": "/"
+        },
+        {
+          "accept_language": "en-US,en;q=0.9",
+          "path": "/sub.js"
+        },
+        {
+          "accept_language": "en-US,en;q=0.9",
+          "path": "/sub.png"
+        },
+        {
+          "accept_language": "en-US,en;q=0.9",
+          "path": "/favicon.ico"
+        },
+        {
+          "accept_language": "en-US,en;q=0.9",
+          "path": "/worker.js"
+        }
+      ],
+      "worker": {
+        "language": "en-US",
+        "languages": [
+          "en-US",
+          "en"
+        ]
+      }
+    }
+  },
+  "binary": "/usr/bin/chromium",
+  "binary_version": "Chromium 152.0.7977.82 built on Debian GNU/Linux 13 (trixie)",
+  "bound": "STOCK chromium is the instrument. It is legitimate for THIS question only because no patch in engine/patches/fingerprint/ touches lang/locale/accept \u2014 zero hits across all sixteen. No row here may be read as a statement about persona's engine patches.",
+  "locale_requested": "en-US",
+  "persona_layer_extension_count": 11,
+  "persona_locale_flags": [
+    "--lang=en-US",
+    "--accept-lang=en-US,en"
+  ],
+  "taken_at": "2026-09-10T15:39:16Z",
+  "verdict": {
+    "bare_on_de_host_languages": [
+      "en-US",
+      "en"
+    ],
+    "bare_page_languages": [
+      "en-US",
+      "en"
+    ],
+    "bare_vs_persona_disagree": false,
+    "coherence": {
+      "accept_language_wire": [
+        "pl-PL,pl;q=0.9"
+      ],
+      "declared_locale": "pl-PL",
+      "iframe_languages": [
+        "pl-PL",
+        "pl"
+      ],
+      "intl_matches_declared": true,
+      "intl_resolved_locale": "pl-PL",
+      "intl_timezone": "UTC",
+      "language_matches_declared": true,
+      "languages_matches_declared": true,
+      "navigator_language": "pl-PL",
+      "navigator_languages": [
+        "pl-PL",
+        "pl"
+      ],
+      "own_descriptor": null,
+      "proto_getter_source": "function get languages() { [native code] }",
+      "realms_agree": true,
+      "wire_matches_declared": true,
+      "worker_languages": [
+        "pl-PL",
+        "pl"
+      ]
+    },
+    "coherence_measured": true,
+    "control_bare_tracks_host": false,
+    "control_bare_tracks_host_note": "false here because only C/POSIX locales are generated in this container, so de_DE.UTF-8 does not exist to be tracked. This leg is NOT required for the knob proof below.",
+    "control_flags_override_host": true,
+    "full_layer_iframe_languages": [
+      "en-US",
+      "en"
+    ],
+    "full_layer_intl": "en-US",
+    "full_layer_measured": true,
+    "full_layer_navigator_language": "en-US",
+    "full_layer_own_descriptor": null,
+    "full_layer_page_languages": [
+      "en-US",
+      "en"
+    ],
+    "full_layer_proto_getter_source": "function get languages() { [native code] }",
+    "full_layer_realms_agree": true,
+    "full_layer_vs_bare_disagree": false,
+    "full_layer_wire_accept_language": [
+      "en-US,en;q=0.9"
+    ],
+    "full_layer_worker_languages": [
+      "en-US",
+      "en"
+    ],
+    "intl_locale": "en-US",
+    "knob_proved_live": true,
+    "measurable": true,
+    "navigator_language": "en-US",
+    "page_own_descriptor": null,
+    "persona_iframe_languages": [
+      "en-US",
+      "en"
+    ],
+    "persona_page_languages": [
+      "en-US",
+      "en"
+    ],
+    "persona_pl_flags_on_de_host_languages": [
+      "pl-PL",
+      "pl"
+    ],
+    "persona_worker_languages": [
+      "en-US",
+      "en"
+    ],
+    "probe_proved_live": true,
+    "proto_getter_source": "function get languages() { [native code] }",
+    "realms_agree": true,
+    "reveal_languages": [
+      "zz-ZZ",
+      "zz"
+    ],
+    "reveal_proto_getter_source": "function () { return Object.freeze(['zz-ZZ', 'zz']); }",
+    "reveal_reproduces_worker_split": true,
+    "reveal_worker_languages": [
+      "en-US",
+      "en"
+    ],
+    "wire_accept_language_values": [
+      "en-US,en;q=0.9"
+    ]
+  }
+}
