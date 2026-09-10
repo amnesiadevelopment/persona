@@ -463,6 +463,40 @@ _SCRATCH_PREFIX = "pb-ci-"
 _ENGINE_DIR_ENV = "PERSONA_ENGINE_DIR"
 
 
+#: WHERE THE SCRATCH HOME IS CREATED, and the base is CHOSEN rather than
+#: accepted — the same rule `behaviour.default_scratch_home` states and for the
+#: same measured reason.
+#:
+#: ⛔ `tempfile.mkdtemp()` ALONE HONOURS TMPDIR, AND THE BASES REAL RUNNERS HAND
+#: IT ARE LONG. Measured on this branch's own CI, macos-latest:
+#:
+#:     /var/folders/d8/hvxvltxn0fl4rmnd52sncbth0000gn/T/pb-ci-fvhc6jzr
+#:         -> 63 bytes, budget -28   (the names need 5)
+#:
+#: i.e. the prefix was already short enough and the BASE spent the whole budget
+#: anyway. Shortening the prefix further cannot fix that — 53 of those bytes are
+#: macOS's, before this script contributes anything. So the base is picked the
+#: way `behaviour.py` picks it: shortest writable candidate first, `/tmp` asked
+#: for rather than assumed (a hardened runner can have neither), and the result
+#: still VERIFIED by `_assert_name_budget` rather than trusted.
+#:
+#: ⚠️ THE VERIFICATION IS NOT REDUNDANT WITH THE CHOICE. Choosing the shortest
+#: base makes the common runner work; measuring the result is what turns a
+#: runner where even that is too long into a sentence naming the cure instead
+#: of a 90-second wait for a tree that cannot appear.
+def _scratch_base() -> "str | None":
+    """The shortest writable temporary base, or None to let mkdtemp decide."""
+    candidates = [tempfile.gettempdir()]
+    if os.name == "posix":
+        candidates.append("/tmp")
+
+    bases = sorted(
+        {c for c in candidates if os.path.isdir(c) and os.access(c, os.W_OK)},
+        key=len,
+    )
+    return bases[0] if bases else None
+
+
 def _assert_name_budget(home: str) -> "str | None":
     """Refuse a scratch home no chromium profile can launch under.
 
@@ -545,7 +579,7 @@ def main() -> int:
         )
         return 2
 
-    home = tempfile.mkdtemp(prefix=_SCRATCH_PREFIX)
+    home = tempfile.mkdtemp(prefix=_SCRATCH_PREFIX, dir=_scratch_base())
 
     # ⛔ BEFORE ANYTHING LAUNCHES. A home that is too long for the chromium
     # profile names produces a FATAL several seconds into a launch, which every
