@@ -2140,10 +2140,20 @@ def _falsify_no_process_survives_a_degraded_session(ctx: Context) -> str:
     try:
         stopped = _stop_group_or_refuse(pgid)
 
-        # The defect, exactly: the one pid we hold, escalated, and nothing
-        # else. SIGKILL is used on the held pid because SIGTERM to a STOPPED
-        # process is merely queued — it would leave the wrapper alive and make
-        # this a test of SIGSTOP rather than of the pre-PS-192 shape.
+        # The defect, exactly: the one pid we hold, and nothing else.
+        #
+        # ⚠️ SIGKILL DIRECTLY, WITHOUT THE SIGTERM SECTION 8's FALSIFICATION
+        # SENDS FIRST, and the divergence is deliberate rather than an
+        # oversight: SIGTERM TO A STOPPED PROCESS IS QUEUED, NOT DELIVERED —
+        # the kernel holds it until the process is continued — so the polite
+        # signal would do nothing here and the `wait()` after it would burn its
+        # whole timeout. Sending it anyway would make the arm slower and would
+        # make this a test of SIGSTOP's semantics rather than of the
+        # pre-PS-192 shape. SIGKILL is the leg that actually removes the
+        # wrapper on both arms, so it is the whole escalation on this one.
+        # Measured (`readings/ps388-2026-09-10/wait_isolation.txt`): after a
+        # SIGTERM to a stopped group, `wait()` = 10.00s; after the SIGKILL,
+        # 0.00s.
         with contextlib.suppress(Exception):
             os.kill(proc.pid, getattr(signal, "SIGKILL", 9))
         with contextlib.suppress(Exception):
