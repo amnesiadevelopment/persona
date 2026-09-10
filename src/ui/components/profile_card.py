@@ -73,22 +73,6 @@ def _indicator_box(content: ft.Control, border: bool = True) -> ft.Container:
     )
 
 
-def _proxy_age_label(proxy: Proxy, state: str, now: float) -> str:
-    """Human 'when was this last checked' phrase for the card's meta line.
-
-    Deliberately NOT used in the indicator's tooltip: that string is an
-    exact-equality contract in test_indicator_click_checks_proxy, so the age
-    rides the meta line instead of being concatenated into it.
-    """
-    if state == "failed":
-        if proxy.checked_at:
-            return f"check failed {humanize_since(proxy.checked_at, now)}"
-        return "check failed"
-    if state == "unverified":
-        return "not checked yet"
-    return f"checked {humanize_since(proxy.checked_at, now)}"
-
-
 def _proxy_indicator(
     proxy: Proxy | None,
     on_check_proxy: Callable[[str], None] | None,
@@ -99,17 +83,18 @@ def _proxy_indicator(
 
     - no proxy        -> a 'direct' box (not clickable)
     - checking        -> a spinner
-    - checked ok      -> the country flag (click to re-check)
-    - stale           -> the country code, dimmed, NOT a flag (click to re-check)
+    - checked ok      -> the country flag (click to re-check + refresh the IP)
+    - stale           -> STILL the country flag (last-known); click to re-check
     - check failed    -> an ✕ (click to re-check)
     - not checked yet -> a dot placeholder (click to check)
 
-    The flag is deliberately not drawn once the check is older than
-    PROXY_STALE_AFTER_S: the operator launches from this row, and a rotating
-    exit moves underneath a stored country code with no event to tell us. The
-    age itself is carried on the card's meta line (see build_profile_card), so
-    the indicator never asserts a country without its provenance sitting beside
-    it. Reading a timestamp is the whole mechanism — nothing here re-checks.
+    The flag is drawn from the last successful check's country regardless of its
+    age: the operator wants the exit country visible the moment persona opens,
+    not a bare code. The freshness signal lives on the meta line as the exit IP
+    (see build_profile_card) and is refreshed by clicking the flag (re-check) or
+    the rotate control beneath it — so the flag is a last-known label, not a
+    claim about the present. Reading a stored value is the whole mechanism —
+    nothing here re-checks.
     """
     if proxy is None:
         return _indicator_box(
@@ -131,29 +116,20 @@ def _proxy_indicator(
             ft.Text("✕", size=14, color=COLORS["error"], font_family=MONO)
         )
     else:
+        # The flag is drawn from the last successful check's country whether or
+        # not that check is fresh: the operator wants to see the exit's country
+        # the moment persona opens, not a bare code. Freshness is carried by the
+        # exit IP on the meta line and refreshed by the check/rotate controls,
+        # so the flag is a last-known label rather than a claim about right-now.
         path = (
             flag_path(proxy.country_code)
-            if state == "verified" and proxy.country_code
+            if state in ("verified", "stale") and proxy.country_code
             else None
         )
         if path:
             inner = ft.Image(src=path, width=_IND_W, height=_IND_H, border_radius=2)
-        elif state == "stale" and proxy.country_code:
-            # Distinct from the flag on purpose: the country is what we last
-            # saw, not what we know now, so it is reported as text-with-an-age
-            # rather than drawn as the confident graphic.
-            inner = _indicator_box(
-                ft.Text(
-                    proxy.country_code.strip().lower(),
-                    size=11,
-                    color=COLORS["text_dim"],
-                    font_family=MONO,
-                    italic=True,
-                )
-            )
         else:
-            # has a proxy but no successful check yet (or a stale check with no
-            # country on record)
+            # has a proxy but no successful check on record yet
             inner = _indicator_box(
                 ft.Text("·", size=14, color=COLORS["text_dim"], font_family=MONO)
             )
@@ -169,6 +145,29 @@ def _proxy_indicator(
         # The action label is a stable, asserted contract; the age rides the
         # meta line instead of being concatenated in here.
         tooltip="Check this profile's proxy",
+    )
+
+
+def _rotate_button(name: str, on_rotate: Callable[[str], None]) -> ft.Control:
+    """The small rotate control under the flag: pull a fresh exit IP in place.
+
+    A rotating residential exit changes its address on a new session token or a
+    provider rotate endpoint; this fires that (app._rotate_proxy) so the
+    operator does not have to open the network page to do it. The exit IP on the
+    meta line changing is the confirmation the rotation took effect. Pure render
+    — it wires the click and performs no IO itself.
+    """
+    return ft.Container(
+        width=_IND_W,
+        height=16,
+        border_radius=2,
+        alignment=ft.Alignment(0, 0),
+        on_click=lambda _, n=name: on_rotate(n),
+        ink=True,
+        tooltip="Rotate this profile's exit IP",
+        content=ft.Icon(
+            ft.Icons.REFRESH, size=13, color=COLORS["text_dim"]
+        ),
     )
 
 
@@ -216,6 +215,9 @@ def build_profile_card(
     on_select: Callable[[str], None] | None = None,
     proxy: Proxy | None = None,
     on_check_proxy: Callable[[str], None] | None = None,
+    on_rotate: Callable[[str], None] | None = None,
+    ip_color: str | None = None,
+    ip_sink: Callable[[str, "ft.Text"], None] | None = None,
     proxy_checking: bool = False,
     on_notes_change: Callable[[str, str], None] | None = None,
     cdp_channel_open: bool = False,
@@ -238,6 +240,17 @@ def build_profile_card(
     # caller's signature is untouched and no re-check is implied by a redraw.
     now = time.time()
     indicator = _proxy_indicator(proxy, on_check_proxy, proxy_checking, now)
+    # A rotate control sits directly under the flag so the operator can pull a
+    # fresh exit IP without opening the network page; the IP on the meta line
+    # then changes in place. Only shown for a proxied profile with a rotate
+    # handler wired — a direct profile has nothing to rotate.
+    if proxy is not None and on_rotate is not None:
+        indicator = ft.Column(
+            spacing=2,
+            alignment=ft.MainAxisAlignment.CENTER,
+            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+            controls=[indicator, _rotate_button(proxy.name, on_rotate)],
+        )
 
     if is_running:
         border_color = COLORS["accent"]
@@ -251,13 +264,33 @@ def build_profile_card(
     # A running profile is already shown by the accent border and the stop
     # button; a "· running" suffix here would be redundant.
     meta = f"{os_label} · {proxy_label}"
-    if proxy is not None:
-        # The age rides the meta line, so the operator reads it while
-        # scanning. Same phrasing as the network page — one vocabulary for
-        # one fact.
-        meta += (
-            f" · {_proxy_age_label(proxy, proxy_indicator_state(proxy, now), now)}"
+    meta_color = COLORS["accent"] if is_running else COLORS["text_sub"]
+    # The exit IP is drawn as its OWN Text so a check/rotate can light just the
+    # digits — green on check, blue on rotate — which app.py then fades back to
+    # the resting grey. It replaces "checked Nd ago" (that provenance lives on
+    # the network page) and is never written to the disk-backed log, so no
+    # timestamped IP history is created. The colour is decided by the caller
+    # (ip_color) so an in-progress fade survives a card rebuild; the control is
+    # handed up (ip_sink) so the fade can drive whichever instance is live.
+    if proxy is not None and proxy.last_ip:
+        ip_text = ft.Text(
+            proxy.last_ip,
+            size=11,
+            color=ip_color or meta_color,
+            font_family=MONO,
         )
+        if ip_sink is not None:
+            ip_sink(proxy.name, ip_text)
+        meta_cell: ft.Control = ft.Row(
+            spacing=0,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            controls=[
+                ft.Text(f"{meta} · ", size=11, color=meta_color, font_family=MONO),
+                ip_text,
+            ],
+        )
+    else:
+        meta_cell = ft.Text(meta, size=11, color=meta_color, font_family=MONO)
 
     left_block = ft.Row(
         spacing=14,
@@ -281,15 +314,7 @@ def build_profile_card(
                         spacing=8,
                         vertical_alignment=ft.CrossAxisAlignment.CENTER,
                         controls=[
-                            ft.Text(
-                                meta,
-                                size=11,
-                                color=(
-                                    COLORS["accent"] if is_running
-                                    else COLORS["text_sub"]
-                                ),
-                                font_family=MONO,
-                            ),
+                            meta_cell,
                             # Gated on is_running as well as on the captured
                             # fact: a stopped profile renders exactly as it did
                             # before this indicator existed. The two conditions

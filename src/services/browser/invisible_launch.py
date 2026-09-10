@@ -3527,10 +3527,45 @@ def _launch_and_watch(cfg, profile_dir, emit, _finish, stop_event, in_thread):
 
     # A DBus-valid, per-profile-unique remoting name so multiple profiles open
     # at once (see _remoting_name). It doubles as the Wayland app_id for the
-    # taskbar icon. Set in this child's own environment — forks have separate
-    # memory, so this doesn't race with other profiles' children.
+    # taskbar icon. Set in this child's own environment: forks have separate
+    # memory, so this doesn't race with other profiles' children (the same
+    # reasoning the environ scrub in `_child` cites, and now the same guard).
+    #
+    # FORK PATH ONLY, and the guard is the whole point — the fifth and last of
+    # this seam's process-global mutations to carry it (see the AST gate in
+    # tests/test_browser_process_global_guards.py, which derives that set
+    # rather than remembering it). When `stop_event` is set we are a THREAD of
+    # the manager process — Windows/macOS, where re-exec can't work, and Linux
+    # under `in_process=True` (verify/baseline.py's recorder) — and there is no
+    # child environment: `os.environ` IS persona's own.
+    #
+    # ⛔ PS-360 MEASURED THREE CONSEQUENCES THERE, and the third is why this is
+    # guarded rather than merely tidied. The value is on no scrub list
+    # (`grep -c MOZ_ env_policy.py` -> 0) and nothing ever clears it, so
+    # (1) it outlives the session in persona's own environ, and (2) a later
+    # session whose own write does not fire — an unnamed profile — starts its
+    # engine under the PREVIOUS profile's identity. Worst: (3) two CONCURRENT
+    # thread-path sessions both reach their engine holding the last writer's
+    # name, so on that path this line produces the very collision the
+    # per-profile-unique name exists to prevent.
+    #
+    # ⚠️ SET-AND-RESTORE WAS CONSIDERED AND REFUSED, not overlooked. It is the
+    # shape env_policy.neutralise_vendored_credentials already argues against
+    # for a sibling case ("a global mutation with a race window visible to
+    # every other thread and every open profile, whose `finally` has to survive
+    # an exception on a thread nobody joins") — and consequence (3) above is
+    # that race observed rather than predicted. A `finally` makes it strictly
+    # worse: one session's restore clears a concurrent session's live value.
+    #
+    # THE COST IS STATED: on the thread path the Wayland taskbar icon is not
+    # set by this variable. That is a recorded absence, not a guarantee that
+    # silently doesn't hold — and it is not a regression in behaviour that ever
+    # worked, since the value racing to a colliding name never delivered it.
+    # `--name` below is passed as a launch ARGUMENT rather than through
+    # process-global state, so the X11 WM_CLASS half is unaffected on every
+    # path; the engine seam exposes no `env=` for the Wayland half to use.
     name = cfg.get("profile_name", "")
-    if name and _platform.IS_LINUX:
+    if name and not in_thread and _platform.IS_LINUX:
         os.environ["MOZ_APP_REMOTINGNAME"] = _remoting_name(name)
 
     try:
@@ -3643,6 +3678,14 @@ def _launch_and_watch(cfg, profile_dir, emit, _finish, stop_event, in_thread):
         # --name sets the X11 instance (the WM_CLASS labwc matches for the icon);
         # MOZ_APP_REMOTINGNAME (set above) is the Wayland app_id. Keep both so
         # the taskbar icon matches the .desktop StartupWMClass on either backend.
+        #
+        # ⚠️ DELIBERATELY NOT `not in_thread`-GUARDED, unlike the environ write
+        # above, and the difference is the whole reason one is guarded and the
+        # other is not: this is a per-launch ARGUMENT handed to the engine, so
+        # it reaches only this session's browser and mutates nothing global.
+        # The X11 half therefore still works on the thread path; only the
+        # Wayland app_id, which has no channel but the environment, is absent
+        # there (PS-360).
         extra_args.append(f"--name={_remoting_name(name)}")
     if profile_dir:
         # MUST stay the LAST argument. Playwright hardcodes an "about:blank"
