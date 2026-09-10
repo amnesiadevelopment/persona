@@ -1,0 +1,26 @@
+# PS-408 — lines our patches ADD that UNMODIFIED upstream Chromium already writes.
+#
+# A claim is only worth anything if finding it in a tree licenses the conclusion
+# "this patch is applied". A line upstream writes on its own licenses nothing:
+# it holds against a perfectly clean control, and on the absence gate that means
+# a build fails for a reason that is not true. Run 34513197109 failed exactly
+# that way, on ONE claim out of sixteen.
+#
+# ⛔ THIS IS NOT AN ALLOWLIST OF PATCHES. Each entry drops ONE non-discriminating
+# LINE; every other claim the same patch makes stays fully load-bearing.
+#
+# ⭐ REGENERATE, DO NOT HAND-EDIT:
+#     scripts/ps408_upstream_claim_sweep.sh
+# It fetches every file our patches touch at the tag in CURRENT_TAG.txt and
+# tests every `added` claim against the real upstream source. Re-run it after a
+# patch rebase: a line that was distinctive at one tag can become upstream's at
+# the next, and the sweep is the only thing that would say so.
+#
+# Measured at ungoogled tag 152.0.7977.75-1 over all 16 patches: exactly ONE.
+# Format: one literal line per entry, leading/trailing whitespace stripped.
+
+# 014-client-rects.patch — ui/gfx/geometry/quad_f.cc
+# Upstream writes this at quad_f.cc:171 inside QuadF::IntersectsRect, a
+# separating-axis test unrelated to our QuadF::Offset. Same file, same
+# pre-existing Extents() API, different function.
+const auto [min, max] = Extents();
