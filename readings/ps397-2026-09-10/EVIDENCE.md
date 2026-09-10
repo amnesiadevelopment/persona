@@ -103,6 +103,17 @@ dirs, report = build_chromium_layer(d, 12345, os_type="windows", include_geo=Tru
 # 11 extension dirs; every .js and .json under them scanned
 ```
 
+⚠️ **CORRECTION, added on review — that census covered 11 of the 13 extensions
+`spawn_browser` builds, not all of them.** `build_chromium_layer` is a DESKTOP
+checker tier and excludes `build_search_extension` and `build_mobile_extension`
+by its own stated decision. The finding is unchanged (both were re-scanned and
+neither defines `languages`), but the census as originally run did not cover
+them, and the regression fence that borrowed the same harness inherited the same
+hole — a worker-realm `G.navigator` override planted in `mobile_ext` was NOT
+seen. `tests/test_ps397_languages_native.py` now scans the product's own set and
+derives its completeness oracle BY AST from `spawn_browser`, so the coverage
+claim is checked rather than asserted. See §6 bound 6.
+
 Result — the **only** locale-family hits in the entire built layer:
 
 | file | keyword | count |
@@ -113,6 +124,10 @@ Result — the **only** locale-family hits in the entire built layer:
 Both are `voice_ext` *reading* `navigator.language` to pick a matching speech
 voice, and an `Intl.DisplayNames({type:'language'})` call. **Neither defines
 `languages`, and neither writes to any navigator property.**
+
+Re-scanned on review across `search_ext` (manifest only, emits no `.js`) and
+**both** arms of `mobile_ext` (Android and iOS emit different scripts): **zero
+additional hits.** The census table above is unchanged by the widening.
 
 `locale_ext` — the extension whose entire job is the locale — pins **Intl, Date
 and Number only**, and says so in its own docstring: *"fingerprint-chromium
@@ -328,6 +343,20 @@ nothing observable.** That is the cost the ticket asks to avoid.
    locale mechanism has no headless-conditional path in upstream Chromium, and
    the same waiver is applied **identically to every arm**, so it cannot author
    a *difference* between them — and a difference is the entire subject.
+6. ⚠️ **Every arm ran a DESKTOP profile, so no row here speaks to a mobile
+   profile's layer.** A mobile profile is a genuinely different extension set —
+   `process.py`'s `spawn_browser` builds `mobile_ext` **in place of**
+   `device_ext` for one — and none of the seven arms launched with it. The §1
+   census *was* widened on review to scan both arms of `mobile_ext`'s built
+   bytes (zero hits), so the **JS-override half** of the finding now covers the
+   mobile layer; the **live-reading half** does not. If `navigator.languages`
+   is ever questioned on a mobile profile, §2 and §4 must be re-taken there —
+   the extension census alone does not answer it. Recorded because the
+   regression fence originally inherited this exact blind spot silently, and a
+   bound that is not written down is one the next reader has to rediscover.
+7. **`search_ext` is scanned but emits no `.js`** — it is a manifest-only
+   settings override. It is in the scanned set anyway, because "it cannot carry
+   an override" is precisely the reasoning that was wrong about `mobile_ext`.
 
 ---
 
