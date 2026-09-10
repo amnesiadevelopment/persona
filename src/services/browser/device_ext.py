@@ -655,37 +655,256 @@ __SCREEN_LEAF_CLOAK__
     // devicePixelRatio must agree with the spoofed screen. The host's real DPR
     // leaking through makes scanners read screen.width * dpr = a resolution no
     // monitor has. Pin DPR (1 Windows / 2 Retina) and answer the matchMedia
-    // dppx / device-width / device-height probes consistently.
+    // resolution / device-pixel-ratio / device-width / device-height probes
+    // consistently.
+    //
+    // ⛔ THIS IS A PARSER, NOT A PATTERN MATCH, AND THE DIFFERENCE IS THE WHOLE
+    // POINT. The previous form substring-tested the query
+    // (`/resolution|dppx|device-pixel-ratio/.test(q)`) and then overwrote the
+    // WHOLE result. That does not implement a subset of the media query
+    // language — it ASSERTS CONTRADICTIONS IN IT. Measured on the built
+    // extension at DPR 1, every one of these answered `true` at once:
+    //
+    //     (resolution: 1dppx)                                   true
+    //     not all and (resolution: 1dppx)                        true   <- Q and NOT-Q
+    //     print and (resolution: 1dppx)                          true   <- in a screen realm
+    //     (min-resolution: 1dppx) and (max-resolution: 0.5dppx)  true   <- a contradiction
+    //     (resolution: 1dppx) and (min-width: 999999px)          true
+    //
+    // while the unit gap that prompted the work — `(resolution: 96dpi)` false
+    // beside `(resolution: 1dppx)` true — was only the mildest symptom of the
+    // same cause. Widening the PATTERN fixes the values it got wrong; only
+    // PARSING fixes the fact that it answered a question it never read.
+    //
+    // ⭐ THE FALLBACK IS THE LOAD-BEARING PART: anything this parser does not
+    // fully understand is NOT overridden, so an unrecognised query degrades to
+    // the engine's own honest answer instead of a fabricated one. Every
+    // non-resolution feature and the media type are DELEGATED to the real
+    // matchMedia rather than guessed at.
     try {
       def(G, 'devicePixelRatio', DPR);
       var mm = G.matchMedia;
       if (mm) {
-        var _mqDim = function (q, feature, target) {
-          var re = new RegExp('(min-|max-)?' + feature + '\\s*:\\s*(\\d+(?:\\.\\d+)?)\\s*px', 'i');
-          var m = q.match(re);
+        // A resolution literal in any of its equivalent spellings. `x` is the
+        // unitless alias and IS valid (Chromium 152.0.7977.82: `(resolution:
+        // 1x)` answers true at dpr 1, and serializes back as `(resolution:
+        // 1x)`), which is why it cannot be treated as a bare number.
+        var RESU = { dppx: 1, x: 1, dpi: 1 / 96, dpcm: 2.54 / 96 };
+        // ⚠️ dpcm COMPARES OVER A BAND WHERE dpi AND dppx COMPARE EXACTLY, and
+        // this asymmetry is MEASURED, not derived from Blink's source. At dpr 1
+        // on 152.0.7977.82: 37.607dpcm..37.982dpcm answer TRUE while 37.605 and
+        // 37.985 answer FALSE (a half-width of ~0.00496 dppx), yet 96.001dpi
+        // and 1.0001dppx both answer FALSE. Comparing dpcm exactly would make
+        // `(resolution: 37.795dpcm)` disagree with `(resolution: 96dpi)` — i.e.
+        // it would introduce a NEW cross-unit contradiction of exactly the kind
+        // this code exists to remove. The tolerance is relative so it scales
+        // with a Retina DPR.
+        var RESTOL = { dpcm: 0.005 };
+        // "96dpi" / "1.5dppx" / "+1e0dppx" / "2x" -> { dppx, unit }, else null.
+        var _resVal = function (s) {
+          var m = String(s).trim().match(
+            /^([+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)(dppx|dpi|dpcm|x)$/i);
           if (!m) return null;
-          var kind = (m[1] || '').toLowerCase(), n = parseFloat(m[2]);
-          if (kind === 'min-') return target >= n;
-          if (kind === 'max-') return target <= n;
-          return target === n;
+          var u = m[2].toLowerCase(), f = RESU[u];
+          if (f === undefined) return null;
+          var n = parseFloat(m[1]);
+          if (!isFinite(n)) return null;
+          return { dppx: n * f, unit: u, neg: n < 0 };
         };
-        // Match a resolution/device-pixel-ratio query against our pinned DPR.
-        var _dprRe = new RegExp('(^|[^\\d.])' + DPR + '(\\.0+)?\\s*dppx', 'i');
-        var _dprRatioRe = new RegExp('device-pixel-ratio\\s*:\\s*' + DPR + '(\\.0+)?\\s*\\)', 'i');
+        // Compare the pinned DPR against a parsed literal. op: 'eq'|'min'|'max'.
+        var _resCmp = function (v, op) {
+          var tol = (RESTOL[v.unit] || 0) * DPR;
+          if (op === 'min') return DPR >= v.dppx - tol;
+          if (op === 'max') return DPR <= v.dppx + tol;
+          return Math.abs(DPR - v.dppx) <= tol;
+        };
+        // A px literal for device-width / device-height.
+        var _pxVal = function (s) {
+          var m = String(s).trim().match(/^([+-]?(?:\d+\.?\d*|\.\d+))px$/i);
+          return m ? parseFloat(m[1]) : null;
+        };
+        // Evaluate ONE parenthesised feature. Returns true/false when this code
+        // owns the answer, the string 'invalid' when the feature is malformed
+        // (which makes the whole media query false), or null for "not mine" —
+        // and null is what sends it to the engine untouched.
+        var _feat = function (text) {
+          var body = text.replace(/^\(/, '').replace(/\)$/, '').trim();
+          if (!body) return null;
+          // MQ4 range form, one-sided: (resolution >= 0.5dppx). Chromium 152
+          // supports it (measured true), so leaving it unparsed would delegate
+          // it to the engine and leak the HOST's dpr.
+          var r1 = body.match(/^([a-z-]+)\s*(<=|>=|=|<|>)\s*(\S+)$/i);
+          if (r1 && /^(-webkit-)?(resolution|device-pixel-ratio)$/i.test(r1[1])) {
+            var rv = _resVal(r1[3]);
+            if (!rv && /device-pixel-ratio$/i.test(r1[1])) {
+              rv = _resVal(r1[3] + 'x');
+            }
+            if (!rv) return 'invalid';
+            if (rv.neg) return 'invalid';
+            var op = r1[2];
+            if (op === '>=') return _resCmp(rv, 'min');
+            if (op === '<=') return _resCmp(rv, 'max');
+            if (op === '>') return DPR > rv.dppx;
+            if (op === '<') return DPR < rv.dppx;
+            return _resCmp(rv, 'eq');
+          }
+          // MQ4 range form, two-sided: (0.5dppx <= resolution <= 2dppx).
+          var r2 = body.match(/^(\S+)\s*(<=|<)\s*([a-z-]+)\s*(<=|<)\s*(\S+)$/i);
+          if (r2 && /^(-webkit-)?(resolution|device-pixel-ratio)$/i.test(r2[3])) {
+            var lo = _resVal(r2[1]), hi = _resVal(r2[5]);
+            if (!lo || !hi || lo.neg || hi.neg) return 'invalid';
+            var okLo = (r2[2] === '<=') ? _resCmp(lo, 'min') : DPR > lo.dppx;
+            var okHi = (r2[4] === '<=') ? _resCmp(hi, 'max') : DPR < hi.dppx;
+            return okLo && okHi;
+          }
+          // Ordinary `feature: value` form.
+          var m = body.match(/^([a-z-]+)\s*:\s*(.+)$/i);
+          if (!m) return null;
+          var name = m[1].toLowerCase(), val = m[2].trim();
+          var kind = 'eq';
+          if (name.indexOf('min-') === 0) { kind = 'min'; name = name.slice(4); }
+          else if (name.indexOf('max-') === 0) { kind = 'max'; name = name.slice(4); }
+          // `-webkit-min-device-pixel-ratio` puts the prefix FIRST.
+          if (name.indexOf('-webkit-min-') === 0) { kind = 'min'; name = '-webkit-' + name.slice(12); }
+          else if (name.indexOf('-webkit-max-') === 0) { kind = 'max'; name = '-webkit-' + name.slice(12); }
+          if (name === 'resolution') {
+            var v = _resVal(val);
+            if (!v) return 'invalid';
+            if (v.neg) return 'invalid';
+            return _resCmp(v, kind);
+          }
+          if (name === '-webkit-device-pixel-ratio') {
+            // Unitless number, in dppx. The `<ratio>` form (1/1) is NOT accepted
+            // here by the engine (measured false), so it is left invalid.
+            var w = _resVal(val + 'x');
+            if (!w || w.neg) return 'invalid';
+            return _resCmp(w, kind);
+          }
+          // ⛔ UNPREFIXED `device-pixel-ratio` IS DELIBERATELY NOT HANDLED.
+          // Chromium 152.0.7977.82 does not support it: `(device-pixel-ratio: 1)`
+          // answers FALSE at dpr 1, as does the `<ratio>` form `(1/1)`. The old
+          // code answered TRUE for it, which was a wrong-TRUE leak in its own
+          // right. Returning null delegates it, and the engine answers false —
+          // which is the correct, real-browser answer, for free.
+          if (name === 'device-width' || name === 'device-height') {
+            var px = _pxVal(val);
+            if (px === null) return null;
+            var t = (name === 'device-width') ? W : H;
+            if (kind === 'min') return t >= px;
+            if (kind === 'max') return t <= px;
+            return t === px;
+          }
+          return null;
+        };
+        // Split on a separator only at paren depth 0.
+        var _split = function (s) {
+          var out = [], depth = 0, cur = '';
+          for (var i = 0; i < s.length; i++) {
+            var c = s.charAt(i);
+            if (c === '(') depth++;
+            else if (c === ')') depth--;
+            if (depth === 0 && c === ',') { out.push(cur); cur = ''; continue; }
+            cur += c;
+          }
+          out.push(cur);
+          return out;
+        };
+        // Split a single media query into its `and`-joined terms, respecting
+        // parens so `(min-width: 1px) and (max-width: 2px)` yields two terms.
+        var _terms = function (s) {
+          var out = [], depth = 0, cur = '', low = s.toLowerCase();
+          for (var i = 0; i < s.length; i++) {
+            var c = s.charAt(i);
+            if (c === '(') depth++;
+            else if (c === ')') depth--;
+            if (depth === 0 && low.substr(i, 5) === ' and ') {
+              out.push(cur); cur = ''; i += 4; continue;
+            }
+            cur += c;
+          }
+          out.push(cur);
+          return out;
+        };
+        // Evaluate ONE media query (no commas). Returns true/false, or null to
+        // mean "this code does not own this query" — which leaves the engine's
+        // answer in place rather than replacing it with a guess.
+        var _one = function (q) {
+          var s = String(q).trim();
+          // Chromium tolerates an unclosed feature — `(resolution: 96dpi`
+          // parses and answers true. Balance it so the same input reaches this
+          // parser as a feature rather than falling through and leaking the
+          // host dpr via delegation.
+          var open = 0;
+          for (var k = 0; k < s.length; k++) {
+            if (s.charAt(k) === '(') open++;
+            else if (s.charAt(k) === ')') open--;
+          }
+          while (open-- > 0) s += ')';
+          var negate = false;
+          var mNot = s.match(/^not\s+/i);
+          if (mNot) { negate = true; s = s.slice(mNot[0].length); }
+          else {
+            var mOnly = s.match(/^only\s+/i);
+            if (mOnly) s = s.slice(mOnly[0].length);
+          }
+          var terms = _terms(s), typeOk = true, i0 = 0;
+          if (terms.length && terms[0].trim().charAt(0) !== '(') {
+            var type = terms[0].trim();
+            if (!/^[a-z-]+$/i.test(type)) return null;
+            // The media TYPE is delegated too — this code has no business
+            // deciding whether a realm is `print`.
+            try { typeOk = mm.call(G, type).matches; } catch (e) { return null; }
+            i0 = 1;
+          }
+          var all = typeOk, sawMine = false;
+          for (var i = i0; i < terms.length; i++) {
+            var t = terms[i].trim();
+            if (!t) return null;
+            if (t.charAt(0) !== '(') return null;
+            var r = _feat(t);
+            if (r === 'invalid') { all = false; sawMine = true; continue; }
+            if (r === null) {
+              // Not a feature this code owns. Ask the engine for THIS TERM
+              // ALONE — media features are independent, so a per-term
+              // delegation composes correctly and cannot leak the answer to a
+              // term we do understand.
+              try { r = mm.call(G, t).matches; } catch (e) { return null; }
+            } else {
+              sawMine = true;
+            }
+            all = all && r;
+          }
+          // Nothing in this query was ours: leave the engine's answer alone.
+          if (!sawMine) return null;
+          return negate ? !all : all;
+        };
         G.matchMedia = nw(mm, function (q) {
           var res = mm.call(G, q);
-          if (/resolution|dppx|device-pixel-ratio|-webkit-device-pixel-ratio/i.test(q)) {
-            var wantsDpr = _dprRe.test(q) || _dprRatioRe.test(q);
-            try { def(res, 'matches', wantsDpr); } catch (e) {}
-          }
-          if (/device-width/i.test(q)) {
-            var mw = _mqDim(q, 'device-width', W);
-            if (mw !== null) { try { def(res, 'matches', mw); } catch (e) {} }
-          }
-          if (/device-height/i.test(q)) {
-            var mh = _mqDim(q, 'device-height', H);
-            if (mh !== null) { try { def(res, 'matches', mh); } catch (e) {} }
-          }
+          try {
+            var parts = _split(String(q)), any = false, owned = false;
+            for (var i = 0; i < parts.length; i++) {
+              var r = _one(parts[i]);
+              if (r === null) {
+                // A comma-list is a DISJUNCTION of independent queries, so a
+                // branch we do not own can be delegated on its own and OR'd in
+                // — the branches cannot influence each other. Bailing out of
+                // the whole list here would discard a branch we DO own and
+                // hand the answer back to the host's dpr.
+                if (!parts[i].trim()) { owned = false; break; }
+                try { r = mm.call(G, parts[i]).matches; } catch (e) { owned = false; break; }
+              } else {
+                owned = true;
+              }
+              if (r) any = true;
+            }
+            // ⭐ ONLY WRITE WHEN WE ACTUALLY DISAGREE. Natively `matches` lives
+            // on MediaQueryList.prototype and the instance owns NOTHING
+            // (measured: Object.getOwnPropertyNames(matchMedia(q)) is []), so
+            // every own property installed here is itself a position tell. The
+            // old code installed one on EVERY resolution query; this installs
+            // one only where the engine's answer is actually wrong.
+            if (owned && res.matches !== any) { def(res, 'matches', any); }
+          } catch (e) {}
           return res;
         });
       }
