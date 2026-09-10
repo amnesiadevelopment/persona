@@ -416,6 +416,63 @@ def test_the_accessors_stringify_with_V8s_get_prefix(composed):
         assert got["stringified"] == native_form(got["name"])
 
 
+def test_the_falsification_arms_do_not_disturb_any_spoofed_value(scripts):
+    """⛔ ZERO FINGERPRINT CONTENT MOVES — the ticket's hardest out-of-scope fence.
+
+    This change touches ~21 write sites across twelve modules, several of them
+    inside minified one-liners that also carry the arity and name pins. A slip
+    there would not fail any assertion above: the own-property set, the arity,
+    the name and the stringification would all still read correctly while the
+    profile silently reported a different machine — and unlinkability regressions
+    are exactly the class this project has shipped green before.
+
+    So the spoofed VALUES are read back out of the realm and pinned. These
+    figures were verified byte-identical against the pristine base (`360c488`)
+    by running this same probe under both trees, which is the measurement this
+    assertion freezes rather than an expectation invented here.
+    """
+    out = probe(
+        [
+            scripts[m]
+            for m in (
+                "native_ext",
+                "gpu_ext",
+                "webgl_ext",
+                "audio_ext",
+                "device_ext",
+                "locale_ext",
+                "voice_ext",
+                "geo_ext",
+            )
+        ],
+        reads={
+            "screen.width": "G.screen.width",
+            "screen.height": "G.screen.height",
+            "dpr": "G.devicePixelRatio",
+            "cores": "G.navigator.hardwareConcurrency",
+            "mem": "G.navigator.deviceMemory",
+            "gpu_vendor":
+                "(function(){var c=new WebGLRenderingContext();"
+                " return c.getParameter(0x1F00);})()",
+            "audio":
+                "JSON.stringify(Array.from(new AudioBuffer().getChannelData(0)))",
+        },
+        raw_reads=True,
+    )
+    assert out["__errors"] == []
+    assert out["screen.width"] == 1440 and out["screen.height"] == 900
+    assert out["dpr"] == 1
+    assert out["cores"] == 6 and out["mem"] == 8
+    assert out["gpu_vendor"] == "WebKit"
+    assert out["audio"] == (
+        "[0.49999499320983887,-0.25000250339508057,0.12499874830245972]"
+    ), (
+        "the perturbed audio samples moved — a marker edit reached the noise "
+        "path, and two profiles' unlinkability is not something the shape "
+        "assertions above can see"
+    )
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # AC5 — FALSIFICATION (non-waivable). Both arms must go RED, or the file above
 # is asserting properties that hold for reasons unrelated to this change.
