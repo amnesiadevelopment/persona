@@ -458,8 +458,9 @@ jobs:
         # the firefox arm above IS pinned.
         #
         # ⭐ WHY UNPINNED WINS ON THIS PARTICULAR CHECK, and it is a property of
-        # WHAT IS BEING MEASURED rather than a general preference. The other
-        # three checks read a MASKED IDENTITY — values persona's layer computes,
+        # WHAT IS BEING MEASURED rather than a general preference. Every OTHER
+        # check in this lane reads a MASKED IDENTITY — values persona's layer
+        # computes,
         # where an engine that changed its output is indistinguishable from a
         # product regression, so a pin is what makes their red readable. This
         # check counts PROCESSES. Its subject is persona's own teardown
