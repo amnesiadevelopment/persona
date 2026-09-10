@@ -32,11 +32,16 @@ name: behaviour-launch-lane
 # ---------------------------------------------------------------------------
 # Measured on one linux host at n=1, real Personium engine, under `xvfb-run -a`:
 #
-#     the three selected checks       66.2s, 12 browser launches
-#     the whole registry (all seven)  93.5s, 16 browser launches
+#     the three selected checks       66.2s, 12 browser launches   (PS-336)
+#     the FOUR selected checks       113.5s, 16 browser launches   (PS-380)
 #     engine download, cold cache     ~10s, 584 MB extracted
 #
-# So the lane itself is ~76s against ci.yml's 30-minute per-job cap, and it
+# PS-380 added `two-profile-unlinkability` — the only check anywhere that
+# observes Level 2 of the bar — at a cost of 4 launches and ~47s. Its red arm
+# was measured on the same host: a planted collision on `window/webgl.readback`
+# ran 137.9s and exited 1 naming that vector.
+#
+# So the lane itself is ~124s against ci.yml's 30-minute per-job cap, and it
 # WOULD fit there on wall-clock alone. It is here anyway, for three reasons
 # that are about cost and correctness rather than about the cap:
 #
@@ -168,7 +173,7 @@ jobs:
     # not do the unmeasured work of a display story on the macOS and Windows
     # runners. A pass here says nothing about how those platforms behave.
     runs-on: ubuntu-24.04
-    # The lane measured 66s and the whole registry 94s, plus ~10s for the
+    # The lane measured 114s (four checks, 16 launches), plus ~10s for the
     # engine and a couple of minutes of dependency installation. 45 leaves
     # headroom for a slow runner or a slow upstream without letting a genuinely
     # wedged browser launch hang for hours — the same budget

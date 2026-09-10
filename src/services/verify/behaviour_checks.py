@@ -28,10 +28,12 @@ from .behaviour import (
     BehaviourCheckError,
     Check,
     Context,
+    KnownPosition,
     Outcome,
     _first_readable,
     _readings_or_refuse,
     _summarise,
+    known_positions_for,
 )
 
 # --- the first-launch transient, and why every launch check discards one -----
@@ -177,6 +179,142 @@ def _falsify_restart_continuity(ctx: Context) -> str:
 # --- 2. two profiles are genuinely two machines -----------------------------
 
 
+def _known_position_split(entries: list[dict], build: "str | None"):
+    """Split a comparison into (live, excluded, stale) by known position.
+
+    PS-380, and this is where rules 2 and 3 are executed. See
+    ``behaviour.KNOWN_POSITIONS`` for all four.
+
+    ⭐ THE PIN'S ONLY POWER IS TO REMOVE AN EXACTLY-MATCHING RECORDED COLLISION.
+    Everything else flows through to the verdict untouched. That is the whole
+    rule, and it is deliberately the narrowest one that works:
+
+    * ``excluded`` — the pinned pairs whose reading MATCHES the pin. These do
+      not reach the verdict, and they are REPORTED on every run, which is what
+      makes this an exclusion rather than a waiver (rule 2).
+    * ``live`` — everything else, INCLUDING a pinned pair whose reading does not
+      match. A pair that collides at an unrecorded digest is a collision the pin
+      does not describe, so it is compared exactly as if it were never pinned —
+      which is how it reaches the verdict as the finding it is (rule 3). Same
+      for a pinned pair that came back INCONCLUSIVE: nobody read it, which is
+      never a recorded anything.
+    * ``stale`` — NOTES, not entries, and never a status of their own. A pin
+      whose premise no longer holds is reported loudly so it gets deleted.
+
+    ⛔ A VANISHED COLLISION IS NOT A FINDING, AND GETTING THAT WRONG WOULD
+    RE-CREATE THE DEFECT THIS WHOLE SLICE EXISTS TO REMOVE. When PS-2 fixes the
+    canvas collision the pinned pairs will simply DIFFER, and an earlier draft
+    of this function reported that as a FINDING — turning the lane red on the
+    day the product got better, for a reason that is not a product defect. That
+    is "permanently red is as bad as permanently green" arriving by the back
+    door. A pair whose collision is gone REJOINS the live comparison and gates
+    normally (so the vector is not blinded), the dead pin is reported (so it
+    gets deleted), and the gate stays green because the product is fine.
+    Measured: three existing tests — `test_ps232_child_frame_unlinkability.py::
+    test_the_live_lane_records_every_realm_the_comparator_will_walk` and two in
+    `test_canvas_readback_probe.py` — drive this check over profiles that differ
+    on every pair, and they are what caught it.
+
+    ⛔ AND THE DIRECTION IS STILL SAFE. `live` is the verdict's input, and a pin
+    only ever REMOVES an exactly-matching recorded collision from it. Every
+    other path ADDS the pair back, which can make the verdict redder or leave it
+    equal and can never make it greener — the towards-2 asymmetry, one level
+    below the adjudicator that states it.
+    """
+    known: dict[str, KnownPosition] = {}
+    for kp in known_positions_for(build):
+        # ⚠️ TWO ENTRIES PINNING THE SAME PAIR ON THE SAME BUILD would silently
+        # collapse to the last one under a plain dict comprehension, so the
+        # second pin's digest would be the only one that could ever match and
+        # the first would be inert without saying so. Cannot happen today (two
+        # entries, two pairs), but a silent collapse in a structure whose whole
+        # value is legibility is exactly the rot the four rules exist against.
+        if kp.pair in known:
+            raise BehaviourCheckError(
+                f"two known positions pin {kp.pair!r} on build {kp.build!r} "
+                f"({known[kp.pair].digest!r} and {kp.digest!r}). A pair has ONE "
+                "recorded reading per build; keeping both would silently make "
+                "one of them inert. Delete the stale entry."
+            )
+        known[kp.pair] = kp
+    if not known:
+        return list(entries), [], []
+
+    seen: set[str] = set()
+    live: list[dict] = []
+    excluded: list[dict] = []
+    stale: list[str] = []
+
+    for entry in entries:
+        pair = f"{entry.get('realm')}/{entry.get('probe_id')}"
+        kp = known.get(pair)
+        if kp is None:
+            live.append(entry)
+            continue
+        seen.add(pair)
+        if entry.get("status") != "colliding":
+            # INCONCLUSIVE on a pinned pair. Not the recorded position: nobody
+            # obtained the reading, so the premise was not observed at all. It
+            # goes back into the verdict, where an unread must-differ vector is
+            # CANNOT_RUN — never a pass and never a pinned excuse.
+            live.append(entry)
+            stale.append(
+                f"STALE PIN: {pair} is pinned at digest {kp.digest!r} on "
+                f"{kp.build}, but this run could not READ it. An unobtained "
+                "reading is never a recorded collision, so the pair was "
+                "compared normally and the pin did not apply."
+            )
+            continue
+        observed = _collision_digest(entry)
+        if observed == kp.digest:
+            excluded.append(dict(entry, known_position=kp))
+            continue
+        # A DIFFERENT collision. The pin names a reading, not a vector, so this
+        # is an uncovered collision and reaches the verdict as one.
+        live.append(entry)
+        stale.append(
+            f"STALE PIN: {pair} collides at {observed!r}, but the known "
+            f"position for {kp.build} pins {kp.digest!r} "
+            f"({kp.reason_path}). A DIFFERENT collision is not the recorded "
+            "one, so the pin did not apply and this is reported as a finding."
+        )
+
+    # A pinned pair that produced NO entry has stopped colliding: the comparator
+    # is silent only on a pair that was read on both sides and DIFFERED. That is
+    # GOOD NEWS about the product and bad news about the pin, so it is reported
+    # loudly and costs the verdict nothing — see the docstring for why making it
+    # a finding would be the same defect wearing the other colour.
+    for pair, kp in known.items():
+        if pair in seen:
+            continue
+        stale.append(
+            f"STALE PIN — DELETE IT: {pair} is pinned at digest {kp.digest!r} "
+            f"on {kp.build}, but the two profiles DIFFERED on it. The "
+            f"collision is GONE: its premise ({kp.reason_path}) has expired, "
+            f"{kp.owner} can close its side, and the pair is now gating "
+            "normally. Remove the entry — a pin left in place would blind a "
+            "vector that has started working."
+        )
+
+    return live, excluded, stale
+
+
+def _collision_digest(entry: dict):
+    """The reading two profiles share, unwrapped to the value the pin names.
+
+    ``compare_profiles`` carries the shared reading on ``value``; a probe's
+    reading is a dict, and the digest inside it is what a pin can be compared
+    against. Anything else is returned verbatim so an unexpected shape fails
+    the comparison rather than matching it by accident.
+    """
+    value = entry.get("value")
+    if isinstance(value, dict):
+        if "digest" in value:
+            return value["digest"]
+        return tuple(sorted(value.items()))
+    return value
+
+
 def _run_two_profile_unlinkability(ctx: Context) -> Outcome:
     from .diff import compare_profiles
     from .probes import must_differ_probes, must_differ_realms
@@ -196,7 +334,15 @@ def _run_two_profile_unlinkability(ctx: Context) -> Outcome:
     _readings_or_refuse(snap_a, "profile-A")
     _readings_or_refuse(snap_b, "profile-B")
 
-    entries = compare_profiles(snap_a, snap_b)
+    all_entries = compare_profiles(snap_a, snap_b)
+    # PS-380. A known position is removed BEFORE a verdict exists, and what was
+    # removed is stated in the outcome. The pin's only power is to remove an
+    # EXACTLY-MATCHING recorded collision; everything else flows through to the
+    # verdict, so an uncovered collision on a pinned pair is still a finding and
+    # an unread one is still CANNOT_RUN.
+    entries, excluded, stale = _known_position_split(
+        all_entries, snap_a.get("engine_build")
+    )
     colliding = [e for e in entries if e.get("status") == "colliding"]
     inconclusive = [e for e in entries if e.get("status") == "inconclusive"]
 
@@ -210,6 +356,44 @@ def _run_two_profile_unlinkability(ctx: Context) -> Outcome:
         f" (engine {snap_a.get('engine')!r} build "
         f"{snap_a.get('engine_build')!r})"
     )
+    # ⭐ NAMED ON EVERY RUN, PASS OR FAIL, and that is rule 2 in force: an
+    # excluded pair is visible in the report, where a forgiven one would be
+    # invisible. A reader must never be able to mistake this green for "every
+    # pair differed".
+    known_note = ""
+    known_evidence: list[str] = []
+    if excluded:
+        known_note = (
+            " KNOWN POSITIONS EXCLUDED FROM THIS COMPARISON (reported, not "
+            f"silenced): {len(excluded)} pair(s) — "
+            + "; ".join(
+                f"{e['known_position'].pair} at digest "
+                f"{e['known_position'].digest!r} on "
+                f"{e['known_position'].build}, owned by "
+                f"{e['known_position'].owner}"
+                for e in excluded
+            )
+            + ". Each is pinned to a recorded reading, so a DIFFERENT "
+            "collision on the same pair is reported as a finding."
+        )
+        known_evidence = [
+            f"KNOWN POSITION (excluded, not forgiven): {e['known_position'].pair}"
+            f" — collides at {e['known_position'].digest!r} on "
+            f"{e['known_position'].build}; recorded in "
+            f"{e['known_position'].reason_path}; owned by "
+            f"{e['known_position'].owner}"
+            for e in excluded
+        ]
+    # A dead pin is reported in the SAME breath whatever the verdict is, and it
+    # does NOT colour it: a pin whose collision is gone is good news about the
+    # product, and failing the lane on it would turn a fix into a red.
+    if stale:
+        known_note += (
+            f" ⚠️ {len(stale)} KNOWN-POSITION PIN(S) NO LONGER DESCRIBE THIS "
+            "TREE — see the evidence; a pin that did not apply blinds nothing "
+            "(the pair was compared normally) but must be deleted."
+        )
+        known_evidence = known_evidence + list(stale)
 
     if colliding:
         return Outcome(
@@ -219,8 +403,9 @@ def _run_two_profile_unlinkability(ctx: Context) -> Outcome:
             detail=(
                 f"{len(colliding)} seed-derived vector(s) AGREE across two "
                 "distinct profiles — that is a linkable identity. " + breadth
+                + known_note
             ),
-            evidence=_summarise(colliding),
+            evidence=known_evidence + _summarise(colliding),
             launches=2,
         )
     if inconclusive:
@@ -233,8 +418,9 @@ def _run_two_profile_unlinkability(ctx: Context) -> Outcome:
                 "at least one side, so distinctness was not established. "
                 "Holding one profile's digest and not the other's is one "
                 "reading and one hole, never evidence the two differ. " + breadth
+                + known_note
             ),
-            evidence=_summarise(inconclusive),
+            evidence=known_evidence + _summarise(inconclusive),
             launches=2,
         )
     return Outcome(
@@ -245,8 +431,9 @@ def _run_two_profile_unlinkability(ctx: Context) -> Outcome:
             "two distinct profiles differ on every seed-derived vector that was "
             "compared. " + breadth + ". NOTE: the must-differ inventory is "
             "narrow, so this is a real but NARROW pass — see the report's "
-            "inventory note."
+            "inventory note." + known_note
         ),
+        evidence=known_evidence,
         launches=2,
     )
 
@@ -257,6 +444,23 @@ def _falsify_two_profile_unlinkability(ctx: Context) -> str:
     This is the defect the check exists for — two identities a site can link —
     modelled by copying profile A's reading over profile B's. If the comparator
     reports nothing, the unlinkability verdict is inert.
+
+    ⭐ PS-380: THE PLANT GOES ON A *LIVE* PAIR, AND THE SELF-TEST RUNS THROUGH
+    THE KNOWN-POSITION SPLIT RATHER THAN AROUND IT. This is the whole safety
+    argument for the split existing. The check's verdict is now taken over the
+    pairs the split leaves LIVE, so a falsification that asserted only the raw
+    comparator would prove the COMPARATOR can see a collision while saying
+    nothing about whether the CHECK still can — exactly the permanently-green
+    shape this module's falsify-first rule exists to prevent. If a future entry
+    ever pinned the pair this plants on, the comparator would still report it
+    and the check would still be blind.
+
+    And the degenerate end-state is refused outright: if EVERY must-differ pair
+    were a known position there would be no live pair to plant on, the check
+    could not be shown capable of failing at all, and this raises rather than
+    returning a sentence. That is the hard floor under ``KNOWN_POSITIONS``
+    growing one entry at a time — the set cannot be extended to cover the
+    inventory without this check refusing to publish a verdict.
     """
     import copy
 
@@ -274,8 +478,8 @@ def _falsify_two_profile_unlinkability(ctx: Context) -> str:
     a = ctx.make_profile("ps70-unlink-falsify-a")
     b = ctx.make_profile("ps70-unlink-falsify-b")
     # Same realm set as the verdict lane, and for a sharper reason than
-    # symmetry: this falsification PLANTS a collision on `targets[0]` in
-    # `probe.realms[0]`. Were the recording narrower than the inventory, a
+    # symmetry: this falsification PLANTS a collision on the first LIVE
+    # (realm, probe) pair. Were the recording narrower than the inventory, a
     # target whose only realm this recording skipped would have nothing to
     # plant ONTO — the KeyError below — so the self-test would fail to run on
     # exactly the vector the check was extended to cover, and `run_check`
@@ -286,8 +490,24 @@ def _falsify_two_profile_unlinkability(ctx: Context) -> str:
     _readings_or_refuse(snap_a, "falsification-A")
     _readings_or_refuse(snap_b, "falsification-B")
 
-    probe = targets[0]
-    realm = probe.realms[0]
+    build = snap_a.get("engine_build")
+    pinned = {kp.pair for kp in known_positions_for(build)}
+    candidates = [
+        (r, p)
+        for p in targets
+        for r in p.realms
+        if f"{r}/{p.id}" not in pinned
+    ]
+    if not candidates:
+        raise BehaviourCheckError(
+            "every must-differ pair on this build is a KNOWN POSITION, so "
+            "there is no live pair left to plant a collision on and this "
+            "check cannot be shown capable of failing at all. A known-position "
+            "set that has grown to cover the whole inventory is a gate that "
+            "certifies nothing — shrink it, or fix the vectors it pins "
+            f"(build {build!r}, pinned {sorted(pinned)})."
+        )
+    realm, probe = candidates[0]
     planted = copy.deepcopy(snap_b)
     try:
         planted["probes"][realm][probe.id] = copy.deepcopy(
@@ -308,8 +528,27 @@ def _falsify_two_profile_unlinkability(ctx: Context) -> str:
             "comparator did not report a collision. The unlinkability check is "
             "inert; its green certifies nothing."
         )
+
+    # ⛔ AND THE SPLIT MUST NOT SWALLOW IT. The verdict is taken over `live`, so
+    # a planted collision that the split removed would leave the check green
+    # over a real leak. Proving the comparator saw it is not enough; this
+    # proves the pair the verdict is COMPUTED from still carries it.
+    live, _excluded, _expired = _known_position_split(entries, build)
+    if not any(
+        e.get("probe_id") == probe.id
+        and e.get("realm") == realm
+        and e.get("status") == "colliding"
+        for e in live
+    ):
+        raise BehaviourCheckError(
+            f"a forced collision on {realm}/{probe.id} was reported by the "
+            "comparator and then REMOVED by the known-position split, so the "
+            "verdict would be taken over a world that no longer contains it. A "
+            "known position must never cover a pair this check still gates."
+        )
     return (
-        f"a forced collision on {realm}/{probe.id} is reported as linkable"
+        f"a forced collision on {realm}/{probe.id} is reported as linkable, "
+        "and survives the known-position split into the verdict"
     )
 
 
