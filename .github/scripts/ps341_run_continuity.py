@@ -327,11 +327,48 @@ def read_both(probe, new_binary: str, old_binary: str, seeds) -> dict:
     ⛔ The ``None`` return is preserved and is the whole point: a leg that
     produced no reading is recorded as ``None`` and the verdict EXCLUDES it from
     the moved/same tally rather than scoring it as a difference.
+
+    ⛔ AND A RAISE IS RECORDED THE SAME WAY, PER LEG. ``read_pair`` returns
+    ``None`` for the ONE failure it anticipates — no ``DevToolsActivePort``
+    within its timeout — and everything after that line is unguarded:
+    ``sync_playwright()``, ``connect_over_cdp``, ``contexts[0]``, ``new_page()``
+    and ``evaluate()`` all raise. A browser that writes its port file and then
+    dies, a driver ImportError, an IndexError on empty ``contexts`` or an
+    evaluate timeout would otherwise propagate out of this function and out of
+    ``run()``, which catches ``StagingError`` and nothing else.
+
+    That is the defect this job's own docstring forbids in as many words —
+    "every failure path here produces a RESULT rather than raising, because the
+    report is this job's deliverable: a traceback writes no step output, files
+    no issue and uploads no artifact". Measured before the guard: a refused CDP
+    connect produced report.md=False, verdict.json=False, step outputs=False,
+    and the workflow went red saying "the read step produced no status at all".
+
+    ⚠️ THE GUARD IS PER SEED AND PER LEG, NOT AROUND THE LOOP. Sixteen headful
+    launches on a CI runner is exactly where a flaky launch is expected, and a
+    loop-level guard discards the seeds already read — measured at 0 rows
+    salvaged when one seed raised. Per-seed, the reading survives with that leg
+    marked unreadable.
+
+    ⛔ AN EXCEPTION IS AN UNREADABLE LEG, NEVER A DIFFERENCE. That is AC3's
+    non-waivable clause, and ``classify`` already handles it correctly: one
+    unreadable row among readable ones yields ``unmeasured``, exit 2, with the
+    row counted in ``seeds_unreadable`` and excluded from ``moved``/``same``.
+    So this needs no verdict change, and it must NOT swallow the failure into a
+    ``held``.
     """
+    def _read(binary: str, seed, leg: str):
+        try:
+            return probe.read_pair(binary, seed)
+        except Exception as exc:  # noqa: BLE001 — any raise is an unreadable leg
+            _log("seed %s: build %s raised (%s: %s) — recorded as unreadable" % (
+                seed, leg, type(exc).__name__, exc))
+            return None
+
     rows = []
     for seed in seeds:
-        new = probe.read_pair(new_binary, seed)
-        old = probe.read_pair(old_binary, seed)
+        new = _read(new_binary, seed, "N")
+        old = _read(old_binary, seed, "N-1")
         readable = new is not None and old is not None
         rows.append({
             "seed": seed,
