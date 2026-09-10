@@ -32,17 +32,15 @@ Three bodies that cannot execute at all, and a fresh gate printing "the
 behaviour held" over them. Its ``EXPECTED_CHECKS`` floor is CORRECT and is
 scoped to its own lane by construction, so it structurally cannot notice.
 
-⭐ WHY THIS LANE IS THREE CHECKS AND NOT FOUR — THE LOAD-BEARING DECISION HERE
+⭐ WHY THIS LANE IS FOUR CHECKS AND NOT FIVE — AND WHY THE FOURTH IS NOW IN IT
 ------------------------------------------------------------------------------
 ``two-profile-unlinkability`` is the fourth ``needs_launch=True`` check and it
-is deliberately neither SELECTED nor in this lane's FLOOR. Argued rather than
-asserted, because "the venue runs only the checks it expects to pass" is a real
-criticism and this has to answer it.
-
-**It does not pass on the engine this project ships, and that is a recorded,
-published fact — not a discovery and not a regression.** Measured on this
-branch under a real display against the Personium ``firefox-20`` build,
-4 browser launches::
+is the ONLY check anywhere that observes **Level 2 of the bar (mutual
+unlinkability)**. Until PS-380 it was neither SELECTED nor in this lane's FLOOR,
+and the reason was correct: **it does not pass whole on the engine this project
+ships, and that is a recorded, published fact — not a discovery and not a
+regression.** Measured at PS-336 under a real display against the Personium
+``firefox-20`` build, 4 browser launches::
 
     [FINDING] two-profile-unlinkability
       2 seed-derived vector(s) AGREE across two distinct profiles
@@ -57,56 +55,65 @@ probe: on the SAME snapshots, audio.digest, webgl.readback, webgl.unmasked,
 webgl.parameters and hardwareConcurrency all varied across seeds, so the
 masking layer was live and correctly seeded. Canvas 2D is simply not spoofed on
 firefox — ``--fingerprint=`` is chromium-only and the firefox arm returns at
-``process.py:353``, well before it. The digest read here (4242351214) is
-BIT-IDENTICAL to the one committed in that reading directory for all three
-seeds, so this is the same measurement, re-observed.
+``process.py:353``, well before it.
 
-**Including it would make this gate PERMANENTLY RED, which is the same defect
-as permanently green wearing the other colour.** A gate nobody can ever make
-green is a gate people learn to ignore and then delete; and worse, it destroys
-this venue's ONLY job — a red that is always red cannot tell a newly-rotted
-dark body from the known collision. Every one of the three mutants below would
-turn it red, and so would a clean tree, which proves sensitivity to nothing.
+**Requiring the check WHOLE would make this gate PERMANENTLY RED, which is the
+same defect as permanently green wearing the other colour.** That reasoning is
+unchanged and must not be reversed. What PS-380 changed is the GRANULARITY of
+the answer to it.
 
-**It is also not DARK, which is what this ticket is about.** The caller census,
-re-run at this base over ``src/ tests/ .github/`` excluding the registry file::
+⭐ **THE EXCLUSION WAS WHOLE-CHECK; THE COLLISION IS NOT.** The check compares
+FIVE must-differ pairs. Measured live at PS-380 on this lane's own engine
+(firefox-20, Firefox 151.0 build 20260817150018), two runs of two fresh
+profiles each, ``realms=('window','worker','child_frame')``::
 
-    _run_restart_continuity         0 external callers
-    _run_benign_edit_stability      0 external callers
-    _run_trash_restore_and_wipe     0 external callers
-    _run_two_profile_unlinkability  11 external callers   <- probes.py x2,
-                                    test_ps232_child_frame_unlinkability.py x9,
-                                    including `outcome = _run_two_profile_unlinkability(ctx)`
+    child_frame/webgl.readback.childFrame   DIFFERS
+    window/audio.digest                     DIFFERS
+    window/canvas.readback                   COLLIDING   digest 4242351214
+    window/webgl.readback                    DIFFERS
+    worker/canvas.readback                   COLLIDING   digest 4242351214
 
-That fourth row is the DISCRIMINATING CONTROL that makes the three zeros real
-rather than a bad pathspec — and it is also the reason this check is out of
-scope: a test file drives its body directly, so it is the one launch-backed
-body that was never dark. Only its VENUE was shared with the other three. The
-mutation arms agree: sabotaging it kills 4 tests, sabotaging any of the three
-kills none.
+Three of the five vary, and they are **exactly the vectors persona ships
+Firefox spoofs for** — ``_install_spoof("webgl", firefox_webgl_init_script(seed))``
+and ``_install_spoof("audio", firefox_audio_init_script(seed))`` in
+``invisible_launch.py``; canvas has no firefox arm at all. So excluding the
+whole check to avoid ONE known red also stopped anyone watching the vectors the
+product actively defends: **if either spoof silently stopped being installed,
+two profiles would share a WebGL readback and an audio digest, and nothing in
+CI would have said so.** That is the exact defect class PS-182, PS-97 and PS-89
+were each filed on — every one found by a person reading code, never by a gate.
 
-⛔ WHAT THIS IS NOT, AND THE LINE THAT MUST NOT BE CROSSED: the fourth check is
-EXCLUDED FROM THE SELECTION, never "run and then forgiven". Adjudicating its
-FINDING down to a pass would launder a 1 into a 0 and break the asymmetry that
-is the entire safety argument for having adjudication at all — every
-correction moves a verdict TOWARDS 2, never towards 0. That rule is pinned by
-``test_no_corroboration_rule_can_make_the_job_greener``, and nothing here
-weakens it. Excluding a check is visible in the report (it is simply not
-there); forgiving one is invisible, which is why only the first is admissible.
+``behaviour.KNOWN_POSITIONS`` is the finer instrument. The two canvas pairs are
+EXCLUDED FROM THE COMPARISON AND REPORTED ON EVERY RUN, pinned to the digest
+they were recorded at on the build they were recorded on, each citing the
+reading it rests on. The other three gate normally, so this lane now watches
+Level 2 for the first time.
 
-⚠️ WHEN PS-2 FIXES THE CANVAS COLLISION, add ``two-profile-unlinkability`` to
-both ``SELECTED_CHECKS`` and ``EXPECTED_CHECKS`` below in the same change. The
-registry-agreement test in ``tests/test_ps336_launch_behaviour_venue.py`` names
-it as a permitted omission and says why, so that edit is prompted by a test
-rather than left to be remembered.
+⛔ WHAT THIS IS NOT, AND THE LINE THAT IS STILL NOT CROSSED: a known-position
+pair is EXCLUDED, never "run and then forgiven". Adjudicating its FINDING down
+to a pass would launder a 1 into a 0 and break the asymmetry that is the entire
+safety argument for having adjudication at all — every correction moves a
+verdict TOWARDS 2, never towards 0. That rule is pinned by
+``test_no_corroboration_rule_can_make_the_job_greener`` and
+``test_no_rule_can_make_this_lane_greener``, and **nothing here touches either
+of them**: the pair is removed before a verdict exists, so no correction
+happens. Excluding is visible in the report; forgiving is invisible, which is
+why only the first is admissible. The four rules that keep it that way —
+shrink-only, excluded-visibly, pin-a-reading-not-a-name, cite-a-file-and-a-quote
+— are argued in full at ``behaviour.KNOWN_POSITIONS`` and guarded by
+``tests/test_ps380_known_position.py``.
 
-⭐ THE SECOND OMISSION, AND IT IS A DIFFERENT REASON — NOT A WIDENED CARVE-OUT
+⚠️ WHEN PS-2 FIXES THE CANVAS COLLISION, delete the two ``KNOWN_POSITIONS``
+entries. The check goes green on all five pairs and nothing else changes —
+and if the entries are left behind, the split reports them as STALE and the
+lane goes red naming them, so that edit is prompted rather than remembered.
+
+⭐ THE REMAINING OMISSION, AND IT IS A DIFFERENT REASON — NOT A WIDENED CARVE-OUT
 ------------------------------------------------------------------------------
 ``no-process-survives-a-closed-session`` (PS-347) is the fifth
-``needs_launch=True`` check and is likewise neither SELECTED nor in the FLOOR.
-Its reason is NOT the one above, and collapsing the two into a single "known
-exclusions" set would hide that — so they are recorded separately and pinned
-separately.
+``needs_launch=True`` check and is neither SELECTED nor in the FLOOR. Its reason
+is NOT the one above, and collapsing the two into a single "known exclusions"
+set would hide that — so they are recorded separately and pinned separately.
 
 **This lane provisions FIREFOX, and that check launches CHROMIUM by
 construction.** The engine step calls
@@ -280,13 +287,16 @@ MODULE = "src.services.verify.behaviour_cli"
 MODULE_FILE = REPO_ROOT.joinpath(*MODULE.split(".")).with_suffix(".py")
 
 #: THE CHECKS THIS LANE SELECTS — the launch-backed bodies that were DARK
-#: before this venue existed. TWO launch-backed checks are absent DELIBERATELY,
-#: for two DIFFERENT reasons that must not be collapsed into one carve-out; the
-#: header argues both at length and a test pins each by name. `--check` is
-#: repeatable and VALIDATES each name, so a rename or a retirement fails loudly
-#: here instead of silently shrinking the lane.
+#: before this venue existed, PLUS `two-profile-unlinkability` (PS-380), which
+#: is the ONLY check that observes Level 2 of the bar and was excluded
+#: WHOLE-CHECK until it could be run without the known canvas collision making
+#: this gate permanently red. ONE launch-backed check remains absent
+#: DELIBERATELY; the header argues it at length and a test pins it by name.
+#: `--check` is repeatable and VALIDATES each name, so a rename or a retirement
+#: fails loudly here instead of silently shrinking the lane.
 SELECTED_CHECKS = (
     "restart-continuity",
+    "two-profile-unlinkability",
     "benign-edit-stability",
     "trash-restore-and-wipe",
 )
@@ -334,22 +344,27 @@ COMMAND = [
 #: reworked to close.
 EXPECTED_CHECKS = (
     "restart-continuity",
+    "two-profile-unlinkability",
     "benign-edit-stability",
     "trash-restore-and-wipe",
 )
 
 #: Recorded so a reader of a red run knows what the lane costs and can tell a
-#: genuinely wedged launch from a slow one. Measured on this branch, one host,
-#: real engine, under xvfb-run, n=1 each:
+#: genuinely wedged launch from a slow one. Measured on one linux host, real
+#: Personium engine, under xvfb-run, n=1 each:
 #:
-#:     the 3 selected checks          66.2s, 12 browser launches, exit 0
-#:     the whole registry (all 7)     93.5s, 16 browser launches, exit 1
-#:     engine download (cold cache)   ~10s, 584 MB extracted
+#:     the 3 selected checks (PS-336)   66.2s, 12 browser launches, exit 0
+#:     the 4 selected checks (PS-380)  113.5s, 16 browser launches, exit 0
+#:     engine download (cold cache)    ~10s, 584 MB extracted
 #:
-#: See the workflow for how that is priced against ci.yml's 30-minute cap.
+#: PS-380 added `two-profile-unlinkability`, which costs 4 launches (2 for its
+#: falsification, 2 for its verdict) and ~47s. Its red arms were measured too,
+#: on the same host: a planted collision on `window/webgl.readback` ran 137.9s
+#: and exited 1 naming that vector. Still far inside the 45-minute job budget;
+#: see the workflow for how that is priced against ci.yml's 30-minute cap.
 _MEASURED_NOTE = (
-    "measured on one linux host at n=1: this lane runs in ~66s over 12 browser "
-    "launches, plus ~10s to fetch the engine"
+    "measured on one linux host at n=1: this lane runs in ~114s over 16 "
+    "browser launches, plus ~10s to fetch the engine"
 )
 
 

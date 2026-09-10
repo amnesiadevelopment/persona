@@ -197,6 +197,164 @@ UNCOVERED_SURFACES: tuple[tuple[str, str], ...] = (
 )
 
 
+# --- known positions: a red that has always been red, one vector at a time ---
+#
+# PS-380. A KNOWN POSITION is a single (realm, probe) pair whose collision is a
+# RECORDED, PUBLISHED fact handed to another ticket as product work. It is
+# EXCLUDED FROM THE COMPARISON AND REPORTED, never run-and-then-forgiven.
+#
+# ⭐ WHY THIS EXISTS AT ALL — IT SHRINKS AN EXCLUSION, IT DOES NOT CREATE ONE.
+# `two-profile-unlinkability` is the only check that observes Level 2 of the
+# bar (mutual unlinkability), and the launch lane's venue
+# (`.github/scripts/run_launch_behaviour_checks.py`) excludes it WHOLE-CHECK,
+# for a reason that is correct and must not be reversed: the check reports a
+# FINDING on the firefox engine this project ships, because canvas 2D is not
+# spoofed there, so requiring it would make that gate permanently red — "the
+# same defect as permanently green wearing the other colour", in that file's
+# own words.
+#
+# But the check compares FIVE must-differ pairs and only TWO of them collide.
+# Measured live at PS-380 on the lane's own engine, firefox-20 (Personium,
+# Firefox 151.0 build 20260817150018), two runs of two fresh profiles each:
+#
+#     child_frame/webgl.readback.childFrame   DIFFERS
+#     window/audio.digest                     DIFFERS
+#     window/canvas.readback                   COLLIDING  digest 4242351214
+#     window/webgl.readback                    DIFFERS
+#     worker/canvas.readback                   COLLIDING  digest 4242351214
+#
+# The three that differ are exactly the vectors persona ships Firefox spoofs
+# for (`_install_spoof("webgl", ...)` and `_install_spoof("audio", ...)` in
+# invisible_launch.py; canvas has no firefox arm). So a whole-check exclusion
+# taken to avoid ONE known red also stops anyone watching the vectors the
+# product actively defends: if either spoof silently stopped being installed,
+# two profiles would share a WebGL readback and an audio digest and NOTHING in
+# CI would say so. This structure is what lets the lane watch those three
+# while the known canvas collision stays visible rather than silenced.
+#
+# ⛔ THE FOUR RULES, AND EACH ONE IS A GUARD AGAINST A SPECIFIC WAY THIS
+# AFFORDANCE COULD ROT INTO A WAIVER LIST:
+#
+# 1. IT MAY ONLY EVER SHRINK AN EXISTING EXCLUSION, NEVER CREATE ONE. A vector
+#    enters this set solely by moving OUT of a check-level omission that
+#    already exists — never by moving out of a passing lane. A check that is
+#    green today may not buy itself a known position tomorrow.
+# 2. EXCLUDED VISIBLY, NEVER FORGIVEN. The pair is removed from the comparison
+#    BEFORE a verdict exists, and it is named in the outcome's detail and
+#    evidence on every run. Nothing adjudicates a FINDING down to a PASS:
+#    `run_behaviour_checks.py`'s asymmetry ("every correction here can only
+#    ever move a verdict TOWARDS 2, never greener") is untouched, because no
+#    correction happens at all. Excluding is visible in the report; forgiving
+#    is invisible, which is why only the first is admissible.
+# 3. THE PIN IS A READING, NOT A VECTOR NAME. An entry carries the DIGEST the
+#    collision was recorded at, on the BUILD it was recorded on. A pair that
+#    collides on a DIFFERENT value is NOT the known position and is reported
+#    as the finding it is — and so is a pair that has stopped colliding, which
+#    means the premise expired and the entry must go.
+# 4. EVERY ENTRY CITES A FILE AND A VERBATIM QUOTE, on the model of
+#    `tests/test_engine_masking_matrix.py`'s RECORDED_REASON_SOURCES. A
+#    recorded decision whose record has been deleted or reworded is an
+#    unexplained absence wearing a reason's clothes, so the quote is re-read at
+#    its source by a test rather than trusted.
+#
+# ⚠️ THE ci.yml ANTI-ALLOWLIST STANCE IS NOT BREACHED, AND THE DISTINCTION IS
+# THE OBJECT. That passage ("NO ALLOWLIST IS CONFIGURED, ON ANY PLATFORM, AND
+# THAT IS DELIBERATE … a floor becomes permanent: the 22 would stop being a
+# debt anyone can see and start being scenery") governs a TEST-SUITE FAILURE
+# FLOOR: an unbounded count of anonymous failures, where the allowlist's job is
+# to stop anyone having to look. This is the opposite shape — one named pair,
+# one pinned digest, one cited reading, REPORTED ON EVERY RUN, which goes red
+# the moment the reading changes in either direction. The thing ci.yml refuses
+# is a mechanism that makes a debt invisible; this one is the mechanism that
+# keeps this debt legible while un-blinding three vectors beside it.
+#
+# ⚠️ AND THE NOISE-SOURCE TEST IS ANSWERED RATHER THAN SIDESTEPPED. A tolerance
+# mechanism transplanted from a gate whose noise is a third party we do not
+# control, onto a gate whose finding is our own arithmetic over our own two
+# profiles, stops absorbing drift and starts silencing a true leak. That rule
+# is why this is NOT the checker matrix' waiver: nothing here tolerates
+# variance, nothing here absorbs noise, and no reading is re-classified. The
+# collision is still reported as a collision on every run; what changes is that
+# it no longer takes FOUR OTHER PAIRS with it into a whole-check exclusion. A
+# permission to HIDE is what that rule forbids, and this grants none — which is
+# also why rule 1 exists, so the next carve-out cannot reach for it.
+
+
+@dataclass(frozen=True)
+class KnownPosition:
+    """One (realm, probe) pair whose collision is already recorded elsewhere.
+
+    ``digest`` is the reading the pair was recorded colliding AT, and
+    ``build`` the engine build it was recorded ON — the pin is a measurement,
+    not a vector name (rule 3 above). ``reason_path`` / ``reason_quote`` cite
+    where the decision lives, verbatim (rule 4).
+    """
+
+    realm: str
+    probe_id: str
+    digest: object
+    build: str
+    owner: str
+    reason_path: str
+    reason_quote: str
+
+    @property
+    def pair(self) -> str:
+        return f"{self.realm}/{self.probe_id}"
+
+
+#: The known positions, one entry per pair. Listed rather than derived, because
+#: a derived set would grow silently and each entry has to be argued.
+#:
+#: ⛔ DO NOT ADD AN ENTRY TO MAKE A RED LANE GREEN. Rule 1 above is enforced by
+#: `tests/test_ps380_known_position.py`, which refuses an entry for a pair that
+#: is not inside a check-level omission already recorded in
+#: `tests/test_ps336_launch_behaviour_venue.py`'s DOCUMENTED_OMISSIONS.
+KNOWN_POSITIONS: tuple[KnownPosition, ...] = (
+    KnownPosition(
+        realm="window",
+        probe_id="canvas.readback",
+        digest=4242351214,
+        build="firefox-20",
+        owner="PS-2 (readings/ps135-2026-08-24/EVIDENCE.md §7.3 hands it over)",
+        reason_path="readings/ps135-2026-08-24/EVIDENCE.md",
+        reason_quote=(
+            "two profiles agree, so the two-profile unlinkability check will"
+        ),
+    ),
+    KnownPosition(
+        realm="worker",
+        probe_id="canvas.readback",
+        digest=4242351214,
+        build="firefox-20",
+        owner="PS-2 (readings/ps135-2026-08-24/EVIDENCE.md §7.3 hands it over)",
+        reason_path="readings/ps135-2026-08-24/EVIDENCE.md",
+        reason_quote=(
+            "report **COLLIDING** on `window` and `worker` and go to "
+            "**FINDING** on that"
+        ),
+    ),
+)
+
+
+def known_positions_for(build: "str | None") -> tuple[KnownPosition, ...]:
+    """The known positions recorded on ``build``, in inventory order.
+
+    ⛔ THE BUILD AXIS IS HONOURED RATHER THAN STATED-AND-IGNORED. The corpus
+    shows the collided digest MOVING with the engine: the same profile reads
+    4242351214 on firefox-20 and 2735004646 on firefox-21/25/26
+    (``readings/ps290-2026-09-03/artifacts/*/fingerprint-{before,after}.json``).
+    So an entry pinned to one build says nothing about another, and on an
+    unrecognised build this returns NOTHING — every pair is compared and a
+    collision is reported as the finding it is. A baseline that followed the
+    engine wherever it went would be a waiver, not a pin: the safe direction
+    for an unknown build is to measure it, not to excuse it.
+    """
+    if not build:
+        return ()
+    return tuple(kp for kp in KNOWN_POSITIONS if kp.build == build)
+
+
 class BehaviourCheckError(RuntimeError):
     """A check could not be run, with an actionable reason."""
 
@@ -826,6 +984,26 @@ def format_report(outcomes: "list[Outcome]", ctx: "Context | None" = None) -> st
     lines.append("NOT COVERED BY THIS MODULE (stated, not implied):")
     for surface, why in UNCOVERED_SURFACES:
         lines.append(f"  * {surface} — {why}")
+
+    # ⭐ KNOWN POSITIONS ARE IN THE REPORT, ALWAYS — that is what makes them an
+    # EXCLUSION rather than a WAIVER (see KNOWN_POSITIONS, rule 2). A forgiven
+    # pair would be invisible here; an excluded one is named with its pinned
+    # digest, its build, the reading it rests on and the ticket that owns the
+    # fix, so a reader can never mistake a green for "every pair differed".
+    if KNOWN_POSITIONS:
+        lines.append("")
+        lines.append(
+            "KNOWN POSITIONS — single (realm, probe) pairs whose collision is "
+            "already RECORDED and owned elsewhere. Each is EXCLUDED from the "
+            "cross-profile comparison and REPORTED here, never adjudicated "
+            "down to a pass. A pair that collides at a DIFFERENT reading, or "
+            "has STOPPED colliding, is reported as a finding:"
+        )
+        for kp in KNOWN_POSITIONS:
+            lines.append(
+                f"  * {kp.pair} — collides at {kp.digest!r} on {kp.build}; "
+                f"owned by {kp.owner}; recorded in {kp.reason_path}"
+            )
     return "\n".join(lines)
 
 
@@ -835,17 +1013,20 @@ __all__ = [
     "EXIT_FINDING",
     "EXIT_OK",
     "FINDING",
+    "KNOWN_POSITIONS",
     "PASS",
     "SUN_PATH_LIMIT",
     "UNCOVERED_SURFACES",
     "BehaviourCheckError",
     "Check",
     "Context",
+    "KnownPosition",
     "Outcome",
     "UnsafeEnvironment",
     "default_scratch_home",
     "exit_code",
     "format_report",
+    "known_positions_for",
     "profile_name_budget",
     "require_display",
     "require_scratch_home",
