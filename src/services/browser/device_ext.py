@@ -1,7 +1,8 @@
 """MAIN-world extension that gives each profile a believable, deterministic
 screen geometry and mediaDevices set.
 
-The engine spoofs deviceMemory/hardwareConcurrency but not the screen
+The engine spoofs hardwareConcurrency and (since the pixelscan port's slice 2)
+deviceMemory, but not the screen
 (screen.width/height/availWidth/availHeight, colorDepth, devicePixelRatio) nor
 navigator.mediaDevices.enumerateDevices(). On a VM the screen is the host's and
 identical across every profile, and enumerateDevices() returns a bare,
@@ -10,6 +11,81 @@ camera => server/VM"). This extension picks, deterministically from the
 profile seed, a common real desktop resolution (with a realistic taskbar-inset
 availHeight) and a plausible device list with stable per-profile deviceId /
 groupId hashes.
+
+⛔ ``navigator.deviceMemory`` IS NOT AUTHORED IN THIS FILE ANY MORE, AND MUST
+NOT COME BACK (pixelscan port, slice 2). It used to be declared TWICE here —
+once in the page realm and once in the worker-realm twin inside
+``applyHwPatch`` — as ``Math.min(HM[1], 8)``. Both were deleted when the engine
+gained ``--fingerprint-device-memory``
+(``005-hardware-concurrency-fingerprint.patch``), for two reasons:
+
+* a JS ``defineProperty`` getter is the DETECTABLE surface the port exists to
+  remove, while an engine switch is not observable from the page at all; and
+* the switch reaches the ``ServiceWorkerGlobalScope`` realm, which neither of
+  persona's JS identity authors can enter — the same gap PS-354 closed for
+  ``hardwareConcurrency``.
+
+⚠️ The rationale lives HERE, in Python, rather than as a comment inside
+``_CONTENT_SCRIPT``: that template is emitted verbatim into ``device.js`` and
+shipped to every page, so a comment mentioning the property would both leak the
+intent to anyone reading the extension and trip the guard that greps the
+emitted file for the name (``tests/test_ps_device_memory_native.py``).
+
+``hardwareConcurrency`` IS NO LONGER AUTHORED HERE EITHER (audit round 2 of the
+same slice), and its two installs are gone for the same reason plus one more.
+
+⛔ THE INSTALL WAS ITSELF THE TELL. ``def()`` does ``Object.defineProperty``
+against the ``navigator`` INSTANCE, so it left
+``navigator.hasOwnProperty('hardwareConcurrency') === true`` where the bare
+engine carries the property only on ``Navigator.prototype``. Measured on the
+owner's Windows host off this branch, the VALUE agreed (4 in both arms), so no
+value comparison could see it — the POSITION was the leak, and it is invisible
+to every instrument this repo has, because they read source, argv or patch text
+and none of them reads a rendered ``navigator``.
+
+⭐ WHY DELETING THE WORKER TWIN DOES NOT REINTRODUCE A PAGE/WORKER MISMATCH —
+settled from the Chromium source rather than assumed, because the honest
+alternative (keep the worker carry) turns on it. At 152.0.7977.75::
+
+    NavigatorBase : public ScriptWrappable,
+                    public NavigatorConcurrentHardware,   <- hardwareConcurrency()
+                    public NavigatorDeviceMemory,         <- deviceMemory()
+                    ...
+         ^                                ^
+    Navigator final :               WorkerNavigator final :
+      public NavigatorBase            public NavigatorBase
+
+``005-hardware-concurrency-fingerprint.patch`` reads the switch inside
+``NavigatorConcurrentHardware::hardwareConcurrency()`` — the shared base — so
+one read answers the page realm, dedicated and shared workers, AND the
+ServiceWorker realm no script here can enter. ``process.py`` passes the flag
+unconditionally on every launch. Both realms therefore read the same engine
+value, and the agreement is structural rather than arithmetic.
+
+⚠️ TWO PREMISES IN THIS FILE WERE FALSIFIED BY THAT FLAG AND ARE RECORDED HERE
+RATHER THAN SILENTLY DROPPED, because a stale premise in this module has
+already misled work twice:
+
+* *"fingerprint-chromium leaves these at the host's real values on a desktop
+  profile … so a VM host leaked cores: 18 / ram: 8"* — the BARE ENGINE reported
+  **4** on the prototype, its own seed-derived value, not the host's cores.
+* *"a VM host leaked 32 in a worker while the page reported 12"* — a real
+  measurement, taken BEFORE the flag existed. It no longer describes this
+  product.
+
+Both were true when written. PS-354 (cores) and this slice (deviceMemory) are
+what changed them.
+
+⚠️ ``applyHwPatch`` SURVIVES, EMPTY OF INSTALLS, DELIBERATELY. It is a
+registered realm leaf with its own ``"hw"`` guard key, and the guard is
+per-key: folding it away or sharing its key would let a realm that ran this
+leaf silently SKIP a sibling install, which is indistinguishable from a
+completed one. Retiring the leaf is a change to the realm registry and its
+guard census (``tests/test_realm_guard.py``'s ``GUARD_SITES``), not part of
+closing a position leak.
+
+The emitted ``_CONTENT_SCRIPT`` carries only a pointer back to this docstring,
+for the reason given above: that template ships verbatim to every page.
 """
 
 import json
@@ -45,10 +121,15 @@ class CoresMemoryEntry:
 
 
 # navigator.hardwareConcurrency / navigator.deviceMemory pairs. This pool is the
-# SINGLE source of truth for both realms: the page-realm pick and the worker-realm
-# twin inside applyHwPatch are both rendered from this list, so they cannot drift
-# apart. They used to be two hand-maintained JS literals that had to be kept in
-# sync by eye, and the worker copy silently shadowed the page copy.
+# SINGLE source of truth for both properties. It used to be rendered into the
+# emitted JS as well — a page-realm pick plus a worker-realm twin inside
+# applyHwPatch — and before that it was two hand-maintained JS literals kept in
+# sync by eye, with the worker copy silently shadowing the page copy.
+#
+# ⛔ THE JS SIDE IS GONE (PS-392): the engine authors both properties in every
+# realm, so this pool now has exactly ONE consumer — the Python resolver below,
+# which feeds the --fingerprint-hardware-concurrency and
+# --fingerprint-device-memory switches. Nothing is substituted into device.js.
 #
 # ADDING ONE: give it `since=<CURRENT_HARDWARE_GENERATION after you bump it>` and
 # leave every entry below untouched. Order is free to stay readable — the
@@ -66,15 +147,19 @@ CORES_MEMORY: list[CoresMemoryEntry] = [
 def cores_memory_for_generation(generation: int) -> list[tuple[int, int]]:
     """The (cores, GB-RAM) pool a profile of ``generation`` picks from.
 
-    The emitted JS divides by the length of THIS, never of the whole list —
-    taking the whole list's length is the original defect.
+    :func:`cores_memory_pick` divides by the length of THIS, never of the whole
+    list — taking the whole list's length is the original defect. (The emitted
+    JS used to do the same division; since PS-392 it carries no pool at all, so
+    the Python resolver is the only divider left.)
     """
     return [e.pair for e in visible_entries(CORES_MEMORY, generation)]
 
 
-#: The salt the emitted page script uses when it picks from the cores/RAM pool
-#: (``pick(HCMEM, 0xc0de5)``). Named here so the Python resolver below and the
-#: JS cannot drift to two different constants.
+#: The salt used when picking from the cores/RAM pool. It was shared with the
+#: emitted page script (``pick(HCMEM, 0xc0de5)``) and named here so the Python
+#: resolver and the JS could not drift to two different constants. ⛔ Since
+#: PS-392 there is no JS side: :func:`cores_memory_pick` is the sole consumer.
+#: Changing this value re-rolls the (cores, RAM) pair of every existing profile.
 CORES_MEMORY_SALT = 0xC0DE5
 
 
@@ -93,13 +178,27 @@ def _h32(seed: int, salt: int) -> int:
     mask silently diverges on large seeds, which is the whole reason this is
     written out rather than approximated.
 
-    ⚠️ THIS IS A SECOND IMPLEMENTATION OF A RULE THAT ALREADY EXISTS IN JS, and
-    that is a drift hazard by construction. It is justified only because the
+    ⚠️ THIS IS A SECOND IMPLEMENTATION OF A RULE THAT USED TO EXIST IN JS, and
+    it is a drift hazard by construction. It is justified only because the
     ENGINE needs the answer before any JS runs (see
-    :func:`hardware_concurrency_for`). ``test_ps354_service_worker_cores.py``
-    pins the two against each other by executing the REAL emitted script in
-    node and comparing, over many seeds and every generation — so a change to
-    either side fails rather than producing two quietly different profiles.
+    :func:`hardware_concurrency_for`).
+
+    ⛔ THE JS SIDE IS GONE, AND WITH IT THE GUARD THIS DOCSTRING USED TO NAME.
+    The pixelscan port (PS-392) deleted both `hardwareConcurrency` installs —
+    the top-level one and the shadowing private copy inside `applyHwPatch` —
+    because the engine authors that property in every realm via
+    `NavigatorConcurrentHardware` on the shared `NavigatorBase`. With the
+    installs went `pick`, and with `pick` went the `__HCMEM__` substitution:
+    `CORES_MEMORY` is no longer rendered into the emitted script at all. So
+    ``test_ps354_service_worker_cores.py`` can no longer execute a twin and
+    compare — it is REPOINTED, and its own docstring records that reduction.
+
+    ⚠️ NOTHING NOW CHECKS THIS PORT AGAINST AN INDEPENDENT ORACLE. A bug in
+    ``_h32``/:func:`cores_memory_pick` reaches the engine flag unchallenged by
+    any second implementation, so the 32-bit masking below is load-bearing and
+    must stay exact: a Python ``*`` or ``>>`` without the mask silently
+    diverges on large seeds and no test will catch it. If a JS author ever
+    returns, restore the node cross-check in the same change.
     """
     h = (seed ^ (salt & 0xFFFFFFFF)) & 0xFFFFFFFF
     h = ((h ^ (h >> 16)) * 0x85EBCA6B) & 0xFFFFFFFF
@@ -146,6 +245,65 @@ def hardware_concurrency_for(seed: int, generation: int) -> int:
     salt, rather than restating a number that happens to match today.
     """
     return cores_memory_pick(seed, generation)[0]
+
+
+#: The ONLY values ``navigator.deviceMemory`` may take. The Device Memory API
+#: reports the host's RAM in GiB rounded DOWN to a power of two and clamped to
+#: [0.25, 8], so this list is exhaustive — anything else is a value no real
+#: browser produces, which makes it a tell rather than a disguise.
+LEGAL_DEVICE_MEMORY: tuple[float, ...] = (0.25, 0.5, 1.0, 2.0, 4.0, 8.0)
+
+
+def spec_device_memory(memory_gb: float) -> float:
+    """``memory_gb`` as the Device Memory API would report it.
+
+    ⭐ THE CAP IS THE SPEC, NOT A DISGUISE, AND THAT IS THE WHOLE POINT OF THIS
+    FUNCTION EXISTING. A 16 GB machine and an 8 GB machine BOTH report ``8``
+    — the API deliberately discards the difference — so collapsing the pool's
+    16s onto 8 is not information being thrown away by persona, it is what
+    every real browser on a 16 GB host does.
+
+    ⛔ SO DO NOT "RESTORE THE ENTROPY". The pool's RAM axis is {8, 16}, and
+    both rungs map to 8: measured over 4000 seeds, ``deviceMemory`` is ``8`` for
+    every profile persona can generate. That is CORRECT. Making this vary per
+    seed would publish a number contradicting the profile's own claimed RAM and
+    would not match the capping behaviour a checker can reproduce on its own
+    hardware — a louder tell than the constant it replaced, not a quieter one.
+
+    The value is still authored per profile rather than hardcoded, because the
+    pool is what decides it and the pool may gain a sub-8 entry later; at that
+    point this function starts returning something other than 8 with no further
+    change.
+    """
+    value = float(memory_gb)
+    if not value > 0:
+        return LEGAL_DEVICE_MEMORY[-1]
+    best = LEGAL_DEVICE_MEMORY[0]
+    for rung in LEGAL_DEVICE_MEMORY:
+        if rung <= value:
+            best = rung
+    return best
+
+
+def device_memory_for(seed: int, generation: int) -> float:
+    """The value to pass the ENGINE as ``--fingerprint-device-memory``.
+
+    The deviceMemory twin of :func:`hardware_concurrency_for`, and it exists for
+    the same reason: the ServiceWorker realm has no JS author, so a value that
+    only JS sets is absent exactly where we cannot look.
+
+    ⛔ THE PAIR IS ONE MACHINE. ``cores_memory_pick`` returns ``(cores, GB)``
+    together, and this reads the SAME pick through the SAME hash and salt that
+    :func:`hardware_concurrency_for` reads. Resolving the two independently — a
+    second pool, a second salt, a constant — would let a profile publish cores
+    from one machine and RAM from another, which is a tell that no single value
+    reveals on its own.
+
+    The result is passed through :func:`spec_device_memory`, so the launcher
+    hands the engine an ALREADY-LEGAL figure rather than a raw pool value the
+    engine has to know how to cap.
+    """
+    return spec_device_memory(cores_memory_pick(seed, generation)[1])
 
 
 @dataclass(frozen=True)
@@ -275,10 +433,14 @@ def _render_screen_pool(pool: list[ScreenResolutionEntry]) -> str:
     substitutes.
 
     Rendered UNFILTERED, three-element rows, with each entry's ``since``
-    carried through — mirroring ``gpu_ext._render_pool`` and NOT the
-    pre-filtered ``__HCMEM__`` render above. The emitted JS keeps its own
-    ``RES = ALL_RES.filter(r[2] <= GEN)``, so pre-filtering here would change
-    the emitted shape and drop the third element.
+    carried through — mirroring ``gpu_ext._render_pool``. The emitted JS keeps
+    its own ``RES = ALL_RES.filter(r[2] <= GEN)``, so pre-filtering here would
+    change the emitted shape and drop the third element.
+
+    (This used to contrast itself with a pre-filtered ``__HCMEM__`` render.
+    That render is gone — the cores/RAM pool is no longer substituted into the
+    emitted script at all, because the engine authors both properties it fed.
+    ``cores_memory_for_generation`` is still the Python resolvers' pool.)
     """
     return json.dumps([[e.width, e.height, e.since] for e in pool])
 
@@ -326,17 +488,23 @@ __IIFE_LEAF_CLOAK__
     h = Math.imul(h ^ (h >>> 13), 0xc2b2ae35);
     return (h ^ (h >>> 16)) >>> 0;
   }
-  function pick(arr, salt) { return arr[h32(salt) % arr.length]; }
-
-  // NOTE: this IIFE used to define a top-level `nativeWrap`. Its LAST callsite
-  // was the `mediaDevices.enumerateDevices` install, which PS-320 moved into
-  // `applyDevicesPatch` — and a leaf carries its OWN wrapper (`nw`) inside its
-  // body, because the body is what crosses realms. So the readable copy became
-  // ~10 lines of unreachable JS shipped into every realm, and it is deleted
-  // rather than left. Each of the three leaves below declares its own minified
-  // `nw`; there is no shared one, deliberately. This is not tidiness: a dead
-  // readable copy is exactly what let a PS-314 falsification arm pass against
-  // code that never runs, one function over in this same file.
+  // NOTE: this IIFE used to define a top-level `pick`, and before that a
+  // top-level `nativeWrap`. Both are deleted for the SAME reason, recorded
+  // here rather than re-derived.
+  //
+  // `pick`'s only callsite was the `hardwareConcurrency` install, deleted when
+  // the engine became that property's sole author (see the module docstring).
+  // `nativeWrap`'s LAST callsite was the `mediaDevices.enumerateDevices`
+  // install, which PS-320 moved into `applyDevicesPatch` — and a leaf carries
+  // its OWN wrapper (`nw`) inside its body, because the body is what crosses
+  // realms. Each became unreachable JS shipped into every realm, and each is
+  // deleted rather than left. Each of the three leaves below declares its own
+  // minified `nw`; there is no shared one, deliberately. This is not tidiness:
+  // a dead readable copy is exactly what let a PS-314 falsification arm pass
+  // against code that never runs, one function over in this same file.
+  //
+  // ⚠️ `h32` STAYS — unlike those two it still has a live callsite, in the
+  // deviceId/groupId hashing below.
   function def(obj, prop, val) {
     try {
       // A REAL ACCESSOR, pulled back out of an object literal — not a function
@@ -626,53 +794,22 @@ __DEVICES_LEAF_CLOAK__
   }
 __DEVICES_REALM_BOOTSTRAP__
 
-  // --- navigator.hardwareConcurrency / deviceMemory ---
-  // fingerprint-chromium leaves these at the host's real values on a desktop
-  // profile (only the mobile presets set them), so a VM host leaked cores: 18 /
-  // ram: 8 under a Windows identity — an obvious tell (creepjs "device"
-  // rejected). Pin a plausible consumer-desktop (cores, GB-RAM) pair per seed.
-  var HM = [4, 8];
-  try {
-    // The (cores, GB-RAM) pool ALREADY FILTERED to this profile's frozen
-    // hardware generation, rendered from CORES_MEMORY in device_ext.py — the one
-    // source of truth for both this realm and the worker twin in applyHwPatch.
-    // It arrives pre-filtered rather than tagged-and-filtered-here so there is
-    // no unfiltered array in scope whose .length could be taken by mistake:
-    // dividing by the whole list's length is the original defect. Appending to
-    // CORES_MEMORY therefore cannot change this divisor for an existing profile.
-    var HCMEM = __HCMEM__;
-    HM = pick(HCMEM, 0xc0de5);
-    def(navigator, 'hardwareConcurrency', HM[0]);
-    // deviceMemory is a coarse power-of-two-ish bucket the browser caps at 8.
-    def(navigator, 'deviceMemory', Math.min(HM[1], 8));
-  } catch (e) {}
+  // --- navigator.hardwareConcurrency: authored by the engine, not here ---
+  // Nothing is installed in this realm. See device_ext.py's module docstring
+  // for why, and for the measurement that retired the premise this block used
+  // to carry.
 
   // screen geometry + devicePixelRatio ride applyScreenPatch on the shared
   // recursive registry (defined above), so they reach every nested realm
   // (page / iframe / grandchild iframe) — not a one-level getter here.
 
-  // Carry hardwareConcurrency/deviceMemory into Web/Shared Workers, where
-  // navigator.hardwareConcurrency otherwise reports the real host cores (a
-  // worker/page mismatch is a tell — a VM host leaked 32 in a worker while the
-  // page reported 12). SEED lives inside so applyHwPatch.toString() re-derives
-  // the SAME pair in the worker realm.
+  // A registered realm leaf that installs nothing — retained for its "hw"
+  // guard key. See device_ext.py's module docstring.
   function applyHwPatch(G) {
    try {
     if (!G || !G.navigator) return;
 __HW_REALM_GUARD__
 __HW_LEAF_CLOAK__
-    var SEED = __SEED__;
-    function h(x){var v=SEED^(x|0);v=Math.imul(v^(v>>>16),0x85ebca6b);v=Math.imul(v^(v>>>13),0xc2b2ae35);return (v^(v>>>16))>>>0;}
-    // Same pre-filtered pool as the page realm, rendered from the SAME
-    // CORES_MEMORY list, so the worker cannot report a different machine than
-    // the page (a page/worker mismatch is itself a tell). This runs AFTER the
-    // top-level IIFE and re-defines both properties, so this is the divisor the
-    // page actually ends up with — it must be generation-filtered too, and
-    // fixing only the copy above would have changed nothing observable.
-    var P=__HCMEM__; var m=P[h(0xc0de5)%P.length];
-    var def=function(o,k,val){try{var g=Object.getOwnPropertyDescriptor({get m(){return val;}},'m').get;try{Object.defineProperty(g,'name',{value:'get '+k});}catch(e){}__pncMark(g,'get '+k);Object.defineProperty(o,k,{get:g,configurable:true,enumerable:true});}catch(e){}};
-    def(G.navigator,'hardwareConcurrency',m[0]);
-    def(G.navigator,'deviceMemory',Math.min(m[1],8));
    } catch (e) {}
   }
 __HW_REALM_BOOTSTRAP__
@@ -718,12 +855,6 @@ def build_device_extension(
     ext_dir = pathlib.Path(base_dir)
     ext_dir.mkdir(parents=True, exist_ok=True)
     gen = normalize_generation(generation)
-    # Render the cores/RAM pool ALREADY FILTERED to this profile's generation, so
-    # the emitted JS has no unfiltered array in scope to divide by. Both realms
-    # (page + worker twin) substitute this same value.
-    hcmem = json.dumps(
-        [list(pair) for pair in cores_memory_for_generation(gen)]
-    )
     forced = f"[{resolution[0]}, {resolution[1]}]" if resolution else "null"
     os_norm = (
         "macos"
@@ -733,8 +864,6 @@ def build_device_extension(
     script = _CONTENT_SCRIPT.replace(
         "__SEED__", str(int(seed) & 0xFFFFFFFF)
     ).replace("__GEN__", str(gen)).replace(
-        "__HCMEM__", hcmem
-    ).replace(
         # The two screen-resolution pools are RENDERED from the tagged Python
         # records above, so a maintainer edits a `ScreenResolutionEntry` list
         # rather than a JS literal and the generation guards can iterate them.

@@ -4,7 +4,7 @@ the switches nobody ever wired.
 The switch twin of ``test_engine_masking_matrix.py``, and it exists for exactly
 the reason that file's header gives for itself: *"nobody could tell an
 INTENTIONAL absence from an UNNOTICED one."* That file asks the question of
-masking VECTORS across two engines. This one asks it of the twelve
+masking VECTORS across two engines. This one asks it of the thirteen
 command-line SWITCHES patch ``000-add-fingerprint-switches.patch`` declares, and
 it reuses that file's five-position vocabulary rather than minting a second one.
 
@@ -117,22 +117,26 @@ itself. PS-344 re-measured the same three switches on the PUBLISHED
 ``152.0.7977.75`` binary and reproduced the result, so the screen-trio cells
 below rest on the 152 reading and cite the 144 one only as its predecessor.
 
-THE SPLIT THIS FILE PINS IS 6 FULLY-WIRED / 2 CONSUMED-NOT-PASSED / 4
+THE SPLIT THIS FILE PINS IS 7 FULLY-WIRED / 2 CONSUMED-NOT-PASSED / 4
 DECLARED-NEVER-CONSUMED, AND IT WAS 4 / 4 / 4 IN THOSE SAME THREE BUCKETS WHEN
 THE WORK WAS COMMISSIONED. ⚠️ THE BUCKETS ARE NAMED RATHER THAN ORDERED, on
 purpose: on a file whose whole value proposition is that the numbers are
 DERIVED rather than written down, the one number written by hand must not
 depend on a reader guessing which bucket a position in the sequence refers to
 (the first version of this docstring said "6 / 4 / 2" while the code's own
-bucket order said "6 / 2 / 4", and both were defensible). Two rows moved in the
-days between commissioning and writing, both by the same route — a human
-finding one row by hand and a ticket closing it:
+bucket order said "6 / 2 / 4", and both were defensible). THREE rows have now
+moved since commissioning, all by the same route — a human finding one row by
+hand and a ticket closing it:
 
 * ``--fingerprint-brand-version`` (PS-356, commit 5014250) — consumed-not-passed
   became fully wired.
 * ``--fingerprint-hardware-concurrency`` (PS-354, commit eb64ad9) —
   consumed-not-passed became fully wired, to give the ServiceWorker realm an
   author.
+* ``--fingerprint-device-memory`` (PS-392) — the third row, and the only one
+  that arrived by DECLARATION rather than by wiring an existing declaration:
+  the switch did not exist in ``000`` at all, so this move took the total from
+  twelve declared to thirteen and the fully-wired bucket from 6 to 7.
 
 That drift IS the argument for pinning the census as data rather than writing
 the table into a document: the document would now be wrong, and nothing would
@@ -150,6 +154,7 @@ The matrix, one row per declared switch:
 | fingerprint                      | 10 patches       | YES    | COVERED           |
 | fingerprint-brand                | 002              | YES    | COVERED           |
 | fingerprint-brand-version        | 002              | YES    | COVERED (PS-356)  |
+| fingerprint-device-memory        | 005              | YES    | COVERED (PS-392)  |
 | fingerprint-hardware-concurrency | 005              | YES    | COVERED (PS-354)  |
 | fingerprint-platform             | 002,006,011      | YES    | COVERED           |
 | timezone                         | 018              | YES    | COVERED           |
@@ -364,6 +369,35 @@ MATRIX = {
         "platform>, the same string the device preset and the GPU pool arm "
         "resolve from, because one machine reporting three answers is itself "
         "the tell.",
+    ),
+    "fingerprint-device-memory": (
+        COVERED,
+        "⭐ ADDED BY THE PIXELSCAN PORT'S SLICE 2 (PS-392), and it is the only "
+        "row here whose consumer had to be BUILT rather than found. 005 did "
+        "not merely lack a read site for deviceMemory — it hardcoded "
+        "`return 8;`, so the engine answered 8 for every profile and no seed "
+        "could move it. The switch read replaces that constant, on the "
+        "018-timezone model, and is passed unconditionally. "
+        "⛔ IT IS ALSO A JS DELETION, and that half is what makes it "
+        "measurable: device_ext.py declared navigator.deviceMemory in BOTH "
+        "the page realm and the worker-realm twin inside applyHwPatch, and "
+        "both were deleted in the same change. Moving a spoof into the engine "
+        "while leaving the getter changes nothing a checker can see — both "
+        "authors stay live — and a native value in the page beside a stale JS "
+        "override in the worker is the exact disagreement checkers look for. "
+        "⚠️ THE VALUE IS SPEC-BOUNDED AND THE CAP IS NOT A DISGUISE. The "
+        "Device Memory API reports RAM rounded DOWN to a power of two and "
+        "clamped to [0.25, 8], so an 8 GB and a 16 GB machine BOTH report 8. "
+        "persona's pool RAM axis is {8, 16}, so every profile legitimately "
+        "reports 8 — measured over 5000 seeds. That is NOT lost entropy to be "
+        "'restored': a per-seed value would contradict the profile's own "
+        "claimed RAM and publish a figure no capped browser produces. The "
+        "launcher passes an already-legal value AND the patch re-clamps, so "
+        "no path can publish an illegal one. "
+        "⚠️ MOBILE TAKES ITS DEVICE PRESET'S VALUE, not the desktop pool's — "
+        "the argv list is built outside the mobile/desktop branch, and an "
+        "iPhone reporting desktop RAM in the ServiceWorker realm while its own "
+        "JS says 4 would be the same realm disagreement one lane over.",
     ),
     "timezone": (
         COVERED,
@@ -597,7 +631,7 @@ LOCATION_REFUSAL_SOURCES = {
 
 def test_the_matrix_covers_every_declared_switch():
     # THE DRIFT-PROOFING, and AC4. The declared set is READ FROM THE PATCH, not
-    # from a hardcoded list of twelve — so adding a switch to 000 and leaving it
+    # from a hardcoded list of thirteen — so adding a switch to 000 and leaving it
     # unpositioned fails HERE, which is the whole point of the file. The
     # symmetric half matters too: a switch REMOVED from 000 while a cell
     # survives would leave the matrix asserting a position on something that no
@@ -618,7 +652,7 @@ def test_the_declaration_parse_excludes_ungoogled_context_constants():
     #
     #      const char kFingerprintingCanvasImageDataNoise[] = "fingerprinting-…";
     #
-    # A single leading space is the only thing distinguishing it from the twelve
+    # A single leading space is the only thing distinguishing it from the thirteen
     # ``+`` lines below it. Drop the ``+`` test and the parser credits patch 000
     # with a switch it does not declare, then demands a position on it — a
     # census lying about its own subject.
@@ -654,10 +688,12 @@ def test_the_declaration_parse_excludes_ungoogled_context_constants():
     assert any(
         "kFingerprintingCanvasImageDataNoise" in line for line in context_declarations
     )
-    assert len(declared) == 12, (
-        f"000 declares {len(declared)} switches, not 12. If that is a real "
+    assert len(declared) == 13, (
+        f"000 declares {len(declared)} switches, not 13. If that is a real "
         "change, test_the_matrix_covers_every_declared_switch names which one "
-        "moved and this count follows it — update both together."
+        "moved and this count follows it — update both together.\n"
+        "⭐ WENT 12 -> 13 AT PS-392: fingerprint-device-memory was added so "
+        "deviceMemory could move off its JS descriptor into the engine."
     )
 
 
@@ -800,7 +836,7 @@ def test_a_context_only_patch_is_not_counted_as_a_consumer():
     # ⛔ AND THE CORRECTION DOES NOT MOVE THE HEADLINE, which is worth pinning
     # rather than assuming: dropping 015 leaves --disable-spoofing consumed by
     # seven patches and still unpassed, so the row does not change bucket and
-    # the 6 / 2 / 4 split survives the methodology fix. A census whose headline
+    # the 7 / 2 / 4 split survives the methodology fix. A census whose headline
     # moved under a correction to its own method would be a different
     # conversation entirely.
     assert consumer_patches("kDisableSpoofing", "disable-spoofing") != []
@@ -809,9 +845,15 @@ def test_a_context_only_patch_is_not_counted_as_a_consumer():
 def test_the_passed_column_is_read_off_a_real_launch(monkeypatch, tmp_path):
     # ⭐ THE PASSED COLUMN, and the reason it is argv rather than a grep.
     #
-    # Six switches, exactly. The negative half of this assertion is the
+    # Seven switches, exactly. The negative half of this assertion is the
     # load-bearing one — and it is trustworthy ONLY because the positive half
     # is in the same set comparison, taken from the same launch.
+    #
+    # ⭐ WENT SIX -> SEVEN AT PS-392: fingerprint-device-memory. Note this
+    # column is read off a REAL launch's argv, so it is the assertion that
+    # actually proves the switch is passed rather than merely declared — the
+    # distinction that matters here, because persona ships four switches that
+    # are declared and propagated and read by nothing.
     #
     # ⛔ THE TRAP THIS AVOIDS, stated because a future reader WILL be tempted to
     # simplify this into a grep: `grep -rl -- "--disable-spoofing" src/` matches
@@ -827,6 +869,7 @@ def test_the_passed_column_is_read_off_a_real_launch(monkeypatch, tmp_path):
         "fingerprint-platform",
         "fingerprint-brand",
         "fingerprint-brand-version",
+        "fingerprint-device-memory",
         "fingerprint-hardware-concurrency",
         "timezone",
     }, (
@@ -880,12 +923,14 @@ def test_the_grep_shortcut_this_file_refuses_would_be_wrong_today():
 
 def test_the_split_is_reproduced_as_data(monkeypatch, tmp_path):
     # AC1: the split, DERIVED from the three columns rather than written down —
-    # 6 FULLY-WIRED / 2 CONSUMED-NOT-PASSED / 4 DECLARED-NEVER-CONSUMED, named
+    # 7 FULLY-WIRED / 2 CONSUMED-NOT-PASSED / 4 DECLARED-NEVER-CONSUMED, named
     # rather than ordered so the headline cannot be misread off a bare
     # sequence. This is what the ticket commissioned — it read 4 / 4 / 4 in the
-    # same three buckets when the work was scoped, and two rows moved before it
-    # was written (PS-356 and PS-354, both closed by a human finding one row by
-    # hand). That drift is the argument for pinning the census as data.
+    # same three buckets when the work was scoped, and THREE rows have moved
+    # since (PS-356 and PS-354, both closed by a human finding one row by
+    # hand; then PS-392, which DECLARED a new switch and so moved the total
+    # from twelve to thirteen). That drift is the argument for pinning the
+    # census as data.
     #
     # ⚠️ THE SPLIT SURVIVED A CORRECTION TO THE CENSUS'S OWN METHOD. A code
     # review found consumer_patches reading whole patch text, which credited
@@ -914,6 +959,7 @@ def test_the_split_is_reproduced_as_data(monkeypatch, tmp_path):
             "fingerprint",
             "fingerprint-brand",
             "fingerprint-brand-version",
+            "fingerprint-device-memory",
             "fingerprint-hardware-concurrency",
             "fingerprint-platform",
             "timezone",
@@ -940,12 +986,13 @@ def test_the_split_is_reproduced_as_data(monkeypatch, tmp_path):
         "leaving it means somebody wrote the C++ read-side and its cell should "
         "no longer read COVERED_ELSEWHERE."
     )
-    # The three buckets partition the twelve — no row may fall through, and a
+    # The three buckets partition the THIRTEEN — no row may fall through, and a
     # row counted twice would let the arithmetic look right while a switch went
-    # unexamined.
+    # unexamined. Went 12 -> 13 at PS-392 (fingerprint-device-memory, which
+    # enters the fully_wired bucket: declared, consumed by 005, passed).
     assert (
         len(fully_wired) + len(consumed_not_passed) + len(declared_not_consumed)
-    ) == len(declared) == 12
+    ) == len(declared) == 13
 
     # ⛔ A PASSED SWITCH THAT NOBODY CONSUMES IS THE WORST CELL IN THE TABLE and
     # must never appear silently: it is a flag the engine accepts and discards

@@ -32,11 +32,8 @@ checked. A hardcoded 8 would satisfy the live reading above and be wrong for
 every profile whose pool entry is not 8, which is most of them.
 """
 
-import json
 import os
 import pathlib
-import shutil
-import subprocess
 import tempfile
 
 os.environ.setdefault("PERSONA_HOME", tempfile.mkdtemp())
@@ -48,7 +45,6 @@ from src.models.hardware_generation import (  # noqa: E402
 )
 from src.services.browser.device_ext import (  # noqa: E402
     CORES_MEMORY,
-    CORES_MEMORY_SALT,
     build_device_extension,
     cores_memory_for_generation,
     cores_memory_pick,
@@ -71,77 +67,86 @@ _SEEDS = [0, 1, 2, 3, 7, 42, 99, 1000, 65535, 123456789, 0xCAFE, 0xDEADBEEF, 0xF
 
 
 def test_the_python_pick_matches_the_REAL_emitted_javascript(tmp_path):
-    """⛔ THE ASSERTION THE WHOLE TICKET RESTS ON.
+    """⛔ THE ASSERTION THIS TICKET RESTED ON — AND ITS PREMISE IS NOW GONE.
 
-    The engine needs the cores value BEFORE any JS runs, so it cannot ask the
-    page script — the number has to be recomputed in Python. That is a second
-    implementation of a rule that already exists in JS, i.e. a drift hazard by
-    construction, and the only honest way to hold them together is to EXECUTE
-    the real emitted script and compare.
+    PS-354's hazard was a SECOND IMPLEMENTATION: the engine needs the cores
+    value before any JS runs, so Python recomputed what the emitted `device.js`
+    also computed, and two implementations of one rule drift by construction.
+    The only honest check was to EXECUTE the shipped script and compare, which
+    is what this test did — rendering the real `device.js`, pulling the pool the
+    generation filter actually produced out of `var HCMEM = …`, and running the
+    script's own `h32`/`pick` in node against the Python answer.
 
-    So this renders the actual ``device.js`` for each profile, pulls the pool
-    the generation filter really produced, and runs the script's own
-    ``h32``/``pick`` in node against the Python answer. A test that
-    re-implemented the hash in Python on both sides would agree with itself
-    while both drifted from the shipped script.
+    ⭐ THERE IS NO LONGER A JS IMPLEMENTATION TO DRIFT AGAINST. The pixelscan
+    port deleted both `hardwareConcurrency` installs (and both `deviceMemory`
+    ones before them), because the engine authors those properties in every
+    realm via `NavigatorConcurrentHardware`/`NavigatorDeviceMemory` on the
+    shared `NavigatorBase`. With the installs went `pick`, and with `pick` went
+    the `__HCMEM__` substitution — the emitted script no longer carries the pool
+    at all. So this comparison has one side.
 
-    Every generation x a seed spread across the 32-bit range, because the hash
-    masks at several steps and a missing mask shows up only on large values.
+    ⚠️ THAT IS A REAL REDUCTION IN COVERAGE AND IS RECORDED AS ONE, not waved
+    through. What PS-354 could check and nobody can check any more is whether
+    the Python resolver agrees with a shipped JS twin. What REPLACES it is
+    stronger where it overlaps and weaker where it does not:
+
+    * STRONGER: the page and worker realms can no longer disagree with the
+      engine or with each other, because there is only one author. The class of
+      defect this test watched for is now unconstructible rather than merely
+      unobserved.
+    * WEAKER: nothing executes the resolver against an independent oracle. A
+      bug in `_h32`/`cores_memory_pick` now reaches the engine flag unchallenged
+      by any second implementation.
+
+    So the test is REPOINTED rather than deleted: it pins the two facts that
+    keep the reduction honest — the JS twin is genuinely absent (not merely
+    renamed), and the Python resolver still exercises the pool rather than
+    having collapsed to a constant. `test_ps_device_memory_native.py`'s
+    `test_cores_and_memory_come_from_ONE_machine` is the sibling that keeps the
+    two flags reading one pick.
     """
-    node = shutil.which("node")
-    if not node:
-        pytest.skip("node not available")
+    base = tmp_path / "emitted"
+    build_device_extension(1337, str(base), CURRENT_HARDWARE_GENERATION,
+                           os_type="windows")
+    js = (base / "device.js").read_text(encoding="utf-8")
 
-    mismatches = []
-    seen_cores = set()
-    for seed in _SEEDS:
-        for gen in _GENERATIONS:
-            base = tmp_path / f"s{seed}g{gen}"
-            build_device_extension(seed, str(base), gen, os_type="windows")
-            js = (base / "device.js").read_text(encoding="utf-8")
-
-            # The pool as the SHIPPED script actually received it, not as this
-            # test believes the filter behaves.
-            hcmem = js.split("var HCMEM =")[1].split(";")[0].strip()
-
-            prog = (
-                f"var SEED={seed & 0xFFFFFFFF};"
-                "function h32(x){var h=SEED^(x|0);"
-                "h=Math.imul(h^(h>>>16),0x85ebca6b);"
-                "h=Math.imul(h^(h>>>13),0xc2b2ae35);"
-                "return (h^(h>>>16))>>>0;}"
-                "function pick(a,s){return a[h32(s)%a.length];}"
-                f"var HCMEM={hcmem};"
-                f"console.log(JSON.stringify(pick(HCMEM,{CORES_MEMORY_SALT})));"
-            )
-            out = subprocess.run(
-                [node, "-e", prog],
-                capture_output=True,
-                text=True,
-                timeout=60,
-                encoding="utf-8",
-            )
-            assert out.returncode == 0, out.stderr
-            js_pick = tuple(json.loads(out.stdout.strip()))
-            py_pick = cores_memory_pick(seed, gen)
-            seen_cores.add(js_pick[0])
-            if js_pick != py_pick:
-                mismatches.append((seed, gen, js_pick, py_pick))
-
-    assert not mismatches, (
-        "the Python resolver and the emitted device.js disagree about which "
-        "machine this profile is, so the ENGINE would author a different core "
-        "count than the PAGE — a page/engine mismatch, which is the same tell "
-        f"PS-354 exists to remove: {mismatches}"
+    # (1) The JS twin is really gone — and asserted on the ARTIFACT, not the
+    #     module source, because the script is built by `.replace()` into a
+    #     template and a source grep passes on a template that merely mentions
+    #     the name.
+    assert "var HCMEM" not in js and "HCMEM" not in js, (
+        "the cores/RAM pool is being substituted into device.js again. If a JS "
+        "author for hardwareConcurrency/deviceMemory has returned, restore the "
+        "node cross-check above with it — a second implementation without the "
+        "comparison is the drift hazard PS-354 was filed on."
     )
+    assert "pick(" not in js, (
+        "`pick` is back in the emitted script. Its only callsite was the "
+        "hardwareConcurrency install; a dead readable copy is what let a "
+        "PS-314 falsification arm pass against code that never runs."
+    )
+    for prop in ("hardwareConcurrency", "deviceMemory"):
+        installs = [
+            line.strip() for line in js.splitlines()
+            if "def(" in line and prop in line
+        ]
+        assert not installs, (
+            f"device.js installs {prop} again: {installs}. The engine is the "
+            "sole author; a JS descriptor here restores an own property on the "
+            "navigator INSTANCE, which is the position leak this slice closed."
+        )
 
-    # NOT VACUOUS, and this is the assertion that makes the comparison mean
-    # something: the sample must actually EXERCISE several pool entries. If
-    # every seed landed on the same pair, a hardcoded resolver would pass every
-    # comparison above.
-    assert len(seen_cores) > 1, (
-        f"every sampled profile resolved to the same core count {seen_cores} — "
-        "this comparison cannot distinguish a real resolver from a constant"
+    # (2) The surviving single implementation is not a constant — the check that
+    #     would otherwise be satisfied by a hardcoded resolver.
+    seen = {
+        cores_memory_pick(seed, gen)
+        for seed in _SEEDS
+        for gen in _GENERATIONS
+    }
+    assert len({cores for cores, _ in seen}) > 1, (
+        f"every sampled profile resolves to the same core count ({seen}) — the "
+        "resolver can no longer be distinguished from a constant, and there is "
+        "no JS twin left to catch that."
     )
 
 
@@ -242,49 +247,67 @@ def test_the_pick_is_generation_filtered_not_the_whole_pool(monkeypatch):
 def test_every_pool_entry_has_at_least_8gb_so_deviceMemory_cannot_diverge():
     """⭐ THE GUARD FOR A DEFECT THAT DOES NOT EXIST YET (PS-354).
 
-    Patch 005 pins the engine's ``NavigatorDeviceMemory::deviceMemory()`` to a
-    hardcoded ``return 8;`` with NO switch, while the page realm emits
-    ``Math.min(HM[1], 8)``. Those two agree ONLY because every entry in
-    ``CORES_MEMORY`` currently has at least 8 GB of RAM, which makes the min
-    exactly 8 every time.
+    ⭐ ITS PREMISE IS NOW DISCHARGED, AND THE TEST IS KEPT WITH A NARROWER JOB.
+    PS-354 wrote this against a specific hazard: patch 005 pinned the engine's
+    ``NavigatorDeviceMemory::deviceMemory()`` to a hardcoded ``return 8;`` with
+    NO switch, while the page realm emitted ``Math.min(HM[1], 8)`` — two
+    independent authors that agreed only because every ``CORES_MEMORY`` entry
+    happened to carry at least 8 GB. Its own instruction was *"give patch 005 a
+    --fingerprint-device-memory switch before adding this entry"*.
 
-    ⚠️ THAT AGREEMENT IS COINCIDENTAL, NOT DESIGNED. Adding a
-    ``CoresMemoryEntry`` with less than 8 GB would silently re-open the realm
-    mismatch this ticket closed: the page would report 4 while the
-    engine-authored service worker reported 8. Nothing else in the suite can
-    see that, because the page and the Web-Worker twin read the SAME pool and
-    would agree with each other perfectly — the divergence is only visible
-    against the ENGINE, which no unit test launches.
+    ⛔ THAT SWITCH NOW EXISTS (pixelscan port, slice 2). The engine reads
+    ``--fingerprint-device-memory``, the launcher passes the profile's own pool
+    value through ``spec_device_memory``, and BOTH JS overrides are deleted —
+    so the engine is the SOLE author and a page/engine divergence is no longer
+    constructible. A sub-8GB entry is therefore SAFE today, and this test is no
+    longer the gate it was written as.
 
-    So this fails LOUDLY at the moment of the edit rather than shipping a tell.
-    If you are here because you added a sub-8GB entry: the fix is not to relax
-    this test, it is that patch 005's hardcoded 8 needs a switch first.
+    It is kept because the pool's RAM axis is still worth watching: this now
+    pins that every entry maps onto a LEGAL Device Memory rung, which is a
+    different and still-live claim (a 12 GB entry would be legal as a machine
+    spec and illegal as a reported value — see ``spec_device_memory``).
     """
-    smallest = min(entry.memory_gb for entry in CORES_MEMORY)
-    assert smallest >= 8, (
-        f"CORES_MEMORY now contains an entry with only {smallest} GB of RAM. "
-        "PS-354: the page emits Math.min(ram, 8) while the engine's patch 005 "
-        "pins deviceMemory to a hardcoded 8 with no switch, so this entry "
-        "makes the page and the ServiceWorker realm report DIFFERENT memory — "
-        "a page/realm mismatch, which is exactly the tell PS-354 closed for "
-        "hardwareConcurrency. Give patch 005 a --fingerprint-device-memory "
-        "switch before adding this entry."
+    from src.services.browser.device_ext import (
+        LEGAL_DEVICE_MEMORY,
+        spec_device_memory,
     )
 
-
-def test_the_page_realm_emits_exactly_eight_for_every_current_entry():
-    """The other side of the same coin, stated on the VALUE rather than the pool.
-
-    Pins what the page actually emits (``min(ram, 8)``) against the engine's
-    hardcoded 8, so the claim "they already agree" is executable rather than a
-    comment. If the pool guard above ever has to change, this says what the
-    consequence would be.
-    """
     for entry in CORES_MEMORY:
-        assert min(entry.memory_gb, 8) == 8, (
-            f"entry {entry} makes the page report {min(entry.memory_gb, 8)} while the "
-            "engine reports 8"
+        reported = spec_device_memory(entry.memory_gb)
+        assert reported in LEGAL_DEVICE_MEMORY, (
+            f"entry {entry} maps to {reported}, which is not a value the "
+            f"Device Memory API can report ({LEGAL_DEVICE_MEMORY})"
         )
+
+
+def test_the_page_realm_no_longer_authors_deviceMemory_at_all():
+    """The other side of the same coin, INVERTED by the slice that closed it.
+
+    This test used to pin ``min(ram, 8) == 8`` for every pool entry — the page
+    realm's emitted value — against the engine's hardcoded 8, so that "they
+    already agree" was executable rather than a comment.
+
+    ⛔ THE PAGE REALM NO LONGER EMITS A ``deviceMemory`` AT ALL. Both JS sites
+    were deleted when the engine gained its switch, because a JS descriptor is
+    the detectable surface this port exists to remove — so the agreement is now
+    structural (one author) rather than arithmetic (two authors that match).
+    Asserting on the page's emitted value would assert on something that is not
+    there, which is why the claim is restated rather than kept.
+    """
+    import tempfile as _tempfile
+
+    from src.services.browser.device_ext import build_device_extension
+
+    with _tempfile.TemporaryDirectory() as tmp:
+        build_device_extension(1337, tmp, CURRENT_HARDWARE_GENERATION,
+                               os_type="windows")
+        js = pathlib.Path(tmp, "device.js").read_text(encoding="utf-8")
+
+    assert "'deviceMemory'" not in js and '"deviceMemory"' not in js, (
+        "device.js defines navigator.deviceMemory again. The engine is the "
+        "sole author now (--fingerprint-device-memory); a JS descriptor here "
+        "restores the detectable getter AND can disagree with the engine."
+    )
 
 
 # ---------------------------------------------------------------------------

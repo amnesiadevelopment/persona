@@ -430,6 +430,20 @@ def test_the_falsification_arms_do_not_disturb_any_spoofed_value(scripts):
     figures were verified byte-identical against the pristine base (`360c488`)
     by running this same probe under both trees, which is the measurement this
     assertion freezes rather than an expectation invented here.
+
+    ⭐ TWO READS WERE REMOVED WHEN THEIR SPOOF LEFT THE PAGE, and the reason is
+    worth stating so nobody restores them as "missing coverage". `cores` and
+    `mem` used to read `G.navigator.hardwareConcurrency` / `.deviceMemory`,
+    which `device_ext` installed as own properties. The pixelscan port deleted
+    both installs — the engine authors those properties natively in every realm
+    — so in this harness they now read whatever the stub realm happens to carry,
+    which is NOT a persona-spoofed value and cannot detect a marker edit.
+
+    ⛔ KEEPING THEM WOULD HAVE BEEN WORSE THAN DROPPING THEM: an assertion on a
+    value persona no longer authors is an assertion that cannot fail for the
+    reason the test claims, which is precisely the vacuous-guard shape this
+    suite exists to prevent. The remaining six reads still span five extensions
+    and every value in them is genuinely persona-authored.
     """
     out = probe(
         [
@@ -449,8 +463,6 @@ def test_the_falsification_arms_do_not_disturb_any_spoofed_value(scripts):
             "screen.width": "G.screen.width",
             "screen.height": "G.screen.height",
             "dpr": "G.devicePixelRatio",
-            "cores": "G.navigator.hardwareConcurrency",
-            "mem": "G.navigator.deviceMemory",
             "gpu_vendor":
                 "(function(){var c=new WebGLRenderingContext();"
                 " return c.getParameter(0x1F00);})()",
@@ -462,7 +474,6 @@ def test_the_falsification_arms_do_not_disturb_any_spoofed_value(scripts):
     assert out["__errors"] == []
     assert out["screen.width"] == 1440 and out["screen.height"] == 900
     assert out["dpr"] == 1
-    assert out["cores"] == 6 and out["mem"] == 8
     assert out["gpu_vendor"] == "WebKit"
     assert out["audio"] == (
         "[0.49999499320983887,-0.25000250339508057,0.12499874830245972]"
