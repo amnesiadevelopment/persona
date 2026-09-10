@@ -112,6 +112,31 @@ import subprocess
 import sys
 from pathlib import Path
 
+
+def _pin_stdio_to_utf8() -> None:
+    """Make this script's own output survive a non-UTF-8 console.
+
+    ⚠️ NOT COSMETIC, AND MEASURED. Every refusal message here carries a ⚠️ or a
+    ⛔, and on Windows `sys.stderr` resolves to the ANSI code page (cp1252),
+    which cannot encode either. The write then raises UnicodeEncodeError inside
+    the refusal path — so the one message whose entire job is to say "this is
+    NOT a pass" is the message that fails to be written, and a caller reading
+    the streams gets nothing where the reason should be.
+
+    The repo already fights this on the behaviour-check path (see
+    `.github/scripts/run_behaviour_checks.py::echo`); this is the same fix at
+    the smaller scale a single script needs. `errors="replace"` is deliberate:
+    this is the last stop before the log, so an unencodable character must
+    degrade rather than take the refusal down with it.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            try:
+                reconfigure(encoding="utf-8", errors="replace")
+            except (OSError, ValueError):  # a substituted stream in a test
+                pass
+
 # The entitlement set we assert on our own bundles. This MUST be kept in step
 # with `[tool.flet.macos.entitlement]` in pyproject.toml — the two exist for
 # different reasons (that one states intent into the generated plist, this one
@@ -337,6 +362,7 @@ def sign_cmd(target: Path, ents: Path | None) -> list[str]:
 
 
 def main() -> int:
+    _pin_stdio_to_utf8()
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )

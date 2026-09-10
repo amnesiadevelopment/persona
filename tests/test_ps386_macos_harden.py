@@ -151,6 +151,21 @@ def _ents(get_task_allow: bool) -> bytes:
     ).encode()
 
 
+def _streams(res) -> str:
+    """Both captured streams as one string, treating None as empty.
+
+    ⚠️ `capture_output=True` still yields `None` for a stream when the child
+    produced nothing decodable, and `"x" in None` is a TypeError, not a failed
+    assertion. That distinction matters here: a TypeError inside a REFUSAL test
+    reports as an error in the test rather than as the refusal being absent, so
+    the real signal is buried. Measured on CI run 34475127591 (windows leg).
+
+    Reading both streams is also the honest check — the assertions below care
+    that the refusal was SAID, not which fd it went to.
+    """
+    return (res.stdout or "") + (res.stderr or "")
+
+
 def _app(tmp_path: Path, name: str = "persona.app") -> Path:
     app = tmp_path / name
     (app / "Contents" / "MacOS").mkdir(parents=True)
@@ -243,6 +258,7 @@ def test_check_pyproject_runs_anywhere_and_passes():
         [sys.executable, str(SCRIPT), "--check-pyproject"],
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
     assert res.returncode == 0, res.stderr
 
@@ -253,9 +269,10 @@ def test_a_bad_app_path_refuses_with_2_not_0(tmp_path):
         [sys.executable, str(SCRIPT), "--app", str(tmp_path / "nope.app")],
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
     assert res.returncode == 2
-    assert "CANNOT RUN" in res.stderr
+    assert "CANNOT RUN" in _streams(res)
 
 
 @pytest.mark.skipif(sys.platform == "darwin", reason="this asserts the non-Mac refusal")
@@ -270,9 +287,11 @@ def test_non_darwin_refuses_rather_than_claiming_success(tmp_path):
         [sys.executable, str(SCRIPT), "--app", str(fake)],
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
     assert res.returncode == 2
-    assert "NOT a pass" in res.stderr or "CANNOT RUN" in res.stderr
+    blob = _streams(res)
+    assert "NOT a pass" in blob or "CANNOT RUN" in blob
 
 
 # ── Mach-O detection ─────────────────────────────────────────────────────────
@@ -289,7 +308,7 @@ def test_macho_detection_reads_magic_not_extension(mod, tmp_path):
     assert mod.is_macho(fat) is True
 
     text = tmp_path / "script.dylib"  # a lying extension
-    text.write_text("#!/bin/sh\necho not a macho\n")
+    text.write_text("#!/bin/sh\necho not a macho\n", encoding="utf-8")
     assert mod.is_macho(text) is False
 
     empty = tmp_path / "empty"
@@ -642,9 +661,10 @@ def test_verifier_refuses_an_empty_bundle_rather_than_passing_it(tmp_path):
         [sys.executable, str(VERIFIER), "--app", str(app)],
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
     assert res.returncode == 2
-    assert "NOT a pass" in res.stderr
+    assert "NOT a pass" in _streams(res)
 
 
 def test_verifier_exit_codes_are_distinct_end_to_end(tmp_path):
@@ -663,15 +683,16 @@ def test_verifier_exit_codes_are_distinct_end_to_end(tmp_path):
     )
 
     ok = subprocess.run(
-        [sys.executable, str(VERIFIER), "--app", str(good)], capture_output=True, text=True
+        [sys.executable, str(VERIFIER), "--app", str(good)], capture_output=True, text=True, encoding="utf-8"
     )
     fail = subprocess.run(
-        [sys.executable, str(VERIFIER), "--app", str(bad)], capture_output=True, text=True
+        [sys.executable, str(VERIFIER), "--app", str(bad)], capture_output=True, text=True, encoding="utf-8"
     )
     missing = subprocess.run(
         [sys.executable, str(VERIFIER), "--app", str(tmp_path / "nope")],
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
 
     assert ok.returncode == 0, ok.stdout + ok.stderr
@@ -690,7 +711,7 @@ def test_verifier_states_plainly_that_a_pass_is_not_notarized(tmp_path):
         _make_macho(hardened=True, entitlements=_ents(False))
     )
     res = subprocess.run(
-        [sys.executable, str(VERIFIER), "--app", str(app)], capture_output=True, text=True
+        [sys.executable, str(VERIFIER), "--app", str(app)], capture_output=True, text=True, encoding="utf-8"
     )
     assert res.returncode == 0
     assert "NOT A SIGNED OR NOTARIZED ARTIFACT" in res.stdout
@@ -781,7 +802,7 @@ def test_the_verifier_refuses_when_the_controls_readers_are_gone(verifier, tmp_p
     not a verifier that quietly starts measuring with its own parser.
     """
     stub = tmp_path / "ps346_signing_state.py"
-    stub.write_text("def macho_slices(d):\n    return []\n")
+    stub.write_text("def macho_slices(d):\n    return []\n", encoding="utf-8")
     monkeypatch.setattr(verifier, "CONTROL", stub)
     with pytest.raises(ImportError, match="read_macho_slice"):
         verifier.load_control()
@@ -823,6 +844,28 @@ def test_the_scripts_state_they_produce_nothing_notarized():
     hardener = SCRIPT.read_text(encoding="utf-8")
     assert "NOT A NOTARIZED OR IDENTITY-SIGNED BUILD" in hardener
     assert "NOT OUTCOME 4" in hardener
+
+
+def test_the_refusal_messages_survive_a_non_utf8_console():
+    """⚠️ THE REFUSAL IS THE MESSAGE THAT MUST NOT FAIL TO BE WRITTEN.
+
+    Every refusal here carries a ⚠️ or a ⛔, and on Windows `sys.stderr`
+    resolves to cp1252, which cannot encode either — so the write raises inside
+    the refusal path and the one line whose whole job is to say "this is NOT a
+    pass" is the line that never appears. Measured on CI run 34475127591.
+
+    Both scripts must pin their own stdio, and must do it in `main()` before any
+    output — pinning after the first write is pinning after the failure.
+    """
+    for path in (SCRIPT, VERIFIER):
+        src = path.read_text(encoding="utf-8")
+        assert "_pin_stdio_to_utf8" in src, f"{path.name} does not pin its stdio"
+        assert 'errors="replace"' in src, f"{path.name} must degrade, not raise"
+        body = src.split("def main() -> int:", 1)[1]
+        first_call = body.index("_pin_stdio_to_utf8()")
+        assert first_call < body.index("ap.parse_args()"), (
+            f"{path.name} must pin stdio before it can emit anything"
+        )
 
 
 # ── ⭐ the wiring: a script nobody calls changes no shipped byte ─────────────
