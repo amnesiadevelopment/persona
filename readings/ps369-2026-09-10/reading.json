@@ -1,0 +1,855 @@
+{
+  "ticket": "PS-369",
+  "taken_at": "2026-09-10T04:31:51.215790+00:00",
+  "tree": "225ea156aa5985eb9e8d554e3c9e08b792731832",
+  "origin_url": "http://127.0.0.1:33761/",
+  "probe_ids": [
+    "fonts.measureText",
+    "masking.measureText"
+  ],
+  "probe_font_list": [
+    "16px monospace",
+    "16px sans-serif",
+    "16px serif",
+    "16px Arial",
+    "16px Courier New",
+    "16px Times New Roman",
+    "16px Georgia",
+    "16px Verdana",
+    "16px Tahoma",
+    "16px Helvetica",
+    "16px Segoe UI",
+    "16px Roboto",
+    "16px Noto Sans",
+    "16px DejaVu Sans"
+  ],
+  "environment": {
+    "host_platform": "Linux-6.8.0-138-generic-x86_64-with-glibc2.41",
+    "host_machine": "x86_64",
+    "host_system": "Linux",
+    "kernel": "6.8.0-138-generic",
+    "display": ":93",
+    "installed_font_families": [
+      "DejaVu Sans",
+      "DejaVu Sans Mono",
+      "DejaVu Serif"
+    ],
+    "engine_build": "firefox-20",
+    "stock_binary": "/tmp/stockff/firefox/firefox",
+    "stock_version": "Mozilla Firefox 151.0",
+    "stock_sha256": "29a6161ceefebf9cd2e0954ac542328a15ec1748126cc20142df9fdf8bdaeff1",
+    "engine_binary": "/home/yatfa/.cache/invisible-playwright/firefox-20_151.0_20260817150018/firefox",
+    "engine_version": "Mozilla Firefox 151.0",
+    "engine_sha256": "db5196321d4a554f3c1fc513652d742bbaf659b7b9be51bee25a4f83d9199bb7"
+  },
+  "arms": [
+    {
+      "arm": "A1_stock_control",
+      "reveal_control": false,
+      "noop_control": false,
+      "gates": {
+        "channel_arith": 2,
+        "href": "http://127.0.0.1:33761/",
+        "origin": "http://127.0.0.1:33761",
+        "secure_context": true,
+        "user_agent": "Mozilla/5.0 (X11; Linux x86_64; rv:151.0) Gecko/20100101 Firefox/151.0",
+        "layout_width": 1350,
+        "canvas2d_available": true,
+        "build_id": "20181001000000",
+        "worker_available": true
+      },
+      "window": {
+        "fonts.measureText": {
+          "v": {
+            "16px monospace": 205.667,
+            "16px sans-serif": 205.983,
+            "16px serif": 215.95,
+            "16px Arial": 215.95,
+            "16px Courier New": 215.95,
+            "16px Times New Roman": 215.95,
+            "16px Georgia": 215.95,
+            "16px Verdana": 215.95,
+            "16px Tahoma": 215.95,
+            "16px Helvetica": 215.95,
+            "16px Segoe UI": 215.95,
+            "16px Roboto": 215.95,
+            "16px Noto Sans": 215.95,
+            "16px DejaVu Sans": 205.983
+          }
+        },
+        "masking.measureText": {
+          "v": "function measureText() {\n    [native code]\n}"
+        }
+      },
+      "worker": {
+        "fonts.measureText": {
+          "v": {
+            "16px monospace": 205.667,
+            "16px sans-serif": 205.983,
+            "16px serif": 215.95,
+            "16px Arial": 205.983,
+            "16px Courier New": 205.983,
+            "16px Times New Roman": 205.983,
+            "16px Georgia": 205.983,
+            "16px Verdana": 205.983,
+            "16px Tahoma": 205.983,
+            "16px Helvetica": 205.983,
+            "16px Segoe UI": 205.983,
+            "16px Roboto": 205.983,
+            "16px Noto Sans": 205.983,
+            "16px DejaVu Sans": 205.983
+          }
+        },
+        "masking.measureText": {
+          "v": "absent:undefined"
+        }
+      },
+      "answering_install": "/tmp/stockff/firefox",
+      "binary": "/tmp/stockff/firefox/firefox"
+    },
+    {
+      "arm": "A2_persona_engine_bare",
+      "reveal_control": false,
+      "noop_control": false,
+      "gates": {
+        "channel_arith": 2,
+        "href": "http://127.0.0.1:33761/",
+        "origin": "http://127.0.0.1:33761",
+        "secure_context": true,
+        "user_agent": "Mozilla/5.0 (X11; Linux x86_64; rv:151.0) Gecko/20100101 Firefox/151.0",
+        "layout_width": 1350,
+        "canvas2d_available": true,
+        "build_id": "20181001000000",
+        "worker_available": true
+      },
+      "window": {
+        "fonts.measureText": {
+          "v": {
+            "16px monospace": 190.033,
+            "16px sans-serif": 190.033,
+            "16px serif": 190.033,
+            "16px Arial": 190.033,
+            "16px Courier New": 208,
+            "16px Times New Roman": 186.867,
+            "16px Georgia": 198.367,
+            "16px Verdana": 210.35,
+            "16px Tahoma": 188.467,
+            "16px Helvetica": 190.033,
+            "16px Segoe UI": 190.433,
+            "16px Roboto": 190.033,
+            "16px Noto Sans": 190.033,
+            "16px DejaVu Sans": 190.033
+          }
+        },
+        "masking.measureText": {
+          "v": "function measureText() {\n    [native code]\n}"
+        }
+      },
+      "worker": {
+        "fonts.measureText": {
+          "v": {
+            "16px monospace": 190.033,
+            "16px sans-serif": 190.033,
+            "16px serif": 190.033,
+            "16px Arial": 190.033,
+            "16px Courier New": 208,
+            "16px Times New Roman": 186.867,
+            "16px Georgia": 198.367,
+            "16px Verdana": 210.35,
+            "16px Tahoma": 188.467,
+            "16px Helvetica": 190.033,
+            "16px Segoe UI": 190.433,
+            "16px Roboto": 190.033,
+            "16px Noto Sans": 190.033,
+            "16px DejaVu Sans": 190.033
+          }
+        },
+        "masking.measureText": {
+          "v": "absent:undefined"
+        }
+      },
+      "answering_install": "/home/yatfa/.cache/invisible-playwright/firefox-20_151.0_20260817150018",
+      "binary": "/home/yatfa/.cache/invisible-playwright/firefox-20_151.0_20260817150018/firefox"
+    },
+    {
+      "arm": "R_reveal_control_stock",
+      "reveal_control": true,
+      "noop_control": false,
+      "gates": {
+        "channel_arith": 2,
+        "href": "http://127.0.0.1:33761/",
+        "origin": "http://127.0.0.1:33761",
+        "secure_context": true,
+        "user_agent": "Mozilla/5.0 (X11; Linux x86_64; rv:151.0) Gecko/20100101 Firefox/151.0",
+        "layout_width": 1350,
+        "canvas2d_available": true,
+        "build_id": "20181001000000",
+        "worker_available": true
+      },
+      "reveal_installed": "reveal-installed",
+      "window": {
+        "fonts.measureText": {
+          "v": {
+            "16px monospace": 0,
+            "16px sans-serif": 0,
+            "16px serif": 0,
+            "16px Arial": 0,
+            "16px Courier New": 0,
+            "16px Times New Roman": 0,
+            "16px Georgia": 0,
+            "16px Verdana": 0,
+            "16px Tahoma": 0,
+            "16px Helvetica": 0,
+            "16px Segoe UI": 0,
+            "16px Roboto": 0,
+            "16px Noto Sans": 0,
+            "16px DejaVu Sans": 0
+          }
+        },
+        "masking.measureText": {
+          "v": "function measureText(text) {\n      var m = native.apply(this, arguments);\n      var out = {};\n      for (var k in m) {\n        var v = m[k];\n        out[k] = (typeof v === 'number') ? v * 1e-6 : v;\n      }\n      return out;\n    }"
+        }
+      },
+      "worker": {
+        "fonts.measureText": {
+          "v": {
+            "16px monospace": 205.667,
+            "16px sans-serif": 205.983,
+            "16px serif": 215.95,
+            "16px Arial": 205.983,
+            "16px Courier New": 205.983,
+            "16px Times New Roman": 205.983,
+            "16px Georgia": 205.983,
+            "16px Verdana": 205.983,
+            "16px Tahoma": 205.983,
+            "16px Helvetica": 205.983,
+            "16px Segoe UI": 205.983,
+            "16px Roboto": 205.983,
+            "16px Noto Sans": 205.983,
+            "16px DejaVu Sans": 205.983
+          }
+        },
+        "masking.measureText": {
+          "v": "absent:undefined"
+        }
+      },
+      "answering_install": "/tmp/stockff/firefox",
+      "binary": "/tmp/stockff/firefox/firefox"
+    },
+    {
+      "arm": "N_noop_control_stock",
+      "reveal_control": false,
+      "noop_control": true,
+      "gates": {
+        "channel_arith": 2,
+        "href": "http://127.0.0.1:33761/",
+        "origin": "http://127.0.0.1:33761",
+        "secure_context": true,
+        "user_agent": "Mozilla/5.0 (X11; Linux x86_64; rv:151.0) Gecko/20100101 Firefox/151.0",
+        "layout_width": 1350,
+        "canvas2d_available": true,
+        "build_id": "20181001000000",
+        "worker_available": true
+      },
+      "noop_installed": "noop-installed",
+      "window": {
+        "fonts.measureText": {
+          "v": {
+            "16px monospace": 205.667,
+            "16px sans-serif": 205.983,
+            "16px serif": 215.95,
+            "16px Arial": 215.95,
+            "16px Courier New": 215.95,
+            "16px Times New Roman": 215.95,
+            "16px Georgia": 215.95,
+            "16px Verdana": 215.95,
+            "16px Tahoma": 215.95,
+            "16px Helvetica": 215.95,
+            "16px Segoe UI": 215.95,
+            "16px Roboto": 215.95,
+            "16px Noto Sans": 215.95,
+            "16px DejaVu Sans": 205.983
+          }
+        },
+        "masking.measureText": {
+          "v": "m() { return inner.apply(this, arguments); }"
+        }
+      },
+      "worker": {
+        "fonts.measureText": {
+          "v": {
+            "16px monospace": 205.667,
+            "16px sans-serif": 205.983,
+            "16px serif": 215.95,
+            "16px Arial": 205.983,
+            "16px Courier New": 205.983,
+            "16px Times New Roman": 205.983,
+            "16px Georgia": 205.983,
+            "16px Verdana": 205.983,
+            "16px Tahoma": 205.983,
+            "16px Helvetica": 205.983,
+            "16px Segoe UI": 205.983,
+            "16px Roboto": 205.983,
+            "16px Noto Sans": 205.983,
+            "16px DejaVu Sans": 205.983
+          }
+        },
+        "masking.measureText": {
+          "v": "absent:undefined"
+        }
+      },
+      "answering_install": "/tmp/stockff/firefox",
+      "binary": "/tmp/stockff/firefox/firefox"
+    },
+    {
+      "arm": "B_persona_product_path",
+      "reveal_control": false,
+      "noop_control": false,
+      "gates": {
+        "channel_arith": 2,
+        "href": "http://127.0.0.1:33761/",
+        "origin": "http://127.0.0.1:33761",
+        "secure_context": true,
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:151.0) Gecko/20100101 Firefox/151.0",
+        "layout_width": 1264,
+        "canvas2d_available": true,
+        "build_id": "20181001000000",
+        "worker_available": true
+      },
+      "window": {
+        "fonts.measureText": {
+          "v": {
+            "16px monospace": 186.517,
+            "16px sans-serif": 190.033,
+            "16px serif": 186.867,
+            "16px Arial": 190.033,
+            "16px Courier New": 208,
+            "16px Times New Roman": 186.867,
+            "16px Georgia": 198.367,
+            "16px Verdana": 210.35,
+            "16px Tahoma": 188.467,
+            "16px Helvetica": 190.033,
+            "16px Segoe UI": 190.433,
+            "16px Roboto": 186.867,
+            "16px Noto Sans": 186.867,
+            "16px DejaVu Sans": 186.867
+          }
+        },
+        "masking.measureText": {
+          "v": "function measureText() {\n    [native code]\n}"
+        }
+      },
+      "worker": {
+        "fonts.measureText": {
+          "v": {
+            "16px monospace": 186.517,
+            "16px sans-serif": 190.033,
+            "16px serif": 186.867,
+            "16px Arial": 190.033,
+            "16px Courier New": 208,
+            "16px Times New Roman": 186.867,
+            "16px Georgia": 198.367,
+            "16px Verdana": 210.35,
+            "16px Tahoma": 188.467,
+            "16px Helvetica": 190.033,
+            "16px Segoe UI": 190.433,
+            "16px Roboto": 190.033,
+            "16px Noto Sans": 190.033,
+            "16px DejaVu Sans": 190.033
+          }
+        },
+        "masking.measureText": {
+          "v": "absent:undefined"
+        }
+      },
+      "profile": "ps369-measuretext",
+      "seed": 2277337410
+    }
+  ],
+  "rows": {
+    "A1_stock_control": {
+      "window": {
+        "fonts.measureText": {
+          "16px monospace": 205.667,
+          "16px sans-serif": 205.983,
+          "16px serif": 215.95,
+          "16px Arial": 215.95,
+          "16px Courier New": 215.95,
+          "16px Times New Roman": 215.95,
+          "16px Georgia": 215.95,
+          "16px Verdana": 215.95,
+          "16px Tahoma": 215.95,
+          "16px Helvetica": 215.95,
+          "16px Segoe UI": 215.95,
+          "16px Roboto": 215.95,
+          "16px Noto Sans": 215.95,
+          "16px DejaVu Sans": 205.983
+        },
+        "masking.measureText": "function measureText() {\n    [native code]\n}"
+      },
+      "worker": {
+        "fonts.measureText": {
+          "16px monospace": 205.667,
+          "16px sans-serif": 205.983,
+          "16px serif": 215.95,
+          "16px Arial": 205.983,
+          "16px Courier New": 205.983,
+          "16px Times New Roman": 205.983,
+          "16px Georgia": 205.983,
+          "16px Verdana": 205.983,
+          "16px Tahoma": 205.983,
+          "16px Helvetica": 205.983,
+          "16px Segoe UI": 205.983,
+          "16px Roboto": 205.983,
+          "16px Noto Sans": 205.983,
+          "16px DejaVu Sans": 205.983
+        },
+        "masking.measureText": "absent:undefined"
+      }
+    },
+    "A2_persona_engine_bare": {
+      "window": {
+        "fonts.measureText": {
+          "16px monospace": 190.033,
+          "16px sans-serif": 190.033,
+          "16px serif": 190.033,
+          "16px Arial": 190.033,
+          "16px Courier New": 208,
+          "16px Times New Roman": 186.867,
+          "16px Georgia": 198.367,
+          "16px Verdana": 210.35,
+          "16px Tahoma": 188.467,
+          "16px Helvetica": 190.033,
+          "16px Segoe UI": 190.433,
+          "16px Roboto": 190.033,
+          "16px Noto Sans": 190.033,
+          "16px DejaVu Sans": 190.033
+        },
+        "masking.measureText": "function measureText() {\n    [native code]\n}"
+      },
+      "worker": {
+        "fonts.measureText": {
+          "16px monospace": 190.033,
+          "16px sans-serif": 190.033,
+          "16px serif": 190.033,
+          "16px Arial": 190.033,
+          "16px Courier New": 208,
+          "16px Times New Roman": 186.867,
+          "16px Georgia": 198.367,
+          "16px Verdana": 210.35,
+          "16px Tahoma": 188.467,
+          "16px Helvetica": 190.033,
+          "16px Segoe UI": 190.433,
+          "16px Roboto": 190.033,
+          "16px Noto Sans": 190.033,
+          "16px DejaVu Sans": 190.033
+        },
+        "masking.measureText": "absent:undefined"
+      }
+    },
+    "R_reveal_control_stock": {
+      "window": {
+        "fonts.measureText": {
+          "16px monospace": 0,
+          "16px sans-serif": 0,
+          "16px serif": 0,
+          "16px Arial": 0,
+          "16px Courier New": 0,
+          "16px Times New Roman": 0,
+          "16px Georgia": 0,
+          "16px Verdana": 0,
+          "16px Tahoma": 0,
+          "16px Helvetica": 0,
+          "16px Segoe UI": 0,
+          "16px Roboto": 0,
+          "16px Noto Sans": 0,
+          "16px DejaVu Sans": 0
+        },
+        "masking.measureText": "function measureText(text) {\n      var m = native.apply(this, arguments);\n      var out = {};\n      for (var k in m) {\n        var v = m[k];\n        out[k] = (typeof v === 'number') ? v * 1e-6 : v;\n      }\n      return out;\n    }"
+      },
+      "worker": {
+        "fonts.measureText": {
+          "16px monospace": 205.667,
+          "16px sans-serif": 205.983,
+          "16px serif": 215.95,
+          "16px Arial": 205.983,
+          "16px Courier New": 205.983,
+          "16px Times New Roman": 205.983,
+          "16px Georgia": 205.983,
+          "16px Verdana": 205.983,
+          "16px Tahoma": 205.983,
+          "16px Helvetica": 205.983,
+          "16px Segoe UI": 205.983,
+          "16px Roboto": 205.983,
+          "16px Noto Sans": 205.983,
+          "16px DejaVu Sans": 205.983
+        },
+        "masking.measureText": "absent:undefined"
+      }
+    },
+    "N_noop_control_stock": {
+      "window": {
+        "fonts.measureText": {
+          "16px monospace": 205.667,
+          "16px sans-serif": 205.983,
+          "16px serif": 215.95,
+          "16px Arial": 215.95,
+          "16px Courier New": 215.95,
+          "16px Times New Roman": 215.95,
+          "16px Georgia": 215.95,
+          "16px Verdana": 215.95,
+          "16px Tahoma": 215.95,
+          "16px Helvetica": 215.95,
+          "16px Segoe UI": 215.95,
+          "16px Roboto": 215.95,
+          "16px Noto Sans": 215.95,
+          "16px DejaVu Sans": 205.983
+        },
+        "masking.measureText": "m() { return inner.apply(this, arguments); }"
+      },
+      "worker": {
+        "fonts.measureText": {
+          "16px monospace": 205.667,
+          "16px sans-serif": 205.983,
+          "16px serif": 215.95,
+          "16px Arial": 205.983,
+          "16px Courier New": 205.983,
+          "16px Times New Roman": 205.983,
+          "16px Georgia": 205.983,
+          "16px Verdana": 205.983,
+          "16px Tahoma": 205.983,
+          "16px Helvetica": 205.983,
+          "16px Segoe UI": 205.983,
+          "16px Roboto": 205.983,
+          "16px Noto Sans": 205.983,
+          "16px DejaVu Sans": 205.983
+        },
+        "masking.measureText": "absent:undefined"
+      }
+    },
+    "B_persona_product_path": {
+      "window": {
+        "fonts.measureText": {
+          "16px monospace": 186.517,
+          "16px sans-serif": 190.033,
+          "16px serif": 186.867,
+          "16px Arial": 190.033,
+          "16px Courier New": 208,
+          "16px Times New Roman": 186.867,
+          "16px Georgia": 198.367,
+          "16px Verdana": 210.35,
+          "16px Tahoma": 188.467,
+          "16px Helvetica": 190.033,
+          "16px Segoe UI": 190.433,
+          "16px Roboto": 186.867,
+          "16px Noto Sans": 186.867,
+          "16px DejaVu Sans": 186.867
+        },
+        "masking.measureText": "function measureText() {\n    [native code]\n}"
+      },
+      "worker": {
+        "fonts.measureText": {
+          "16px monospace": 186.517,
+          "16px sans-serif": 190.033,
+          "16px serif": 186.867,
+          "16px Arial": 190.033,
+          "16px Courier New": 208,
+          "16px Times New Roman": 186.867,
+          "16px Georgia": 198.367,
+          "16px Verdana": 210.35,
+          "16px Tahoma": 188.467,
+          "16px Helvetica": 190.033,
+          "16px Segoe UI": 190.433,
+          "16px Roboto": 190.033,
+          "16px Noto Sans": 190.033,
+          "16px DejaVu Sans": 190.033
+        },
+        "masking.measureText": "absent:undefined"
+      }
+    }
+  },
+  "noise_signature": {
+    "A1_stock_control": {
+      "window": {
+        "readable": true,
+        "below_one": 0,
+        "total": 14,
+        "distinct": 3
+      },
+      "worker": {
+        "readable": true,
+        "below_one": 0,
+        "total": 14,
+        "distinct": 3
+      }
+    },
+    "A2_persona_engine_bare": {
+      "window": {
+        "readable": true,
+        "below_one": 0,
+        "total": 14,
+        "distinct": 7
+      },
+      "worker": {
+        "readable": true,
+        "below_one": 0,
+        "total": 14,
+        "distinct": 7
+      }
+    },
+    "R_reveal_control_stock": {
+      "window": {
+        "readable": true,
+        "below_one": 14,
+        "total": 14,
+        "distinct": 1
+      },
+      "worker": {
+        "readable": true,
+        "below_one": 0,
+        "total": 14,
+        "distinct": 3
+      }
+    },
+    "N_noop_control_stock": {
+      "window": {
+        "readable": true,
+        "below_one": 0,
+        "total": 14,
+        "distinct": 3
+      },
+      "worker": {
+        "readable": true,
+        "below_one": 0,
+        "total": 14,
+        "distinct": 3
+      }
+    },
+    "B_persona_product_path": {
+      "window": {
+        "readable": true,
+        "below_one": 0,
+        "total": 14,
+        "distinct": 8
+      },
+      "worker": {
+        "readable": true,
+        "below_one": 0,
+        "total": 14,
+        "distinct": 8
+      }
+    }
+  },
+  "wrapper_shape": {
+    "A1_stock_control": {
+      "window": "function measureText() {\n    [native code]\n}",
+      "worker": "absent:undefined"
+    },
+    "A2_persona_engine_bare": {
+      "window": "function measureText() {\n    [native code]\n}",
+      "worker": "absent:undefined"
+    },
+    "R_reveal_control_stock": {
+      "window": "function measureText(text) {\n      var m = native.apply(this, arguments);\n      var out = {};\n      for (var k in m) {\n        var v = m[k];\n        out[k] = (typeof v === 'number') ? v * 1e-6 : v;\n      }\n      return out;\n    }",
+      "worker": "absent:undefined"
+    },
+    "N_noop_control_stock": {
+      "window": "m() { return inner.apply(this, arguments); }",
+      "worker": "absent:undefined"
+    },
+    "B_persona_product_path": {
+      "window": "function measureText() {\n    [native code]\n}",
+      "worker": "absent:undefined"
+    }
+  },
+  "corpus_artifact": "tests/fixtures/engine-fingerprint-baseline.firefox.json",
+  "corpus_agreement": {
+    "A1_stock_control": {
+      "window": {
+        "readable": true,
+        "matching": 0,
+        "total": 14,
+        "differing": [
+          "16px Arial",
+          "16px Courier New",
+          "16px DejaVu Sans",
+          "16px Georgia",
+          "16px Helvetica",
+          "16px Noto Sans",
+          "16px Roboto",
+          "16px Segoe UI",
+          "16px Tahoma",
+          "16px Times New Roman",
+          "16px Verdana",
+          "16px monospace",
+          "16px sans-serif",
+          "16px serif"
+        ]
+      },
+      "worker": {
+        "readable": true,
+        "matching": 0,
+        "total": 14,
+        "differing": [
+          "16px Arial",
+          "16px Courier New",
+          "16px DejaVu Sans",
+          "16px Georgia",
+          "16px Helvetica",
+          "16px Noto Sans",
+          "16px Roboto",
+          "16px Segoe UI",
+          "16px Tahoma",
+          "16px Times New Roman",
+          "16px Verdana",
+          "16px monospace",
+          "16px sans-serif",
+          "16px serif"
+        ]
+      }
+    },
+    "A2_persona_engine_bare": {
+      "window": {
+        "readable": true,
+        "matching": 9,
+        "total": 14,
+        "differing": [
+          "16px DejaVu Sans",
+          "16px Noto Sans",
+          "16px Roboto",
+          "16px monospace",
+          "16px serif"
+        ]
+      },
+      "worker": {
+        "readable": true,
+        "matching": 12,
+        "total": 14,
+        "differing": [
+          "16px monospace",
+          "16px serif"
+        ]
+      }
+    },
+    "R_reveal_control_stock": {
+      "window": {
+        "readable": true,
+        "matching": 0,
+        "total": 14,
+        "differing": [
+          "16px Arial",
+          "16px Courier New",
+          "16px DejaVu Sans",
+          "16px Georgia",
+          "16px Helvetica",
+          "16px Noto Sans",
+          "16px Roboto",
+          "16px Segoe UI",
+          "16px Tahoma",
+          "16px Times New Roman",
+          "16px Verdana",
+          "16px monospace",
+          "16px sans-serif",
+          "16px serif"
+        ]
+      },
+      "worker": {
+        "readable": true,
+        "matching": 0,
+        "total": 14,
+        "differing": [
+          "16px Arial",
+          "16px Courier New",
+          "16px DejaVu Sans",
+          "16px Georgia",
+          "16px Helvetica",
+          "16px Noto Sans",
+          "16px Roboto",
+          "16px Segoe UI",
+          "16px Tahoma",
+          "16px Times New Roman",
+          "16px Verdana",
+          "16px monospace",
+          "16px sans-serif",
+          "16px serif"
+        ]
+      }
+    },
+    "N_noop_control_stock": {
+      "window": {
+        "readable": true,
+        "matching": 0,
+        "total": 14,
+        "differing": [
+          "16px Arial",
+          "16px Courier New",
+          "16px DejaVu Sans",
+          "16px Georgia",
+          "16px Helvetica",
+          "16px Noto Sans",
+          "16px Roboto",
+          "16px Segoe UI",
+          "16px Tahoma",
+          "16px Times New Roman",
+          "16px Verdana",
+          "16px monospace",
+          "16px sans-serif",
+          "16px serif"
+        ]
+      },
+      "worker": {
+        "readable": true,
+        "matching": 0,
+        "total": 14,
+        "differing": [
+          "16px Arial",
+          "16px Courier New",
+          "16px DejaVu Sans",
+          "16px Georgia",
+          "16px Helvetica",
+          "16px Noto Sans",
+          "16px Roboto",
+          "16px Segoe UI",
+          "16px Tahoma",
+          "16px Times New Roman",
+          "16px Verdana",
+          "16px monospace",
+          "16px sans-serif",
+          "16px serif"
+        ]
+      }
+    },
+    "B_persona_product_path": {
+      "window": {
+        "readable": true,
+        "matching": 14,
+        "total": 14,
+        "differing": []
+      },
+      "worker": {
+        "readable": true,
+        "matching": 14,
+        "total": 14,
+        "differing": []
+      }
+    }
+  },
+  "realm_liveness": {
+    "window": {
+      "arms_read": [
+        "A1_stock_control",
+        "A2_persona_engine_bare",
+        "B_persona_product_path"
+      ],
+      "distinct_vectors": 3
+    },
+    "worker": {
+      "arms_read": [
+        "A1_stock_control",
+        "A2_persona_engine_bare",
+        "B_persona_product_path"
+      ],
+      "distinct_vectors": 3
+    }
+  }
+}
