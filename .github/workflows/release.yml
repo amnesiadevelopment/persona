@@ -1001,6 +1001,85 @@ jobs:
           python3 .github/scripts/smoke_frozen_bundle.py "$APP" --repo-root . \
             --python "$BUNDLE_PYTHON"
 
+      # ─────────────────────────────────────────────────────────────────────
+      # PS-386: the two purchase-independent notarization blockers.
+      #
+      # PS-346 measured the shipped 3.1.1 bytes and found the hardened runtime
+      # OFF (flags 0x2, runtime 0x10000 absent) and
+      # com.apple.security.get-task-allow shipped TRUE on 3/3 slices carrying
+      # entitlements. Both are explicit notary-rejection conditions, and NEITHER
+      # needs the Apple Developer purchase to fix. Until this block existed
+      # nothing in this job ever ran `codesign` at all.
+      #
+      # ⛔ NONE OF THIS SIGNS WITH AN IDENTITY OR NOTARIZES ANYTHING. The
+      # signature stays AD-HOC. Notarization needs an Apple Developer Program
+      # membership under a chosen legal identity — a purchase decision reserved
+      # to the owner and deliberately out of scope. What this removes is the two
+      # conditions that would make such a submission fail EVEN WITH the identity.
+      # ─────────────────────────────────────────────────────────────────────
+      - name: Read the signing posture BEFORE hardening
+        # The "before" side of PS-386's before/after reading, taken on the
+        # artifact this job just built rather than on the published assets.
+        # `|| true` because a pre-hardening bundle is EXPECTED to fail this
+        # gate — that is the baseline, not a build error.
+        run: |
+          APP="$(find build/macos -maxdepth 3 -name '*.app' | head -1)"
+          if [ -z "$APP" ]; then
+            echo "ERROR: no .app produced by flet build macos" >&2
+            exit 1
+          fi
+          echo "=== posture BEFORE (expected: FAIL — this is the baseline) ==="
+          python3 scripts/ps386_verify_posture.py --app "$APP" || true
+
+      - name: Enable the hardened runtime and drop get-task-allow
+        # Re-signs OUR slices only. A vendored binary carrying a real identity
+        # (Node.js Foundation's `node` is the known one) is left alone — signing
+        # it would DESTROY a genuine signature and replace it with our ad-hoc
+        # nothing. Nested bundles are signed at their ROOT, deepest-first, so
+        # each bundle's CodeResources seal is rewritten rather than invalidated.
+        run: |
+          APP="$(find build/macos -maxdepth 3 -name '*.app' | head -1)"
+          python3 scripts/ps386_macos_harden.py --app "$APP"
+
+      - name: Assert the posture landed IN THE BYTES
+        # ⭐ THE GATE. The step above exiting 0 says `codesign` accepted its
+        # arguments; it does NOT say the produced CodeDirectory carries
+        # CS_RUNTIME or that the entitlements blob lost get-task-allow. That is
+        # a question about bytes, and this reads them with PS-346's own audited
+        # readers (imported unmodified — this is a CALLER of the control, never
+        # a second reader, and never an edit to it).
+        #
+        # It matters that this can fail: ad-hoc codesign is what INJECTS
+        # get-task-allow in the first place, so a build can carry the hardened
+        # runtime and still be rejected. Fails the build rather than warning.
+        run: |
+          APP="$(find build/macos -maxdepth 3 -name '*.app' | head -1)"
+          echo "=== posture AFTER (must PASS) ==="
+          python3 scripts/ps386_verify_posture.py --app "$APP"
+
+      - name: Re-open the frozen bundle AFTER hardening
+        # ⭐ THE FALSIFICATION STEP, and the reason the smoke test runs twice.
+        #
+        # Hardening re-signs the compiled extensions inside the bundle's own
+        # site-packages — the very .so files this check imports. So the earlier
+        # run validated PRE-hardening bytes and cannot speak for what ships. If
+        # re-signing broke an extension, or if the hardened runtime's library
+        # validation refuses one, THIS is where it surfaces — before hdiutil,
+        # before checksums, before publish.
+        #
+        # ⚠️ ITS BOUND IS DOCUMENTED AND UNCHANGED: it exercises the frozen
+        # PYTHON payload under an ABI-matched interpreter, NOT the Flutter host
+        # layer. It is NECESSARY AND NOT SUFFICIENT for PS-386's outcome 4
+        # ("the app still launches and still spawns a Personium engine"), which
+        # needs a real screen and a human or liaison to observe. A green run
+        # here must never be reported as outcome 4.
+        env:
+          BUNDLE_PYTHON: ${{ steps.bundle-python.outputs.python-path }}
+        run: |
+          APP="$(find build/macos -maxdepth 3 -name '*.app' | head -1)"
+          python3 .github/scripts/smoke_frozen_bundle.py "$APP" --repo-root . \
+            --python "$BUNDLE_PYTHON"
+
       - name: Package the .app into a dmg
         run: |
           echo "=== build/macos tree ==="
