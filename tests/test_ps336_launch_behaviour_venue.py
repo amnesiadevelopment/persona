@@ -956,7 +956,9 @@ def test_the_runner_scratch_home_fits_a_chromium_profile_name(runner) -> None:
 
     needed = max(len(n) for n in SOCKET_BOUND_PROFILE_NAMES)
 
-    home = tempfile.mkdtemp(prefix=runner._SCRATCH_PREFIX)
+    home = tempfile.mkdtemp(
+        prefix=runner._SCRATCH_PREFIX, dir=runner._scratch_base()
+    )
     try:
         budget = profile_name_budget(home)
     finally:
@@ -1005,7 +1007,9 @@ def test_the_runner_refuses_a_home_too_long_for_chromium(runner) -> None:
 
     import tempfile
 
-    ok_home = tempfile.mkdtemp(prefix=runner._SCRATCH_PREFIX)
+    ok_home = tempfile.mkdtemp(
+        prefix=runner._SCRATCH_PREFIX, dir=runner._scratch_base()
+    )
     try:
         assert runner._assert_name_budget(ok_home) is None, (
             "the guard refuses the home the runner actually provisions, so it "
