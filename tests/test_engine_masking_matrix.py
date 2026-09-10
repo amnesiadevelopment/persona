@@ -543,8 +543,17 @@ RECORDED_REASON_SOURCES = {
 # unspoofed, not about Firefox, so it is not a Firefox cell's reason — but it is
 # the sentence that explains why the Chromium builder exists at all, and it is
 # re-read for the same anti-rot purpose.
+#
+# ⚠️ UPDATED BY THE PIXELSCAN PORT, SLICE 2. The sentence used to read "The
+# engine spoofs deviceMemory/hardwareConcurrency but not the screen". That
+# grouping stopped being accurate when deviceMemory moved from a JS descriptor
+# in that same module to a native engine switch — the module no longer authors
+# it at all — so the quote was re-read at its source rather than left pinning a
+# claim the file had stopped making. The BUILDER's reason for existing is
+# unchanged: the screen is still unspoofed by the engine.
 DEVICE_EXT_RATIONALE = (
-    "The engine spoofs deviceMemory/hardwareConcurrency but not the screen"
+    "The engine spoofs hardwareConcurrency and (since the pixelscan port's "
+    "slice 2)\ndeviceMemory, but not the screen"
 )
 
 

@@ -242,49 +242,67 @@ def test_the_pick_is_generation_filtered_not_the_whole_pool(monkeypatch):
 def test_every_pool_entry_has_at_least_8gb_so_deviceMemory_cannot_diverge():
     """⭐ THE GUARD FOR A DEFECT THAT DOES NOT EXIST YET (PS-354).
 
-    Patch 005 pins the engine's ``NavigatorDeviceMemory::deviceMemory()`` to a
-    hardcoded ``return 8;`` with NO switch, while the page realm emits
-    ``Math.min(HM[1], 8)``. Those two agree ONLY because every entry in
-    ``CORES_MEMORY`` currently has at least 8 GB of RAM, which makes the min
-    exactly 8 every time.
+    ⭐ ITS PREMISE IS NOW DISCHARGED, AND THE TEST IS KEPT WITH A NARROWER JOB.
+    PS-354 wrote this against a specific hazard: patch 005 pinned the engine's
+    ``NavigatorDeviceMemory::deviceMemory()`` to a hardcoded ``return 8;`` with
+    NO switch, while the page realm emitted ``Math.min(HM[1], 8)`` — two
+    independent authors that agreed only because every ``CORES_MEMORY`` entry
+    happened to carry at least 8 GB. Its own instruction was *"give patch 005 a
+    --fingerprint-device-memory switch before adding this entry"*.
 
-    ⚠️ THAT AGREEMENT IS COINCIDENTAL, NOT DESIGNED. Adding a
-    ``CoresMemoryEntry`` with less than 8 GB would silently re-open the realm
-    mismatch this ticket closed: the page would report 4 while the
-    engine-authored service worker reported 8. Nothing else in the suite can
-    see that, because the page and the Web-Worker twin read the SAME pool and
-    would agree with each other perfectly — the divergence is only visible
-    against the ENGINE, which no unit test launches.
+    ⛔ THAT SWITCH NOW EXISTS (pixelscan port, slice 2). The engine reads
+    ``--fingerprint-device-memory``, the launcher passes the profile's own pool
+    value through ``spec_device_memory``, and BOTH JS overrides are deleted —
+    so the engine is the SOLE author and a page/engine divergence is no longer
+    constructible. A sub-8GB entry is therefore SAFE today, and this test is no
+    longer the gate it was written as.
 
-    So this fails LOUDLY at the moment of the edit rather than shipping a tell.
-    If you are here because you added a sub-8GB entry: the fix is not to relax
-    this test, it is that patch 005's hardcoded 8 needs a switch first.
+    It is kept because the pool's RAM axis is still worth watching: this now
+    pins that every entry maps onto a LEGAL Device Memory rung, which is a
+    different and still-live claim (a 12 GB entry would be legal as a machine
+    spec and illegal as a reported value — see ``spec_device_memory``).
     """
-    smallest = min(entry.memory_gb for entry in CORES_MEMORY)
-    assert smallest >= 8, (
-        f"CORES_MEMORY now contains an entry with only {smallest} GB of RAM. "
-        "PS-354: the page emits Math.min(ram, 8) while the engine's patch 005 "
-        "pins deviceMemory to a hardcoded 8 with no switch, so this entry "
-        "makes the page and the ServiceWorker realm report DIFFERENT memory — "
-        "a page/realm mismatch, which is exactly the tell PS-354 closed for "
-        "hardwareConcurrency. Give patch 005 a --fingerprint-device-memory "
-        "switch before adding this entry."
+    from src.services.browser.device_ext import (
+        LEGAL_DEVICE_MEMORY,
+        spec_device_memory,
     )
 
-
-def test_the_page_realm_emits_exactly_eight_for_every_current_entry():
-    """The other side of the same coin, stated on the VALUE rather than the pool.
-
-    Pins what the page actually emits (``min(ram, 8)``) against the engine's
-    hardcoded 8, so the claim "they already agree" is executable rather than a
-    comment. If the pool guard above ever has to change, this says what the
-    consequence would be.
-    """
     for entry in CORES_MEMORY:
-        assert min(entry.memory_gb, 8) == 8, (
-            f"entry {entry} makes the page report {min(entry.memory_gb, 8)} while the "
-            "engine reports 8"
+        reported = spec_device_memory(entry.memory_gb)
+        assert reported in LEGAL_DEVICE_MEMORY, (
+            f"entry {entry} maps to {reported}, which is not a value the "
+            f"Device Memory API can report ({LEGAL_DEVICE_MEMORY})"
         )
+
+
+def test_the_page_realm_no_longer_authors_deviceMemory_at_all():
+    """The other side of the same coin, INVERTED by the slice that closed it.
+
+    This test used to pin ``min(ram, 8) == 8`` for every pool entry — the page
+    realm's emitted value — against the engine's hardcoded 8, so that "they
+    already agree" was executable rather than a comment.
+
+    ⛔ THE PAGE REALM NO LONGER EMITS A ``deviceMemory`` AT ALL. Both JS sites
+    were deleted when the engine gained its switch, because a JS descriptor is
+    the detectable surface this port exists to remove — so the agreement is now
+    structural (one author) rather than arithmetic (two authors that match).
+    Asserting on the page's emitted value would assert on something that is not
+    there, which is why the claim is restated rather than kept.
+    """
+    import tempfile as _tempfile
+
+    from src.services.browser.device_ext import build_device_extension
+
+    with _tempfile.TemporaryDirectory() as tmp:
+        build_device_extension(1337, tmp, CURRENT_HARDWARE_GENERATION,
+                               os_type="windows")
+        js = pathlib.Path(tmp, "device.js").read_text(encoding="utf-8")
+
+    assert "'deviceMemory'" not in js and '"deviceMemory"' not in js, (
+        "device.js defines navigator.deviceMemory again. The engine is the "
+        "sole author now (--fingerprint-device-memory); a JS descriptor here "
+        "restores the detectable getter AND can disagree with the engine."
+    )
 
 
 # ---------------------------------------------------------------------------

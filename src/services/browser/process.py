@@ -24,7 +24,12 @@ from ..proxy.store import ProxyStore
 from .bookmarks_seed import seed_bookmarks
 from .process_group import popen_in_new_session, reap_process_group
 from .audio_ext import build_audio_extension
-from .device_ext import build_device_extension, hardware_concurrency_for
+from .device_ext import (
+    build_device_extension,
+    device_memory_for,
+    hardware_concurrency_for,
+    spec_device_memory,
+)
 from .env_policy import (
     browser_child_cwd,
     pin_child_tmpdir,
@@ -1202,6 +1207,39 @@ def spawn_browser(profile: Profile, *, in_process: bool = False) -> subprocess.P
             # "it's 8" is false for most of them.
             f"--fingerprint-hardware-concurrency="
             f"{hardware_concurrency_for(profile.fingerprint_seed, profile.hardware_generation)}",
+            # navigator.deviceMemory, authored NATIVELY rather than by a JS
+            # descriptor (pixelscan port, slice 2). Before this the engine
+            # returned a HARDCODED 8 for every profile
+            # (005-hardware-concurrency-fingerprint.patch: `return 8;`) while
+            # device_ext.py re-declared the same property in two JS realms — so
+            # the value was both unauthored by the seed AND carried by exactly
+            # the detectable descriptor this port exists to remove. Both JS
+            # sites are deleted in the same change; this flag is what replaces
+            # them, and it reaches the ServiceWorker realm neither of them could.
+            #
+            # ⭐ WHY THIS IS NOT SEED-VARYING, AND WHY THAT IS CORRECT. The
+            # Device Memory API reports RAM rounded DOWN to a power of two and
+            # CLAMPED AT 8, so an 8 GB and a 16 GB machine both report 8 — the
+            # spec discards the difference. persona's pool has RAM {8, 16}, so
+            # every profile legitimately reports 8. That is the real browser's
+            # behaviour, not a lost opportunity: a per-seed value here would
+            # contradict the profile's own claimed RAM and publish a figure no
+            # capped browser produces. `spec_device_memory` is applied at this
+            # boundary so the ENGINE is handed an already-legal value, and the
+            # patch clamps again defensively so no path can publish an illegal
+            # one.
+            #
+            # ⛔ MOBILE TAKES ITS OWN VALUE, and this branch is load-bearing.
+            # This list is built OUTSIDE the mobile/desktop if-else above, so a
+            # mobile profile reaches it too — and mobile's deviceMemory comes
+            # from its DEVICE PRESET (an iPhone reports 4), not from the desktop
+            # CORES_MEMORY pool. Passing the desktop pick to an iPhone profile
+            # would put desktop RAM in the ServiceWorker realm while
+            # mobile_ext.py's JS says 4 everywhere else — a realm disagreement
+            # inside one launch, which is the exact tell this slice removes on
+            # the desktop arm.
+            f"--fingerprint-device-memory="
+            f"{spec_device_memory(preset.device_memory) if (is_mobile and preset is not None) else device_memory_for(profile.fingerprint_seed, profile.hardware_generation)}",
             # ⛔ THE SWITCH THAT MUST NEVER APPEAR IN THIS LIST: --disable-spoofing.
             #
             # A reader auditing the fingerprint switches will notice that patch

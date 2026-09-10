@@ -1038,8 +1038,14 @@ def _hw_seen(tmp_path, seed, generation, tag):
     )
     assert out.returncode == 0, out.stderr
     seen = json.loads(out.stdout)
-    assert seen["cores"] != -1 and seen["memory"] != -1, (
-        "the extension did not patch navigator, so this measured nothing"
+    # ⚠️ ONLY `cores` IS A LIVE SENTINEL NOW. `deviceMemory` moved to a native
+    # engine switch (pixelscan port, slice 2) and device.js no longer authors
+    # it, so `memory` legitimately reads back as the unpatched -1 here — this
+    # harness runs the extension in node, where no engine exists. Demanding it
+    # move would assert that the JS override had been restored.
+    assert seen["cores"] != -1, (
+        "the extension did not patch navigator.hardwareConcurrency, so this "
+        "measured nothing"
     )
     return (seen["cores"], seen["memory"])
 
