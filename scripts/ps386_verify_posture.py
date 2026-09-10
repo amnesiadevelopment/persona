@@ -71,6 +71,25 @@ import json
 import sys
 from pathlib import Path
 
+
+def _pin_stdio_to_utf8() -> None:
+    """Make this script's own output survive a non-UTF-8 console.
+
+    ⚠️ NOT COSMETIC. Every refusal and every "this is NOT a pass" line here
+    carries a ⚠️ or a ⛔, and on Windows `sys.stderr` resolves to the ANSI code
+    page (cp1252), which cannot encode either — so the write raises inside the
+    refusal path and the reason never reaches the log. Same fix, same reason, as
+    the hardener's; `errors="replace"` degrades rather than raising.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            try:
+                reconfigure(encoding="utf-8", errors="replace")
+            except (OSError, ValueError):  # a substituted stream in a test
+                pass
+
+
 CONTROL = Path(__file__).resolve().parent / "ps346_signing_state.py"
 
 MACHO_MAGICS = {
@@ -233,6 +252,7 @@ def verdict(ours: list[dict]) -> tuple[bool, list[str]]:
 
 
 def main() -> int:
+    _pin_stdio_to_utf8()
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
