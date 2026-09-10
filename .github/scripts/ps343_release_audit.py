@@ -158,6 +158,48 @@ OUTCOME_NAMES = {
 }
 
 
+def echo(text: str = "", *, err: bool = False) -> None:
+    """Write to the step log without a locale-dependent re-encode.
+
+    ⭐ THIS IS AN EXIT-CODE CONCERN, NOT A COSMETIC ONE, which is why this
+    script does not simply use `print`. Every line this file emits carries ⚠️,
+    ✅, ⛔ or an em dash, and on Windows `sys.stdout` resolves to the ANSI code
+    page: a bare `print` there raises `UnicodeEncodeError` and the process dies
+    with **exit 1** — byte-identical to `UNRECORDED_RELEASE`.
+
+    ⛔ SO A CONSOLE CODEC COULD FORGE THIS GATE'S VERDICT. An encoding crash
+    would report "a published release has no provenance record" while naming
+    nothing, on a machine where nothing had been reconciled at all. §2 of this
+    gate's contract is that the three outcomes stay three; a decode accident
+    that lands on one of them collapses the vocabulary from the outside.
+    Reproduced rather than predicted: `PYTHONIOENCODING=cp1252 python3
+    .github/scripts/ps343_release_audit.py --selftest` raised
+    `UnicodeEncodeError: 'charmap' codec can't encode character '\\u2705'` and
+    exited 1.
+
+    ⛔ AND THE REMEDY IS NOT TO STRIP THE NON-ASCII. The ⚠️ on
+    `CANNOT_ENUMERATE` is doing real work — it is what stops "we failed to look"
+    reading as "we looked and it was fine" — and destroying a report's content
+    to protect its encoding is the wrong trade. `run_behaviour_checks.echo`
+    records this project's answer (PS-315, measured on run 34000438536's windows
+    leg) and this is the same mechanism: write encoded BYTES to the underlying
+    buffer, which is what makes it independent of the console's codec.
+
+    `errors="replace"` is deliberate: this is the last stop before the log, so a
+    character that cannot be written must degrade rather than raise and take the
+    gate's verdict down with it.
+    """
+    stream = sys.stderr if err else sys.stdout
+    buffer = getattr(stream, "buffer", None)
+    if buffer is None:  # a substituted stream in a test, not a real console
+        stream.write(text + "\n")
+        stream.flush()
+        return
+    stream.flush()
+    buffer.write((text + "\n").encode("utf-8", errors="replace"))
+    buffer.flush()
+
+
 def _updater():
     """Imported lazily, exactly as ``ps344_gate_plan.plan()`` does it.
 
@@ -238,6 +280,12 @@ def classify(
             "reason": reason or "the published engine set was not established",
             "published_count": None,
             "record_count": len(records),
+            # `published` is None because it was NOT ESTABLISHED; `records` is a
+            # real reading and is reported as one. Emitted rather than omitted
+            # so the renderer prints a list instead of `None`, which reads as
+            # "there are no records" — a claim this branch is not making.
+            "published": None,
+            "records": sorted(records),
             "unrecorded": [],
             "orphan_records": [],
             "recorded": [],
@@ -415,7 +463,7 @@ def selftest() -> int:
         code, body = classify(published, records, reason=reason or "")
         got_named = body.get("unrecorded") or []
         ok = code == want_code and got_named == want_named
-        print(
+        echo(
             f"{'✅' if ok else '❌'} {name}\n"
             f"     exit {code} ({OUTCOME_NAMES[code]}), named={got_named}"
         )
@@ -424,13 +472,13 @@ def selftest() -> int:
                 f"{name}: wanted exit {want_code} named={want_named}, "
                 f"got exit {code} named={got_named}"
             )
-    print("")
+    echo("")
     if failures:
-        print("❌ THE JUDGEMENT IS BROKEN. Nothing below this point would mean anything:")
+        echo("❌ THE JUDGEMENT IS BROKEN. Nothing below this point would mean anything:")
         for f in failures:
-            print(f"   - {f}")
+            echo(f"   - {f}")
         return 1
-    print(
+    echo(
         f"✅ {len(SELFTEST_CASES)} synthesised cases: the judgement still "
         "distinguishes QUIET from UNRECORDED_RELEASE from CANNOT_ENUMERATE."
     )
@@ -492,7 +540,7 @@ def main(argv: "list[str] | None" = None) -> int:
         # that cannot reach GitHub at all.
         updater = _updater()
         injected = [updater.version_from_tag(t) for t in args.inject_published]
-        print(
+        echo(
             "⚠️  FALSIFICATION ARM: injecting "
             + ", ".join(updater.engine_tag(v) for v in injected)
             + " into the published set. This ADDS to the set and can only make "
@@ -507,12 +555,12 @@ def main(argv: "list[str] | None" = None) -> int:
 
     # ECHOED unconditionally, red or green. A gate whose remedy is "write the
     # record for tag X" is useless if the run does not print X.
-    print(f"outcome          : {body['outcome']} (exit {code})")
-    print(f"published set    : {body.get('published') if published is not None else '<UNESTABLISHED>'}")
-    print(f"record set       : {body.get('records')}")
-    print(f"unrecorded       : {body.get('unrecorded')}")
-    print(f"orphan records   : {body.get('orphan_records')} (noted, not scored)")
-    print(f"reason           : {body.get('reason')}")
+    echo(f"outcome          : {body['outcome']} (exit {code})")
+    echo(f"published set    : {body.get('published') if published is not None else '<UNESTABLISHED>'}")
+    echo(f"record set       : {body.get('records')}")
+    echo(f"unrecorded       : {body.get('unrecorded')}")
+    echo(f"orphan records   : {body.get('orphan_records')} (noted, not scored)")
+    echo(f"reason           : {body.get('reason')}")
 
     if args.out:
         out = pathlib.Path(args.out)

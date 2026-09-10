@@ -57,6 +57,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import pathlib
 import re
 import subprocess
@@ -281,10 +282,34 @@ def test_the_real_repository_reconciles_quiet_against_its_own_records(audit):
 
 
 def _run(*args, cwd=REPO):
+    """Run the audit as a subprocess, with BOTH ends of the stream pinned.
+
+    ⚠️ TWO FIXES, NOT ONE, AND THE SECOND IS THE ONE THIS PROJECT HAS ALREADY
+    LEARNED (PS-315). The audit's output carries ⚠️/✅/⛔ and an em dash.
+
+    * The PARENT's decode: `text=True` alone decodes with the platform default —
+      cp1252 on Windows, where those bytes are undecodable. Caught by CI on a
+      real Windows runner: `UnicodeDecodeError: 'charmap' codec can't decode
+      byte 0x8f`, which surfaced as `argument of type 'NoneType' is not
+      iterable` because the decode failed before `stdout` was populated.
+    * The CHILD's encode: pinning only the parent leaves the child WRITING
+      under the platform console codec, so it dies with `UnicodeEncodeError`
+      before the parent has anything to decode. `tests/test_ps315_behaviour_
+      gate.py` records that exact lesson — "the child inherits this hostile
+      value" — and `PYTHONIOENCODING` is the remedy it names.
+
+    ⛔ The remedy is NOT to strip the non-ASCII from the audit's output. That
+    would destroy a report's content to protect its encoding, and the ⚠️ on
+    `CANNOT_ENUMERATE` is doing real work: it is what stops "we failed to look"
+    reading as "we looked and it was fine".
+    """
+    env = dict(os.environ, PYTHONIOENCODING="utf-8")
     return subprocess.run(
         [sys.executable, str(AUDIT_SCRIPT), *args],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        env=env,
         cwd=str(cwd),
     )
 
@@ -645,6 +670,72 @@ def test_the_lint_fixture_stays_hermetic(monkeypatch):
     spec.loader.exec_module(suite)
     assert suite.SHIPPED_TAG.startswith("personium-")
     assert (RECORDS_DIR / f"{suite.SHIPPED_TAG}.json").is_file()
+
+
+def test_a_hostile_console_codec_cannot_forge_the_verdict():
+    """⭐ MEASURED, NOT ANTICIPATED, AND IT IS AN EXIT-CODE CONCERN.
+
+    Every line this gate emits carries ⚠️, ✅, ⛔ or an em dash, and on Windows
+    `sys.stdout` resolves to the ANSI code page. A bare `print` there raises
+    `UnicodeEncodeError` and the process dies with **exit 1** — byte-identical
+    to `UNRECORDED_RELEASE`. So a console codec could report "a published
+    release has no provenance record", naming nothing, on a machine where
+    nothing was reconciled at all: §2's three outcomes collapsed from outside
+    the judgement.
+
+    Reproduced under `PYTHONIOENCODING=cp1252`, which is the Windows condition
+    on any platform, and asserted on all three arms — a fix that only rescued
+    the green path would leave the red one forgeable."""
+    hostile = dict(os.environ, PYTHONIOENCODING="cp1252")
+
+    def _hostile(*args):
+        return subprocess.run(
+            [sys.executable, str(AUDIT_SCRIPT), *args],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=hostile,
+            cwd=str(REPO),
+        )
+
+    selftest = _hostile("--selftest")
+    assert selftest.returncode == 0, selftest.stdout + selftest.stderr
+    assert "UnicodeEncodeError" not in selftest.stderr
+
+    red = _hostile("--inject-published", "personium-999.0.0.0")
+    assert red.returncode == 1, red.stdout + red.stderr
+    assert "UnicodeEncodeError" not in red.stderr
+    # And it still NAMES the release. A crash would also have exited 1.
+    assert "personium-999.0.0.0" in red.stdout
+
+
+def test_the_script_writes_bytes_rather_than_relying_on_the_console(audit):
+    """The mechanism, asserted directly rather than only through its effect.
+
+    ⛔ The test above would also pass if someone "fixed" this by stripping the
+    non-ASCII out of the reports — which would destroy a report's content to
+    protect its encoding. The ⚠️ on `CANNOT_ENUMERATE` is doing real work: it is
+    what stops "we failed to look" reading as "we looked and it was fine". This
+    names the actual remedy, the same one `run_behaviour_checks.echo` records
+    (PS-315)."""
+    src = AUDIT_SCRIPT.read_text(encoding="utf-8")
+    assert 'buffer.write((text + "\\n").encode("utf-8", errors="replace"))' in src
+    # And nothing bypasses it.
+    body = src.partition("def echo(")[2].partition("\n\n\n")[2]
+    assert "print(" not in body, "a bare print() bypasses the byte-safe writer"
+    # The characters that make this necessary are still there.
+    assert "⚠️" in src and "⛔" in src
+
+
+def test_the_unestablished_branch_does_not_claim_there_are_no_records(audit):
+    """`published` is None because it was NOT ESTABLISHED. The record set IS a
+    real reading and must be reported as one — an omitted key renders as `None`,
+    which reads as "there are no records", a claim this branch is not making."""
+    _, body = audit.classify(None, ["personium-152.0.7977.75"], reason="rate limited")
+    assert body["published"] is None
+    assert body["records"] == ["personium-152.0.7977.75"]
+    assert body["record_count"] == 1
 
 
 def test_no_run_body_carries_an_unintended_expression_delimiter(workflow_yaml):
