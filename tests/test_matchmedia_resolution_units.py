@@ -117,13 +117,184 @@ Object.defineProperty(MediaQueryList.prototype, 'media',
 MediaQueryList.prototype.addListener = function () {};
 MediaQueryList.prototype.removeListener = function () {};
 globalThis.MediaQueryList = MediaQueryList;
+// ⛔ THE STAND-IN ENGINE SPEAKS THE WHOLE GRAMMAR, AND IT HAS TO.
+//
+// The first version of this stub answered `min-width`/`max-width`/`screen`/
+// `print` and returned FALSE for everything else. That made it BLIND to the
+// three defects an audit later found on the real engine — `or`, `)and `, and
+// the nested `(not (…))` form — because every one of those queries is outside
+// its vocabulary, so it answered `false` to them and any assertion built on it
+// agreed with a broken build. A stub whose vocabulary excludes the failing
+// forms is not an oracle; it is a mirror.
+//
+// So this one implements MQ4 properly: a tokenizer with CSS's function-token
+// rule, a recursive-descent grammar over `not`/`and`/`or`/nesting, and
+// THREE-VALUED (Kleene) logic — all of it measured against stock Chromium
+// 152.0.7977.82 first (the four-way `(bogus: 1)` table in device_ext.py is the
+// derivation). Its resolution answers come from the HOST's 1.5, so any query
+// the patch delegates instead of parsing leaks a visible wrong answer.
+globalThis.__K = { T: 1, F: 0, U: -1 };
+// ⛔ THE HOST DPR IS CAPTURED HERE, BEFORE THE PATCH RUNS, AND THAT IS
+// LOAD-BEARING. `device_ext` redefines `globalThis.devicePixelRatio` to the
+// PROFILE's value before it wraps matchMedia, so a stand-in engine that reads
+// `devicePixelRatio` at CALL time reads the spoofed 1 — it would agree with
+// the patch by construction and the leak arm below would be unable to fail.
+// The engine's real answers must come from the real host value, so it is
+// snapshotted at definition time.
+globalThis.__HOST_DPR = globalThis.devicePixelRatio;
+globalThis.__engine3 = function (q) {
+  var K = globalThis.__K;
+  var src = String(q);
+  var open = 0, i;
+  for (i = 0; i < src.length; i++) {
+    if (src.charAt(i) === '(') open++; else if (src.charAt(i) === ')') open--;
+  }
+  while (open-- > 0) src += ')';
+  var toks = [], n = src.length, j, c;
+  i = 0;
+  while (i < n) {
+    c = src.charAt(i);
+    if (/\\s/.test(c)) { j = i; while (j < n && /\\s/.test(src.charAt(j))) j++;
+      toks.push({ t: 'ws', s: i, e: j }); i = j; continue; }
+    if (c === '(' || c === ')' || c === ',') { toks.push({ t: c, s: i, e: i + 1 }); i++; continue; }
+    if (/[a-zA-Z_-]/.test(c)) {
+      j = i; while (j < n && /[a-zA-Z0-9_-]/.test(src.charAt(j))) j++;
+      if (j < n && src.charAt(j) === '(') {
+        toks.push({ t: 'func', v: src.slice(i, j).toLowerCase(), s: i, e: j + 1 }); i = j + 1;
+      } else { toks.push({ t: 'ident', v: src.slice(i, j).toLowerCase(), s: i, e: j }); i = j; }
+      continue;
+    }
+    toks.push({ t: 'other', v: c, s: i, e: i + 1 }); i++;
+  }
+  var kNot = function (v) { return v === K.U ? K.U : (v === K.T ? K.F : K.T); };
+  var kAnd = function (a, b) { if (a === K.F || b === K.F) return K.F;
+    if (a === K.U || b === K.U) return K.U; return K.T; };
+  var kOr = function (a, b) { if (a === K.T || b === K.T) return K.T;
+    if (a === K.U || b === K.U) return K.U; return K.F; };
+  var st = { p: 0 };
+  var sk = function () { while (st.p < toks.length && toks[st.p].t === 'ws') st.p++; };
+  var pk = function () { return st.p < toks.length ? toks[st.p] : null; };
+  var kw = function (w) { var t = pk();
+    if (!t || t.t !== 'ident' || t.v !== w) return false;
+    var nx = st.p + 1 < toks.length ? toks[st.p + 1] : null;
+    return !!nx && nx.t === 'ws'; };
+  var close = function (a) { var d = 0, b;
+    for (b = a; b < toks.length; b++) { if (toks[b].t === '(' || toks[b].t === 'func') d++;
+      else if (toks[b].t === ')') { d--; if (d === 0) return b; } } return -1; };
+  // The stand-in's ONLY real facts. Resolution comes from the HOST's dpr, so a
+  // delegated resolution query answers 1.5x and the leak is visible.
+  var feat = function (text) {
+    var s2 = String(text).trim(), m2;
+    m2 = s2.match(/^min-width\\s*:\\s*([0-9.]+)px$/i); if (m2) return 1280 >= +m2[1] ? K.T : K.F;
+    m2 = s2.match(/^max-width\\s*:\\s*([0-9.]+)px$/i); if (m2) return 1280 <= +m2[1] ? K.T : K.F;
+    m2 = s2.match(/^width\\s*:\\s*([0-9.]+)px$/i); if (m2) return 1280 === +m2[1] ? K.T : K.F;
+    var RU = { dppx: 1, x: 1, dpi: 1 / 96, dpcm: 2.54 / 96 };
+    m2 = s2.match(/^(min-|max-)?resolution\\s*:\\s*([0-9.]+)(dppx|dpi|dpcm|x)$/i);
+    if (m2) { var v = +m2[2] * RU[m2[3].toLowerCase()], h = globalThis.__HOST_DPR;
+      var k2 = (m2[1] || '').toLowerCase();
+      if (k2 === 'min-') return h >= v ? K.T : K.F;
+      if (k2 === 'max-') return h <= v ? K.T : K.F;
+      return Math.abs(h - v) < 1e-9 ? K.T : K.F; }
+    m2 = s2.match(/^-webkit-(min-|max-)?device-pixel-ratio\\s*:\\s*([0-9.]+)$/i);
+    if (m2) { var v3 = +m2[2], h3 = globalThis.__HOST_DPR, k3 = (m2[1] || '').toLowerCase();
+      if (k3 === 'min-') return h3 >= v3 ? K.T : K.F;
+      if (k3 === 'max-') return h3 <= v3 ? K.T : K.F;
+      return Math.abs(h3 - v3) < 1e-9 ? K.T : K.F; }
+    return K.U;
+  };
+  var cond, inP;
+  inP = function (d) {
+    if (d > 32) return null;
+    sk(); var o = pk();
+    if (!o || o.t !== '(') return null;
+    var a = st.p, b = close(a);
+    if (b < 0) return null;
+    var save = st.p; st.p = b + 1;
+    var innerSrc = src.slice(o.e, toks[b].s);
+    var sub = toks.slice(a + 1, b), q2;
+    var hasStruct = false, z;
+    for (z = 0; z < sub.length; z++) {
+      if (sub[z].t === '(') { hasStruct = true; break; }
+      if (sub[z].t === 'ident' && sub[z].v === 'not') { hasStruct = true; break; }
+    }
+    if (hasStruct) {
+      var keep = st.p, keepToks = toks;
+      var r2 = (function () {
+        var outer = st.p; st.p = a + 1;
+        var vv = cond(d + 1, b);
+        sk();
+        if (st.p !== b) { st.p = outer; return null; }
+        st.p = outer; return vv;
+      })();
+      if (r2 === null) { st.p = save; return null; }
+      return r2;
+    }
+    q2 = feat(innerSrc);
+    return q2;
+  };
+  cond = function (d, stop) {
+    if (d > 32) return null;
+    sk();
+    var v, r, op = null;
+    if (kw('not')) { st.p++; v = inP(d + 1); return v === null ? null : kNot(v); }
+    v = inP(d + 1);
+    if (v === null) return null;
+    for (;;) {
+      sk();
+      if (stop !== undefined && st.p >= stop) break;
+      var isAnd = kw('and'), isOr = kw('or');
+      if (!isAnd && !isOr) break;
+      if (op && ((isAnd && op !== 'and') || (isOr && op !== 'or'))) return null;
+      op = isAnd ? 'and' : 'or';
+      st.p++;
+      r = inP(d + 1);
+      if (r === null) return null;
+      v = isAnd ? kAnd(v, r) : kOr(v, r);
+    }
+    return v;
+  };
+  var one = function (lo, hi) {
+    st.p = lo; sk();
+    if (st.p >= hi) return K.F;
+    var neg = false, only = false, v, r;
+    if (kw('not')) { neg = true; st.p++; sk(); }
+    else if (kw('only')) { only = true; st.p++; sk(); }
+    var t = pk();
+    if (t && t.t === 'ident' && t.v !== 'and' && t.v !== 'or' && t.v !== 'not' && st.p < hi) {
+      v = (t.v === 'screen' || t.v === 'all') ? K.T : K.F;
+      st.p++;
+      for (;;) {
+        sk();
+        if (st.p >= hi || !kw('and')) break;
+        st.p++;
+        r = inP(0);
+        if (r === null) return K.F;
+        v = kAnd(v, r);
+      }
+      sk();
+      if (st.p < hi) return K.F;
+      return neg ? kNot(v) : v;
+    }
+    if (only) return K.F;
+    if (neg) { v = inP(0); sk(); if (v === null || st.p < hi) return K.F; return kNot(v); }
+    v = cond(0, hi);
+    sk();
+    if (v === null || st.p < hi) return K.F;
+    return v;
+  };
+  var bounds = [], d2 = 0, start = 0;
+  for (i = 0; i < toks.length; i++) {
+    if (toks[i].t === '(' || toks[i].t === 'func') d2++;
+    else if (toks[i].t === ')') d2--;
+    else if (toks[i].t === ',' && d2 === 0) { bounds.push([start, i]); start = i + 1; }
+  }
+  bounds.push([start, toks.length]);
+  var acc = K.F;
+  for (i = 0; i < bounds.length; i++) acc = kOr(acc, one(bounds[i][0], bounds[i][1]));
+  return acc;
+};
 globalThis.__engineAnswer = function (q) {
-  var s = String(q).trim().toLowerCase();
-  var m = s.match(/^\\(min-width:\\s*(\\d+)px\\)$/); if (m) return 1280 >= +m[1];
-  m = s.match(/^\\(max-width:\\s*(\\d+)px\\)$/); if (m) return 1280 <= +m[1];
-  if (s === 'screen' || s === 'all') return true;
-  if (s === 'print') return false;
-  return false;
+  return globalThis.__engine3(q) === globalThis.__K.T;
 };
 globalThis.matchMedia = function (q) {
   var o = new MediaQueryList(); o._q = q; o._m = globalThis.__engineAnswer(q);
@@ -593,3 +764,238 @@ def test_the_host_dpr_never_leaks_through_any_form(tmp_path):
             f"leaking through this form instead of being answered from the "
             f"pinned DPR"
         )
+
+
+# ---------------------------------------------------------------------------
+# ⭐⭐ THE ALGEBRAIC ARM — laws, not readings. These need NO oracle at all.
+#
+# Every assertion above compares persona against a model of the engine, so it
+# is only ever as good as that model. The three defects an audit found on the
+# real engine — `or`, `)and `, and the nested `(not (…))` form — were invisible
+# to the previous stub because they lay outside its vocabulary, so it answered
+# `false` to all of them and the suite agreed with a broken build.
+#
+# The assertions below cannot go stale that way, because they do not reference
+# the engine, the host, the profile or any expected value. They are LAWS OF
+# BOOLEAN ALGEBRA that any coherent implementation satisfies at any DPR:
+#
+#     Q and (not Q) must DISAGREE          (non-contradiction)
+#     A or B must equal B or A             (commutativity of OR)
+#     A and B must equal B and A           (commutativity of AND)
+#     X or (something true) must be true   (OR's floor)
+#
+# A page that breaks one of these has identified itself to a script that knows
+# nothing about screens, units, or what machine it is running on — which is
+# precisely the class the ticket calls qualitatively worse than the unit gap.
+# ---------------------------------------------------------------------------
+
+# Every spelling of the resolution question this patch claims to own, in the
+# forms an audit found broken. Each is paired with its negation below.
+_SPELLINGS = [
+    "(resolution: 1dppx)",
+    "(resolution: 96dpi)",
+    "(resolution: 1x)",
+    "(resolution: 37.795dpcm)",
+    "(min-resolution: 0.5dppx)",
+    "(max-resolution: 2dppx)",
+    "(min-resolution: 48dpi)",
+    "(-webkit-device-pixel-ratio: 1)",
+    "(-webkit-min-device-pixel-ratio: 0.5)",
+    "(resolution: 2dppx)",
+    "(resolution: 192dpi)",
+    "(min-resolution: 2dppx)",
+    "(resolution >= 0.5dppx)",
+    "(resolution <= 2dppx)",
+]
+
+
+def test_no_spelling_answers_the_same_as_its_own_negation(tmp_path):
+    """⛔ NON-CONTRADICTION, IN THE MQ4 SPELLING THE AUDIT FOUND BROKEN.
+
+    `not all and Q` was already asserted above and was already correct. The
+    form that was NOT correct is MQ4's nested `(not Q)`, which Chromium 152
+    supports and which answered TRUE beside Q answering TRUE — and the value
+    leaking through it was the HOST's real DPR, so the incoherent form was
+    also a side channel for the exact number the patch exists to hide.
+
+    ⭐ THIS TEST NEEDS NO ORACLE. It never says what the answer should be, only
+    that a query and its negation cannot agree. It would have caught the defect
+    with no knowledge of the engine whatsoever.
+    """
+    queries = list(_SPELLINGS) + ["(not %s)" % q for q in _SPELLINGS]
+    got = _ask(tmp_path, queries, tag="algneg")
+    bad = [
+        (q, got[q], got["(not %s)" % q])
+        for q in _SPELLINGS
+        if got[q] == got["(not %s)" % q]
+    ]
+    assert not bad, (
+        "a query and its negation MUST disagree — each row below answered the "
+        "SAME to Q and to (not Q), which is a state no real browser is in and "
+        "is detectable without knowing anything about the host:\n"
+        + "\n".join(f"    Q={v!s:5} notQ={n!s:5}  {q}" for q, v, n in bad)
+    )
+
+
+def test_or_is_commutative(tmp_path):
+    """⛔ COMMUTATIVITY. `A or B` and `B or A` are the same question.
+
+    The regression this pins answered FALSE to `(resolution: 1dppx) or
+    (min-width: 1px)` and TRUE to `(min-width: 1px) or (resolution: 1dppx)` —
+    the same query with its branches swapped. A script that swaps the operands
+    and gets two different answers has identified persona in two lines, with no
+    baseline and no host knowledge.
+
+    ⭐ AGAIN NO ORACLE: the law is asserted, never the value.
+    """
+    others = ["(min-width: 1px)", "(max-width: 1px)", "(min-width: 999999px)"]
+    pairs = [(a, b) for a in _SPELLINGS for b in others]
+    queries = [f"{a} or {b}" for a, b in pairs] + [f"{b} or {a}" for a, b in pairs]
+    got = _ask(tmp_path, queries, tag="algor")
+    bad = [
+        (a, b, got[f"{a} or {b}"], got[f"{b} or {a}"])
+        for a, b in pairs
+        if got[f"{a} or {b}"] != got[f"{b} or {a}"]
+    ]
+    assert not bad, (
+        "`A or B` MUST equal `B or A` — these disagreed, so swapping the "
+        "branches of an OR changes the answer:\n"
+        + "\n".join(f"    {ab!s:5} vs {ba!s:5}   A={a}  B={b}" for a, b, ab, ba in bad)
+    )
+
+
+def test_and_is_commutative(tmp_path):
+    """The same law for AND — and the form that pins the `)and ` regression.
+
+    CSS's function-token rule makes `)and ` a valid keyword (an identifier is
+    only a function token when `(` follows it IMMEDIATELY), and the engine
+    accepts it. Splitting the query on the literal `" and "` missed it and
+    answered FALSE where the engine answers TRUE.
+    """
+    others = ["(min-width: 1px)", "(max-width: 1px)"]
+    pairs = [(a, b) for a in _SPELLINGS for b in others]
+    queries = (
+        [f"{a} and {b}" for a, b in pairs]
+        + [f"{b} and {a}" for a, b in pairs]
+        + [f"{a}and {b}" for a, b in pairs]
+    )
+    got = _ask(tmp_path, queries, tag="algand")
+    bad = [
+        (a, b, got[f"{a} and {b}"], got[f"{b} and {a}"])
+        for a, b in pairs
+        if got[f"{a} and {b}"] != got[f"{b} and {a}"]
+    ]
+    assert not bad, (
+        "`A and B` MUST equal `B and A` — these disagreed:\n"
+        + "\n".join(f"    {ab!s:5} vs {ba!s:5}   A={a}  B={b}" for a, b, ab, ba in bad)
+    )
+    # ⭐ `)and ` IS THE SAME QUERY AS `) and `. A whitespace-only difference
+    # that changes the answer is its own two-line tell.
+    spaced = [
+        (a, b, got[f"{a} and {b}"], got[f"{a}and {b}"])
+        for a, b in pairs
+        if got[f"{a} and {b}"] != got[f"{a}and {b}"]
+    ]
+    assert not spaced, (
+        "`A and B` and `Aand B` are the SAME query — CSS only makes an "
+        "identifier a function token when `(` follows it immediately, so the "
+        "missing space before `and` is not significant. These disagreed:\n"
+        + "\n".join(f"    {w!s:5} vs {n!s:5}   A={a}  B={b}" for a, b, w, n in spaced)
+    )
+
+
+def test_or_with_a_true_branch_is_always_true(tmp_path):
+    """⛔ OR'S FLOOR, and the cheapest tell of the three.
+
+    `(min-width: 1px)` is true in this realm, so ANYTHING or-ed with it must be
+    true — whatever the other branch is, whatever the host, whatever the
+    profile. The regression answered FALSE for six of six such queries.
+
+    A prober needs no baseline for this one: it can pick a branch it KNOWS is
+    true (a `min-width` its own layout satisfies) and watch the OR come back
+    false.
+    """
+    truthy = "(min-width: 1px)"
+    queries = [truthy] + [f"{q} or {truthy}" for q in _SPELLINGS]
+    got = _ask(tmp_path, queries, tag="algfloor")
+    assert got[truthy] is True, (
+        "this arm's premise failed: the branch it assumes is true answered "
+        "false, so the law below would be vacuous"
+    )
+    bad = [q for q in _SPELLINGS if got[f"{q} or {truthy}"] is not True]
+    assert not bad, (
+        f"every one of these is `X or {truthy}` where the right branch is "
+        f"TRUE, so the whole disjunction must be true regardless of X:\n"
+        + "\n".join(f"    false   {q} or {truthy}" for q in bad)
+    )
+
+
+def test_the_host_dpr_never_leaks_through_the_structural_forms(tmp_path):
+    """⛔ THE LEAK ARM, EXTENDED TO THE FORMS THAT ACTUALLY LEAKED.
+
+    `test_the_host_dpr_never_leaks_through_any_form` above has exactly the
+    right premise and a query list that was too short: every entry in it is a
+    BARE feature, and the forms an audit found leaking were STRUCTURAL — a
+    nested `(not …)`, an `or`, a `)and `. Those reached the engine, and the
+    engine answers a resolution question from the REAL host DPR.
+
+    The harness realm's own `devicePixelRatio` is 1.5 and its stand-in engine
+    answers resolution queries from that host value, so a DPR-1 profile
+    answering TRUE to any spelling of 1.5x means the host's scale is showing
+    through the structure rather than the feature.
+    """
+    host = ["(resolution: 1.5dppx)", "(resolution: 144dpi)", "(resolution: 1.5x)",
+            "(-webkit-device-pixel-ratio: 1.5)", "(min-resolution: 1.5dppx)"]
+    queries = []
+    for q in host:
+        queries += [
+            q,
+            "(not (not %s))" % q,
+            "%s or (max-width: 1px)" % q,
+            "(max-width: 1px) or %s" % q,
+            "%sand (min-width: 1px)" % q,
+            "%s and (min-width: 1px)" % q,
+            "((%s))" % q,
+            "screen and %s" % q,
+        ]
+    got = _ask(tmp_path, queries, tag="leakstruct")
+    bad = [q for q, v in got.items() if v is True]
+    assert not bad, (
+        "a DPR-1 profile answered TRUE to a spelling of 1.5x — the HOST's real "
+        "scale is leaking through the STRUCTURE of these queries (the feature "
+        "itself is handled; the wrapper is what delegated):\n"
+        + "\n".join(f"    {q}" for q in bad)
+    )
+
+
+def test_a_query_naming_no_resolution_is_answered_by_the_engine_alone(tmp_path):
+    """⛔ SCOPE ITEM 4, AS A DIFFERENTIAL RATHER THAN A LIST.
+
+    `test_an_unrelated_query_is_not_touched` above checks seven hand-picked
+    queries against hand-written expectations. This asks the harness's own
+    engine the SAME question and requires byte-identical answers across a much
+    wider structural spread — including the `or`, nested-`not` and `)and `
+    shapes, which is where the divergence actually was.
+
+    ⭐ THE EXPECTATION IS COMPUTED, NOT WRITTEN DOWN, so this arm cannot drift
+    out of date with the stand-in engine the way a literal list can.
+    """
+    base = ["(min-width: 1px)", "(max-width: 1px)", "(min-width: 999999px)",
+            "(bogus: 1)", "(width: 1280px)"]
+    queries = list(base)
+    for a in base:
+        queries += ["(not %s)" % a, "((%s))" % a, "screen and %s" % a]
+        for b in base:
+            queries += ["%s or %s" % (a, b), "%s and %s" % (a, b),
+                        "%sand %s" % (a, b), "%s, %s" % (a, b)]
+    queries = sorted(set(queries))
+    got = _ask(tmp_path, queries, tag="quietdiff", extra_probe=(
+        "qs.forEach(function (q) { o['ENGINE::' + q] = __engineAnswer(q); });"
+    ))
+    bad = [(q, got["ENGINE::" + q], got[q]) for q in queries
+           if got[q] != got["ENGINE::" + q]]
+    assert not bad, (
+        "a query naming NO resolution feature must be answered by the engine "
+        "ALONE — the patch must be invisible on it. These differ:\n"
+        + "\n".join(f"    engine={e!s:5} persona={p!s:5}  {q}" for q, e, p in bad)
+    )
