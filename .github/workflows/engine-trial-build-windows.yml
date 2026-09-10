@@ -261,7 +261,7 @@ permissions:
 env:
   UNGOOGLED_TAG: ${{ inputs.ungoogled_tag || '152.0.7977.75-1.1' }}
   EXPECT_BASE: ${{ inputs.expect_base || 'cacf0f0fd2446a837528c54df1880b75874b9580' }}
-  FALSIFY: ${{ inputs.falsify || 'none' }}
+  FALSIFY: ${{ inputs.falsify || 'drop_patch' }}
 
 concurrency:
   # Serialised deliberately: concurrent runs fetch the same ~38 paths from
@@ -381,7 +381,7 @@ jobs:
       # engine/patches/fingerprint on the runner; nothing is committed and the
       # repository is untouched.
       - name: ⚠️ Deliberately break the patch layer (falsification)
-        if: ${{ (inputs.falsify || 'none') != 'none' }}
+        if: ${{ (inputs.falsify || 'drop_patch') != 'none' }}
         run: |
           set -eu
           cd engine/patches/fingerprint
