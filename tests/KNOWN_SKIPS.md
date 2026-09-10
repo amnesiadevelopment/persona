@@ -81,6 +81,20 @@ Correct everywhere except the named platform. Not a provisioning gap on Linux.
 | `test_invisible_launch.py:3867` | exercises the real Toolhelp/PEB process scan |
 | `test_update_verify.py:217`, `:238` | exercises the real Windows `apply_and_restart` `os._exit` path |
 | `test_main_utf8_fs.py:76` | this platform's C locale still yields a UTF-8 filesystem encoding |
+| `test_ps374_runtime_enable_guard.py:592`, `:735` | `POSIX shell script` — skips on **Windows only**; runs on ubuntu + macOS |
+| `test_ps374_runtime_enable_guard.py:679` | `the BSD-sed shim is a POSIX shebang script; PATHEXT ignores it` — **Windows only** |
+
+> ⚠️ The two `test_ps374_runtime_enable_guard.py` rows above — covering **three**
+> skip sites (`:592`, `:735`, `:679`) — are the **inverse** of
+> every other row here: they skip on Windows and run on Linux/macOS, so a Linux
+> contributor never sees them skip. They model **BSD `sed`**, which macOS
+> runners have and Windows runners never will — an extensionless `#!/bin/sh`
+> shim is not even a PATHEXT candidate on Windows, so the shim would silently
+> not engage. That was caught by its own positive control going red in CI
+> rather than by review (PS-374), and skipping is the honest outcome: a
+> `sed.bat` wrapper would test the wrapper. The platform-independent half —
+> `test_no_shell_script_uses_the_gnu_only_in_place_sed_form` — still runs on
+> all three.
 
 ### Environment-bound — a machine that is simply missing something
 
