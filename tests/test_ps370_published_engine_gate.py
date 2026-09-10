@@ -738,10 +738,16 @@ def test_the_runner_stages_with_a_symlink_and_does_not_touch_the_resolver():
 def test_the_runner_preserves_the_archives_executable_bits():
     """FOUND BY RUNNING IT, and it is why this assertion exists.
 
-    `ZipFile.extractall` discards the unix mode, so the Chrome for Testing
-    archive's `chrome_crashpad_handler` lands non-executable and the control
-    browser dies at startup with `Permission denied (13)` — reaching the judge
-    as INDETERMINATE on all four control cells, i.e. a permanently red gate.
+    `ZipFile.extractall` discards the unix mode, so a helper binary the Chrome
+    for Testing archive ships beside `chrome` lands non-executable and the
+    control browser dies at startup with `Permission denied (13)` — reaching the
+    judge as INDETERMINATE on all four control cells, i.e. a permanently red
+    gate.
+
+    ⛔ The helper is not NAMED, here or in the runner: PS-359's ratchet forbids
+    this repository from owning any list of upstream's runtime filenames, and
+    the fix does not need one — every member is extracted mode-preserving, which
+    is precisely why it cannot rot when upstream renames something.
     """
     runner = RUN_SCRIPT.read_text(encoding="utf-8")
     # `zf.extractall(...)` as a CALL — the docstring names the method, which is
