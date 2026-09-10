@@ -287,8 +287,17 @@ jobs:
           # interpolated into the command line, so an empty input contributes no
           # argument at all instead of an empty string the parser would have to
           # interpret. The value reaches the runner through `env` and never
-          # through `${{ }}` inside the script body, so a hostile input cannot
-          # become shell.
+          # through an expression interpolation inside the script body, so a
+          # hostile input cannot become shell.
+          #
+          # ⚠️ AND NOT EVEN IN A COMMENT. This block originally spelled that
+          # rule out using the literal `$`+`{{` delimiters, and the workflow
+          # failed to parse: GitHub expands expressions in a `run:` body as
+          # TEXT, before any shell sees it, so a `#` does not protect one. The
+          # first push of this file died at parse time with "unexpected end of
+          # input while parsing variable access" and ZERO jobs — which is
+          # exactly the artifact class this job exists to eliminate, caught by
+          # actually running it.
           args=(--out /tmp/ps385/audit.json --markdown /tmp/ps385/audit.md)
           if [ -n "${INJECT:-}" ]; then
             args+=(--inject-published "$INJECT")
