@@ -136,20 +136,74 @@ peak live tree: 10 process(es) ... survivors after terminate(): 0``, exit 0,
 and its falsifier reports 9 survivors when descendant teardown is sabotaged.
 The check works; this runner cannot host it.
 
-⛔ AND THE GAP IS NOT THIS TICKET'S TO CLOSE BY HAND. ``ci.yml`` already names
-it, at length and deliberately (:427-455): ``browser_chromium`` is *"a real
-capability nothing declares"*, *"THE ENGINE THE PRODUCT DEFAULTS TO IS THE ONE
-NO GATE LAUNCHES"*, and closing it *"is a separate slice, and it is not one
-line"* — the product launches fingerprint-chromium, not playwright's build, so
-which build, which pin and which runner are all open questions. Provisioning it
-here on the way past would answer them by accident. PS-347's check is therefore
-falsified on a hand-built chromium venue and recorded in its PR, exactly as the
-ticket required, and stays out of this lane until that slice lands.
+⭐⭐ THAT EXCLUSION IS OVER (PS-383). THE LANE NOW PROVISIONS CHROMIUM AND THE
+CHECK IS SELECTED. The paragraph above is kept rather than deleted because it
+is the RECORD OF WHY IT WAS DARK, and because the two provisioning defects
+below are only legible against it. What follows is what it took, measured on a
+real engine (``personium-152.0.7977.75``, 202,193,400 bytes) rather than
+reasoned — and BOTH of these produce the SAME ``exit 2`` the exclusion cites,
+so a change that adds the download and stops there reproduces the omission's
+own evidence instead of closing it.
 
-⚠️ WHEN A CHROMIUM ENGINE IS PROVISIONED FOR CI, add
-``no-process-survives-a-closed-session`` to both constants below in the same
-change. The registry-agreement test names it and says why, so that edit is
-prompted rather than remembered.
+  1. ⛔ THE ENGINE DOES NOT LIVE AT A FIXED PATH — IT FOLLOWS ``PERSONA_HOME``.
+     ``config.ENGINE_DIR`` is ``_under_home("engine", "PERSONA_ENGINE_DIR")``,
+     and ``main()`` below hands the child a FRESH ``PERSONA_HOME`` on every
+     run. So an engine downloaded by the workflow lands in the WORKFLOW's home
+     and the child resolves ``$PERSONA_HOME/engine/fpchrome.AppImage`` —
+     a directory created seconds ago by ``mkdtemp``, which is empty. Measured::
+
+         scratch home: /tmp/persona-behaviour-launch-ci-yp34liw3
+         ENGINE_BINARY= /tmp/.../engine/fpchrome.AppImage    exists= False
+
+     The cure is ``PERSONA_ENGINE_DIR`` — the documented override, pinned by
+     ``tests/test_config_home.py`` and already used by the PS-301/PS-344
+     launch readings for exactly this — set to a directory OUTSIDE the scratch
+     home, so the engine survives the per-run home while the profile store
+     does not. ⚠️ THE FIREFOX ARM HID THIS FOR THREE CHECKS: it resolves
+     through ``~/.cache/invisible-playwright``, which is not under
+     ``PERSONA_HOME`` at all, so this lane has never had an engine that could
+     be relocated by its own scratch home until now.
+
+  2. ⛔ THIS RUNNER'S OWN SCRATCH PREFIX IS 6 BYTES OVER THE CHROMIUM WALL.
+     ``behaviour.py`` sizes ``default_scratch_home`` against the two
+     socket-bound profile names and calls the terseness of its ``pb-`` prefix
+     "load-bearing rather than a style preference". THIS FILE provisions its
+     own home and never consulted that budget, because no check it selected
+     bound a socket. Measured::
+
+         /tmp/persona-behaviour-launch-ci-hv7nlra0  -> 41 bytes, budget  -6
+         /tmp/pb-3bbkckgh                           -> 16 bytes, budget  19
+         (the names need 5: 'p347a', 'p347b')
+
+     and end-to-end, engine correctly placed, under a real display::
+
+         [CANNOT RUN] no-process-survives-a-closed-session
+           SELF-TEST FAILED … profile 'p347b' puts its process-singleton
+           socket at 119 bytes, and the limit is 107 …
+           0 passed, 0 finding(s), 1 could not run, 0 browser launch(es)
+
+     That is ``_survivor_profile``'s PRE-LAUNCH refusal working exactly as
+     designed, and it is a fact about THIS FILE's prefix, not about the check.
+     ⛔ THE CURE IS THE SHORTER PREFIX, NEVER A LOOSER GUARD — not a longer
+     ``sun_path``, not a shorter profile name, not a relaxed ``_MIN_LIVE_TREE``.
+     A budget checked on one side only is a budget that fails on the other,
+     which is the sentence ``TestSingletonSocketBudget`` already carries one
+     venue over; ``_assert_name_budget`` below is this venue's half of it, and
+     it REFUSES up front rather than letting a 90-second launch time out.
+
+⛔ ``ci.yml``'s REFUSAL IS UNTOUCHED AND STAYS CORRECT. It argues (:427-455)
+against folding ``browser_chromium`` into its SIX-INSTANCE ``tests`` matrix —
+a 200 MB download six times per PR. That reasoning is about that matrix. This
+is a dedicated single-instance lane on a cron, which is the venue
+``engine-gpu-variance.yml`` established for precisely this trade and which this
+workflow already was. The two are not in tension and neither was weakened.
+
+⚠️ WHEN PS-2 FIXES THE CANVAS COLLISION, ``two-profile-unlinkability`` is the
+ONE remaining omission and the same instruction applies to it. Its reason is
+unrelated to anything above: it reports a real FINDING on the shipped firefox
+engine, so requiring it would make this gate permanently RED — the opposite
+failure mode from the one just closed, which is why the two were never
+collapsed into a single carve-out.
 
 WHY A SEPARATE FLOOR AND NOT AN EXTENSION OF PS-315'S
 ------------------------------------------------------
@@ -280,15 +334,25 @@ MODULE = "src.services.verify.behaviour_cli"
 MODULE_FILE = REPO_ROOT.joinpath(*MODULE.split(".")).with_suffix(".py")
 
 #: THE CHECKS THIS LANE SELECTS — the launch-backed bodies that were DARK
-#: before this venue existed. TWO launch-backed checks are absent DELIBERATELY,
-#: for two DIFFERENT reasons that must not be collapsed into one carve-out; the
-#: header argues both at length and a test pins each by name. `--check` is
+#: before this venue existed. ONE launch-backed check is absent DELIBERATELY
+#: (`two-profile-unlinkability`, a permanent FINDING on the shipped engine);
+#: the header argues it at length and a test pins it by name. `--check` is
 #: repeatable and VALIDATES each name, so a rename or a retirement fails loudly
 #: here instead of silently shrinking the lane.
+#:
+#: ⭐ FOUR SINCE PS-383. `no-process-survives-a-closed-session` is a CHROMIUM
+#: launch and this lane now provisions chromium, so the second omission — which
+#: was never about the check and always about the venue — is closed. Its entry
+#: is deleted from `DOCUMENTED_OMISSIONS` in the same change, as the header's
+#: standing instruction required. ⛔ It is a WRAPPER launch that binds a
+#: process-singleton socket, which is why `main()` below now sizes its scratch
+#: home against the profile-name budget and pins `PERSONA_ENGINE_DIR` outside
+#: it; read the header's two numbered defects before touching either.
 SELECTED_CHECKS = (
     "restart-continuity",
     "benign-edit-stability",
     "trash-restore-and-wipe",
+    "no-process-survives-a-closed-session",
 )
 
 COMMAND = [
@@ -336,6 +400,7 @@ EXPECTED_CHECKS = (
     "restart-continuity",
     "benign-edit-stability",
     "trash-restore-and-wipe",
+    "no-process-survives-a-closed-session",
 )
 
 #: Recorded so a reader of a red run knows what the lane costs and can tell a
@@ -346,11 +411,111 @@ EXPECTED_CHECKS = (
 #:     the whole registry (all 7)     93.5s, 16 browser launches, exit 1
 #:     engine download (cold cache)   ~10s, 584 MB extracted
 #:
-#: See the workflow for how that is priced against ci.yml's 30-minute cap.
+#: ⭐ PS-383 ADDS A SECOND ENGINE AND A FOURTH CHECK, and the figures above are
+#: NOT re-stated from a guess. The chromium download was measured in a
+#: container on this branch — `personium-152.0.7977.75`, 202,193,400 bytes,
+#: fetched and verified in ~35s — and the survivor check's own cost is bounded
+#: by its thresholds rather than by a stopwatch: `_TREE_GROW_TIMEOUT` is 90s per
+#: launch and it takes two, so its WORST case is ~3 minutes and its measured
+#: case (the tree settles at 10 within ~7s, per `_STABLE_SAMPLES`' own note) is
+#: ~30s. So the lane's ceiling is roughly 66s + 3min + two downloads ≈ 6 min
+#: against a 45-minute budget. ⛔ THE CHROMIUM FIGURE IS A DOWNLOAD
+#: MEASUREMENT, NOT A LAUNCH ONE: the container that took it cannot launch
+#: chromium at all (no unprivileged user namespaces — the engine exits FATAL
+#: "No usable sandbox!" ~3s in), which is a fact about that sandbox and not
+#: about the runner. See the workflow header for the CI-side figures.
 _MEASURED_NOTE = (
-    "measured on one linux host at n=1: this lane runs in ~66s over 12 browser "
-    "launches, plus ~10s to fetch the engine"
+    "measured on one linux host at n=1: the three firefox checks run in ~66s "
+    "over 12 browser launches, plus ~10s to fetch the firefox engine; the "
+    "chromium survivor check adds two wrapper launches bounded at 90s each "
+    "and a ~200 MB engine download"
 )
+
+#: THE SCRATCH-HOME PREFIX, AND ITS LENGTH IS A CORRECTNESS PROPERTY.
+#:
+#: ⛔ DO NOT LENGTHEN THIS BACK. It was `persona-behaviour-launch-ci-` until
+#: PS-383, which was fine while every selected check launched FIREFOX — firefox
+#: binds no process-singleton socket, so no profile path here was measured
+#: against `sun_path`. `no-process-survives-a-closed-session` launches CHROMIUM,
+#: which does, and the old prefix produced a 41-byte home whose profile-name
+#: budget was NEGATIVE SIX against names needing five. The lane would have been
+#: permanently exit 2 for a reason that has nothing to do with the product.
+#:
+#: This mirrors `behaviour.default_scratch_home`'s own `pb-` prefix and the
+#: sentence beside it: "every byte here is a byte taken off the profile-name
+#: budget above". `_assert_name_budget` below checks the result rather than
+#: trusting this constant, because a budget checked on one side only is a
+#: budget that fails on the other.
+_SCRATCH_PREFIX = "pb-ci-"
+
+#: WHERE THE CHROMIUM ENGINE LIVES, and it must be OUTSIDE the scratch home.
+#:
+#: `config.ENGINE_DIR` is `_under_home("engine", "PERSONA_ENGINE_DIR")`, so
+#: without this the child resolves the engine under the throwaway home this
+#: script just created — an empty directory — and reports the exact
+#: `FileNotFoundError: .../fpchrome.AppImage` that kept this check out of the
+#: lane in the first place. The workflow downloads into this path; the child
+#: reads from it. The PROFILE STORE stays in the scratch home and is still
+#: destroyed after every run — only the 200 MB binary is exempted, and it is
+#: exempted because it is provisioning rather than fixture state.
+#:
+#: Honoured only when the workflow (or an operator) has not already set it.
+_ENGINE_DIR_ENV = "PERSONA_ENGINE_DIR"
+
+
+def _assert_name_budget(home: str) -> "str | None":
+    """Refuse a scratch home no chromium profile can launch under.
+
+    Returns an operator-facing message, or None when the home fits.
+
+    ⭐ CHECKED HERE RATHER THAN LEFT TO THE CHECK, though the check does refuse
+    on its own (`_survivor_profile` measures the same arithmetic before
+    launching). Both are wanted and neither is redundant: the check's refusal
+    protects an operator who passed `--home` by hand, and this one protects the
+    VENUE — it is this file that chooses the prefix, so it is this file that
+    must be shown to have chosen a workable one. A CI failure that says "your
+    runner's temp prefix is six bytes too long" is a different and far more
+    actionable sentence than one that says a browser tree never settled.
+
+    ⛔ THE FIX FOR A FAILURE HERE IS A SHORTER PREFIX, NEVER A SHORTER PROFILE
+    NAME AND NEVER A LOOSER GUARD. The names belong to the check and their
+    length is already argued where they live.
+    """
+    try:
+        from src.services.verify.behaviour import (
+            profile_name_budget,
+            singleton_socket_is_bound,
+        )
+        from src.services.verify.behaviour_checks import (
+            SOCKET_BOUND_PROFILE_NAMES,
+        )
+    except Exception:  # pragma: no cover - the harness check below reports it
+        # The import failing is the harness being unimportable, which `main`
+        # already reports with a better message a few lines down. Do not
+        # manufacture a second, worse one here.
+        return None
+
+    if not singleton_socket_is_bound():
+        return None
+
+    needed = max((len(n) for n in SOCKET_BOUND_PROFILE_NAMES), default=0)
+    budget = profile_name_budget(home)
+    if budget >= needed:
+        return None
+
+    return (
+        f"CANNOT RUN: the scratch home {home!r} is {len(home)} bytes, which "
+        f"leaves {budget} byte(s) for a profile name — and this lane launches "
+        f"chromium under names needing {needed}. Chromium's process singleton "
+        "binds a UNIX socket under the profile and the engine does not degrade "
+        "when it does not fit: it exits FATAL 'Socket path too long' seconds "
+        "into the launch, which looks from outside like a browser that started "
+        "and vanished. Nothing would be measured.\n"
+        f"Shorten this script's scratch prefix ({_SCRATCH_PREFIX!r}) or point "
+        "TMPDIR at a shorter base. Do NOT shorten the check's profile names "
+        "and do NOT relax its guards — the budget is a property of this home.\n"
+        "Nothing was certified.\n"
+    )
 
 
 def main() -> int:
@@ -380,9 +545,33 @@ def main() -> int:
         )
         return 2
 
-    home = tempfile.mkdtemp(prefix="persona-behaviour-launch-ci-")
+    home = tempfile.mkdtemp(prefix=_SCRATCH_PREFIX)
+
+    # ⛔ BEFORE ANYTHING LAUNCHES. A home that is too long for the chromium
+    # profile names produces a FATAL several seconds into a launch, which every
+    # watcher reads as a browser that started and vanished. Refusing here turns
+    # that into a sentence naming the cure, and it costs nothing on the path
+    # where the home fits.
+    too_long = _assert_name_budget(home)
+    if too_long is not None:
+        shutil.rmtree(home, ignore_errors=True)
+        echo(too_long, err=True)
+        return 2
+
     env = dict(os.environ)
     env["PERSONA_HOME"] = home
+    # ⛔ THE ENGINE MUST NOT FOLLOW THE HOME. `config.ENGINE_DIR` is
+    # `_under_home("engine", "PERSONA_ENGINE_DIR")`, so without this the child
+    # looks for the chromium binary inside the throwaway directory created one
+    # line above — which is empty — and reports the FileNotFoundError this
+    # lane's own header quotes as the reason the check was excluded. The
+    # profile store still lives in (and dies with) the scratch home; only the
+    # engine is pinned outside it. An explicit setting from the workflow or an
+    # operator wins, so a caller who has already placed the engine is honoured.
+    env.setdefault(
+        _ENGINE_DIR_ENV,
+        os.path.join(os.path.expanduser("~"), ".persona-ci-engine"),
+    )
     # The home is already set in the child's environment BEFORE the process
     # starts, which is the exact condition behaviour_cli's re-exec exists to
     # guarantee — and os.execve has spawn-and-exit semantics on Windows, so a
@@ -396,6 +585,7 @@ def main() -> int:
     env["PYTHONIOENCODING"] = "utf-8"
 
     echo(f"scratch PERSONA_HOME={home}\n")
+    echo(f"engine dir={env[_ENGINE_DIR_ENV]}\n")
     echo(f"cwd={REPO_ROOT}\n")
     echo(f"DISPLAY=[{os.environ.get('DISPLAY', '<unset>')}]\n")
     echo(f"$ {' '.join(COMMAND[1:])}\n")
