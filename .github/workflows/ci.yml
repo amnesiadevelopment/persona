@@ -216,13 +216,50 @@ jobs:
         # through conftest's table with this declaration in force, and ZERO
         # newly fail. It polices a state that does not currently occur — which
         # is exactly what a guard is for.
+        #
+        # ── WHY `yaml` IS DECLARED HERE (PS-389) ─────────────────────────────
+        # Nothing above covers it, and the population it covers is the most
+        # embarrassing one to lose: 89 tests parse a workflow file through a
+        # PyYAML guard, and 37 of them are the gate-shape guards in
+        # tests/test_ci_verification_gates.py — INCLUDING the two directly
+        # above this comment's subject, `test_ci_declares_the_browser_
+        # capability_rather_than_inferring_it` and `test_ci_declares_the_
+        # engine_capability_on_every_platform`. Without this name the tests
+        # asserting that the other two declarations exist could go dark and
+        # report green, so the mechanism would stop policing its own shape.
+        #
+        # MEASURED, NOT ARGUED (a `sys.meta_path` blocker raising a genuine
+        # ModuleNotFoundError, at 9dad467): with PyYAML absent, this job's own
+        # declaration — `browser,engine`, verbatim — left all 89 skips silent,
+        # BYTE-IDENTICAL to declaring nothing at all.
+        #
+        # THIS IS DECLARABLE BECAUSE IT IS PROVISIONED, MEASURED NOT ASSUMED.
+        # The install step above runs `pip install -r requirements-dev.txt`
+        # before pytest (see the "Install dependencies" step), and PS-389
+        # declares PyYAML in that file directly. Before this commit it arrived
+        # only as a transitive dependency of `uvicorn[standard]` — a route that
+        # nothing pinned for this purpose and no test asserted, which is
+        # exactly the accident this declaration stops depending on.
+        #
+        # BLAST RADIUS: nil today, and that is the point of a guard. With
+        # PyYAML present the 16 guarding test files report 660 passed and ZERO
+        # skips, so this declaration converts nothing that currently happens.
+        #
+        # ⭐ AND IT REACHES THE MODULE-LEVEL GUARDS TOO, which took a second
+        # hook in conftest.py to make possible. Eight of those files guard at
+        # module level, where an importorskip raises during COLLECTION: the
+        # file is dropped whole, no test item is created, and the run-time hook
+        # is never called. Wired only to that hook, this declaration printed
+        # "ok yaml: no test declined to run" while 222 tests silently failed to
+        # collect. conftest.py's pytest_collectreport closes that, for every
+        # capability rather than only this one.
         shard:
           - name: main
             marker: "not ui_driver"
-            capabilities: browser,engine
+            capabilities: browser,engine,yaml
           - name: ui-driver
             marker: "ui_driver"
-            capabilities: browser,engine,ui_driver
+            capabilities: browser,engine,yaml,ui_driver
     runs-on: ${{ matrix.os }}
     # ⚠️ THE CAP IS STILL 30. THIS SPLIT DELIBERATELY DID NOT RAISE IT.
     #
@@ -651,7 +688,15 @@ jobs:
           # deliberately in neither. tests/test_ci_verification_gates.py pins
           # that the non-ubuntu fallback declares `engine`, so this copy cannot
           # drift back out of step without a red test.
-          PERSONA_REQUIRED_CAPABILITIES: ${{ matrix.os == 'ubuntu-24.04' && matrix.shard.capabilities || 'browser,engine' }}
+          #
+          # `yaml` is in both for the same reason `engine` is (PS-389): the
+          # install step runs `pip install -r requirements-dev.txt` on all
+          # three runners, and PyYAML is declared in that file. The workflow-
+          # shape tests it covers are platform-independent — they parse a file
+          # in the repo — so there is no ubuntu-only condition to respect here,
+          # unlike `ui_driver` and its /usr/bin/chromium. tests/
+          # test_ci_verification_gates.py pins this copy too.
+          PERSONA_REQUIRED_CAPABILITIES: ${{ matrix.os == 'ubuntu-24.04' && matrix.shard.capabilities || 'browser,engine,yaml' }}
         # `-m` here SELECTS THIS SHARD'S PORTION — it is not the `-k` narrowing
         # forbidden above. The two shards partition the suite (15 + 5551 ==
         # 5566, pinned by tests/test_ci_shard_partition.py) and both gate, so
