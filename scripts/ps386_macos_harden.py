@@ -27,6 +27,25 @@ and is silently reverted by the next build, which would leave a green commit
 and an unchanged artifact. Re-signing the produced `.app` is the only seam that
 survives regeneration.
 
+⭐ SIGNING IS BUNDLE-AWARE, AND THAT IS THE LOAD-BEARING PART
+-------------------------------------------------------------
+`codesign` seals a bundle over its contents: the seal is a manifest of digests
+in `_CodeSignature/CodeResources`. PS-346 measured **20 such seals** inside this
+one `.app` — it is not one bundle, it is a tree of them (the
+`serious_python_darwin.framework`, the `python.bundle` inside it, the Flutter
+frameworks). So re-signing a nested bundle's INNER BINARY as if it were a loose
+file rewrites bytes that its own enclosing seal already committed to, and every
+seal above it goes stale at once. `codesign --verify --deep --strict` then
+fails, and the artifact is worse than the one we started with.
+
+Two rules follow, and both are tested:
+
+  1. A nested bundle is signed **at its bundle root**, never at its inner
+     binary — that is what makes `codesign` rewrite the seal instead of
+     invalidating it.
+  2. Everything is signed **deepest first**, so a container is only ever sealed
+     over contents that have already reached their final bytes.
+
 WHAT IT SIGNS, AND WHAT IT DELIBERATELY DOES NOT
 -------------------------------------------------
 ⭐ ONLY THE SLICES WE PRODUCE. The honest target named by PS-386 is "every slice
@@ -38,7 +57,16 @@ re-signing those would DESTROY a genuine signature and replace it with our
 ad-hoc one. That is strictly worse than leaving them alone.
 
 So this walks the bundle and skips anything already carrying a CMS signature
-(a real identity), re-signing only ad-hoc/unsigned Mach-O slices.
+(a real identity), re-signing only ad-hoc/unsigned Mach-O code.
+
+⚠️ ENTITLEMENTS GO ON BUNDLES, NOT ON EVERY DYLIB, and that asymmetry is
+deliberate rather than an oversight. An entitlement blob is a statement about a
+PROCESS, so it belongs on the executable the kernel launches; stamping one onto
+each of ~200 loose dylibs would invent ~200 entitlement blobs where the shipped
+artifact has three, and every one of them would be a new place for
+`get-task-allow` to be re-injected. Loose code gets `--options runtime` and
+nothing else. PS-346's reading corroborates the shape: entitlements were found
+on 3 slices out of 225, not on all of them.
 
 ⛔ NO CREDENTIAL, EVER. This signs ad-hoc (`--sign -`), exactly as the build
 already does. It CANNOT and MUST NOT produce a signed or notarized artifact:
@@ -48,14 +76,21 @@ blockers that would make such a submission fail EVEN IF the identity existed.
 An ad-hoc signature with the hardened runtime is still not notarizable — it is
 notarization-READY, which is the whole and only claim here.
 
+⚠️ THIS SCRIPT ASSERTS A POSTURE; IT DOES NOT MEASURE ONE. Whether `codesign`
+honoured what was asked — in particular whether it re-injected
+`get-task-allow` anyway, which is exactly what it does when left to itself — is
+a question about the produced BYTES, and it is answered by
+`scripts/ps386_verify_posture.py`, which reads them with PS-346's own audited
+readers. Do not read a zero exit here as a measured result.
+
 USAGE
 -----
     python3 scripts/ps386_macos_harden.py --app build/macos/Build/Products/Release/persona.app
     python3 scripts/ps386_macos_harden.py --app <path> --dry-run
 
 Exit codes:
-    0  every targeted slice re-signed and verified
-    1  a slice failed to re-sign or failed verification
+    0  every targeted item re-signed and the bundle verifies
+    1  an item failed to re-sign, or the bundle failed verification
     2  the environment cannot do this (not macOS / no codesign / bad --app)
 
 ⚠️ EXIT 2 IS NOT A PASS. It means the question was not asked.
@@ -71,7 +106,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-# The entitlement set we assert on our own slices. This MUST be kept in step
+# The entitlement set we assert on our own bundles. This MUST be kept in step
 # with `[tool.flet.macos.entitlement]` in pyproject.toml — the two exist for
 # different reasons (that one states intent into the generated plist, this one
 # is what codesign actually applies), and `--check-pyproject` asserts they agree
@@ -97,6 +132,9 @@ MACHO_MAGICS = {
     b"\xbe\xba\xfe\xca",  # FAT_CIGAM
 }
 
+# Directory suffixes that mean "this is a bundle, sign it at the root".
+BUNDLE_SUFFIXES = (".framework", ".bundle", ".app", ".xpc", ".appex")
+
 
 def is_macho(path: Path) -> bool:
     """Does this file begin with a Mach-O or fat-binary magic?
@@ -113,7 +151,7 @@ def is_macho(path: Path) -> bool:
 
 
 def has_real_identity(path: Path) -> bool:
-    """Does this slice already carry a CMS signature naming a real identity?
+    """Does this item already carry a CMS signature naming a real identity?
 
     ⭐ THIS IS THE GUARD THAT KEEPS US OFF THIRD-PARTY CODE. `codesign -dvvv`
     prints an `Authority=` line only for a genuine signature; an ad-hoc one has
@@ -122,9 +160,9 @@ def has_real_identity(path: Path) -> bool:
     identity with our ad-hoc nothing.
 
     ⚠️ FAIL SAFE, NOT FAIL OPEN: if the probe itself errors we return True
-    ("treat as third-party, leave alone"). Skipping a slice we could have
-    hardened is a measurable shortfall the instrument will report; destroying a
-    real signature is not recoverable from the build output.
+    ("treat as third-party, leave alone"). Skipping an item we could have
+    hardened is a measurable shortfall the verifier will report as a miss;
+    destroying a real signature is not recoverable from the build output.
     """
     try:
         out = subprocess.run(
@@ -139,17 +177,90 @@ def has_real_identity(path: Path) -> bool:
     return "Authority=" in blob
 
 
-def find_slices(app: Path) -> list[Path]:
-    """Every Mach-O file in the bundle, deepest first.
+def bundle_main_executable(bundle: Path) -> Path | None:
+    """The binary `codesign` will sign when handed this bundle root.
+
+    Needed so the same binary is not ALSO signed as a loose file: signing it
+    directly and then signing its bundle is not merely wasteful, it means the
+    loose pass writes entitlements onto a slice the bundle pass then rewrites,
+    and the artifact's entitlement count stops matching what this script says
+    it applied.
+    """
+    for info in (
+        bundle / "Contents" / "Info.plist",
+        bundle / "Resources" / "Info.plist",
+        bundle / "Versions" / "Current" / "Resources" / "Info.plist",
+        bundle / "Versions" / "A" / "Resources" / "Info.plist",
+    ):
+        if not info.is_file():
+            continue
+        try:
+            with open(info, "rb") as fh:
+                plist = plistlib.load(fh)
+        except Exception:
+            continue
+        name = plist.get("CFBundleExecutable")
+        if not name:
+            continue
+        for cand in (
+            bundle / "Contents" / "MacOS" / name,
+            bundle / "Versions" / "A" / name,
+            bundle / "Versions" / "Current" / name,
+            bundle / name,
+        ):
+            if cand.is_file() and not cand.is_symlink():
+                return cand
+    # A `.framework` may carry no Info.plist we can read; its binary is
+    # conventionally Versions/A/<framework name>.
+    if bundle.suffix == ".framework":
+        cand = bundle / "Versions" / "A" / bundle.stem
+        if cand.is_file() and not cand.is_symlink():
+            return cand
+    return None
+
+
+def find_nested_bundles(app: Path) -> list[Path]:
+    """Every bundle inside the app — the things that must be signed AT THE ROOT.
+
+    PS-346 counted 20 `_CodeSignature/CodeResources` seals in this one `.app`,
+    which is what a tree of nested bundles looks like from the outside. Each of
+    those seals is a manifest of digests over that bundle's contents, so each
+    one is a thing that goes stale if its contents are rewritten under it.
+    """
+    out = []
+    for path in app.rglob("*"):
+        if path.is_symlink() or not path.is_dir():
+            continue
+        if path.suffix in BUNDLE_SUFFIXES:
+            out.append(path)
+    return out
+
+
+def plan(app: Path) -> tuple[list[Path], list[Path]]:
+    """Return (items_to_sign_deepest_first, bundle_roots).
+
+    An "item" is either a nested bundle root or a loose Mach-O file that is not
+    some bundle's main executable. Ordering is by path depth, DESCENDING.
 
     ⚠️ DEEPEST FIRST IS LOAD-BEARING, not tidiness. codesign seals a bundle over
-    its contents, so signing an outer bundle before its nested code invalidates
-    the outer seal the moment the inner one changes. Nested code must be signed
-    before the thing that contains it.
+    its contents, so an outer bundle signed before its nested code has its seal
+    invalidated the instant the inner code changes. Nested code must reach its
+    final bytes before the thing that contains it is sealed.
     """
-    out = [p for p in app.rglob("*") if p.is_file() and not p.is_symlink() and is_macho(p)]
-    out.sort(key=lambda p: len(p.parts), reverse=True)
-    return out
+    bundles = find_nested_bundles(app)
+    mains = {m for b in bundles if (m := bundle_main_executable(b)) is not None}
+    app_main = bundle_main_executable(app)
+    if app_main is not None:
+        mains.add(app_main)
+
+    loose = [
+        p
+        for p in app.rglob("*")
+        if p.is_file() and not p.is_symlink() and p not in mains and is_macho(p)
+    ]
+    items = bundles + loose
+    items.sort(key=lambda p: len(p.parts), reverse=True)
+    return items, bundles
 
 
 def check_pyproject(root: Path) -> int:
@@ -183,8 +294,24 @@ def check_pyproject(root: Path) -> int:
     return 0
 
 
+def sign_cmd(target: Path, ents: Path | None) -> list[str]:
+    """The exact `codesign` invocation, in one place so a test can read it.
+
+    `--sign -` is ad-hoc and is the ONLY identity this script can use.
+    `--options runtime` is the whole point. `--entitlements` is passed only for
+    bundles (see the module docstring).
+    """
+    cmd = ["codesign", "--force", "--sign", "-", "--options", "runtime", "--timestamp=none"]
+    if ents is not None:
+        cmd += ["--entitlements", str(ents)]
+    cmd.append(str(target))
+    return cmd
+
+
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("--app", help="path to the built .app bundle")
     ap.add_argument("--dry-run", action="store_true", help="list what would be signed, sign nothing")
     ap.add_argument(
@@ -222,49 +349,46 @@ def main() -> int:
     for key, value in ENTITLEMENTS.items():
         print(f"    {key} = {value}")
 
-    slices = find_slices(app)
-    print(f"\n{len(slices)} Mach-O slice(s) found in {app}")
+    items, bundles = plan(app)
+    bundle_set = set(bundles)
+    print(f"\n{len(items)} item(s) to consider in {app}")
+    print(f"  {len(bundles)} nested bundle(s) — signed AT THE ROOT so their seals are rewritten")
+    print(f"  {len(items) - len(bundles)} loose Mach-O file(s)")
 
     ours: list[Path] = []
     theirs: list[Path] = []
-    for path in slices:
+    for path in items:
         (theirs if has_real_identity(path) else ours).append(path)
 
-    print(f"  {len(ours)} ad-hoc/unsigned  -> WILL be re-signed (ours)")
+    print(f"\n  {len(ours)} ad-hoc/unsigned  -> WILL be re-signed (ours)")
     print(f"  {len(theirs)} carrying a real identity -> LEFT ALONE (third-party)")
     for path in theirs:
         print(f"      skip: {path.relative_to(app)}")
 
     if args.dry_run:
         print("\n--dry-run: nothing was signed.")
+        print("Sign order would be (deepest first, first 20):")
+        for path in ours[:20]:
+            kind = "bundle" if path in bundle_set else "file"
+            print(f"    [{kind}] {path.relative_to(app)}")
         return 0
 
     failures: list[tuple[Path, str]] = []
     for path in ours:
-        cmd = [
-            "codesign", "--force", "--sign", "-",
-            "--options", "runtime",
-            "--entitlements", str(ents_path),
-            "--timestamp=none",
-            str(path),
-        ]
-        res = subprocess.run(cmd, capture_output=True, text=True)
+        # Entitlements describe a PROCESS, so they go on bundles only. Loose
+        # dylibs get the runtime option and no entitlement blob — see the
+        # module docstring for why stamping ~200 of them would be a regression.
+        ents = ents_path if path in bundle_set else None
+        res = subprocess.run(sign_cmd(path, ents), capture_output=True, text=True)
         if res.returncode != 0:
             failures.append((path, (res.stderr or "").strip()))
 
-    # The bundle itself last — it seals over everything signed above.
-    cmd = [
-        "codesign", "--force", "--sign", "-",
-        "--options", "runtime",
-        "--entitlements", str(ents_path),
-        "--timestamp=none",
-        str(app),
-    ]
-    res = subprocess.run(cmd, capture_output=True, text=True)
+    # The app itself LAST — it seals over everything signed above.
+    res = subprocess.run(sign_cmd(app, ents_path), capture_output=True, text=True)
     if res.returncode != 0:
         failures.append((app, (res.stderr or "").strip()))
 
-    print(f"\nre-signed {len(ours)} slice(s) + the bundle")
+    print(f"\nre-signed {len(ours)} item(s) + the app bundle")
 
     if failures:
         print(f"\nFAILED on {len(failures)} item(s):", file=sys.stderr)
@@ -283,16 +407,23 @@ def main() -> int:
         print("FAIL: the bundle does not verify after re-signing.", file=sys.stderr)
         return 1
 
-    print("\nOK: every targeted slice re-signed with --options runtime.")
+    print("\nOK: every targeted item re-signed with --options runtime, and the")
+    print("    bundle still verifies --deep --strict (its seals were rewritten,")
+    print("    not invalidated).")
     print(
         "\n⚠️  THIS IS NOT A NOTARIZED OR IDENTITY-SIGNED BUILD, and must not be\n"
         "    reported as one. The signature is still AD-HOC and carries no\n"
         "    certificate. What changed is that the two purchase-independent\n"
-        "    rejection conditions are gone: the hardened runtime is on, and\n"
-        "    get-task-allow is false. Notarization still needs the Apple\n"
-        "    Developer Program membership, which is the owner's decision.\n"
-        "\n⛔  A PASS HERE IS NOT OUTCOME 4. It says the bytes changed; it does\n"
-        "    NOT say the app still launches or still spawns an engine. Launch it."
+        "    rejection conditions are addressed: the hardened runtime is asked\n"
+        "    for, and get-task-allow is declared false. Notarization still needs\n"
+        "    the Apple Developer Program membership, which is the owner's\n"
+        "    decision.\n"
+        "\n⛔  A PASS HERE IS NOT A MEASUREMENT. This says codesign accepted what\n"
+        "    it was asked; it does NOT say the produced bytes carry the posture.\n"
+        "    Run scripts/ps386_verify_posture.py, which reads them with PS-346's\n"
+        "    own readers.\n"
+        "\n⛔  AND IT IS NOT OUTCOME 4. It says nothing about whether the app\n"
+        "    still launches or still spawns an engine. Launch it."
     )
     return 0
 
