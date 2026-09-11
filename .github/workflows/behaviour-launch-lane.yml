@@ -159,13 +159,11 @@ name: behaviour-launch-lane
 # ⭐ AND SINCE PS-383, A SECOND ENGINE: the Personium CHROMIUM build, fetched by
 # `src.services.engine.updater` — the same downloader the operator's app calls
 # hourly. It is here because `no-process-survives-a-closed-session` launches
-# chromium BY CONSTRUCTION (`os_type="linux"`): the leak it guards is a
-# property of the WRAPPER, multi-process launch (fpchrome.AppImage above a
-# browser above a zygote/gpu/renderer fan-out), and a direct single-process
-# launch does not leak on `terminate()` at all — so the same measurement on
-# this lane's firefox fixtures would be VACUOUS. That check shipped merged in
-# PS-347 and, until this workflow provisioned the engine, had ZERO callers
-# anywhere in .github/: a written check, not a gate.
+# chromium BY CONSTRUCTION (`os_type="linux"`): the leak it guards was measured
+# on the WRAPPER, multi-process launch (fpchrome.AppImage above a browser above
+# a zygote/gpu/renderer fan-out). That check shipped merged in PS-347 and, until
+# this workflow provisioned the engine, had ZERO callers anywhere in .github/: a
+# written check, not a gate.
 #
 # ⛔ THE TWO ENGINES ARE PROVISIONED DIFFERENTLY AND THAT IS DELIBERATE — the
 # firefox arm is PINNED to engine-baseline.txt, the chromium arm is UNPINNED.
@@ -173,10 +171,40 @@ name: behaviour-launch-lane
 # because it is a property of what each check measures. Do not "tidy" the two
 # into one posture without reading it.
 #
-# ⛔ NOR IS THE CHROMIUM ARM POINTABLE AT THE FIREFOX ENGINE ALREADY PRESENT.
-# `_survivor_profile` takes `os_type="linux", engine="chromium"` and its
-# docstring says why; windows+desktop is the one combination that resolves to
-# firefox, and firefox is not the arm PS-192 was measured on.
+# ⛔⛔ AND THE SURVIVOR CHECKS ARE NOT POINTABLE AT THE FIREFOX ENGINE THIS LANE
+# ALREADY PROVISIONS — BUT NOT FOR THE REASON THIS COMMENT USED TO GIVE. It said
+# firefox "is not the arm PS-192 was measured on" and, above, that "a direct
+# single-process launch does not leak on `terminate()` at all — so the same
+# measurement on this lane's firefox fixtures would be VACUOUS". BOTH SENTENCES
+# WERE FALSE and they are corrected rather than removed (PS-402), because a
+# reader who finds a plausible wrong reason stops looking for the real one.
+#
+# A persona firefox launch is a FORK launch above a 6-to-12 process Gecko tree
+# — a forkserver, a Socket Process, WebExtensions, an RDD Process, a Utility
+# Process and up to four Web Content children, the count driven by how many tabs
+# are open. Measured three times, by three tickets — and the three figures are
+# quoted rather than averaged into one range, because they disagree by design:
+# readings/ps171-2026-08-25/REPRO.md:407 (6 processes at one tab, 11 at two),
+# readings/ps349-2026-09-09/jugwedge.txt (nproc 10 across 300 samples, 12 across
+# 105), and readings/ps402-2026-09-10/ (11 members named one by one, on the
+# Personium build THIS LANE provisions, under the survivor check's own sampler).
+#
+# ⭐ THE REAL OBSTACLE IS THE CHECK'S INSTRUMENT, AND IT IS A CEILING. `firefox`
+# calls setsid, so the ENGINE leader's pgid == sid == its own pid — a DIFFERENT
+# group from the one recorded at launch, which is the group the forked python
+# leader leads. So the check counts TWO processes while the browser is eleven,
+# `_MIN_LIVE_TREE` (3) is unsatisfiable, and a firefox arm would report
+# CANNOT_RUN on every run of this lane forever (peak 3, never settling inside
+# the 90s timeout — a wider timeout cannot reach a ceiling). The falsification
+# cannot be satisfied either. So no firefox arm was added, and no name was added
+# to SELECTED_CHECKS / EXPECTED_CHECKS — a check that can never certify anything
+# would red this lane permanently, which is worse than a recorded gap.
+#
+# ⚠️ THIS IS NOT A LEAK REPORT: firefox's teardown is CORRECT on every path the
+# product takes (0 of 10 survivors, healthy and wedged). What is unobserved is
+# that correctness. The cure is a survivor count anchored on the ENGINE'S OWN
+# SESSION rather than on the launch group — a different instrument, not a second
+# profile. See `behaviour.UNCOVERED_SURFACES` for the recorded gap in full.
 #
 # ---------------------------------------------------------------------------
 # WHY xvfb IS INSTALLED HERE WHEN ci.yml MEASURED THAT IT DID NOT NEED ONE
@@ -423,10 +451,23 @@ jobs:
 
       - name: Provision the Personium chromium engine binary
         # ⭐ THE SECOND ENGINE (PS-383). `no-process-survives-a-closed-session`
-        # launches CHROMIUM by construction — the leak it guards is a property
-        # of the WRAPPER, multi-process launch, so the same measurement on this
-        # lane's firefox fixtures would be vacuous — and until this step existed
-        # the check was in the registry with ZERO callers anywhere in .github/.
+        # launches CHROMIUM by construction — the leak it guards was measured on
+        # the WRAPPER, multi-process launch — and until this step existed the
+        # check was in the registry with ZERO callers anywhere in .github/.
+        #
+        # ⛔ THE JUSTIFICATION THIS COMMENT USED TO CARRY WAS FALSE and is
+        # corrected rather than deleted (PS-402). It said "the same measurement
+        # on this lane's firefox fixtures would be vacuous". It would not: a
+        # persona firefox launch is a fork launch above a 6-to-12 process Gecko
+        # tree (readings/ps402-2026-09-10/ measured 11; ps171 measured 6 and 11,
+        # ps349 measured 10 and 12 — tab count drives it). What makes a
+        # firefox arm impossible TODAY is this check's INSTRUMENT — the engine
+        # calls setsid, so its tree is in its own session and NOT in the group
+        # recorded at launch, the counted group holds two, and `_MIN_LIVE_TREE`
+        # (3) is a ceiling rather than a threshold. The header above states it in
+        # full. So chromium is provisioned because the chromium arm needs a
+        # chromium binary — a sufficient reason on its own — and not because
+        # firefox would measure nothing.
         #
         # ---------------------------------------------------------------------
         # WHERE IT LANDS, AND WHY THAT IS NOT THE DEFAULT
