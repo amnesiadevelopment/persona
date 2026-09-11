@@ -268,6 +268,42 @@ def test_a_way_back_does_not_change_what_the_row_says(tmp_path, monkeypatch):
     assert "known bad" in _render(stub).lower()
 
 
+def test_a_good_newer_build_is_still_offered_over_a_blocklisted_installed_one(
+    tmp_path, monkeypatch
+):
+    """AC4's other state, pinned rather than left to be discovered.
+
+    A WAY FORWARD OUTRANKS A STANDING COMPLAINT. When an acceptable newer build
+    exists, ``_engine_update_available`` is True and the row renders that tag
+    with the accent dot lit — so the operator is shown the thing they can act
+    on, and one click leaves the blocklisted build behind. AC4 is satisfied
+    literally here: what renders is the UPSTREAM tag, never the installed one,
+    so a blocklisted build is not presented as a healthy engine in this state
+    either.
+
+    This is also why option (c) ("treat a blocklisted installed build as making
+    any build an update") was rejected as the primary mechanism rather than as
+    wrong: the forward offer already happens whenever a forward build exists,
+    with no change to ``is_newer`` — which four consumers share. (c) would have
+    altered a shared predicate's meaning to reach the ONE case where there is
+    nothing newer, which is precisely the case this ticket is about and the one
+    ``_installed_build_refusal`` answers.
+    """
+    _blocklist(tmp_path, monkeypatch, BAD)
+    _installed(monkeypatch, BAD)
+    monkeypatch.setattr(app_mod.engine, "pinned_build", lambda: "")
+
+    stub = _row(_engine_latest=GOOD_NEWER)
+
+    assert stub._engine_update_available() is True, (
+        "an acceptable newer build must still be offered — the operator's exit "
+        "from a blocklisted build is the ordinary update path"
+    )
+    rendered = _render(stub)
+    assert rendered == GOOD_NEWER
+    assert rendered != BAD, "the blocklisted installed build is never rendered"
+
+
 def test_the_launch_path_still_never_consults_the_policy():
     """The launch is NOT refused, and that is a decision rather than an
     omission — see this module's docstring for why Chromium's single
