@@ -1205,8 +1205,29 @@ def spawn_browser(profile: Profile, *, in_process: bool = False) -> subprocess.P
             # on every other profile -- the same tell, relocated. Measured
             # live: profiles resolve to 4, 6, 8 and 16 across the pool, so
             # "it's 8" is false for most of them.
+            #
+            # ⛔ MOBILE TAKES ITS OWN VALUE, and this branch is load-bearing —
+            # the exact twin of the deviceMemory branch below, and it was
+            # MISSING here until PS-394. This list is built OUTSIDE the
+            # mobile/desktop if-else above, so a mobile profile reaches it too,
+            # and mobile's core count comes from its DEVICE PRESET (an iPhone
+            # declares 6, every Android preset 8), not from the desktop
+            # CORES_MEMORY pool. mobile_ext.py's JS authors that same preset
+            # value in every realm a content script can reach, so passing the
+            # desktop pick put a DIFFERENT number in the realms JS cannot reach
+            # — the ServiceWorker above all. Measured on the release engine
+            # before the fix: five of six mobile profiles disagreed with
+            # themselves (iphone-15 page=6 sw=4/12/6; galaxy-s23 page=8 sw=12;
+            # xiaomi-13 page=8 sw=4/6), and the one that agreed did so by
+            # coincidence when the desktop draw happened to equal the preset.
+            # A page that spawns a ServiceWorker and compares
+            # navigator.hardwareConcurrency identifies the profile in two lines
+            # with no knowledge of the host — the same class of tell the
+            # desktop arm of PS-354 removed, left live on the mobile arm.
+            # ⚠️ A DEDICATED Worker cannot see it: applyHwPatch reaches those.
+            # Pinned by tests/test_ps394_mobile_hardware_concurrency.py.
             f"--fingerprint-hardware-concurrency="
-            f"{hardware_concurrency_for(profile.fingerprint_seed, profile.hardware_generation)}",
+            f"{preset.hardware_concurrency if (is_mobile and preset is not None) else hardware_concurrency_for(profile.fingerprint_seed, profile.hardware_generation)}",
             # navigator.deviceMemory, authored NATIVELY rather than by a JS
             # descriptor (pixelscan port, slice 2). Before this the engine
             # returned a HARDCODED 8 for every profile
