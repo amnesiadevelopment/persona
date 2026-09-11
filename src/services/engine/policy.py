@@ -169,6 +169,14 @@ NO_CEILING = float("inf")
 # through ``parse_version`` and never ``ChromiumVersion.full``: the truncation
 # that keeps the advertised version honest would destroy the only component that
 # distinguishes a fixed engine from the broken one it replaces.
+#
+# ⚠️ AND THE MOMENT IT IS NON-EMPTY, THIS CONSTANT IS THE ONLY THING SWITCHING
+# THE REPAIR OFF ON A MACHINE WHOSE OPERATOR SAID NOTHING. That is the intended
+# effect, and it is also why ``measuretext_fix_min_version()`` below does NOT
+# fall back to this value for an override it cannot use: an operator whose
+# geometry breaks after an engine change must have a gesture that puts the
+# repair back, and while this constant is empty every fallback looks like it
+# works. Read that function's table before changing either.
 MEASURETEXT_FIX_MIN_VERSION: str = ""
 
 # Operator override, read at call time (not import time) so an edit takes effect
@@ -222,6 +230,14 @@ def _local_policy() -> dict:
     Fails OPEN to the committed defaults on purpose: a corrupt policy file must
     not brick engine updating, and the shipped defaults are themselves a safe
     answer. A file that cannot be parsed is simply not an override.
+
+    ⚠️ THIS COLLAPSES THREE STATES INTO ONE, and for two of the three callers
+    that is correct: "no file", "a file I cannot read" and "a file with nothing
+    to say about this key" all mean "the committed default stands", because for
+    ``known_bad_versions`` and ``max_tested_major`` the committed default IS the
+    safe answer. :func:`measuretext_fix_min_version` cannot use this, because
+    for IT the committed default is the UNSAFE direction — see
+    :func:`_local_policy_entry`.
     """
     try:
         with open(POLICY_FILE, encoding="utf-8") as f:
@@ -229,6 +245,44 @@ def _local_policy() -> dict:
         return data if isinstance(data, dict) else {}
     except (OSError, ValueError):
         return {}
+
+
+#: Returned by :func:`_local_policy_entry` for "the operator's file says
+#: nothing about this key" — distinguishable from every JSON value a file could
+#: legitimately hold, including ``None`` (which JSON's ``null`` produces and
+#: which an operator may mean as a deliberate "no value").
+_ABSENT = object()
+
+#: Returned by :func:`_local_policy_entry` when the file EXISTS but cannot be
+#: read as a policy object. That is NOT the same fact as "no file": an operator
+#: who wrote a file meant to say something, and the caller decides what an
+#: unreadable intent costs in ITS OWN safety direction.
+_UNREADABLE = object()
+
+
+def _local_policy_entry(key: str):
+    """One override, with "absent" and "unreadable" kept DISTINGUISHABLE.
+
+    :func:`_local_policy` above answers "what are the overrides?" and collapses
+    a missing file, a corrupt file and a missing key into ``{}``. That is right
+    for a key whose committed default is the safe answer and wrong for one whose
+    committed default is the dangerous one, because under the collapse a
+    deliberate operator gesture is byte-indistinguishable from silence.
+
+    Returns the raw JSON value, or :data:`_ABSENT` (no file, or a readable file
+    with no such key), or :data:`_UNREADABLE` (a file that exists and is not a
+    policy object). The caller interprets all three — nothing is decided here.
+    """
+    try:
+        with open(POLICY_FILE, encoding="utf-8") as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        return _ABSENT
+    except (OSError, ValueError):
+        return _UNREADABLE
+    if not isinstance(data, dict):
+        return _UNREADABLE
+    return data.get(key, _ABSENT)
 
 
 def known_bad_versions() -> frozenset[str]:
@@ -277,35 +331,70 @@ def measuretext_fix_min_version() -> str:
     "every engine still needs the repair" rather than as "no engine does".
     That direction is not a preference: ``browser/measuretext_ext.py`` repairs
     geometry Google Sheets lays its grid out against, so a threshold that is
-    absent, malformed or unreadable must leave the repair INSTALLED. Erring the
-    other way silently breaks a working product to remove a tell.
+    malformed or unreadable must leave the repair INSTALLED. Erring the other
+    way silently breaks a working product to remove a tell.
 
-    Two layers, exactly as :func:`known_bad_versions` and
-    :func:`max_tested_major` above, and for the same reason: the committed
-    default is what this persona build ships knowing, and the operator's local
-    policy file is the escape hatch that does not need a persona release. An
-    operator who installs a fixed engine before persona's own constant catches
-    up can set ``measuretext_fix_min_version`` and stop carrying the wrapper.
+    Two layers, as :func:`known_bad_versions` and :func:`max_tested_major`
+    above: a committed default, plus an operator override that does not need a
+    persona release. But ⛔ THE FALLBACK DIRECTION IS INVERTED HERE AND THE
+    PATTERN COULD NOT BE COPIED WHOLE. Those two functions fall back to the
+    committed default on every unusable override, and that is safe BY
+    CONSTRUCTION for them — a local ``known_bad_versions`` entry "only ever
+    ADDs", so an unusable one can leave a build blocked and nothing worse. This
+    value's committed default REMOVES a repair the moment it is non-empty, so
+    falling back to it is the STRICT direction — the one this ticket's bounds
+    name as far worse. So the fallback is narrowed to the single state where it
+    cannot be a decision: the operator said nothing at all.
 
-    ⚠️ THE OVERRIDE MUST BE A TAG, AND THE TYPE CHECK IS THE GUARD. A
-    non-string is refused OUTRIGHT rather than coerced, which is a deliberate
-    difference from :func:`max_tested_major` beside it: that function accepts an
-    ``int`` because a ceiling IS a number, while this one is a version STRING
-    and a number here states no build. ⛔ The value most worth refusing is
-    ``true`` — "trust me, the fix is in", with no version to check it against,
-    which is the inherited-claim error PS-406's thread was written to stamp out.
-    An empty string, whitespace, and a tag carrying no digits are refused too:
-    ``updater.parse_version`` yields an empty tuple for each, and an empty tuple
-    compares at or below every installed version — i.e. it would read as "every
-    engine is fixed" and switch the repair off everywhere. So a typo cannot do
-    that; it falls back to the committed default.
+    ⭐ EXACTLY ONE THING SWITCHES THE REPAIR OFF: A WELL-FORMED TAG. Where it
+    comes from is the only question this function answers.
+
+    ====================================  ===============================
+    what the local policy file says        threshold
+    ====================================  ===============================
+    no file, or no such key (ABSENT)       the committed default
+    a well-formed tag ("152.0.7977.75.1")  that tag
+    ``""`` / ``"   "`` / ``null`` /        ``""`` — NO THRESHOLD, repair
+    ``false`` / ``true`` / ``152`` /       installed, whatever the
+    ``"fixed"`` / a corrupt file           committed default says
+    ====================================  ===============================
+
+    ⚠️ ROW 3 IS THE OPERATOR ESCAPE HATCH AND IT IS WHY ``_local_policy_entry``
+    exists. An operator whose canvas geometry breaks after an engine change must
+    be able to put the repair back on a machine they control, without a persona
+    release. Under a plain ``.get()`` they could not: DELETING the key is
+    byte-indistinguishable from never having written one, so "clear it" lands on
+    the committed default that is switching the repair off, and the only value
+    that would restore it is an absurdly high threshold nobody would guess.
+    ⛔ SO "CLEAR IT" IS NOT THE GESTURE — an explicitly PRESENT empty string is,
+    and ``browser/process.py``'s remediation log line says exactly that. The two
+    must not drift apart: if this rule changes, that sentence is wrong.
+
+    ⚠️ AND THE MALFORMED ROW IS A DECISION, NOT A FALLTHROUGH. A typo, a
+    ``true`` ("trust me, the fix is in" — the inherited-claim error PS-406's
+    thread was written to stamp out), a bare int naming no build, a half-saved
+    file: each is an operator who MEANT to say something and said something
+    unusable. Reading that as "install the repair" costs an extension that
+    repairs nothing. Reading it as the committed default costs Google Sheets.
+    The cheap failure is chosen deliberately, and it makes the behaviour this
+    function's tests are NAMED for — a malformed override cannot switch the
+    repair off — true for every value of the committed default rather than only
+    while it happens to be empty.
     """
-    val = _local_policy().get("measuretext_fix_min_version")
-    if isinstance(val, str):
-        tag = val.strip()
+    raw = _local_policy_entry("measuretext_fix_min_version")
+    if raw is _ABSENT:
+        # The operator said nothing. This is the ONLY state in which the
+        # committed default speaks, because it is the only one that is not an
+        # operator gesture this function would be overriding.
+        return MEASURETEXT_FIX_MIN_VERSION
+    if isinstance(raw, str):
+        tag = raw.strip()
         if tag and any(c.isdigit() for c in tag):
             return tag
-    return MEASURETEXT_FIX_MIN_VERSION
+    # Present and unusable (or a file that exists and cannot be read): no
+    # threshold in force. See the table above — this is the fail-open answer and
+    # it deliberately does NOT consult the committed default.
+    return ""
 
 
 def check(tag: str) -> tuple[str, str]:

@@ -238,3 +238,103 @@ invisible.
   dependency the confirm review named, and it is why the threshold is a
   configurable constant with the release obligation written above it rather than
   a value guessed in advance.
+
+---
+
+## §7 — ⛔ ROUND 2: the escape hatch this reading could not reach, and why no arm here can
+
+**Nothing in §1–§6 is re-measured or withdrawn.** The gate, the arms and the
+instrument are unchanged and the code review re-ran the seven mutation claims and
+reproduced each one. What follows is a defect in the *policy lookup beside* the
+gate — ⚠️ **structurally invisible to this reading**, and recorded here so the
+next reader does not conclude that four measured arms covered it.
+
+### The defect
+
+`engine/policy.measuretext_fix_min_version()` resolved **every** unusable
+operator override — an absent key, a corrupt file, `true`, a bare int, an
+explicitly-emptied string — to the committed default. That is the pattern
+`known_bad_versions` uses, and it is safe **there** because that function's local
+entries "only ever ADD": an unusable override can leave a build *blocked* and
+nothing worse. ⛔ **This value's committed default REMOVES a repair**, so the same
+fallback is the STRICT direction — the one this ticket's own bounds name as far
+worse — the moment the constant is non-empty.
+
+Two claims were false in that state, both of them *promises to an operator*:
+
+* the docstring's "a threshold that is absent, malformed or unreadable must
+  leave the repair **INSTALLED**";
+* `process.py`'s launch log, which told an operator whose canvas geometry broke
+  to **clear** `measuretext_fix_min_version` to restore the repair. ⛔ Clearing a
+  key is byte-indistinguishable from never having written one, so that landed on
+  the committed default that was withholding it. **The one recovery action the
+  product names was a no-op.** The only value that would have worked is an
+  absurdly high threshold, which nothing names and nobody would guess.
+
+### ⚠️ WHY NO ARM OF THIS READING COULD SEE IT — the bound worth carrying forward
+
+**Arms A–D each set the threshold EXPLICITLY through a well-formed policy file**
+(`scripts/ps409_gate_reading.py` writes `{"measuretext_fix_min_version": <tag>}`
+per arm), so **not one of them ever takes the fallback branch**. And the
+committed constant is `""`, which makes the fallback's *value* identical to the
+fail-open answer — so the defect is inert today and becomes live **only on the
+release-day edit this same change mandates.** A reading whose every arm supplies
+the input under test cannot measure what happens when the input is absent; that
+is not a flaw in the instrument's execution but in its coverage, and it is the
+reason the fix is fenced by tests rather than by a fifth arm.
+
+### The fix, and what fences it
+
+`_local_policy_entry()` keeps **ABSENT** (no file, or a file with no such key)
+distinguishable from **UNREADABLE** and from a present-but-unusable value. Only
+ABSENT reaches the committed default; everything else states *no threshold*,
+which installs the repair. So an explicitly-present `""` is a real gesture, and
+the log line now names **that** gesture rather than deleting the key.
+
+⭐ **Measured, as a mutation battery on the product** — each mutation reverted
+after reading, `__pycache__` cleared between runs (a stale `.pyc` produced a
+phantom failure during the code review):
+
+| mutation | result |
+|---|---|
+| the round-1 `.get()` lookup restored (the defect itself) | **12 red**, incl. the behavioural log test |
+| `MEASURETEXT_FIX_MIN_VERSION = "152.0.7977.75.1"` — **the release-day edit, verbatim** | ⭐ **exactly 1 red**, the release tripwire, by design (round 1: **7 red**, six of which were correct-about-intent assertions whose shortest path to green was to delete them) |
+| log line reverted to "clear the key" (mechanism left fixed) | 1 red — the behavioural test performs the printed instruction |
+| `_ABSENT` collapsed into the malformed arm (silence read as a gesture) | 3 red |
+| `_UNREADABLE` folded into `_ABSENT` (a corrupt file read as silence) | 3 red |
+| `data.get(key) or _ABSENT` (an explicit `null`/`""` collapsing to absent) | 5 red |
+| type check coerced to `str(raw)` | 2 red — incl. the bare-int row, exactly as reported in round 1 |
+| the other two readers switched to the narrowed lookup ("consistency" refactor) | 1 red — the divergence is asserted, not left to a comment |
+
+The behavioural fence is
+`test_the_omission_log_names_a_remediation_THAT_ACTUALLY_WORKS`
+(`tests/test_engine_masking_matrix.py`): it **parses the sentence the product
+actually logged**, performs the gesture that sentence names, relaunches, and
+asserts the repair came back — with the committed default stubbed to a released
+tag, because with it empty both arms pass for free. ⚠️ **That stub is the whole
+point of the test**: it is the only way to ask this question before release day.
+
+### ⚠️ And the release tripwire is now singular, deliberately
+
+`test_an_unset_threshold_is_not_read_as_every_engine_being_fixed` still pins the
+constant and still goes red on release day — that is its job. The six
+malformed-override rows no longer do: they asserted the *fallback value* (`== ""`)
+and now assert the *behaviour they are named for* against a **non-empty**
+committed default, which is the state that makes the question non-vacuous. ⛔ Under
+the old oracle those rows passed while the code did the opposite of what they
+claimed, and release day would have turned them red with the shortest path to
+green being to edit six correct assertions — silently removing the hatch.
+
+### Non-blocking, also corrected
+
+`process.py`'s function-local `..engine` import carried a comment asserting a
+cycle through `browser/__init__` and that it matched "every other browser→engine
+reference in this package". ⛔ **Both halves are false** — verified by hoisting it
+to module scope: the package imports fine (`engine/policy` imports only
+`core.config` and `engine_naming`; `browser/__init__` exports only
+`BrowserLauncher`), and it was the *only* function-local `..engine` import in the
+file. The import is now at module scope and the false constraint is gone rather
+than restated. ⚠️ The identical sentence still sits on
+`installed_chromium_version` (`engine_version.py`), where it predates this change
+and refers to `..engine.updater`; it is left alone as out of scope rather than
+edited on an unmeasured assumption.

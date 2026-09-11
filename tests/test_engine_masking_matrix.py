@@ -1155,6 +1155,89 @@ def test_chromium_measuretext_is_gated_on_the_engine_version(monkeypatch, tmp_pa
     assert no_repair - needs_repair == set()
 
 
+def test_the_omission_log_names_a_remediation_THAT_ACTUALLY_WORKS(
+    monkeypatch, tmp_path, caplog
+):
+    # PS-409 round 2. ⛔ THE LOG LINE IS A PROMISE TO AN OPERATOR AND THIS TEST
+    # MAKES IT KEPT — by reading the sentence the product actually printed,
+    # performing the gesture it names, and re-launching to see the repair return.
+    #
+    # ⚠️ THE DEFECT THIS FENCES WAS INVISIBLE TO EVERY OTHER TEST IN THIS
+    # CHANGE, and not by oversight. Round 1's policy lookup fell back to the
+    # committed default on EVERY unusable override — including an explicitly
+    # emptied key — so "clear measuretext_fix_min_version to restore it" landed
+    # on the very constant that was withholding the repair. It was harmless only
+    # while that constant was `""`, i.e. only until the release obligation this
+    # same change mandates is discharged, and every arm of the live reading set
+    # the threshold explicitly through a well-formed file, so none of them ever
+    # took the fallback. A latent no-op in the ONE recovery action a user is
+    # told to take.
+    #
+    # ⭐ SO THE COMMITTED DEFAULT IS STUBBED TO A RELEASED TAG. With it empty
+    # both arms below pass for free — there is nothing for a fallback to fall
+    # back TO — which is exactly how the defect survived round 1.
+    from src.services.engine import policy as engine_policy
+
+    pf = tmp_path / "engine-policy.json"
+    monkeypatch.setattr(engine_policy, "POLICY_FILE", str(pf))
+    monkeypatch.setattr(
+        engine_policy, "MEASURETEXT_FIX_MIN_VERSION", "152.0.7977.75.1"
+    )
+    import src.services.engine.updater as updater_mod
+    monkeypatch.setattr(updater_mod, "current_version", lambda: "152.0.7977.75.1")
+
+    # ARM 1 — the operator has said nothing. The engine carries the fix, so the
+    # repair is omitted and the launch says so.
+    pf.write_text("{}", encoding="utf-8")
+    with caplog.at_level("INFO", logger="persona"):
+        caplog.clear()
+        omitted = _ext_vectors(
+            _spawn_chromium_args(
+                monkeypatch, tmp_path, Profile(name="mt-log-omit")
+            )["args"]
+        )
+    assert "measuretext" not in omitted
+    line = next(
+        (r.getMessage() for r in caplog.records
+         if "measureText repair extension" in r.getMessage()),
+        None,
+    )
+    assert line is not None, (
+        "the omission is no longer logged. An operator whose canvas geometry "
+        "breaks after an engine change has nothing naming the decision."
+    )
+
+    # ⭐ THE SENTENCE IS PARSED, NOT PARAPHRASED. The JSON fragment below is
+    # lifted out of the message the product emitted, so a rewrite that changes
+    # the advertised gesture without changing the mechanism fails HERE rather
+    # than reaching a user. It must name the key, and it must name an
+    # explicitly-present empty string rather than deleting anything.
+    assert "measuretext_fix_min_version" in line
+    assert '"measuretext_fix_min_version": ""' in line, (
+        "the remediation line no longer names an explicitly-present empty "
+        "string. Deleting the key is indistinguishable from never having set "
+        "one and falls back to the committed default — i.e. the instruction "
+        "would be a no-op exactly when it matters."
+    )
+    assert "do NOT delete the key" in line
+
+    # ARM 2 — PERFORM IT. Same engine, same committed default; the only thing
+    # that moved is the operator doing what the log told them to.
+    pf.write_text('{"measuretext_fix_min_version": ""}', encoding="utf-8")
+    restored = _ext_vectors(
+        _spawn_chromium_args(
+            monkeypatch, tmp_path, Profile(name="mt-log-restore")
+        )["args"]
+    )
+    assert "measuretext" in restored, (
+        "the remediation the launch log names does not restore the repair. "
+        "That line is the only recovery action an operator is given, and a "
+        "no-op there means broken Sheets geometry with no way back short of "
+        "guessing an absurdly high threshold."
+    )
+    assert restored - omitted == {"measuretext"}
+
+
 # --- the Firefox column, read off the source the builders emit ---------------
 
 

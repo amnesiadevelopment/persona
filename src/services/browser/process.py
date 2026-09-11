@@ -21,6 +21,7 @@ from ..proxy.errors import (
     TimezoneUnderivableError,
 )
 from ..proxy.store import ProxyStore
+from ..engine import policy as _engine_policy
 from .bookmarks_seed import seed_bookmarks
 from .process_group import popen_in_new_session, reap_process_group
 from .audio_ext import build_audio_extension
@@ -1073,21 +1074,26 @@ def spawn_browser(profile: Profile, *, in_process: bool = False) -> subprocess.P
             # change needs one searchable line naming the decision and the engine
             # version it was taken on, rather than having to diff a command line.
             #
-            # Imported function-locally like every other browser→engine
-            # reference in this package (a module-level one closes a cycle
-            # through `browser/__init__`).
-            from ..engine import policy as _engine_policy
-
+            # ⛔ AND THE REMEDIATION IT NAMES MUST BE AN ACTION THAT WORKS. It
+            # says SET THE KEY TO AN EMPTY STRING, not "clear it": under
+            # `policy.measuretext_fix_min_version`'s table an explicitly PRESENT
+            # empty string is the escape hatch, while DELETING the key is
+            # byte-indistinguishable from never having written one and lands on
+            # the committed default — which, once that default is non-empty, is
+            # the very thing switching the repair off. The two texts are a pair;
+            # if that table changes, this sentence is wrong.
             logger.info(
                 "Profile %r launches WITHOUT the measureText repair extension: "
                 "the installed engine carries the PS-345 fix (policy threshold "
                 "%s), so the repair's guard could never fire and the wrapper "
                 "would be an observable tell with no benefit. If canvas text "
-                "geometry misbehaves on this engine, clear "
-                "measuretext_fix_min_version in your engine policy file to "
-                "restore it.",
+                "geometry misbehaves on this engine, set "
+                '"measuretext_fix_min_version": "" (an empty string, '
+                "explicitly present — do NOT delete the key) in %s to restore "
+                "the repair.",
                 profile.name,
                 _engine_policy.measuretext_fix_min_version(),
+                _engine_policy.POLICY_FILE,
             )
         # On Windows/macOS the seeded default_search_provider_data pref is reset by
         # tracked-preference (default-search) enforcement, so a settings-override

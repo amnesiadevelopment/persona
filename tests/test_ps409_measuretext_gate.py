@@ -132,6 +132,22 @@ def test_an_unset_threshold_is_not_read_as_every_engine_being_fixed():
     binary returning −0.0006 — so the honest committed answer is "we cannot name
     a fixed build", which must leave the repair installed for everyone.
 
+    ⭐ THIS IS THE ONE TEST IN THIS FILE THAT GOES RED ON RELEASE DAY, AND IT IS
+    MEANT TO. It is a tripwire on the release obligation, not a claim about the
+    gate — its first assertion pins a CONSTANT, and discharging the obligation is
+    exactly the edit that moves it. That is why the failure message below tells
+    the reader how to tell a discharge from a mistake.
+
+    ⚠️ AND IT BEING THE ONLY ONE IS ITSELF LOAD-BEARING, measured rather than
+    assumed. An earlier round wired the six malformed-override rows below to
+    ``measuretext_fix_min_version() == ""`` — the fallback VALUE — so setting
+    this constant turned SEVEN tests red, and the shortest path back to green
+    was to edit six assertions that were correct about intent. Those rows now
+    assert the BEHAVIOUR they are named for, against a NON-EMPTY committed
+    default, so they survive the edit and keep testing the fail-open rule. If
+    you are here on release day, set the constant and expect exactly this one
+    failure; more than one means something else moved too.
+
     ⚠️ WHAT THIS ROW DOES **NOT** DISCRIMINATE, stated because it was MEASURED
     rather than assumed. ``carries_measuretext_fix`` refuses an unset threshold
     twice over: an explicit early return, and then the unparseable-tag guard
@@ -176,6 +192,21 @@ def test_the_operator_override_is_read_at_call_time(tmp_path, monkeypatch):
     ) is False
 
 
+# The tag the release obligation names (PS-406: a FIFTH component). Used as the
+# COMMITTED DEFAULT in the tests below, so they read the way they will read on
+# release day rather than the way they read while the constant is empty.
+_RELEASED = "152.0.7977.75.1"
+
+
+def _repair_required_on(installed_tag, monkeypatch):
+    """``measuretext_repair_required()`` with ``version.txt`` saying
+    ``installed_tag`` — the real gate, reading a real policy lookup."""
+    import src.services.engine.updater as updater
+
+    monkeypatch.setattr(updater, "current_version", lambda: installed_tag)
+    return measuretext_repair_required()
+
+
 @pytest.mark.parametrize(
     "raw,why",
     [
@@ -185,6 +216,9 @@ def test_the_operator_override_is_read_at_call_time(tmp_path, monkeypatch):
         ('{"measuretext_fix_min_version": "   "}', "whitespace"),
         ('{"measuretext_fix_min_version": "fixed"}', "no digits to compare"),
         ("not json at all", "a corrupt policy file"),
+        ('{"measuretext_fix_min_version": null}', "an explicit JSON null"),
+        ('{"measuretext_fix_min_version": false}', "a boolean the OTHER way"),
+        ('["not", "an", "object"]', "valid JSON that is not a policy object"),
     ],
 )
 def test_a_MALFORMED_override_cannot_switch_the_repair_off(
@@ -192,15 +226,27 @@ def test_a_MALFORMED_override_cannot_switch_the_repair_off(
 ):
     """A typo must not break Sheets.
 
+    ⛔ ASSERTED AGAINST A **NON-EMPTY** COMMITTED DEFAULT, AND THAT IS THE WHOLE
+    POINT OF THE TEST. An earlier round asserted
+    ``measuretext_fix_min_version() == ""`` — the fallback VALUE — which is
+    true today only because the committed default happens to be ``""`` too. Under
+    that oracle every row here passed while the code did the OPPOSITE of what
+    this test is named for: a malformed override fell back to the committed
+    default, so the day that default named a released tag, a typo in an
+    operator's policy file would switch the repair off and break Google Sheets
+    on an unfixed engine. So these rows pin the BEHAVIOUR (``is the repair
+    installed?``) with the default set to the tag the release obligation names,
+    which is the state that makes the question non-vacuous.
+
     ⭐ THE ``true`` ROW IS THE ONE WORTH HAVING. It is the shape an operator
     would most plausibly reach for, and it is precisely the inherited claim
     PS-406's thread was written to stamp out: a boolean asserts the fix is in
     with no version to check it against.
 
     ⚠️ ONLY ONE ROW DISCRIMINATES THE TYPE CHECK, AND IT IS NOT THAT ONE —
-    measured, not reasoned. Replacing ``isinstance(val, str)`` with a blanket
-    ``str(val)`` coercion turns exactly the **bare-int** row red and leaves the
-    other five green, because every other malformed value survives coercion into
+    measured, not reasoned. Replacing ``isinstance(raw, str)`` with a blanket
+    ``str(raw)`` coercion turns exactly the **bare-int** row red and leaves the
+    others green, because every other malformed value survives coercion into
     something the digit guard below it already refuses (``str(True)`` is
     ``"True"``, which carries no digits; ``""`` and whitespace are empty). So
     ``152`` is the row that fences the type check, and the ``true`` row is
@@ -209,15 +255,129 @@ def test_a_MALFORMED_override_cannot_switch_the_repair_off(
     test suite that only kept the mutation-visible one would stop documenting
     the hazard. ⛔ Do not "simplify" the assertion into the single row that
     happens to be load-bearing today.
+
+    ⚠️ THE LAST TWO ROWS ARE NEW AND THEY FENCE ``_local_policy_entry``'s OWN
+    SPLIT. ``null`` is what JSON produces for a key an operator half-cleared,
+    and it must NOT read as "absent" — a ``.get()``-shaped lookup with a
+    sentinel default would collapse the two and send this row to the committed
+    default. A non-object document is the ``_UNREADABLE`` arm, which must land
+    with the malformed values rather than with silence.
     """
     pf = tmp_path / "engine-policy.json"
     pf.write_text(raw, encoding="utf-8")
     monkeypatch.setattr(policy, "POLICY_FILE", str(pf))
+    monkeypatch.setattr(policy, "MEASURETEXT_FIX_MIN_VERSION", _RELEASED)
 
-    assert policy.measuretext_fix_min_version() == "", why
-    assert carries_measuretext_fix(
-        "152.0.7977.75", policy.measuretext_fix_min_version()
-    ) is False
+    assert _repair_required_on("152.0.7977.75", monkeypatch) is True, why
+    # ...and on the released engine too: an unusable override states no
+    # threshold AT ALL, which is not the same as falling back to one.
+    assert _repair_required_on(_RELEASED, monkeypatch) is True, why
+
+
+def test_the_operator_can_PUT_THE_REPAIR_BACK_on_a_machine_they_control(
+    tmp_path, monkeypatch
+):
+    """⛔ THE ESCAPE HATCH ``process.py``'s remediation line names, and the one
+    state a ``.get()``-shaped lookup cannot express.
+
+    An operator whose canvas geometry breaks after an engine change is told, in
+    the launch log, to put the repair back. That instruction has to be an action
+    that WORKS, and "delete the key" cannot be it: deleting is
+    byte-indistinguishable from never having written one, so it lands on the
+    committed default — which, once non-empty, is the very thing withholding the
+    repair. The only value that would restore it under that shape is an absurdly
+    high threshold nobody would guess.
+
+    ⭐ SO AN EXPLICITLY PRESENT EMPTY STRING IS THE GESTURE, and this test is
+    what makes it real: same committed default, same engine, the ONLY difference
+    between the two arms is whether the key is present. It is measured against a
+    NON-EMPTY default because with an empty one both arms pass for free.
+    """
+    monkeypatch.setattr(policy, "MEASURETEXT_FIX_MIN_VERSION", _RELEASED)
+    pf = tmp_path / "engine-policy.json"
+    monkeypatch.setattr(policy, "POLICY_FILE", str(pf))
+
+    # ARM 1 — the operator says NOTHING. The committed default speaks, and on a
+    # released engine the repair is correctly omitted. (This is the arm that
+    # makes arm 2 non-vacuous: without it, "the repair is installed" could just
+    # mean the gate never switches off at all.)
+    pf.write_text("{}", encoding="utf-8")
+    assert policy.measuretext_fix_min_version() == _RELEASED
+    assert _repair_required_on(_RELEASED, monkeypatch) is False
+
+    # ARM 2 — the operator sets the key to an explicit empty string. NO
+    # threshold is in force, so the repair comes back on the SAME engine.
+    pf.write_text('{"measuretext_fix_min_version": ""}', encoding="utf-8")
+    assert policy.measuretext_fix_min_version() == ""
+    assert _repair_required_on(_RELEASED, monkeypatch) is True, (
+        "the documented escape hatch is a no-op. An operator following the "
+        "launch log's remediation line gets the identical command line, and the "
+        "only lever that would work is an absurdly high threshold the log does "
+        "not name."
+    )
+
+
+def test_ABSENT_and_PRESENT_BUT_EMPTY_are_not_the_same_fact(tmp_path, monkeypatch):
+    """The distinction the hatch rests on, at the policy layer, over every way
+    of saying nothing.
+
+    ⚠️ NO FILE AT ALL and A FILE WITH NO SUCH KEY are both silence and must both
+    reach the committed default — an operator who has never opened the policy
+    file has expressed no opinion, and neither has one who set only
+    ``max_tested_major``. Everything else in that file is an utterance.
+    """
+    monkeypatch.setattr(policy, "MEASURETEXT_FIX_MIN_VERSION", _RELEASED)
+    pf = tmp_path / "engine-policy.json"
+    monkeypatch.setattr(policy, "POLICY_FILE", str(pf))
+
+    # No file on disk at all.
+    assert not pf.exists()
+    assert policy.measuretext_fix_min_version() == _RELEASED
+
+    # A real file that says something ELSE.
+    pf.write_text('{"max_tested_major": 160}', encoding="utf-8")
+    assert policy.measuretext_fix_min_version() == _RELEASED
+
+    # The same file, now carrying the key explicitly emptied.
+    pf.write_text(
+        '{"max_tested_major": 160, "measuretext_fix_min_version": ""}',
+        encoding="utf-8",
+    )
+    assert policy.measuretext_fix_min_version() == ""
+
+
+def test_the_OTHER_policy_readers_keep_their_own_fallback_direction(
+    tmp_path, monkeypatch
+):
+    """⛔ THE NARROWED FALLBACK IS SCOPED TO THIS ONE VALUE, ON PURPOSE.
+
+    ``known_bad_versions`` and ``max_tested_major`` fall back to the committed
+    default on EVERY unusable override, and that is correct for them because
+    their committed defaults are the safe answer — a local known-bad entry "only
+    ever ADDs", so an unusable one can leave a build blocked and nothing worse.
+    ``measuretext_fix_min_version``'s committed default REMOVES a repair, which
+    inverts the safety direction and is why it does not share
+    ``_local_policy``'s collapse.
+
+    This test exists because the obvious "consistency" refactor is to give all
+    three the same lookup. Doing so in either direction breaks one of them, so
+    the divergence is asserted rather than left to a comment.
+    """
+    pf = tmp_path / "engine-policy.json"
+    pf.write_text("not json at all", encoding="utf-8")
+    monkeypatch.setattr(policy, "POLICY_FILE", str(pf))
+    monkeypatch.setattr(
+        policy, "KNOWN_BAD_VERSIONS", frozenset({"148.0.7778.215"})
+    )
+    monkeypatch.setattr(policy, "MEASURETEXT_FIX_MIN_VERSION", _RELEASED)
+
+    # A corrupt file cannot UN-BLOCK a build persona ships knowing is broken...
+    assert "148.0.7778.215" in policy.known_bad_versions()
+    # ...and cannot invent a ceiling either.
+    assert policy.max_tested_major() == policy.NO_CEILING
+    # ...but it DOES state "no measureText threshold", because here the
+    # committed default is the dangerous direction.
+    assert policy.measuretext_fix_min_version() == ""
 
 
 # --- the read: the version comes from the INSTALLED engine ------------------
