@@ -77,6 +77,44 @@ EXIT_OK = 0
 EXIT_FINDING = 1
 EXIT_CANNOT_RUN = 2
 
+#: The realms a lane records when it is comparing a profile against ITSELF —
+#: restart-continuity, benign-edit-stability, trash/restore, and the `_settle`
+#: helper. Applied by :meth:`Context.record` when a caller passes no ``realms=``.
+#:
+#: PS-316. THIS EXISTS TO BE A DIFFERENT QUESTION FROM
+#: ``baseline.BASELINE_REALMS``, WHICH IT USED TO BE SPELLED AS BY ACCIDENT.
+#: Before this constant, these lanes reached the baseline's realm set purely
+#: because ``record_snapshot``'s DEFAULT is that constant and ``Context.record``
+#: passed nothing — a defaulting accident, never a decision that a
+#: restart-continuity check wants whatever realms the committed ARTIFACT
+#: happens to document. The two then had to move together, which is what made
+#: widening the artifact look like a choice between "widen everything" and
+#: "fix nothing": PS-316 needed the baseline to cover ``child_frame`` so its
+#: three write-only residue probes finally had a comparator, and under the old
+#: coupling that would have conscripted four lanes with no stake in it.
+#:
+#: ⛔ SO DO NOT "RESYNC" THIS WITH ``BASELINE_REALMS``. A drift between them is
+#: the intended state, not a bug: one names what the reference document covers,
+#: the other names what a self-comparison needs to enter.
+#:
+#: WHY IT STAYS NARROW, which is the rationale :meth:`Context.record` already
+#: recorded at PS-232 and which this constant preserves rather than
+#: contradicts: these lanes compare with :func:`~.diff.diff_snapshots`, which is
+#: INTERSECTION-driven — it compares what both recordings carry, so an extra
+#: realm buys no comparison here. It does cost something, and the cost is
+#: asymmetric: :func:`_readings_or_refuse` REFUSES a recording carrying ANY
+#: unreadable probe, so a realm that failed to be entered turns these lanes'
+#: verdicts into hard refusals over a realm they never asked about. Since
+#: PS-336 they run in a real CI launch lane, so that refusal would be live and
+#: visible rather than theoretical — which sharpens the argument for narrowness
+#: instead of softening it.
+#:
+#: The lanes that genuinely need a wider set still ask: the two unlinkability
+#: lanes pass :func:`~.probes.must_differ_realms` explicitly, because
+#: ``compare_profiles`` is INVENTORY-driven and a realm it walks but nobody
+#: recorded reads INCONCLUSIVE forever. Narrow default, explicit widening.
+SELF_COMPARISON_REALMS: tuple[str, ...] = ("window", "worker")
+
 #: Surfaces this module does not observe. Reported in the summary rather than
 #: left to the reader to notice, because the ticket's own standard is that an
 #: admitted gap beats a surface marked "covered" by a check that could not fail.
@@ -438,6 +476,7 @@ def known_positions_for(build: "str | None") -> tuple[KnownPosition, ...]:
 
 class BehaviourCheckError(RuntimeError):
     """A check could not be run, with an actionable reason."""
+
 
 
 class UnsafeEnvironment(BehaviourCheckError):
@@ -822,11 +861,20 @@ class Context:
         unauthenticated CDP control channel, which isolation forbids. So
         ``self.launches`` counts recordings, not browser starts.
 
-        ``realms`` defaults to ``record_snapshot``'s own default
-        (``BASELINE_REALMS`` — window and worker), which is what the continuity
-        comparators want: they ask "did THIS profile move?", answered by
-        :func:`~.diff.diff_snapshots` over whatever realms both recordings
-        carry.
+        ``realms`` defaults to :data:`SELF_COMPARISON_REALMS` — window and
+        worker — which is what the continuity comparators want: they ask "did
+        THIS profile move?", answered by :func:`~.diff.diff_snapshots` over
+        whatever realms both recordings carry.
+
+        PS-316. THAT DEFAULT IS NOW NAMED RATHER THAN BORROWED, and the change
+        is the point rather than a tidy-up. It used to be ``record_snapshot``'s
+        own default — ``baseline.BASELINE_REALMS`` — reached by passing nothing,
+        so these lanes tracked the committed ARTIFACT's realm set for no reason
+        beyond a shared default. When PS-316 widened the artifact to cover
+        ``child_frame`` (its three residue probes had no comparator without it),
+        that coupling would have conscripted four lanes with no stake in the
+        change. Naming the set breaks the accident: the two constants may now
+        differ, and they SHOULD — see :data:`SELF_COMPARISON_REALMS`.
 
         PS-232. A caller that is going to compare with
         :func:`~.diff.compare_profiles` must pass
@@ -851,9 +899,15 @@ class Context:
         from .baseline import record_snapshot
 
         self.launches += 1
-        if realms is None:
-            return record_snapshot(profile=profile, fresh=fresh)
-        return record_snapshot(profile=profile, fresh=fresh, realms=realms)
+        # NEVER `record_snapshot(profile=..., fresh=...)` with no `realms=`:
+        # that would re-borrow `BASELINE_REALMS` and silently re-couple these
+        # lanes to the artifact's realm set, which is exactly the accident
+        # SELF_COMPARISON_REALMS exists to end.
+        return record_snapshot(
+            profile=profile,
+            fresh=fresh,
+            realms=SELF_COMPARISON_REALMS if realms is None else realms,
+        )
 
     def data_dir(self, name: str) -> str:
         from ...core.config import DATA_DIR

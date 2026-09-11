@@ -317,10 +317,14 @@ def test_the_retired_omission_covers_exactly_the_pairs_its_evidence_recorded() -
     entry fails, and so does one that quietly dropped a pair it did cover.
 
     ⚠️ WHAT THIS DOES NOT CLAIM. The corpus is `('window', 'worker')` only —
-    no committed recording carries a `child_frame` realm (BASELINE_REALMS, and
-    widening it is PS-316) — so a pair in an unrecorded realm reads
+    those readings were taken before PS-316 widened `BASELINE_REALMS`, and
+    nothing re-recorded the corpus — so a pair in the child realm reads
     INCONCLUSIVE here and is correctly NOT in the covered set. That is the safe
-    direction: an unmeasured pair cannot buy itself a pin.
+    direction: an unmeasured pair cannot buy itself a pin. ⛔ AND IT STAYS THE
+    SAFE DIRECTION NOW THAT THE BASELINE RECORDS THE REALM: the covered set is
+    derived from THIS corpus, not from the baseline artifact, so widening the
+    recorder did not silently admit a child-realm pair to it. Re-deriving the
+    corpus on a three-realm recording is its own act, with its own review.
     """
     import itertools
     import json

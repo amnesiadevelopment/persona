@@ -73,11 +73,42 @@ def test_the_seed_is_pinned_by_the_name_and_is_stable():
     )
 
 
-def test_both_realms_are_recorded_and_neither_is_optional():
-    # A spoof that lands on the page but not inside a Web Worker is the
-    # historically load-bearing leak, and it is invisible unless the worker
-    # realm is read.
-    assert baseline.BASELINE_REALMS == ("window", "worker")
+def test_all_three_realms_are_recorded_and_none_is_optional():
+    # WINDOW + WORKER: a spoof that lands on the page but not inside a Web
+    # Worker is the historically load-bearing leak, and it is invisible unless
+    # the worker realm is read.
+    #
+    # CHILD_FRAME (PS-316): three probes exist ONLY in the child realm —
+    # `realm.bootMarkers.childFrame`, `realm.seedRecoverable.childFrame`, and
+    # `realm.frameIdentity`'s child reading. `diff_snapshots` can only compare
+    # what the baseline carries, so while the artifact was two-realm those
+    # three produced a reading every run that NO comparator ever read. Measured
+    # before the widening, planting a `__pna` marker and diffing a live reading
+    # against the committed artifact: window and worker both reported 1 CHANGED
+    # (the positive controls fire), child_frame reported nothing at all because
+    # the realm was absent. Dropping it from this tuple returns those three
+    # probes to being write-only.
+    assert baseline.BASELINE_REALMS == ("window", "worker", "child_frame")
+
+
+def test_the_baseline_realms_are_not_the_self_comparison_realms():
+    """The two constants are DIFFERENT QUESTIONS, and PS-316 separated them.
+
+    Before it they were the same spelling by accident: the behaviour lanes that
+    compare a profile against ITSELF reached `BASELINE_REALMS` only because
+    `record_snapshot`'s default is that constant and `Context.record` passed
+    nothing. This pins the separation so a future "resync these, they look
+    inconsistent" edit fails here and reads why — a drift between them is the
+    intended state.
+    """
+    from src.services.verify.behaviour import SELF_COMPARISON_REALMS
+
+    assert baseline.BASELINE_REALMS != SELF_COMPARISON_REALMS
+    # And the direction is the one PS-316 chose: the artifact covers MORE,
+    # because the comparator that reads it needs the child realm; the
+    # self-comparison lanes were not conscripted into entering it.
+    assert set(SELF_COMPARISON_REALMS) < set(baseline.BASELINE_REALMS)
+    assert "child_frame" not in SELF_COMPARISON_REALMS
 
 
 def test_provenance_records_how_the_artifact_was_produced():
@@ -86,7 +117,58 @@ def test_provenance_records_how_the_artifact_was_produced():
     assert prov["fingerprint_seed"] == 1042768975
     assert prov["proxy"] == "none"
     assert prov["resolution"] == "1920x1080"
-    assert prov["realms"] == ["window", "worker"]
+    assert prov["realms"] == ["window", "worker", "child_frame"]
+
+
+def test_provenance_records_the_realms_that_were_ACTUALLY_recorded():
+    """PS-316. Provenance records what was DONE, not what a constant says.
+
+    This used to stamp `list(BASELINE_REALMS)` unconditionally, which was not
+    merely imprecise — it was already WRONG on a live path. `record_snapshot`
+    takes `realms=`, and PS-232's two unlinkability lanes pass
+    `must_differ_realms()` through `Context.record`; such a recording stamped
+    the constant into `provenance.realms` while its own top-level `realms` key
+    carried what it really read, so the artifact contradicted itself with
+    nothing to say which half was true.
+    """
+    prov = baseline.provenance(baseline.baseline_profile(), realms=("window",))
+    assert prov["realms"] == ["window"]
+    # And the default still answers for a caller that recorded the baseline set
+    # and said nothing, so nothing silently changed for the artifact itself.
+    assert baseline.provenance(baseline.baseline_profile())["realms"] == list(
+        baseline.BASELINE_REALMS
+    )
+
+
+def test_a_recording_never_stamps_a_realm_set_it_did_not_read(monkeypatch):
+    """The falsification for the test above: prove the old shape WAS wrong.
+
+    Drives the REAL `record_snapshot` with a narrow `realms=` — through the
+    chromium transport, which does not launch — and requires the two places the
+    artifact states its realms to AGREE. Before the fix this failed: top-level
+    `["window"]` against provenance `["window","worker"]`. That is the
+    self-contradiction, and it is why a test that only checked the default
+    could never have caught it — the default was the one input that made the
+    hardcoded constant accidentally correct.
+    """
+    from src.services.verify import baseline as bl
+
+    monkeypatch.setattr(bl, "_require_display", lambda: None)
+    monkeypatch.setattr(
+        "src.services.verify.transport.transport_for",
+        lambda name, engine: _FakeTransport(),
+    )
+    monkeypatch.setattr("src.services.browser.process.spawn_browser", _no_launch)
+
+    snap = bl.record_snapshot(
+        profile=_chromium_effective_profile(), fresh=False, realms=("window",)
+    )
+
+    assert snap["realms"] == ["window"]
+    assert snap["provenance"]["realms"] == snap["realms"], (
+        "the artifact states its realms in two places and they disagreed — a "
+        "reader cannot tell which one describes the instrument that ran"
+    )
 
 
 def test_provenance_names_the_host_dependent_probes():
@@ -698,8 +780,17 @@ def test_the_committed_baseline_exists_and_is_a_clean_reading():
     assert baseline.count_errors(snap) == 0
     assert snap["engine"] == "firefox"
     assert snap["profile"] == baseline.BASELINE_PROFILE_NAME
-    assert set(snap["realms"]) == {"window", "worker"}
-    assert snap["probes"]["window"] and snap["probes"]["worker"]
+    # The artifact must cover exactly the realms the RECORDER records, or
+    # `check` compares a live reading against a reference missing part of it.
+    # Derived from the constant rather than listed, so a widening cannot leave
+    # this guard checking a stale set — and the constant itself is pinned
+    # literally by `test_all_three_realms_are_recorded_and_none_is_optional`,
+    # which is what stops this being a tautology.
+    assert set(snap["realms"]) == set(baseline.BASELINE_REALMS)
+    assert all(snap["probes"][realm] for realm in baseline.BASELINE_REALMS), (
+        "a recorded realm carries no probes at all — every probe in it would "
+        "compare as absent, which is a hole where evidence should be"
+    )
 
 
 def test_the_committed_baseline_records_which_engine_it_was_taken_under():
@@ -815,7 +906,18 @@ def _inventory_mismatch(snap, realm, live_ids=None):
     return sorted(set(live_ids) - recorded), sorted(recorded - set(live_ids))
 
 
-@pytest.mark.parametrize("realm", ["window", "worker"])
+#: The realms the artifact test below walks. DERIVED from `BASELINE_REALMS`
+#: rather than listed, so re-recording with a new realm cannot leave this guard
+#: silently checking the old set — the recorder and its guard move together.
+#:
+#: Deriving is safe here ONLY because the tuple itself is pinned literally by
+#: `test_all_three_realms_are_recorded_and_none_is_optional` above. Without that
+#: pin this would be a tautology: shrink `BASELINE_REALMS` and the guard would
+#: simply stop asking about the dropped realm instead of going red.
+_ARTIFACT_REALMS = list(baseline.BASELINE_REALMS)
+
+
+@pytest.mark.parametrize("realm", _ARTIFACT_REALMS)
 def test_the_committed_baseline_records_exactly_the_live_probe_inventory(realm):
     """Reshape or add a probe and this fails until the artifact is re-recorded.
 

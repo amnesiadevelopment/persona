@@ -636,11 +636,20 @@ def _recording_context(monkeypatch, *, realm_log):
     """A `Context` whose `record` models `record_snapshot`'s REALM CONTRACT.
 
     The fake stands in for the browser, not for the realm logic: it honours
-    `realms` exactly as `record_snapshot` does, **including its default**. That
+    `realms` exactly as `Context.record` does, **including its default**. That
     default is the whole point of the fixture — a lane that forgets to pass
-    `realms=` gets `BASELINE_REALMS` here for the same reason it gets it in
-    production, so this test goes RED on the real defect instead of quietly
-    recording whatever the test wanted.
+    `realms=` gets the narrow self-comparison set here for the same reason it
+    gets it in production, so this test goes RED on the real defect instead of
+    quietly recording whatever the test wanted.
+
+    ⭐ PS-316 RE-POINTED THIS AT `SELF_COMPARISON_REALMS`, and getting it wrong
+    would have been a silent hole rather than a failure. The default used to be
+    `BASELINE_REALMS`, which PS-316 widened to include the child realm — so a
+    fixture still reading that constant would have handed the comparator a
+    child-realm reading FOR FREE, and a lane that forgot `realms=` would have
+    passed here while failing in production. The fixture's claim is "the
+    production default", so it must follow whatever `Context.record` actually
+    defaults to; that is now this constant, which stays narrow by design.
 
     Every must-differ vector reads a per-PROFILE digest, so two profiles differ
     on every compared pair and a correct run is unambiguously a PASS. Any
@@ -648,13 +657,13 @@ def _recording_context(monkeypatch, *, realm_log):
     other way for this input to produce one.
     """
     from src.services.verify import behaviour
-    from src.services.verify.baseline import BASELINE_REALMS
+    from src.services.verify.behaviour import SELF_COMPARISON_REALMS
 
     must_differ = probes.must_differ_ids()
 
     def fake_record(self, profile, *, fresh, realms=None):
         # The production default, reproduced deliberately. See the docstring.
-        effective = BASELINE_REALMS if realms is None else realms
+        effective = SELF_COMPARISON_REALMS if realms is None else realms
         realm_log.append(tuple(effective))
         name = getattr(profile, "name", profile)
         results = {
@@ -758,27 +767,55 @@ def test_the_child_realm_pair_is_actually_among_the_ones_compared(monkeypatch):
 def test_a_narrower_recording_is_refused_rather_than_passed(monkeypatch):
     """The falsification for this defect: prove the assertion above CAN fail.
 
-    Models the PRE-FIX lane exactly — a recording pinned to `BASELINE_REALMS`
-    while the inventory declares a child-realm vector — and requires the gate
-    to report CANNOT_RUN. This is what makes the two tests above load-bearing
-    rather than decorative: it shows the shape they forbid is genuinely
-    reachable and genuinely reported.
+    Models the PRE-FIX lane exactly — a recording NARROWER than the inventory
+    the comparator walks — and requires the gate to report CANNOT_RUN. This is
+    what makes the two tests above load-bearing rather than decorative: it
+    shows the shape they forbid is genuinely reachable and genuinely reported.
 
     It also pins the DIRECTION of the failure, which is the half that matters
     for AC5: an unrecorded realm must read as a refusal, NEVER as two profiles
     differing. A gate that answered PASS here would be manufacturing
     distinctness out of a reading nobody took.
+
+    ⭐ PS-316 RE-ROUTED THIS, and the re-route is the point rather than
+    bookkeeping. It used to model the narrow shape as `BASELINE_REALMS` and
+    assert `CHILD_FRAME not in BASELINE_REALMS` as its own precondition. PS-316
+    widened that constant to cover the child realm, so the precondition stopped
+    holding — and the message on it said exactly that would happen. The narrow
+    shape is now a LOCAL LITERAL, because the thing this test needs is "a
+    recording narrower than the comparator walks", which was never a fact about
+    that constant; borrowing it was incidental.
+
+    ⛔ DELIBERATELY A LITERAL, NOT `BASELINE_REALMS[:2]` OR ANY OTHER DERIVED
+    FORM. A derived tuple would follow a future widening along, and the
+    falsification would quietly become a tautology: it would record everything
+    the comparator walks and could never produce the INCONCLUSIVE it exists to
+    prove is reachable. It must be able to go stale loudly, which is precisely
+    what happened here.
     """
     from src.services.verify.behaviour import CANNOT_RUN
-    from src.services.verify.baseline import BASELINE_REALMS
 
-    assert probes.CHILD_FRAME not in BASELINE_REALMS, (
+    #: The pre-fix production recording shape, pinned as data. See the docstring
+    #: for why this is a literal.
+    NARROW_REALMS = ("window", "worker")
+
+    assert probes.CHILD_FRAME not in NARROW_REALMS, (
         "this falsification models a recording NARROWER than the comparator; "
-        "if BASELINE_REALMS ever covers the child realm it no longer does"
+        "the local narrow tuple must omit the child realm or it models nothing"
+    )
+    # ...and the comparator must genuinely WALK the realm the recording omits,
+    # or every assertion below is vacuously satisfiable over an empty
+    # comparison. This was missing before PS-316: the test asserted only that
+    # the narrow tuple lacked the realm, never that anything asked about it, so
+    # an inventory in which no must-differ vector declared `child_frame` would
+    # have left it green over nothing.
+    assert probes.CHILD_FRAME in probes.must_differ_realms(), (
+        "no must-differ vector declares the child realm, so `compare_profiles` "
+        "never asks about it and this falsification proves nothing"
     )
 
     a, b = _snapshot_pair(window_value="a-win", child_value=None)
-    # Rebuild both sides over the baseline realms only: the child pair is then
+    # Rebuild both sides over the narrow realms only: the child pair is then
     # ABSENT, which is precisely the pre-fix production shape.
     def narrow(profile):
         results = {
@@ -786,10 +823,10 @@ def test_a_narrower_recording_is_refused_rather_than_passed(monkeypatch):
                 probe.id: {"value": f"{profile}:{probe.id}"}
                 for probe in probes.probes_for_realm(realm)
             }
-            for realm in BASELINE_REALMS
+            for realm in NARROW_REALMS
         }
         return snapshot.build_snapshot(
-            results, engine="firefox", profile=profile, realms=BASELINE_REALMS
+            results, engine="firefox", profile=profile, realms=NARROW_REALMS
         )
 
     entries = diff.compare_profiles(narrow("ps232-narrow-a"), narrow("ps232-narrow-b"))

@@ -86,11 +86,78 @@ The exact inputs are also embedded in the artifact itself under `provenance`:
 | bookmarks | **explicitly cleared** (`[]`, not `None`) | `None` means "use the store's defaults", which would make the reading depend on the operator's bookmark store |
 | certificate | none | an mTLS session would add a terminator to the launch path |
 | `window_size` | `1280x800` device px | **PS-304.** The recorder writes this into the profile's `xulstore.json` before the launch, so the main-window geometry is an *input* to the recording rather than whatever default the engine chose for itself. See below |
-| realms | `window` **and** `worker` | a spoof that lands on the page but not inside a Web Worker is the historically load-bearing leak, and it is invisible unless the worker realm is read |
+| realms | `window`, `worker` **and** `child_frame` | a spoof that lands on the page but not inside a Web Worker is the historically load-bearing leak, and it is invisible unless the worker realm is read. **PS-316** added `child_frame` — see below |
 
 The profile is constructed as a plain dataclass and is **never written to the
 profile store**, so the baseline identity cannot be edited by a human out from
 under the artifact.
+
+### Why the child realm is recorded (PS-316)
+
+PS-247/PS-210 shipped three probes that exist **only** in the child realm —
+`realm.bootMarkers.childFrame`, `realm.seedRecoverable.childFrame`, and
+`realm.frameIdentity`'s child reading — plus `webgl.readback.childFrame`. The
+artifact did not record that realm, and `diff_snapshots` can only compare what
+the baseline carries, so those readings were **write-only**: produced every run,
+read by no comparator.
+
+That is worse than an absent probe rather than merely equivalent to one. An
+absent probe is visibly absent; a write-only probe reports a clean number and
+the artifact looks like it covers the realm, so "we looked and found nothing"
+is byte-indistinguishable from "we never looked". Measured before the change,
+planting a `__pna` marker and diffing a live reading through the real
+`diff_snapshots`:
+
+```
+window      /realm.bootMarkers            -> 1 changed   CAUGHT
+worker      /realm.bootMarkers            -> 1 changed   CAUGHT
+child_frame /realm.bootMarkers.childFrame -> realm absent, NOT DEFENDED
+```
+
+The two positive controls fire, so the child-realm zero was the defect and not
+a quiet comparator.
+
+⛔ **This is not the same question as which realms a BEHAVIOUR CHECK enters.**
+The four self-comparison lanes (restart-continuity, benign-edit-stability,
+trash/restore, `_settle`) tracked `BASELINE_REALMS` only because
+`record_snapshot`'s default is that constant and `Context.record` passed
+nothing. PS-316 named that set separately as `behaviour.SELF_COMPARISON_REALMS`
+and left it at `(window, worker)`, so widening the artifact did **not** conscript
+four lanes into entering a realm no comparison of theirs depends on. A drift
+between the two constants is the intended state.
+
+The CI engine-bump gate (`engine_gate`) **is** deliberately left coupled: "did
+the bump change what a site sees about the pinned profile?" is exactly the
+question a child-realm fingerprint move answers.
+
+### The host this artifact was recorded on (PS-316)
+
+Stated because a baseline re-recorded on a different host silently absorbs that
+host's facts and fails in the *flattering* direction — green against itself, red
+on everyone else's machine.
+
+| | |
+|---|---|
+| OS | Debian GNU/Linux 13 (trixie), container |
+| kernel | Linux 6.8.0 x86_64 |
+| CPU | AMD EPYC-Genoa, 8 cores |
+| GPU | **none present** (`/dev/dri` absent) — software rasteriser |
+| display | `xvfb-run -a` |
+| engine build | `firefox-20` (the tag `engine-baseline.txt` pins) |
+
+⭐ **This host absorbed nothing, and that is measured rather than asserted.**
+Before the code change, a live `window`+`worker` recording on this host was
+diffed against the committed artifact through the real `diff_snapshots`:
+**0 entries** — byte-identical across all 90 readings, *including* every one of
+the host-dependent probes named in `ENV_SENSITIVE_PROBES`
+(`fonts.measureText`'s `16px Arial` reads `190.033` on both sides). So the
+re-record's only probe movement is the +4 child rows, which is what makes the
+diff reviewable.
+
+⚠️ One header line also moved and it is not a probe: `app_version` `3.1.0` →
+`3.1.1`, a stale stamp catching up with a release cut after the last recording.
+It is a `_META_FIELD` and `compare()` leaves `include_meta` off by default, so
+it participates in no `check` verdict.
 
 ### Why the window geometry is pinned (PS-304)
 
@@ -261,7 +328,18 @@ the **same** engine:
 - `webgl.unmasked` — reports the renderer string of whatever GPU/driver is
   present (this recording carries an ANGLE/NVIDIA string from the machine below)
 - `webgl.parameters`, `webgl.extensions`, `masking.webglGetParameter`
+- `webgl.readback`, and **`webgl.readback.childFrame`** (PS-316) — the child
+  realm's twin of the same draw. The realm it runs in changes which JS scope
+  issues the draw, not which silicon serves it, so it cannot be less
+  host-dependent than the probe it twins
+- `canvas.readback` — rasterises glyphs and a stroked arc and hashes the pixels
 - `fonts.measureText` — host-specific text metrics
+
+⛔ **This list SUPPRESSES NOTHING.** It is documentation: `compare()` consults
+it nowhere and `diff.py`/`engine_gate.py` carry zero references to it, so a
+move in any listed probe still reds `baseline.check` exactly as it would have
+and still has to be explained. Naming a probe here buys a reader a caveat, not
+a waiver.
 
 This list is embedded in the artifact itself under
 `provenance.env_sensitive_probes`, so whoever is reading a red diff sees the
