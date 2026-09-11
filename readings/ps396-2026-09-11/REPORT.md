@@ -16,7 +16,12 @@ overlap section below restates that against this reading's own numbers.
 
 ## AC #2 — the two arms
 
-Both arms ran for ~44 s at a 1 s cadence (tightened from the shipped 2 s so one
+⭐ **RE-TAKEN IN ROUND 2, NOT INHERITED.** The matcher changed (see the round-2
+section below), and every number in this record is produced by it — so the arms
+were re-run against fresh chromium sessions with the shipped boundary-anchored
+matcher rather than quoted from round 1. The numbers below are the round-2 run.
+
+Both arms ran for ~27 s at a 1 s cadence (tightened from the shipped 2 s so one
 arm fits in one page; the cost figures in AC #8 are at the shipped cadence).
 Both halved: the first half is the arm's baseline, the second half is the
 gesture.
@@ -49,17 +54,17 @@ the context-switch axis. A loaded healthy arm is the hard case for a record
 that is supposed to discriminate.
 
 ```
-n=44 samples          cpu med = 105.6   cpu min = 60.2
-                   ctxt_v med =    40   ctxt_v min =  19
-first  half (baseline)  cpu med = 106.3   ctxt_v min = 19
-second half (no gesture) cpu med = 105.6   ctxt_v min = 19
+n=28 samples          cpu med = 103.3   cpu min = 54.8
+                   ctxt_v med =    60   ctxt_v min =  20
+first  half (baseline)   cpu med = 103.5   ctxt_v min = 44
+second half (no gesture) cpu med = 103.2   ctxt_v min = 20
 ```
 
 **Observed result: the healthy series does not look degraded, and it does not
-drift.** cpu sits at ~105% of one core throughout (the busy renderer plus the
+drift.** cpu sits at ~103% of one core throughout (the busy renderer plus the
 tree's other processes), context switches never reach zero, and the two halves
-are indistinguishable — which is the correct reading for an arm where nothing
-happened.
+are indistinguishable on cpu — which is the correct reading for an arm where
+nothing happened.
 
 ### SIGNAL arm — the SAME session, SIGSTOP'd, and the record carries it
 
@@ -71,8 +76,8 @@ the halfway mark. The processes remain alive and matched (`nproc` stays 11);
 they simply stop running.
 
 ```
-n=44 samples
-first  half (running)  cpu med = 106.2   ctxt_v min = 15
+n=28 samples
+first  half (running)  cpu med = 103.4   ctxt_v min = 33
 second half (SIGSTOP)  cpu med =   0.0   ctxt_v min =  0   ctxt_nv = 0
 ```
 
@@ -81,15 +86,16 @@ transition is visible at a single sample boundary:
 
 ```
    t nproc      cpu  ctxt_v ctxt_nv denied  gone
-16.1    11     96.5      46       8      0     0
+16.1    11     88.9     112      ..      0     0
 17.1    11      0.0       0       0      0     0     <- SIGSTOP
 ```
 
-⚠️ **And note `denied 0` on every stopped sample, with `cpu_from 11` /
-`ctxt_from 11`.** Those zeros are a **reading of eleven readable processes that
-did nothing**, not a failure to look. That distinction is AC #4 and it is what
-makes the wedged signature *meaningful*: a recorder that answered `0` when
-denied would produce this exact row for a permissions problem.
+⚠️ **And note `denied 0` on every one of the 11 stopped samples, with
+`cpu_from 11` / `ctxt_from 11`.** Those zeros are a **reading of eleven
+readable processes that did nothing**, not a failure to look. That distinction
+is AC #4 and it is what makes the wedged signature *meaningful*: a recorder that
+answered `0` when denied would produce this exact row for a permissions
+problem.
 
 ### ⚠️ The overlap, stated rather than smoothed over
 
@@ -104,11 +110,11 @@ sigstop      DEGRADED      0.0     0
 spin         DEGRADED    110.2     202    <- WEDGED, higher than several healthy ones
 ```
 
-This reading's own quiet arm lands **inside that overlap**: `ctxt_v min = 19`,
-which is *above* `jugwedge`'s wedged floor of 18 by one sample, and `cpu med
-105.6`, which is *above* `spin`'s wedged 110.2 by less than 5%. A healthy
-session under load and a wedged session are **not separable by a constant** on
-this evidence. That is why nothing reads this file.
+This reading's own quiet arm lands **inside that overlap**: `ctxt_v min = 20`,
+which is *above* `jugwedge`'s wedged floor of 18, and `cpu med 103.3`, which is
+within 6% of `spin`'s wedged 110.2 and *below* `busymax`'s healthy 103.9. A
+healthy session under load and a wedged session are **not separable by a
+constant** on this evidence. That is why nothing reads this file.
 
 ---
 
