@@ -135,7 +135,7 @@ def test_arm_c_accepts_the_measured_artefact_widths():
 def test_the_committed_reading_still_passes_its_own_verdict(name):
     """If someone edits the reading OR the verdict function without the other,
     this goes red rather than the two quietly drifting apart."""
-    record = json.loads((READING_DIR / name).read_text())
+    record = json.loads((READING_DIR / name).read_text(encoding="utf-8"))
     on, off = record["on"], record["off"]
 
     assert _verdict(on["ref_hash"], off["ref_hash"], record["ref_modified_bytes"]) is True
@@ -155,8 +155,8 @@ def test_the_two_seeds_prove_the_flag_is_live():
 
     Arm B's hash MOVING between seeds while arm A stays byte-exact is what
     proves the flag reached the engine."""
-    a = json.loads((READING_DIR / "reading-seed24601.json").read_text())
-    b = json.loads((READING_DIR / "reading-seed777.json").read_text())
+    a = json.loads((READING_DIR / "reading-seed24601.json").read_text(encoding="utf-8"))
+    b = json.loads((READING_DIR / "reading-seed777.json").read_text(encoding="utf-8"))
 
     assert a["seed"] != b["seed"]
     # Arm A: identical across seeds — the guard is keyed on the render.
@@ -167,7 +167,7 @@ def test_the_two_seeds_prove_the_flag_is_live():
 
 def test_the_falsification_run_is_committed_and_went_red():
     """A guard nobody has watched fail is not evidence."""
-    log = (READING_DIR / "falsification-arm-b.log").read_text()
+    log = (READING_DIR / "falsification-arm-b.log").read_text(encoding="utf-8")
     assert "GUARD TOO WIDE" in log
     assert "OVERALL: DEFECT" in log
     assert "B/protection" in log
