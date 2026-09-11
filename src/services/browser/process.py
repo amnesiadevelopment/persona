@@ -1145,7 +1145,25 @@ def spawn_browser(profile: Profile, *, in_process: bool = False) -> subprocess.P
                     css_width=preset.width,
                     css_height=preset.height,
                     dpr=preset.dpr,
-                    device_memory=preset.device_memory,
+                    # ⛔ CLAMPED HERE, NOT PASSED RAW — and the clamp belongs on
+                    # THIS path specifically, because this is the path with no
+                    # other defence. The engine arm below applies
+                    # `spec_device_memory` at the switch, and patch 005 clamps
+                    # again inside the binary; both of those sit on the ENGINE
+                    # path. The JS author (`mobile_ext`'s `def(nav,
+                    # 'deviceMemory', MEM)`) had NEITHER, and JS wins in every
+                    # realm it reaches — so a preset declaring an illegal figure
+                    # published it verbatim to the page while the engine
+                    # reported the legal one.
+                    #
+                    # ⚠️ THE TABLE BEING CORRECT IS NOT A SUBSTITUTE FOR THIS.
+                    # `xiaomi-13` declared 12 (PS-395) and shipped it; fixing
+                    # that one row closes that one preset and leaves the CLASS
+                    # open for the next device added. This makes the launcher
+                    # structurally incapable of publishing an illegal value,
+                    # which is what the guard in
+                    # `tests/test_ps395_preset_device_memory.py` then pins.
+                    device_memory=spec_device_memory(preset.device_memory),
                     hardware_concurrency=preset.hardware_concurrency,
                     touch_points=touch_points,
                 )
