@@ -99,7 +99,7 @@ from typing import Any, Callable
 
 from ...models.profile import Profile
 from .diff import diff_snapshots, format_diff, inconclusive_count
-from .probes import WINDOW, WORKER
+from .probes import CHILD_FRAME, WINDOW, WORKER
 from .runner import run_probes
 from .snapshot import build_snapshot, load, quote_path
 
@@ -118,7 +118,49 @@ BASELINE_ENGINE = "firefox"
 # reproducible but leaves the recorded geometry implicit in a lookup table.
 BASELINE_RESOLUTION = "1920x1080"
 BASELINE_SEARCH_ENGINE = "duckduckgo"
-BASELINE_REALMS: tuple[str, ...] = (WINDOW, WORKER)
+
+# The realms the committed baseline ARTIFACT covers — i.e. what `check` is able
+# to compare a live reading against.
+#
+# PS-316 added CHILD_FRAME. WHY, stated as the defect it closes rather than as
+# "more coverage": PS-247/PS-210 shipped three residue probes that only exist in
+# the child realm (`realm.bootMarkers.childFrame`,
+# `realm.seedRecoverable.childFrame`, and `realm.frameIdentity`'s child
+# reading), plus `webgl.readback.childFrame`. `diff_snapshots` reports a probe
+# the baseline does not carry, so with a two-realm artifact those readings had
+# NOTHING TO BE COMPARED AGAINST. Measured before the change, planting a `__pna`
+# marker and diffing a live reading against the committed artifact:
+#
+#     window      /realm.bootMarkers            -> 1 changed   CAUGHT
+#     worker      /realm.bootMarkers            -> 1 changed   CAUGHT
+#     child_frame /realm.bootMarkers.childFrame -> realm absent, NOT DEFENDED
+#
+# The two positive controls fire, so the child-realm zero was the defect and not
+# a quiet suite. Three probes were write-only: they produced a number every run
+# and no comparator ever read it, which is indistinguishable from a probe that
+# does not work.
+#
+# ⛔ THIS IS NOT THE SAME QUESTION AS "WHICH REALMS SHOULD A BEHAVIOUR CHECK
+# ENTER?", and the two were only ever the same SPELLING. This names the realms
+# the baseline ARTIFACT documents; `behaviour.SELF_COMPARISON_REALMS` names what
+# a lane comparing a profile against ITSELF needs. They were coupled purely
+# because `record_snapshot`'s default is this constant and `Context.record`
+# passed nothing — an accident of defaulting, never a decision that a
+# restart-continuity check wants the baseline's realm set. See that constant's
+# note; widening this one deliberately did NOT widen those lanes.
+#
+# ⚠️ WIDENING THIS RE-RECORDS THE ARTIFACT, which is the reference every `check`
+# compares against, and it also widens the CI engine-bump gate
+# (`engine_gate.py`'s `record_snapshot(fresh=True)` inherits this default —
+# deliberately kept coupled, since "did the bump change what a site sees?" is
+# exactly the question a child-realm fingerprint move answers). Before doing it
+# again, measure that the new realm ENTERS deterministically: a realm that
+# cannot be entered errors every probe in it (`runner.run_child_frame_realm`),
+# two identically-errored sides compare INCONCLUSIVE, and the bump gate becomes
+# a permanent refusal. Safe direction — it can never falsely tag — but it blocks
+# bumps until fixed. Measured for child_frame at PS-316 on Linux/xvfb with
+# firefox-20: n=2 back-to-back, zero unstable probes, zero errors.
+BASELINE_REALMS: tuple[str, ...] = (WINDOW, WORKER, CHILD_FRAME)
 
 # The main-window geometry the RECORDER pins before every launch, in DEVICE px
 # (xulstore.json's own unit — see `_seed_window_size`'s docstring for the live
@@ -241,6 +283,33 @@ ENV_SENSITIVE_PROBES: tuple[str, ...] = (
     "webgl.extensions",
     "webgl.parameters",
     "webgl.readback",
+    # PS-316. The child-realm twin of `webgl.readback` directly above, added
+    # with the realm that carries it. It rasterises through the SAME host GPU /
+    # driver stack — the realm it runs in changes which JS global scope issues
+    # the draw, not which silicon serves it — so it cannot be less
+    # host-dependent than the probe it twins, and omitting it would leave the
+    # artifact's ONE host-variance caveat silent about the only child-realm row
+    # that has any.
+    #
+    # ⛔ THIS SUPPRESSES NOTHING, and the entry must not be read as buying the
+    # row any tolerance. See the scope note at the end of this tuple: the list
+    # is DOCUMENTATION — `compare()` consults it nowhere, `diff.py` and
+    # `engine_gate.py` carry zero references to it (re-verified at PS-316), and
+    # its only consumer is `provenance()`. A move in this digest still reds
+    # `baseline.check` exactly as it would have.
+    #
+    # Listed rather than omitted for the reason the PS-135 note above gives:
+    # the two errors are not symmetric. Wrongly listed costs a line of caveat
+    # on a real drift; wrongly OMITTED reds the baseline on unfamiliar hardware
+    # for a reason nobody can see IN the artifact, which is how an operator is
+    # trained to ignore the command (engine-fingerprint-baseline.md:182).
+    #
+    # ⚠️ THE HONEST BOUND, same shape as PS-135's: this is an argument from what
+    # the draw DOES plus the parent probe's own listing, not a two-machine
+    # measurement. One host was available at PS-316 and it reproduced the
+    # committed artifact byte-for-byte on every existing row, so no
+    # cross-machine variance was OBSERVED here — for this row or any other.
+    "webgl.readback.childFrame",
     "webgl.unmasked",
     # PS-314. WebSerial is gated on the HOST PLATFORM, not on anything persona
     # does: `stealth_ext` never touches `Serial` or `navigator.serial` (grep it
@@ -388,11 +457,30 @@ def _effective_window_size(profile: Profile) -> list[int] | None:
         return None
 
 
-def provenance(profile: Profile, *, window_size: list[int] | None = None) -> dict:
+def provenance(
+    profile: Profile,
+    *,
+    window_size: list[int] | None = None,
+    realms: tuple[str, ...] | None = None,
+) -> dict:
     """How this recording was produced, as data.
 
     Recorded next to the readings so the next person can reproduce the artifact
     exactly instead of guessing which knobs were set.
+
+    ``realms`` is the realm set the recording ACTUALLY ran with, supplied by the
+    caller that did the recording, for exactly the reason ``window_size`` is —
+    provenance records what was DONE, not what a constant says is usual.
+
+    PS-316. This used to stamp ``list(BASELINE_REALMS)`` unconditionally, which
+    made it a restatement of a default rather than an observation, and it was
+    already WRONG on a live path: ``record_snapshot`` takes ``realms=``, and
+    PS-232's two unlinkability lanes pass ``must_differ_realms()`` through
+    ``Context.record``. Such a recording stamped ``provenance.realms`` from the
+    constant while its own top-level ``realms`` key carried what it really read,
+    so the artifact contradicted itself with nothing to say which half was true.
+    Defaults to ``BASELINE_REALMS`` only so a caller that did record the
+    baseline set — and says nothing — is unchanged.
 
     ``window_size`` is the geometry the recording ACTUALLY ran with, supplied by
     the caller that did the recording — see :func:`_effective_window_size` for
@@ -413,7 +501,7 @@ def provenance(profile: Profile, *, window_size: list[int] | None = None) -> dic
         "proxy": "none",
         "bookmarks": "none (explicitly cleared)",
         "certificate": "none",
-        "realms": list(BASELINE_REALMS),
+        "realms": list(BASELINE_REALMS if realms is None else realms),
         # Which readings are host-dependent, stated IN the artifact rather than
         # only in the accompanying note — so whoever is looking at a red diff
         # sees the caveat in the same file as the values it applies to.
@@ -973,7 +1061,7 @@ def record_snapshot(
     # state (warm); on the chromium arm nothing launched and it reads None, so
     # the field is omitted rather than fabricated.
     snapshot["provenance"] = provenance(
-        profile, window_size=_effective_window_size(profile)
+        profile, window_size=_effective_window_size(profile), realms=realms
     )
     return snapshot
 

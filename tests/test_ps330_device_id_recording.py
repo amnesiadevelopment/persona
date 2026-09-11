@@ -24,10 +24,13 @@ def test_device_ids_are_read_test_locally_and_not_recorded_into_the_probe():
         (``navigator.mediaDevices`` is undefined in a worker) — "a widened
         baseline that records nothing, which is worse than no row because it
         reads like coverage".
-      * ``CHILD_FRAME`` is the realm that would be worth recording, and the
-        baseline cannot record it: its ``realms`` is ``["window","worker"]``.
-        Widening ``BASELINE_REALMS`` is its own slice (PS-316) and doing it
-        here would silently re-record every probe in a new realm.
+      * ``CHILD_FRAME`` is the realm that would be worth recording, and since
+        PS-316 the baseline DOES record it (``realms`` is
+        ``["window","worker","child_frame"]``). That removes the mechanical
+        obstacle this bullet used to name, and not the argument: reaching the
+        child realm from here still means ``ALL_REALMS``, which drags in the
+        worker realm the bullet above rules out — and the measurement below
+        rules the vector out on its own terms regardless of realm.
 
     ⭐ AND FIREFOX ADDS A REASON OF ITS OWN, which is this ticket's measurement
     rather than PS-320's: the ids are the EMPTY STRING on every profile. A
