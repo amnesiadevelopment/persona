@@ -206,50 +206,6 @@ exclude = [
 # is the first thing the user sees, already centred. The boot screen (app.zip
 # extract after an update) is also hidden; that extract is brief and the window
 # simply appears once persona's own splash is ready.
-# ── macOS notarization posture (PS-386) ──────────────────────────────────────
-# WHY THIS SECTION EXISTS AT ALL. Until PS-386 there was no `[tool.flet.macos]`
-# here, and that absence was load-bearing rather than an oversight: it meant
-# persona contributed NOTHING to the entitlement set, and the shipped plist was
-# whatever the toolchain happened to produce. PS-346 measured what that was, on
-# the published 3.1.1 bytes, and it is a notarization-rejection condition:
-#
-#     CodeDirectory flags = 0x2   adhoc: True   runtime (0x10000): False
-#     <key>com.apple.security.get-task-allow</key><true/>
-#
-# WHERE THE SIXTH KEY COMES FROM — settled by set-difference, no Mac required.
-# flet-cli 0.85.3 seeds exactly FIVE keys (build_base.py:816-822) and the string
-# "get-task-allow" does not occur anywhere in the package. The build template
-# (v0.85.3) renders `macos/Runner/Release.entitlements` verbatim from that dict
-# via `render_dict(cookiecutter.options.macos_entitlements)` — no sixth key
-# there either. The template's Release build config carries
-# `CODE_SIGN_IDENTITY = "-"` (ad-hoc), and ad-hoc/development signing is what
-# injects `get-task-allow` itself. So the key is added AT SIGNING TIME by
-# neither persona nor flet, and it cannot be "removed" from a source file that
-# never contained it.
-#
-# ⛔ THIS BLOCK ALONE DOES NOT REMOVE IT, AND MUST NOT BE READ AS DOING SO.
-# `merge_dict` (build_base.py:883-886) merges these keys OVER flet's five, so
-# what this section buys is that the plist written to disk states our posture
-# EXPLICITLY and DELIBERATELY instead of inheriting a default. The `false` below
-# is a declaration of intent that codesign may still override; the re-sign step
-# in `scripts/ps386_macos_harden.py` is what actually makes it true in the
-# shipped bytes. Two mechanisms, because one of them is not enough.
-#
-# ⛔ EVERY KEY BELOW IS DELIBERATE — DO NOT SWEEP THEM TO MAKE A CHECKER GREEN.
-# `cs.allow-jit` in particular is very probably REQUIRED: persona ships a
-# bundled CPython, and removing it trades a notarization prerequisite for an app
-# that does not start. The first four restate flet's own defaults verbatim so
-# that the set is readable in one place; only the fifth is new.
-[tool.flet.macos.entitlement]
-"com.apple.security.app-sandbox" = false
-"com.apple.security.cs.allow-jit" = true
-"com.apple.security.network.client" = true
-"com.apple.security.network.server" = true
-"com.apple.security.files.user-selected.read-write" = true
-# Stated explicitly so the intent survives a toolchain change. See the ⛔ above:
-# the re-sign step is what enforces it.
-"com.apple.security.get-task-allow" = false
-
 [tool.flet.app.boot_screen]
 show = false
 
