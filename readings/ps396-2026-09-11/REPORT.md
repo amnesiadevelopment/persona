@@ -216,65 +216,68 @@ real hardware, which no cycle has.
 
 ## AC #10 — the full-suite failure SET, diffed intra-container
 
-Both runs in THIS container, same interpreter, same installed packages, same
-`-p no:randomly` ordering. The base is a clean worktree at `1133fa0`.
+⭐ **RE-MEASURED IN ROUND 2, NOT INHERITED.** The matcher changed and six tests
+were rewritten for the CI finding, so the set was taken again from scratch on
+both sides rather than quoted from round 1. Both runs in THIS container, same
+interpreter, same installed packages, same `-p no:randomly` ordering, run
+concurrently. The base is a clean worktree at `1133fa0`.
 
 ```
-BASE   (1133fa0, pristine worktree)   77 failed, 7202 passed, 80 skipped   24:31
-BRANCH (this work)                    79 failed, 7220 passed, 80 skipped   25:41
+BASE   (1133fa0, pristine worktree)   77 failed, 7202 passed, 80 skipped   24:15
+BRANCH (this work)                    77 failed, 7228 passed, 80 skipped   27:17
+
+IN BRANCH, NOT IN BASE:  (none)
+IN BASE, NOT IN BRANCH:  (none)
 ```
+
+**The failure SETS are byte-identical**, and the branch adds 26 passing tests.
 
 ⛔ **Never assert zero — the absent-import set was re-measured here rather than
 inherited.** The ticket's own list said `psutil` was absent; it is **present at
-7.2.2**. On a first pass `flet`, `fastapi`, `cryptography`, `mcp`, `paramiko`,
-`uvicorn` and `requests` were also absent until `requirements.txt` was
-installed. The 77 baseline failures that remain are `invisible_playwright` and
-`playwright` artifacts of this container, not of the tree.
-
-**The 79 was NOT accepted as a wash.** Diffed as SETS:
+7.2.2**. The 77 baseline failures are container artifacts, not tree defects, and
+they decompose cleanly:
 
 ```
-IN BRANCH, NOT IN BASE:
-  tests/test_encoding_discipline.py::test_no_platform_dependent_text_decode_in_tests
-  tests/test_encoding_discipline.py::test_product_side_platform_dependent_decodes_do_not_grow
-IN BASE, NOT IN BRANCH:
-  (none)
+No module named 'invisible_core'         58
+No module named 'invisible_playwright'   16
+(other import-time failures)              3
+                                        ---
+                                         77   in 6 files
 ```
 
-Both were **mine**, and both were real: nine `open()`/`write_text()` calls in
-the new test file and two `/proc` reads in the new module named no encoding, so
-they resolve to cp1252 on Windows while the product writes utf-8. A project
-guard doing exactly its job. Fixed in the branch's encoding commit; the two tests now pass, and the
-suites for every touched file pass together (160 tests: the new file, both
-encoding guards, all six launcher suites, the launch guard, all four wipe
-suites, the manager stop hook, and PS-330's convention test).
+### Round 1's own set diff, kept as the record of a real catch
 
-⚠️ **The final failure set is therefore identical to the base's**, established
-by the set diff above plus a targeted re-run — not by a second 25-minute
-full-suite run, which would have measured the same 77 container artifacts again.
+Round 1's first branch run read **79** and that was NOT accepted as a wash. The
+two extra were both **mine** and both real: nine `open()`/`write_text()` calls
+in the new test file and two `/proc` reads in the new module named no encoding,
+so they resolve to cp1252 on Windows while the product writes utf-8 — a project
+guard doing exactly its job. Fixed then; both encoding ratchets **pass
+outright** (zero, not a lowered number) in the round-2 runs above, which is the
+closing check that matters more than the diff itself.
 
-### The set diff's own blind spot, checked rather than assumed
+### The set diff's own blind spot, checked rather than assumed — re-checked in round 2
 
 A **counting** test (a ratchet, a coverage floor, a lint total) that is red on
 BOTH sides **cancels out of a set diff** while the number inside it moves — a
 PR can add eleven violations and still truthfully report "failure sets
 identical" (measured on PS-202, where exactly that hid eleven new encoding
-violations). So the both-red set was examined rather than waved through:
+violations, in this same `test_encoding_discipline` ratchet). So the both-red
+set was examined rather than waved through, and the check was **parsed, not
+grepped**:
 
 ```
-comm -12 base.txt mine.txt              -> 77 tests, in 6 files
-grep -lE "ratchet|must stay at zero|do not grow|no new "  -> none of them
-normalise every numeric assertion message to N, diff the multiset
-                                        -> the only difference is the
-                                           encoding ratchet's own message,
-                                           present in the branch run and
-                                           absent after the fix
+comm -12 base.txt mine.txt                                -> 77 tests, in 6 files
+grep -lE "ratchet|must stay at zero|do not grow|no new "  -> 1 file matched
+  -> tests/test_ff_language_override.py, matched at line 791 — a PROSE COMMENT,
+     in no test of the both-red set.
+AST-parse each of that file's 5 both-red tests, per test:
+  ratchet-words = 0   integer-literal comparisons = 0    (all five)
 ```
 
-All 77 both-red tests are plain `invisible_playwright` / `playwright` import
-failures carrying no counting assertion. And the closing check is stronger than
-the diff: both encoding ratchets now **pass outright** — zero, not a lowered
-number.
+So no both-red test carries a counting assertion that a set diff could hide. The
+grep's single hit is the reason this was parsed rather than trusted: a
+file-level grep answers a question about the FILE, and the blind spot is a
+property of the TEST.
 
 ### Each guard was falsified by breaking the property it asserts
 
@@ -335,13 +338,13 @@ verdict.
 
 ---
 
-## ⛔ ROUND 2 — CI FOUND A DEFECT THIS CONTAINER STRUCTURALLY CANNOT SEE
+## ⛔ ROUND 2 — CI FOUND THREE DEFECTS THIS CONTAINER STRUCTURALLY CANNOT SEE
 
 ⭐ **This is the round's most useful finding, and it came from the one venue a
 Linux container cannot substitute for.** The touched suites were green here on
-every run; the macOS and Windows `main` lanes were red — on **six of this
-branch's own tests**. In both classes the *instrument* was lying, not the
-product.
+every run; the macOS and Windows `main` lanes were red — on **this branch's own
+tests**. THREE classes across two CI runs. In the first two the *instrument* was
+lying rather than the product failing; the third is a real product defect.
 
 ### Class 1 — five record-lifecycle tests assumed a file that off Linux is
 ### deliberately never written
@@ -382,6 +385,33 @@ property in the module, and on two of three platforms its guard was inert.
 Denial is now injected at the `open` boundary, which is the same code path the
 module actually meets, on all three platforms.
 
+### Class 3 — the matcher's boundary was keyed on `os.sep`, which UNDERCOUNTS
+### on the platform whose separator differs
+
+Found by the **second** CI run, after classes 1 and 2 were fixed: the same two
+matcher tests went red on `windows-latest` and nowhere else.
+
+`_BOUNDARY_AFTER` was written as `"\0= \t\n\r\"'" + os.sep`, which reads as
+obviously right. On Windows `os.sep` is `\`, so a cmdline carrying a
+**forward-slash** path — entirely ordinary, since the engine is free to
+normalise either way — stopped matching, and a child under the profile dir
+(`<profile>/.invisible-profile`, which is exactly how Firefox is launched) went
+**unmatched**.
+
+⛔ **That is the PS-171 arm-H undercount for the third time in one ticket**, and
+each arrival was through a different door: first `comm` vs `cmdline` (the
+inherited doctrine), then a token split (the review's suggested fix), now a
+platform assumption. A matcher that silently sees fewer processes reports a busy
+session as idle — and on Windows this one would have reported `nproc 1` with
+`denied 0` for a whole Firefox tree.
+
+Both separators are now boundaries. That is safe in the other direction too:
+`\` is not a legal profile-name character (`validate_profile_name`'s
+`_INVALID_CHARS`), so admitting it as a **boundary** cannot let a prefix sibling
+through — the sibling defect turns on `2` and `-2` *following* the path, never
+on a separator, and the prefix-sibling test is the control for exactly that.
+Pinned by a parametrized test over both separators.
+
 ### Falsified, with a control
 
 | arrangement | result |
@@ -389,11 +419,13 @@ module actually meets, on all three platforms.
 | the fix, under a simulated non-Linux platform (`IS_LINUX` forced False) | **26 passed** (control) |
 | drop `recording_platform` from one lifecycle test, same simulation | **1 fail** |
 | restore `os.chmod` as the denial, under simulated *advisory* chmod | **1 fail** |
+| restore `os.sep`, under a simulated Windows separator | **3 fail** — the two CI reported, plus the new guard |
 
 ⭐ **AC #9 arriving from the other side.** The ticket asked that the platform
 scope be *named* rather than papered over, and it is — in the product. What CI
 showed is that the **tests** have to say it deliberately too, rather than by
-accident of where they happened to run.
+accident of where they happened to run. Three defects, none of them findable in
+a Linux container at any effort.
 
 ---
 
@@ -579,7 +611,7 @@ everyone; the one process it may never count is the one asking.
    in a 41-process `/proc`; the scaling arm shows `2.57%` at 1600 processes.
    Neither is "the" cost — see AC #8.
 6. ⛔ **The macOS/Windows arms of the RECORDER are still unmeasured, and the
-   round-2 test fix does not change that.** What CI found was that five tests
+   round-2 fixes do not change that.** What CI found was that five tests
    asserted a file the product deliberately never writes off Linux, and that
    the denial guard was inert on Windows. Both are now fixed — but the fixture
    forces the capability GATE so the WRITER's contract can be tested; it does
