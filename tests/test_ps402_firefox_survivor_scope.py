@@ -73,7 +73,8 @@ def _workflow() -> str:
     from pathlib import Path
 
     root = Path(__file__).resolve().parents[1]
-    return (root / ".github" / "workflows" / "behaviour-launch-lane.yml").read_text()
+    return (root / ".github" / "workflows" / "behaviour-launch-lane.yml").read_text(
+        encoding="utf-8")
 
 
 def _survivor_section() -> str:
@@ -87,7 +88,8 @@ def _survivor_section() -> str:
     from pathlib import Path
 
     root = Path(__file__).resolve().parents[1]
-    text = (root / "src" / "services" / "verify" / "behaviour_checks.py").read_text()
+    text = (root / "src" / "services" / "verify" / "behaviour_checks.py").read_text(
+        encoding="utf-8")
     start = text.index("SCOPE OF THIS FIRST SLICE")
     end = text.index("--- 9. every out-of-perimeter launch artifact")
     return text[start:end]
@@ -264,7 +266,8 @@ def test_every_citation_in_the_corrections_resolves_on_disk() -> None:
                 f"{name} cites {path!r} with a line anchor ({line}), but that "
                 "path is a directory."
             )
-            total = len(target.read_text(errors="replace").splitlines())
+            body = target.read_text(encoding="utf-8", errors="replace")
+            total = len(body.splitlines())
             assert 1 <= line <= total, (
                 f"{name} cites {path}:{line}, but that file has {total} lines. "
                 "The anchor has outlived the lines it points at."
@@ -290,7 +293,7 @@ def test_the_quoted_tree_size_anchor_lands_on_the_figure_it_quotes() -> None:
 
     root = Path(__file__).resolve().parents[1]
     reading = root / "readings" / "ps171-2026-08-25" / "REPRO.md"
-    lines = reading.read_text().splitlines()
+    lines = reading.read_text(encoding="utf-8").splitlines()
 
     anchors = {
         line
@@ -381,7 +384,8 @@ def test_firefox_binds_no_process_singleton_socket_on_the_launch_path() -> None:
     from pathlib import Path
 
     root = Path(__file__).resolve().parents[1]
-    text = (root / "src" / "services" / "browser" / "invisible_launch.py").read_text()
+    text = (root / "src" / "services" / "browser" / "invisible_launch.py").read_text(
+        encoding="utf-8")
     for token in ("AF_UNIX", "sun_path", "SingletonSocket"):
         assert token not in text, (
             f"{token} now appears on the firefox launch path. The corrected "
@@ -403,7 +407,8 @@ def test_the_fork_path_records_its_group_and_carries_a_readable_stdout() -> None
     from pathlib import Path
 
     root = Path(__file__).resolve().parents[1]
-    text = (root / "src" / "services" / "browser" / "invisible_launch.py").read_text()
+    text = (root / "src" / "services" / "browser" / "invisible_launch.py").read_text(
+        encoding="utf-8")
     assert "record_group_by_construction(self, pid=" in text, (
         "the fork path no longer records its group ON THE HANDLE, which is what "
         "`process_group.recorded_group()` reads. PS-204's own comment records "
