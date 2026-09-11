@@ -3900,6 +3900,91 @@ class App:
         else:
             self._check_engine2_async()
 
+    def _installed_build_refusal(self) -> str:
+        """The row's sentence when persona's own governance refuses the build
+        that is ALREADY INSTALLED, or "" when it does not.
+
+        WHY THIS EXISTS AT ALL (PS-321). Every other consultation of
+        ``engine/policy.py`` takes a FETCHED tag — ``fetch_latest_checked``,
+        ``ensure_engine``'s first-install lane, ``_engine_update_available``
+        and ``_record_engine_check`` all ask about a build persona is deciding
+        whether to acquire. Nothing asked about the one on disk. So an operator
+        who blocklisted the tag they were already running got NOTHING: the
+        offer is suppressed (there is no newer build to withhold), and
+        ``_record_engine_check``'s refusal branch is gated on
+        ``is_newer(tag, current_version())``, which is False because a bad
+        build is not newer than itself. The verdict was computed correctly and
+        discarded, and the row fell through to the installed version — rendering
+        a build persona KNOWS to be broken exactly as it renders a healthy one.
+
+        The same blocklist entry is fully effective one moment before that
+        install and completely inert one moment after. This closes that seam.
+
+        ⛔ IT REFUSES NOTHING, AND THAT IS THE DESIGN DECISION, not an
+        omission. Firefox's ``BROKEN_VERSIONS`` retires an installed build at
+        launch resolution — ``engine_install.installed_builds()`` skips it and
+        ``active_build()`` resolves out of what remains — and that is only
+        possible because Firefox keeps MANY builds, one directory per tag, so
+        retiring one falls back to the next. Chromium keeps ONE un-versioned
+        tree. Refusing to launch here would therefore be STRICTLY MORE
+        DESTRUCTIVE than the reference implementation it imitates: it leaves an
+        operator with no browser at all whenever ``rollback_target()`` is
+        empty, which ``_engine_rollback_pending_row``'s docstring measures as
+        the LARGER population rather than an edge case. This tree already rules
+        against that outcome in its own words — "an app with no engine at all
+        is worse than one with an untested engine", and "a pin naming a build
+        that is NOT installed is IGNORED rather than honoured-into-nothing". So
+        the engine keeps launching; the row stops lying about it.
+
+        THE WAY BACK IS NOT NAMED HERE, deliberately. ``_engine_rollback_row``
+        sits directly beneath this line and already offers "previous version"
+        whenever ``rollback_target()`` is non-empty — re-downloading against the
+        RECORDED digest, never a fresh API response, so nothing here widens the
+        trust surface. Naming a gesture in this sentence would duplicate that
+        row when a target exists and, worse, promise one when it does not: the
+        gesture-less remedy this project has already shipped once. This line
+        states the STATE; the row below it owns the gesture, and the two cannot
+        drift into describing one situation differently.
+
+        A KNOWN-BAD REFUSAL AND A CEILING REFUSAL STAY DISTINCT, on the same
+        rule ``_record_engine_check`` follows for the acquisition lane: persona
+        ships no Chromium ceiling, so ABOVE_CEILING is reachable only when the
+        operator lowered ``max_tested_major`` below their own engine — their
+        own reversible decision, and pointing it at persona would be an
+        instruction they cannot act on.
+
+        NEVER WORDED AS A TRANSFER PROBLEM. Nothing here moved a byte, so
+        "download failed" would be both a falsehood and the retry trap the
+        refuse/failed vocabulary exists to prevent.
+
+        Degrades to "" on any raise: this is consulted on every refresh, so a
+        policy file that cannot be read must not take the whole sidebar down —
+        the same fail-quiet direction ``_engine_rollback_row`` takes for an
+        unreadable build record. An empty or unreadable ``version.txt`` needs
+        no branch of its own: ``current_version()`` answers "" and
+        ``policy.check("")`` is OK by contract, because "no tag" is a read
+        failure the caller already reports and must not be mislabelled as a
+        governance refusal.
+        """
+        try:
+            installed = engine.current_version()
+            if not installed:
+                return ""
+            verdict, _message = engine_policy.check(installed)
+        except Exception as e:
+            logger.error("installed-build policy check failed: %s", e)
+            return ""
+        if verdict == engine_policy.KNOWN_BAD:
+            # Says WHOSE decision it is and that it is about the build in use.
+            # Budgeted against _VERSION_MAX_CHARS (17): this is longer, so the
+            # cell ellipsises it and _status_needs_reveal draws the chevron —
+            # which is correct here, unlike on a version string, because the
+            # tail carries meaning an operator needs.
+            return "engine known bad — see the log"
+        if verdict == engine_policy.ABOVE_CEILING:
+            return "engine below your policy ceiling"
+        return ""
+
     def _refresh_engine_text(self, status: str = "") -> None:
         def apply() -> None:
             cur = _short_engine_version(engine.current_version() or "unknown")
@@ -3916,6 +4001,34 @@ class App:
                 # hiding the fact that an upstream build exists and was declined
                 # — the same reason the Firefox row surfaces _engine2_status.
                 self.engine_text.value = self._engine_status
+            elif refusal := self._installed_build_refusal():
+                # THE BUILD ON DISK IS THE ONE persona REFUSES (PS-321), and
+                # this arm is what stops the row rendering it as healthy.
+                #
+                # RANKED BELOW THE THREE ABOVE IT, and the order is the whole
+                # of the placement decision. `status` is the row's live state
+                # ("checking...", "downloading...") and a standing sentence
+                # replacing a spinner is the wedged-row defect
+                # test_a_refusal_actually_paints_the_row_instead_of_wedging_on_downloading
+                # forbids. `_engine_status` is the answer to something the
+                # operator just DID — a refused revert, PS-49's unverifiable
+                # build — and an operator who clicks and gets no reply clicks
+                # again. This refusal is a STANDING fact: it will still be true
+                # a second later, and on the very next refresh, so it can
+                # afford to yield to both and loses nothing by doing so.
+                #
+                # RANKED ABOVE the bare version, which is the entire point: that
+                # arm is where the lie was rendered.
+                #
+                # COMPUTED HERE rather than in _record_engine_check, unlike the
+                # PS-49 refusal it sits beside, because the two answer different
+                # questions. That one is about a FETCHED tag and is only knowable
+                # when a check has run. This one is about the build on disk and
+                # is true with no network at all — an operator who opens the
+                # sidebar offline, or whose check failed, must still be told.
+                # Putting it in the recorder would make the truth of the row
+                # depend on whether a network call succeeded.
+                self.engine_text.value = refusal
             else:
                 self.engine_text.value = cur
             if self._sidebar_host is not None:

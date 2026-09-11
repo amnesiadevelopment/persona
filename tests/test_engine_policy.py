@@ -86,6 +86,13 @@ def _render_stub(**over):
     stub._refresh_engine_text = lambda status="": app_mod.App._refresh_engine_text(
         stub, status
     )
+    # The REAL method, bound off the class (PS-321). ``_refresh_engine_text``
+    # consults it on the arm above the bare version, so a stub without it is
+    # WEAKER than the object it stands in for — it would raise here while
+    # working fine in the real app. Bound rather than stubbed False so these
+    # tests keep exercising the live governance path: with no blocklist in
+    # force it answers "" and the assertions below are unchanged.
+    stub._installed_build_refusal = lambda: app_mod.App._installed_build_refusal(stub)
     return stub
 
 
