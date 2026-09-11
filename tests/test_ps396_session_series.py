@@ -178,6 +178,63 @@ def _fake_proc(tmp_path, pid, cmdline, *, stat=None, status=None):
     return d
 
 
+def _deny_reads_of(monkeypatch, path):
+    """Make ONE path answer `PermissionError`, on every platform.
+
+    ⛔ `os.chmod(f, 0o000)` DOES NOT DENY A READ ON WINDOWS — the mode bits are
+    advisory there and the owner still opens the file. Round 2's CI caught the
+    denial test passing on Linux and FAILING on Windows for exactly that
+    reason: the test believed it had arranged a denial and had not, so what it
+    actually asserted was the ORDINARY path. A guard that cannot arrange the
+    state it is guarding against is worse than no guard, because it reports a
+    green.
+
+    Denying at the `open` boundary instead exercises the same code path this
+    module actually meets — a refused read — on all three platforms.
+    """
+    real_open = open
+
+    def refusing(file, *a, **k):
+        if os.path.abspath(str(file)) == os.path.abspath(str(path)):
+            raise PermissionError(13, "Operation not permitted")
+        return real_open(file, *a, **k)
+
+    monkeypatch.setattr("builtins.open", refusing)
+
+
+@pytest.fixture
+def recording_platform(monkeypatch):
+    """Force the LINUX capability so the WRITER's own properties are testable.
+
+    ⛔ THIS IS A REAL DEFECT CI FOUND AND A LINUX CONTAINER STRUCTURALLY
+    CANNOT. Off Linux `series_capability()["recorded"]` is False and the
+    recorder deliberately writes NOTHING (decision 1 — recording psutil's
+    hard-coded nonvoluntary `0` would forge the sigstop signature). Five tests
+    of the RECORD's lifecycle — truncation, the byte cap, the error line, the
+    PS-330 name absence, the matcher header — opened `rec.path`
+    unconditionally and so failed on macOS and Windows with
+    `FileNotFoundError`. Locally every one of them was green, and no amount of
+    re-running them in a Linux container would ever have said otherwise.
+
+    The properties they pin are NOT platform-specific: truncation, the cap, the
+    error line and the name absence are the WRITER's own contract, and the
+    sampler underneath resolves an empty tree on a box with no `/proc`
+    (`engine_pids_for` returns `[]`), which is a legitimate reading rather than
+    a broken one. So the capability GATE is forced here, and pinned separately
+    by `test_a_platform_that_cannot_measure_writes_no_file_at_all` — the test
+    that must NOT use this fixture, because it asserts the gate itself.
+    """
+    monkeypatch.setattr(ss, "series_capability", lambda: {
+        "platform": "linux",
+        "source": "/proc",
+        "recorded": True,
+        "cpu": "measured",
+        "ctxt_voluntary": "measured",
+        "ctxt_nonvoluntary": "measured",
+        "why": "forced by the `recording_platform` fixture; see its docstring.",
+    })
+
+
 def _stat_line(utime, stime):
     fields = ["0"] * 40
     fields[11] = str(utime)
@@ -193,7 +250,7 @@ def _status_body(vol, nonvol):
     )
 
 
-def test_a_denied_sample_is_null_and_counted_never_zero(tmp_path):
+def test_a_denied_sample_is_null_and_counted_never_zero(tmp_path, monkeypatch):
     """⛔ THE SINGLE MOST IMPORTANT PROPERTY IN THE MODULE (AC #4).
 
     PS-349's venue note records `/proc/<pid>/syscall` and `/proc/<pid>/stack`
@@ -210,7 +267,10 @@ def test_a_denied_sample_is_null_and_counted_never_zero(tmp_path):
     pdir = "/data/profiles/subject"
     d = _fake_proc(proc_root, 4242, f"engine --user-data-dir={pdir}",
                    stat=_stat_line(10, 5), status=_status_body(7, 3))
-    os.chmod(d / "stat", 0o000)
+    # ⛔ NOT os.chmod(0o000): the mode bits are advisory on Windows and the
+    # owner still opens the file, so the arrangement silently fails and the
+    # test asserts the ORDINARY path instead. See `_deny_reads_of`.
+    _deny_reads_of(monkeypatch, d / "stat")
 
     prev = ss._Readings()
     sample = ss._sample(pdir, prev, 0.0, 100.0, now=1.0, proc_root=str(proc_root))
@@ -490,7 +550,7 @@ def test_the_firefox_tree_is_pinned_as_a_LIMITATION_not_as_a_feature(tmp_path):
     assert ss.engine_pids_for(pdir, proc_root=str(proc_root)) == [700]
 
 
-def test_the_record_says_what_its_matcher_matched_on(tmp_path):
+def test_the_record_says_what_its_matcher_matched_on(tmp_path, recording_platform):
     """`nproc: 1` is ambiguous, so the FILE carries the matcher's own scope.
 
     A tree of 1 may mean a one-process session or a matcher blind to this
@@ -697,7 +757,7 @@ def test_the_series_is_excluded_from_a_profile_export(tmp_path):
     )
 
 
-def test_no_profile_name_is_written_into_the_record(tmp_path):
+def test_no_profile_name_is_written_into_the_record(tmp_path, recording_platform):
     """PS-330's sharing convention, answered in code (AC #6).
 
     *"Labels are user-identifying and are deliberately NOT recorded into a
@@ -733,7 +793,7 @@ def test_no_profile_name_is_written_into_the_record(tmp_path):
 # ─────────────────────── AC #7 — the lifecycle is bounded ───────────────────────
 
 
-def test_each_session_truncates_the_previous_series(tmp_path):
+def test_each_session_truncates_the_previous_series(tmp_path, recording_platform):
     """AC #7: per-session truncation, so exactly the LAST session exists.
 
     A retained history of every session is a dated record of the operator's
@@ -758,7 +818,7 @@ def test_each_session_truncates_the_previous_series(tmp_path):
     assert "PREVIOUS SESSION" not in open(rec.path, encoding="utf-8").read()
 
 
-def test_the_cap_stops_the_record_and_says_that_it_did(tmp_path):
+def test_the_cap_stops_the_record_and_says_that_it_did(tmp_path, recording_platform):
     """AC #7's second bound, for the session that never ends.
 
     And it SAYS it capped: a file that merely stops has no way to tell a
@@ -806,7 +866,8 @@ def test_a_recorder_that_cannot_start_returns_none_and_does_not_raise(
     assert ss.start_recording(str(tmp_path), threading.Event()) is None
 
 
-def test_a_raising_sampler_does_not_escape_run(tmp_path, monkeypatch):
+def test_a_raising_sampler_does_not_escape_run(tmp_path, monkeypatch,
+                                              recording_platform):
     """The recorder's own failure is contained, and it SAYS so in the file.
 
     A skipped sample recorded as nothing leaves a gap indistinguishable from a
