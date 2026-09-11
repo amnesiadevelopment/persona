@@ -65,12 +65,10 @@ SEED = int(os.environ.get("PS406_SEED", "24601"))
 # improvised. `test_the_falsification_run_is_committed_and_went_red` requires a
 # recorded run in which arm B goes red — "a guard nobody has watched fail is not
 # evidence". Producing that needs the ON arm launched with the canvas protection
-# deliberately switched off, and a private local edit would make the resulting
-# log unreproducible: the reader could not tell a genuine red arm from a doctored
-# one. So the lever lives here.
+# deliberately switched off, and a private local edit would make the resulting log
+# unreproducible: a reader could not tell a genuine red arm from a doctored one.
 #
-# ⛔ It is INERT when unset, so a normal reading cannot be influenced by it, and
-# the flags it adds are recorded in the log's own header.
+# ⛔ Inert when unset, and the flags it adds are printed in the log's own header.
 EXTRA_FLAGS = [f for f in os.environ.get("PS406_EXTRA_FLAGS", "").split() if f]
 
 PAGE_JS = r"""

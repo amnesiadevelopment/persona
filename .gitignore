@@ -192,3 +192,9 @@ logs/
 .venv-host/
 site/node_modules/
 site/dist/
+
+# Readings are EVIDENCE, not build noise. `*.log` above silently swallowed
+# readings/ps406-2026-09-10/falsification-arm-b.log, which a committed test
+# asserts the existence of - so the test could never pass and `git add` never
+# said why. Anything under readings/ is committed on purpose.
+!readings/**/*.log

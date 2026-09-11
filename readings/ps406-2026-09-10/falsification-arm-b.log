@@ -1,0 +1,27 @@
+engine: /home/builder/actions-runner/_work/persona/persona/package-out/patched/ps218-patched-ungoogled-chromium-152.0.7977.75-1-x86_64.AppImage
+seed: 24601
+extra flags on the ON arm: --disable-spoofing=canvas
+Chromium 152.0.7977.75
+
+=== A. REFERENCE RENDER (PS-373 guard) ===
+distinct colours: ON=15  OFF=15
+hash  ON=b0becdc5  OFF=b0becdc5
+modified bytes (first 4096): 0
+VERDICT: guard PRESENT
+
+=== B. REALISTIC CANVAS (protection still intact) ===
+distinct colours: ON=1904  OFF=1904
+hash  ON=77b3d0a8  OFF=77b3d0a8
+modified bytes (first 4096): 0
+VERDICT: GUARD TOO WIDE - masking disabled on real canvases
+
+=== C. measureText (PS-345 fix) ===
+  'Personium measureText probe 12345'    ON=        298.406250  OFF=  298.4062  ratio=1.000000
+  'W'                                    ON=         15.820312  OFF=   15.8203  ratio=1.000000
+  'iiiii'                                ON=         22.226562  OFF=   22.2266  ratio=1.000000
+  'The quick brown fox'                  ON=        161.617188  OFF=  161.6172  ratio=1.000000
+VERDICT: fix PRESENT (positive and plausible)
+
+wrote /tmp/ps406/reading-24601.json
+
+OVERALL: DEFECT — failing arms: B/protection
