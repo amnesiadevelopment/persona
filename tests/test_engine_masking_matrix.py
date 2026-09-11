@@ -126,7 +126,7 @@ The matrix, for ONE profile per column:
 | locale      | build_locale_extension (always)       | COVERED: _install_spoof("locale") |
 | voice       | build_voice_extension (always)        | NOT COVERED, reason recorded      |
 | stealth     | build_stealth_extension (always)      | NOT APPLICABLE (stock control)   |
-| measuretext | build_measuretext_extension (always)  | NOT APPLICABLE (stock control)   |
+| measuretext | build_measuretext_extension (GATED on engine) | NOT APPLICABLE (stock control) |
 | audio       | build_audio_extension (always)        | COVERED: raw add_init_script      |
 | mobile      | build_mobile_extension (mobile only)  | NOT APPLICABLE (coherence)       |
 | device      | build_device_extension (desktop only) | SPLIT: screen ELSEWHERE / media NOT COVERED, reason recorded |
@@ -190,7 +190,11 @@ CHROMIUM_CONDITIONS = {
     "locale": "",
     "voice": "",
     "stealth": "",
-    "measuretext": "",
+    # PS-409: no longer unconditional. The repair is installed only for engines
+    # that still need it — see the ``measuretext`` cell for the whole reason, and
+    # ``test_chromium_measuretext_is_gated_on_the_engine_version`` for the
+    # behavioural pair that measures both arms off a real launch's argv.
+    "measuretext": "measuretext_repair_required()",
     "search": "not _platform.IS_LINUX",
     "audio": "",
     "mobile": "is_mobile and preset is not None",
@@ -285,7 +289,41 @@ MATRIX = {
         ),
     },
     "measuretext": {
-        "chromium": (COVERED, "build_measuretext_extension, unconditional"),
+        "chromium": (
+            COVERED,
+            "build_measuretext_extension, GATED on the installed engine "
+            "(PS-409) — covered for an engine that still NEEDS the repair, and "
+            "deliberately ABSENT on one that does not. The gate is "
+            "engine_version.measuretext_repair_required(), which reads the raw "
+            "tag from the engine that is actually installed and compares it "
+            "against engine/policy.measuretext_fix_min_version(). The cell is "
+            "COVERED rather than conditional-and-therefore-weaker because the "
+            "vector it addresses is the ENGINE'S OWN NOISE: PS-345 removed that "
+            "noise in the engine, so an engine past the threshold has nothing "
+            "for this extension to cover, and the repair's guard (\"var corrupt "
+            "= hasText && !(Math.abs(m.width) >= 1)\") could not fire there "
+            "anyway. MEASURED on both arms in readings/ps409-2026-09-11/: the "
+            "same FIXED binary with the wrapper installed and with it omitted "
+            "reports BYTE-IDENTICAL widths (ratio 1.0000 against an un-noised "
+            "DOM reference), while the SHIPPED engine with the repair omitted "
+            "reads ratio 2.3e-6 — the Sheets failure. ⚠️ THAT READING ALSO "
+            "CORRECTED THE TICKET'S OBSERVABILITY PREMISE and the correction "
+            "belongs in this cell: PS-409 argued the leftover wrapper is a TELL "
+            "because it stringifies as a JS function, which is PR #327's Arm N "
+            "and is FIREFOX. On Chromium PS-368 gave every leaf its own "
+            "toString cloak, so the wrapper reads \"[native code]\" with exactly "
+            "[\"length\",\"name\"] on EVERY arm — so the omission's measured "
+            "benefit is narrower than the ticket claims (a no-benefit extension "
+            "not loaded, rather than a visible tell removed). ⚠️ THE GATE FAILS "
+            "OPEN, and the asymmetry is the point: no committed threshold, an "
+            "unreadable version.txt or an unparseable tag all answer \"the "
+            "repair is required\", because erring permissive leaves a tell while "
+            "erring strict hands a user ~1e-6 geometry with nothing repairing it "
+            "and breaks Google Sheets. On every PUBLISHED engine today the "
+            "threshold is unset, so the answer is the same as before the gate "
+            "existed. Both arms are measured off a real launch's argv by "
+            "test_chromium_measuretext_is_gated_on_the_engine_version.",
+        ),
         "firefox": (
             NOT_APPLICABLE,
             "PS-369 established this BY MEASUREMENT, against a STOCK Firefox — "
@@ -1047,6 +1085,157 @@ def test_chromium_search_is_the_only_platform_gated_builder(monkeypatch, tmp_pat
         )["args"]
     )
     assert other - linux == {"search"}
+
+
+def test_chromium_measuretext_is_gated_on_the_engine_version(monkeypatch, tmp_path):
+    # PS-409. The cell's condition, MEASURED on both arms off a real launch's
+    # argv — not read off the AST, which its sibling above already does.
+    #
+    # ⚠️ THE TWO ARMS ARE PRODUCED BY MOVING THE ENGINE, NOT BY MOVING THE
+    # PRODUCT. Each arm stubs what ``version.txt`` says and what the policy
+    # threshold is — the two inputs the real gate reads — and then runs the
+    # unmodified launch path. A test that monkeypatched
+    # ``measuretext_repair_required`` itself would assert that an ``if``
+    # branches, which is not the claim: the claim is that the INSTALLED
+    # ENGINE'S VERSION decides, which is acceptance item 3's "read from what is
+    # actually installed, not from a constant".
+    #
+    # ⭐ AND THE ARMS ANCHOR EACH OTHER. ``"measuretext" not in vectors`` alone
+    # is satisfied by any set lacking the token — including an empty one, and
+    # including one of unparsed paths, which is exactly how round 1 of the geo
+    # cell passed vacuously (see that test's note). So the absent arm must first
+    # be shown to be a REAL reading by carrying every OTHER unconditional
+    # vector, and the present arm must carry the very token whose absence is the
+    # claim.
+    from src.services.browser import engine_version as ev
+    from src.services.engine import policy as engine_policy
+
+    def arm(installed_tag, threshold, name):
+        monkeypatch.setattr(ev, "current_version", lambda: installed_tag,
+                            raising=False)
+        monkeypatch.setattr(
+            engine_policy, "measuretext_fix_min_version", lambda: threshold
+        )
+        # The gate reads ``current_version`` through a function-local import, so
+        # the patch has to land on the module it is imported FROM.
+        import src.services.engine.updater as updater_mod
+        monkeypatch.setattr(updater_mod, "current_version", lambda: installed_tag)
+        return _ext_vectors(
+            _spawn_chromium_args(monkeypatch, tmp_path, Profile(name=name))["args"]
+        )
+
+    # ARM 1 — an engine WITHOUT the fix. The threshold names a LATER build than
+    # the one installed, which is the state every published engine is in today
+    # (the committed threshold is unset, so the repair ships for everyone).
+    needs_repair = arm("152.0.7977.75", "152.0.7977.75.1", "mt-unfixed")
+    assert "measuretext" in needs_repair, (
+        "an engine BELOW the fix threshold did not get the repair. That is the "
+        "STRICT failure this gate's fail-open design exists to prevent: the "
+        "user keeps ~1e-6 canvas geometry with nothing repairing it, and Google "
+        "Sheets lays its grid out against a width of ~0."
+    )
+
+    # ARM 2 — the SAME product, an engine WITH the fix. Only the two engine
+    # facts moved.
+    no_repair = arm("152.0.7977.75.1", "152.0.7977.75.1", "mt-fixed")
+    unconditional = {v for v, c in CHROMIUM_CONDITIONS.items() if c == ""}
+    assert unconditional <= no_repair, (
+        "the fixed-engine launch did not install the unconditional vectors, so "
+        "this reading is malformed and the absence below would measure nothing"
+    )
+    assert "measuretext" not in no_repair, (
+        "an engine carrying the PS-345 fix still got the repair extension. The "
+        "wrapper's guard cannot fire there, so it is an observable tell bought "
+        "with nothing."
+    )
+
+    # And the difference is EXACTLY this one vector: a gate that silently took
+    # something else with it would be a coverage hole no cell states.
+    assert needs_repair - no_repair == {"measuretext"}
+    assert no_repair - needs_repair == set()
+
+
+def test_the_omission_log_names_a_remediation_THAT_ACTUALLY_WORKS(
+    monkeypatch, tmp_path, caplog
+):
+    # PS-409 round 2. ⛔ THE LOG LINE IS A PROMISE TO AN OPERATOR AND THIS TEST
+    # MAKES IT KEPT — by reading the sentence the product actually printed,
+    # performing the gesture it names, and re-launching to see the repair return.
+    #
+    # ⚠️ THE DEFECT THIS FENCES WAS INVISIBLE TO EVERY OTHER TEST IN THIS
+    # CHANGE, and not by oversight. Round 1's policy lookup fell back to the
+    # committed default on EVERY unusable override — including an explicitly
+    # emptied key — so "clear measuretext_fix_min_version to restore it" landed
+    # on the very constant that was withholding the repair. It was harmless only
+    # while that constant was `""`, i.e. only until the release obligation this
+    # same change mandates is discharged, and every arm of the live reading set
+    # the threshold explicitly through a well-formed file, so none of them ever
+    # took the fallback. A latent no-op in the ONE recovery action a user is
+    # told to take.
+    #
+    # ⭐ SO THE COMMITTED DEFAULT IS STUBBED TO A RELEASED TAG. With it empty
+    # both arms below pass for free — there is nothing for a fallback to fall
+    # back TO — which is exactly how the defect survived round 1.
+    from src.services.engine import policy as engine_policy
+
+    pf = tmp_path / "engine-policy.json"
+    monkeypatch.setattr(engine_policy, "POLICY_FILE", str(pf))
+    monkeypatch.setattr(
+        engine_policy, "MEASURETEXT_FIX_MIN_VERSION", "152.0.7977.75.1"
+    )
+    import src.services.engine.updater as updater_mod
+    monkeypatch.setattr(updater_mod, "current_version", lambda: "152.0.7977.75.1")
+
+    # ARM 1 — the operator has said nothing. The engine carries the fix, so the
+    # repair is omitted and the launch says so.
+    pf.write_text("{}", encoding="utf-8")
+    with caplog.at_level("INFO", logger="persona"):
+        caplog.clear()
+        omitted = _ext_vectors(
+            _spawn_chromium_args(
+                monkeypatch, tmp_path, Profile(name="mt-log-omit")
+            )["args"]
+        )
+    assert "measuretext" not in omitted
+    line = next(
+        (r.getMessage() for r in caplog.records
+         if "measureText repair extension" in r.getMessage()),
+        None,
+    )
+    assert line is not None, (
+        "the omission is no longer logged. An operator whose canvas geometry "
+        "breaks after an engine change has nothing naming the decision."
+    )
+
+    # ⭐ THE SENTENCE IS PARSED, NOT PARAPHRASED. The JSON fragment below is
+    # lifted out of the message the product emitted, so a rewrite that changes
+    # the advertised gesture without changing the mechanism fails HERE rather
+    # than reaching a user. It must name the key, and it must name an
+    # explicitly-present empty string rather than deleting anything.
+    assert "measuretext_fix_min_version" in line
+    assert '"measuretext_fix_min_version": ""' in line, (
+        "the remediation line no longer names an explicitly-present empty "
+        "string. Deleting the key is indistinguishable from never having set "
+        "one and falls back to the committed default — i.e. the instruction "
+        "would be a no-op exactly when it matters."
+    )
+    assert "do NOT delete the key" in line
+
+    # ARM 2 — PERFORM IT. Same engine, same committed default; the only thing
+    # that moved is the operator doing what the log told them to.
+    pf.write_text('{"measuretext_fix_min_version": ""}', encoding="utf-8")
+    restored = _ext_vectors(
+        _spawn_chromium_args(
+            monkeypatch, tmp_path, Profile(name="mt-log-restore")
+        )["args"]
+    )
+    assert "measuretext" in restored, (
+        "the remediation the launch log names does not restore the repair. "
+        "That line is the only recovery action an operator is given, and a "
+        "no-op there means broken Sheets geometry with no way back short of "
+        "guessing an absurdly high threshold."
+    )
+    assert restored - omitted == {"measuretext"}
 
 
 # --- the Firefox column, read off the source the builders emit ---------------

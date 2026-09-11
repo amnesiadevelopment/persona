@@ -1,0 +1,107 @@
+probe origin: http://127.0.0.1:43019/ps409
+
+=== arm A-shipped-gated-on ===
+  engine       : shipped.AppImage
+  version.txt  : 152.0.7977.75
+  threshold    : 152.0.7977.75.1
+  extensions   : 10  ['audio', 'canvas-ctx', 'device', 'gpu', 'locale', 'measuretext', 'native', 'stealth', 'voice', 'webgl']
+  extra flags  : --headless=new --no-sandbox --disable-dev-shm-usage
+  page         : http://127.0.0.1:43019/ps409
+  toString     : 'function measureText() { [native code] }'
+  [native code]: True
+  own props    : ['length', 'name']  length=1 name='measureText' hasPrototype=False
+  proto __pn*  : []
+  Object __pn* : ['__pnaRealm']
+  F.p.toString native?  True
+  metric own props      []
+  metric proto is TM    True
+  width getter on proxy  threw: TypeError
+  DOM width    : 298.4062
+  width 'W'                                  =          15.82812500
+  width 'Sheet1'                             =          56.46537037
+  width 'Personium measureText probe 1234'   =         298.55361111
+  ratio (canvas/DOM) = 1.00049383
+
+=== arm B-fixed-gated-off ===
+  engine       : ps218-patched-ungoogled-chromium-152.0.7977.75-1-x86_64.AppImage
+  version.txt  : 152.0.7977.75.1
+  threshold    : 152.0.7977.75.1
+  extensions   : 9  ['audio', 'canvas-ctx', 'device', 'gpu', 'locale', 'native', 'stealth', 'voice', 'webgl']
+  extra flags  : --headless=new --no-sandbox --disable-dev-shm-usage
+  page         : http://127.0.0.1:43019/ps409
+  toString     : 'function measureText() { [native code] }'
+  [native code]: True
+  own props    : ['length', 'name']  length=1 name='measureText' hasPrototype=False
+  proto __pn*  : []
+  Object __pn* : ['__pnaRealm']
+  F.p.toString native?  True
+  metric own props      []
+  metric proto is TM    True
+  width getter on proxy  56.437630476408515
+  DOM width    : 298.4062
+  width 'W'                                  =          15.82034907
+  width 'Sheet1'                             =          56.43763048
+  width 'Personium measureText probe 1234'   =         298.40693988
+  ratio (canvas/DOM) = 1.00000231
+
+=== arm C-fixed-gated-on ===
+  engine       : ps218-patched-ungoogled-chromium-152.0.7977.75-1-x86_64.AppImage
+  version.txt  : 152.0.7977.75
+  threshold    : 152.0.7977.75.1
+  extensions   : 10  ['audio', 'canvas-ctx', 'device', 'gpu', 'locale', 'measuretext', 'native', 'stealth', 'voice', 'webgl']
+  extra flags  : --headless=new --no-sandbox --disable-dev-shm-usage
+  page         : http://127.0.0.1:43019/ps409
+  toString     : 'function measureText() { [native code] }'
+  [native code]: True
+  own props    : ['length', 'name']  length=1 name='measureText' hasPrototype=False
+  proto __pn*  : []
+  Object __pn* : ['__pnaRealm']
+  F.p.toString native?  True
+  metric own props      []
+  metric proto is TM    True
+  width getter on proxy  56.437630476408515
+  DOM width    : 298.4062
+  width 'W'                                  =          15.82034907
+  width 'Sheet1'                             =          56.43763048
+  width 'Personium measureText probe 1234'   =         298.40693988
+  ratio (canvas/DOM) = 1.00000231
+
+=== arm D-shipped-gated-off ===
+  engine       : shipped.AppImage
+  version.txt  : 152.0.7977.75
+  threshold    : 152.0.7977.75
+  extensions   : 9  ['audio', 'canvas-ctx', 'device', 'gpu', 'locale', 'native', 'stealth', 'voice', 'webgl']
+  extra flags  : --headless=new --no-sandbox --disable-dev-shm-usage
+  page         : http://127.0.0.1:43019/ps409
+  toString     : 'function measureText() { [native code] }'
+  [native code]: True
+  own props    : ['length', 'name']  length=1 name='measureText' hasPrototype=False
+  proto __pn*  : []
+  Object __pn* : ['__pnaRealm']
+  F.p.toString native?  True
+  metric own props      []
+  metric proto is TM    True
+  width getter on proxy  0.00013047640851775392
+  DOM width    : 298.4062
+  width 'W'                                  =           0.00003657
+  width 'Sheet1'                             =           0.00013048
+  width 'Personium measureText probe 1234'   =           0.00068988
+  ratio (canvas/DOM) = 0.00000231
+
+=== VERDICTS ===
+  PASS  AC1/repair-PRESENT-and-FIRING-on-unfixed
+  PASS  AC1/geometry-is-sheets-shaped
+  PASS  AC2/native-code-on-fixed
+  PASS  AC2/no-added-own-property
+  PASS  AC2/NO-PROXY-on-fixed
+  PASS  CONTROL/gate-reinstalls-on-the-SAME-binary
+  PASS  CONTROL/wrapper-is-a-STRUCTURAL-NO-OP-on-fixed
+  PASS  FALSIFY/unfixed-WITHOUT-repair-is-broken
+  PASS  FALSIFY/and-carries-no-wrapper
+  PASS  CLAIM/omitting-on-fixed-costs-NOTHING
+  PASS  CLAIM/omitting-on-unfixed-would-BREAK-SHEETS
+  PASS  AC4/full-extension-set-on-every-arm
+
+wrote /tmp/ps409/reading.json
+
+OVERALL: the gate discriminates. Repair present and working on an unfixed engine; no wrapper at all on a fixed one.
