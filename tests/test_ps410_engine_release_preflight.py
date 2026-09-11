@@ -87,12 +87,18 @@ class _FakeGitHub:
         self.draft = set(draft)
         self.fail_on = fail_on
         self.calls = []
+        # An override for the refs document itself, so a MALFORMED SUCCESS can
+        # be expressed and not only a failed fetch. Left `None` by default: the
+        # fake answers a well-formed list unless a test asks otherwise.
+        self.refs_payload = None
 
     def fetch_json(self, url, timeout=20):
         self.calls.append(url)
         if self.fail_on is not None and self.fail_on in url:
             raise urllib.error.URLError("connection refused")
         if "matching-refs" in url:
+            if self.refs_payload is not None:
+                return self.refs_payload
             return [{"ref": f"refs/tags/personium-{v}"} for v in self.tags]
         tag = url.rsplit("/", 1)[-1]
         version = tag[len("personium-"):]
@@ -224,6 +230,103 @@ def test_an_unreachable_tag_list_is_unmeasured_not_a_pass(github) -> None:
     github([PUBLISHED], [PUBLISHED], fail_on="matching-refs")
     with pytest.raises(Unmeasured):
         _G.newest_published_release()
+
+
+def test_a_non_list_refs_document_is_unmeasured_not_a_bootstrap(github) -> None:
+    """⛔ THE FETCH'S FAILURE WAS FIXED; ITS MALFORMED SUCCESS WAS NOT.
+
+    The gate makes its own fetch so an EXCEPTION survives as `Unmeasured`
+    instead of being swallowed into `[]` — but the `isinstance(refs, list)`
+    guard below it was copied from `updater.engine_versions_newest_first`,
+    where dropping a non-list into `[]` is CORRECT because the client's `[]`
+    means "do not offer an update". Here `[]` flows to `""`, and `""` is an
+    ALLOW: the same semantic inversion, one line further down.
+
+    Reachable, not theoretical. `api.github.com` answers some rate-limit
+    refusals as a 200-shaped JSON OBJECT, and the proxied branch of
+    `egress.fetch_json` explicitly admits `dict | list` — so an object-shaped
+    body arrives here on an ordinary bad day. Discarded, it reports "the FIRST
+    published engine release" and passes a republish of the live version, which
+    is byte-for-byte the failure this ticket exists to refuse.
+
+    `scripts/ps342_chromium_watch.py` already draws this line explicitly ("the
+    tag list did not come back as a list"): a named non-measurement, never an
+    empty list.
+    """
+    fake = github([PUBLISHED], [PUBLISHED])
+    fake.refs_payload = {"message": "API rate limit exceeded"}
+    with pytest.raises(Unmeasured):
+        _G.newest_published_release()
+
+
+def test_main_is_unmeasured_on_a_non_list_refs_document(github) -> None:
+    """And it must reach the EXIT CODE, not stop at the exception: a workflow
+    reads the status and nothing else. A republish of the live version under a
+    rate-limited refs fetch must be 2, never 0."""
+    fake = github([PUBLISHED], [PUBLISHED])
+    fake.refs_payload = {"message": "API rate limit exceeded"}
+    assert _G.main(["--tag", f"personium-{PUBLISHED}"]) == UNMEASURED
+
+
+def test_probe_exhaustion_is_unmeasured_not_a_bootstrap(github) -> None:
+    """⛔ A BOUND THAT WAS REACHED IS AN UNMEASURED ANSWER, NOT A NEGATIVE ONE.
+
+    `MAX_TAG_PROBES` is the client's own bound and borrowing it is right for
+    AGREEMENT — but it means different things in the two places. For the client
+    stopping at five degrades to "no update offered", which is safe. Here it
+    degraded to `""`, i.e. "no engine tag carries a published release" — an
+    ALLOW, and a false one.
+
+    The trigger state is the one `RELEASING.md` already warns about: a run of
+    engine tags left without releases behind them. FOUR stranded tags is enough
+    in practice, because the candidate's own fresh tag consumes a probe too.
+
+    Six tags here, only the OLDEST released: the five probes are spent on
+    stranded tags and the live release is never reached.
+    """
+    stranded = ["152.0.7977.79", "152.0.7977.78", "152.0.7977.77",
+                "152.0.7977.76", NEWER_REVISION]
+    github(stranded + [PUBLISHED], [PUBLISHED])
+    with pytest.raises(Unmeasured):
+        _G.newest_published_release()
+
+
+def test_main_is_unmeasured_when_probes_are_exhausted(github) -> None:
+    """The same state, through the CLI: a republish of the live version behind
+    five stranded tags must be 2, never 0."""
+    stranded = ["152.0.7977.79", "152.0.7977.78", "152.0.7977.77",
+                "152.0.7977.76", NEWER_REVISION]
+    github(stranded + [PUBLISHED], [PUBLISHED])
+    assert _G.main(["--tag", f"personium-{PUBLISHED}"]) == UNMEASURED
+
+
+def test_an_empty_tag_list_is_still_a_bootstrap_not_an_exhaustion(github) -> None:
+    """THE OTHER SIDE OF THE SAME LINE, pinned so the fix above cannot be made
+    by refusing everything. "The list was empty" and "I stopped looking" are
+    different facts: the first is the honest first-release-ever `""`/ALLOW, and
+    a gate that cannot be bootstrapped is a gate nobody can adopt."""
+    github([], [])
+    assert _G.newest_published_release() == ""
+    assert _G.verdict(PUBLISHED, "")[0] == ALLOW
+
+
+def test_a_short_unreleased_list_is_exhausting_nothing(github) -> None:
+    """The boundary, from the permissive side. FEWER tags than the probe bound
+    means every one of them WAS looked at, so `""` is a measured negative and
+    must stay an ALLOW — otherwise the first release after a tag-only
+    experiment could never be cut."""
+    github([PUBLISHED, OLDER], [])
+    assert _G.newest_published_release() == ""
+
+
+def test_exactly_the_probe_bound_is_fully_measured(github) -> None:
+    """And from the other edge: EXACTLY `MAX_TAG_PROBES` unreleased tags were
+    all inspected — the bound was met, not exceeded — so this is still a
+    measured "nothing published" rather than an exhaustion."""
+    tags = [f"152.0.7977.{n}" for n in range(80, 80 - _G.MAX_TAG_PROBES, -1)]
+    assert len(tags) == _G.MAX_TAG_PROBES
+    github(tags, [])
+    assert _G.newest_published_release() == ""
 
 
 def test_a_transient_error_on_a_release_lookup_does_not_lower_the_baseline(

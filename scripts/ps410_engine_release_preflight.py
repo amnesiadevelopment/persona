@@ -35,9 +35,10 @@ THREE EXIT STATUSES, AND THE THIRD IS NOT A PASS
 ────────────────────────────────────────────────
     0   the tag is strictly newer than the newest published engine release
     1   REFUSED — it is not, and publishing it would reach nobody
-    2   the published set COULD NOT BE READ (GitHub unreachable, a release
-        document that answered something other than 200/404). Nothing was
-        measured.
+    2   the published set COULD NOT BE READ (GitHub unreachable, a refs
+        document that did not come back as a list, a release document that
+        answered something other than 200/404, or the probe bound reached
+        with no published release found). Nothing was measured.
 
 Exit 2 FAILS the workflow, deliberately. A gate that waves a tag through when
 it could not look is the "green that proves nothing" this whole guard exists to
@@ -101,9 +102,14 @@ def verdict(candidate: str, newest_published: str) -> tuple[int, str]:
         )
 
     if not updater.is_engine_tag(updater.engine_tag(candidate)):
-        # Unreachable through engine_tag() today; kept as a named refusal rather
-        # than an assert so a future caller handing this a `v3.1.1` gets an
-        # answer instead of a traceback.
+        # Unreachable through engine_tag() today: main() hands this the output
+        # of version_from_tag(), and engine_tag() prefixes ANYTHING, so a
+        # `v3.1.1` becomes `personium-v3.1.1`, passes is_engine_tag, parses to
+        # () and lands on REFUSE with a Chromium-bump remedy instead. That is
+        # the right VERDICT for a tag this gate cannot judge, wearing a
+        # misleading message; harmless at a `personium-*`-triggered workflow.
+        # Kept as a named refusal rather than an assert so a future caller that
+        # does reach it gets an answer instead of a traceback.
         return (
             UNMEASURED,
             f"{candidate!r} is not an engine version — this gate judges "
@@ -151,8 +157,25 @@ def _published_engine_versions(timeout: int = 20) -> list[str]:
     except Exception as exc:  # noqa: BLE001 - re-raised as a named refusal
         raise Unmeasured(f"could not list engine tags: {exc}") from exc
 
+    # ⚠️ A MALFORMED SUCCESS IS NOT AN EMPTY LIST. The client writes
+    # `refs if isinstance(refs, list) else []` here and is RIGHT to: its `[]`
+    # means "do not offer an update", the safe direction. At this gate `[]`
+    # becomes "" and "" is an ALLOW, so silently discarding a non-list document
+    # would turn the gate into the thing it exists to prevent — and this is
+    # reachable, not theoretical: api.github.com answers some rate-limit
+    # refusals as a 200-shaped JSON OBJECT, and the proxied branch of
+    # `egress.fetch_json` explicitly admits `dict | list`. Fixing the fetch's
+    # EXCEPTION without fixing its malformed SUCCESS left the inversion one
+    # line further down. Named non-measurement, on `ps342_chromium_watch`'s
+    # model ("the tag list did not come back as a list").
+    if not isinstance(refs, list):
+        raise Unmeasured(
+            "the engine tag list did not come back as a list "
+            f"(got {type(refs).__name__}) — nothing was measured"
+        )
+
     versions = []
-    for ref in refs if isinstance(refs, list) else []:
+    for ref in refs:
         if not isinstance(ref, dict):
             continue
         name = ref.get("ref", "") or ""
@@ -240,13 +263,34 @@ def newest_published_release(timeout: int = 20) -> str:
         because every installed persona already carries that version and the
         strict compare in the update offer would never fire.
 
-    Returns "" only when NO engine tag in the repository carries a published
-    release — the honest answer for the very first engine release. Raises
-    `Unmeasured` when the question could not be asked.
+    Returns "" only when EVERY engine tag in the repository was inspected and
+    none carried a published release — the honest answer for the very first
+    engine release. Raises `Unmeasured` when the question could not be asked,
+    AND when the probe bound was reached without an answer: see below.
     """
-    for version in _published_engine_versions(timeout)[:MAX_TAG_PROBES]:
+    versions = _published_engine_versions(timeout)
+    for version in versions[:MAX_TAG_PROBES]:
         if _is_published_release(version, timeout=timeout):
             return version
+
+    # ⚠️ A BOUND THAT WAS REACHED IS AN UNMEASURED ANSWER, NOT A NEGATIVE ONE.
+    # `MAX_TAG_PROBES` is the client's own and borrowing it is right for
+    # AGREEMENT — but the bound means different things in the two places. For
+    # the client, stopping at five degrades to "no update offered", which is
+    # safe. Here `""` is an ALLOW, so stopping early would report "the first
+    # published engine release" for a repository that has published dozens.
+    # The trigger state is the one RELEASING.md already warns about — a run of
+    # engine tags left without releases behind them — and FOUR stranded tags
+    # suffice in practice, because the candidate's own fresh tag spends a probe
+    # too. Two facts, kept apart: everything was looked at and nothing was
+    # found (a measured negative, ALLOW) versus I stopped looking (unmeasured).
+    if len(versions) > MAX_TAG_PROBES:
+        raise Unmeasured(
+            f"none of the {MAX_TAG_PROBES} newest engine tags has a published "
+            f"release behind it, and {len(versions) - MAX_TAG_PROBES} older "
+            "tag(s) were never looked at — the newest published release could "
+            "not be established. Cut or delete the stranded tags (RELEASING.md)"
+        )
     return ""
 
 
