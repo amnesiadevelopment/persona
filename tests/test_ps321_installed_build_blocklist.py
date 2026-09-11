@@ -373,6 +373,42 @@ def test_a_ceiling_the_operator_lowered_below_their_own_build_reads_differently(
         f"the ceiling refusal must point at their own policy file; read "
         f"{rendered!r}"
     )
+    assert "above" in rendered.lower() and "below" not in rendered.lower(), (
+        "ABOVE_CEILING means the INSTALLED build exceeds the ceiling the "
+        f"operator set beneath it — saying 'below' inverts the fact and points "
+        f"the remedy the wrong way; read {rendered!r}"
+    )
+
+
+def test_the_refusal_names_no_gesture_and_promises_no_log_line(
+    tmp_path, monkeypatch
+):
+    """A remedy that names an action the product does not perform is the defect
+    this project has already shipped once (``UNSUPPORTED_COUNTRY_NOTE``), and
+    "see the log" is that shape in miniature: ``_refresh_engine_text`` runs on
+    every sidebar rebuild, so NOTHING may log from this path — a line would
+    repeat for as long as the blocklist entry stands. A row telling an operator
+    to read a log that says nothing is worse than one that simply states the
+    state.
+
+    The gesture, where one exists, is ``_engine_rollback_row`` directly beneath
+    this line, which owns it in both states.
+    """
+    _blocklist(tmp_path, monkeypatch, BAD)
+    _installed(monkeypatch, BAD)
+
+    logs: list[str] = []
+    stub = _row(_engine_latest=BAD, _log=logs.append)
+    rendered = _render(stub).lower()
+
+    assert logs == [], (
+        "the row's refresh must not log — it runs on every sidebar rebuild, so "
+        f"a line here repeats forever: {logs!r}"
+    )
+    for promised in ("see the log", "go back", "click", "restart", "reinstall"):
+        assert promised not in rendered, (
+            f"{promised!r} names an action this line does not perform"
+        )
 
 
 # ---------------------------------------------------------------------------
