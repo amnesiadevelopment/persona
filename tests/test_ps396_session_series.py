@@ -33,14 +33,26 @@ def test_nothing_in_the_tree_reads_the_series():
     today is a guess with a number on it, and a killer acting on it would
     terminate a live session with the operator's account sessions open.
 
-    So this asserts the shape of the absence: exactly ONE site in src/ may
-    mention this module (the launcher, which STARTS it), and no site anywhere
-    in src/ may READ the file back. A future reader that opens the series is
-    the first step toward a verdict, and it fails here.
+    So this asserts the shape of the absence, on the two axes that matter and
+    NOT on a substring count:
+
+    1. Exactly ONE module may IMPORT the recorder — the launcher, which STARTS
+       it. Asserted against parsed imports, so a file that merely NAMES the
+       directory is not confused for one that uses the module.
+    2. NOTHING may OPEN the file. A reader is the first step toward a verdict.
+
+    ⚠️ A THIRD SITE IS ALLOWED AND IS NOT A READER, which is exactly the
+    distinction this test had to learn: `transfer.py` names
+    `.persona-session-series` in `_EXPORT_EXCLUDE_DIRS` in order to **avoid**
+    it. An excluder keeps the record out of a file the operator may share; it
+    consumes nothing and decides nothing about the session. Pinned by name
+    below, so the allowance stays a decision rather than a hole.
     """
+    import ast
+
     root = os.path.join(os.path.dirname(os.path.dirname(
         os.path.abspath(__file__))), "src")
-    mentions = []
+    importers = []
     readers = []
     for dirpath, _dirs, files in os.walk(root):
         for fname in files:
@@ -49,19 +61,28 @@ def test_nothing_in_the_tree_reads_the_series():
             path = os.path.join(dirpath, fname)
             if os.path.basename(path) == "session_series.py":
                 continue
+            rel = os.path.relpath(path, root)
             with open(path, encoding="utf-8") as fh:
                 body = fh.read()
-            if "session_series" in body:
-                mentions.append(os.path.relpath(path, root))
-            # A READER would have to name the file or the path helper.
+            for node in ast.walk(ast.parse(body)):
+                if isinstance(node, ast.ImportFrom):
+                    if "session_series" in (node.module or ""):
+                        importers.append(rel)
+                elif isinstance(node, ast.Import):
+                    if any("session_series" in a.name for a in node.names):
+                        importers.append(rel)
+            # A READER would have to name the FILE or the path helper. Naming
+            # the DIRECTORY (an excluder) is not reading it.
             if ss.SERIES_FILENAME in body or "series_path" in body:
-                readers.append(os.path.relpath(path, root))
+                readers.append(rel)
 
-    assert mentions == [os.path.join("services", "browser", "launcher.py")], (
-        "session_series is referenced from somewhere other than the launcher "
-        f"that starts it: {mentions}. PS-396 ships a RECORDING, not a "
-        "detection — nothing may read this series to decide anything. If a "
-        "consumer is genuinely wanted, it needs the calibration PS-349 "
+    assert sorted(set(importers)) == [
+        os.path.join("services", "browser", "launcher.py")
+    ], (
+        "session_series is imported from somewhere other than the launcher "
+        f"that starts it: {sorted(set(importers))}. PS-396 ships a RECORDING, "
+        "not a detection — nothing may read this series to decide anything. "
+        "If a consumer is genuinely wanted, it needs the calibration PS-349 "
         "Recommendation 4 says does not exist yet (real pages, real "
         "hardware), not a constant."
     )
@@ -71,6 +92,11 @@ def test_nothing_in_the_tree_reads_the_series():
         "populations OVERLAP (PROBE.md:228-239). Read the boundary in "
         "session_series.py's module docstring before removing this."
     )
+
+    # The one allowed non-importer, pinned by name: an EXCLUDER, not a reader.
+    from src.services.profile.transfer import _EXPORT_EXCLUDE_DIRS
+
+    assert ss.SERIES_DIRNAME in _EXPORT_EXCLUDE_DIRS
 
 
 def test_the_module_contains_no_threshold_and_no_termination_path():
@@ -454,6 +480,59 @@ def test_wipe_all_profiles_destroys_the_series(tmp_path, monkeypatch):
         "decision (session_series.py, decision 2) has to be re-made."
     )
     assert not series.parent.exists()
+
+
+def test_the_series_is_excluded_from_a_profile_export(tmp_path):
+    """⚠️ THE PERIMETER THAT MAKES THE WIPE REACH THE SERIES ALSO MAKES EXPORT
+    REACH IT — and the second reach is one this record must NOT have.
+
+    Putting the series in the profile's data dir buys destruction for free
+    (the test above). But "inside the profile data dir" is a property OTHER
+    code reads too, and `export_to_zip` walks that whole directory with one
+    pruning set. PS-129 learned this the expensive way: a new `.persona-tmp`
+    would have added ~714 MB of engine scratch to EVERY exported profile.
+
+    Here the argument is PRIVACY rather than bulk. The file is capped at 4 MiB,
+    so size is not the objection — it is a timestamped record of WHEN THIS
+    OPERATOR'S BROWSER WAS BUSY, a behavioural trace of the person rather than
+    a property of the profile. An export is precisely "a file the operator may
+    share" (PS-330), which is why the series carries no profile name in the
+    first place; shipping it inside an export would put the same class of fact
+    back into the same class of file by the back door.
+    """
+    import zipfile
+
+    from src.models.profile import Profile
+    from src.services.profile.transfer import export_to_zip
+
+    data_dir = tmp_path / "subject"
+    (data_dir / ss.SERIES_DIRNAME).mkdir(parents=True)
+    (data_dir / ss.SERIES_DIRNAME / ss.SERIES_FILENAME).write_text(
+        '{"t":1.0,"cpu":12.5}\n', encoding="utf-8")
+    # THE CONTROL: an ordinary profile file, which MUST be exported. Without it
+    # a broken export that shipped nothing at all would pass this test — the
+    # instrument-produced green PS-299 and PS-341 shipped.
+    (data_dir / "prefs.js").write_text("user_pref();\n", encoding="utf-8")
+
+    out = tmp_path / "out"
+    out.mkdir()
+    ok, _msg = export_to_zip(
+        Profile(name="subject", os_type="windows"), str(data_dir), str(out),
+    )
+    assert ok
+
+    archive = next(out.iterdir())
+    names = zipfile.ZipFile(archive).namelist()
+
+    assert any("prefs.js" in n for n in names), (
+        "the control did not fire: the export shipped no profile data at all, "
+        "so the absence asserted below proves nothing."
+    )
+    assert not any(ss.SERIES_DIRNAME in n for n in names), (
+        f"the session series was exported: {names}. It is a timestamped record "
+        "of when this operator's browser was busy, and an export is a file "
+        "they may share (PS-330). Add it back to _EXPORT_EXCLUDE_DIRS."
+    )
 
 
 def test_no_profile_name_is_written_into_the_record(tmp_path):
