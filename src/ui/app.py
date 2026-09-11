@@ -3975,14 +3975,27 @@ class App:
             logger.error("installed-build policy check failed: %s", e)
             return ""
         if verdict == engine_policy.KNOWN_BAD:
-            # Says WHOSE decision it is and that it is about the build in use.
-            # Budgeted against _VERSION_MAX_CHARS (17): this is longer, so the
-            # cell ellipsises it and _status_needs_reveal draws the chevron —
-            # which is correct here, unlike on a version string, because the
-            # tail carries meaning an operator needs.
-            return "engine known bad — see the log"
+            # NAMES THE STATE AND PROMISES NOTHING ELSE. An earlier draft read
+            # "engine known bad — see the log", which is the gesture-less-remedy
+            # defect this file has already shipped once: nothing logs on this
+            # path, and nothing may. _refresh_engine_text runs on every sidebar
+            # rebuild, so a log call here would repeat the same sentence for as
+            # long as the blocklist entry stands — and a line pointing at a log
+            # that says nothing is worse than no line.
+            #
+            # Budgeted against _VERSION_MAX_CHARS (17): longer, so the cell
+            # ellipsises it and _status_needs_reveal draws the chevron. That is
+            # correct here and NOT on a version string — the tail carries
+            # meaning rather than a build timestamp nobody reads.
+            return "this engine build is known bad"
         if verdict == engine_policy.ABOVE_CEILING:
-            return "engine below your policy ceiling"
+            # ABOVE, not below: check() answers this when the INSTALLED major
+            # exceeds the ceiling, which is only reachable when the operator
+            # lowered max_tested_major beneath the engine they are running.
+            # Points at their own policy file, which is where the remedy is,
+            # rather than at persona — telling them to update persona would be
+            # an instruction they cannot act on for a limit they imposed.
+            return "engine above your policy ceiling"
         return ""
 
     def _refresh_engine_text(self, status: str = "") -> None:
