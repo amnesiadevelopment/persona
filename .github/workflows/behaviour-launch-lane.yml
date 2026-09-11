@@ -179,10 +179,12 @@ name: behaviour-launch-lane
 # WERE FALSE and they are corrected rather than removed (PS-402), because a
 # reader who finds a plausible wrong reason stops looking for the real one.
 #
-# A persona firefox launch is a FORK launch above a 10-to-11 process Gecko tree
+# A persona firefox launch is a FORK launch above a 6-to-12 process Gecko tree
 # — a forkserver, a Socket Process, WebExtensions, an RDD Process, a Utility
-# Process and four Web Content children. Measured three times, by three tickets:
-# readings/ps171-2026-08-25/REPORT.md:405 (6 processes at one tab, 11 at two),
+# Process and up to four Web Content children, the count driven by how many tabs
+# are open. Measured three times, by three tickets — and the three figures are
+# quoted rather than averaged into one range, because they disagree by design:
+# readings/ps171-2026-08-25/REPRO.md:407 (6 processes at one tab, 11 at two),
 # readings/ps349-2026-09-09/jugwedge.txt (nproc 10 across 300 samples, 12 across
 # 105), and readings/ps402-2026-09-10/ (11 members named one by one, on the
 # Personium build THIS LANE provisions, under the survivor check's own sampler).
@@ -456,8 +458,9 @@ jobs:
         # ⛔ THE JUSTIFICATION THIS COMMENT USED TO CARRY WAS FALSE and is
         # corrected rather than deleted (PS-402). It said "the same measurement
         # on this lane's firefox fixtures would be vacuous". It would not: a
-        # persona firefox launch is a fork launch above a 10-to-11 process Gecko
-        # tree (readings/ps402-2026-09-10/, plus ps171 and ps349). What makes a
+        # persona firefox launch is a fork launch above a 6-to-12 process Gecko
+        # tree (readings/ps402-2026-09-10/ measured 11; ps171 measured 6 and 11,
+        # ps349 measured 10 and 12 — tab count drives it). What makes a
         # firefox arm impossible TODAY is this check's INSTRUMENT — the engine
         # calls setsid, so its tree is in its own session and NOT in the group
         # recorded at launch, the counted group holds two, and `_MIN_LIVE_TREE`

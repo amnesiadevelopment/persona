@@ -240,6 +240,22 @@ property a real Gecko tree does not share. So the two now cover:
 
 ## FILES
 
+⚠️ **PROVENANCE, STATED RATHER THAN IMPLIED.** The seven files below are the PROBES. None of
+them writes a file (`grep 'open(\|\.write('` across the seven → 0 hits), so **their output exists
+only as the transcriptions quoted in this report** — it is not committed as captured stdout, and
+this directory should not be described as carrying "every arm's raw output". Sibling readings do
+commit stdout (`ps349/*.txt`, `ps388/run.txt`), so this is a gap against the local convention and
+is named as one.
+
+⛔ **AND IT IS NOT CLOSED BY RE-RUNNING THEM.** A fresh run under a fresh venue produces DIFFERENT
+pids, a different peak and a different settle trace — a second measurement, not the raw output of
+the one transcribed above. Committing it under these numbers would be the precise move this
+report's own bounds refuse. What a future reader gets instead is the stronger half: the probes are
+re-runnable, the venue is reproducible (the header states every step), and
+`tree_vs_group.py` re-derives the one load-bearing claim (`gecko ∩ recorded_group = ∅`) from the
+OS in one run. Read the transcriptions as this run's record and the probes as the way to take your
+own.
+
 | file | what it measures |
 |---|---|
 | `probe.py` | the settle curve against the gate's own three constants (§2) |

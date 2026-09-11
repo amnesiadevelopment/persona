@@ -1265,11 +1265,13 @@ def _falsify_trash_restore_and_wipe(ctx: Context) -> str:
 #
 #   * A persona firefox launch is NOT a direct, single-process launch. It is a
 #     FORK launch (`_spawn_invisible` -> `InvisibleProcess`, `_fork =
-#     needs_fork_launch() and not in_process`) above a 10-to-11 process Gecko
+#     needs_fork_launch() and not in_process`) above a 6-to-12 process Gecko
 #     tree — a forkserver, a Socket Process, WebExtensions, an RDD Process, a
-#     Utility Process and four Web Content children. Measured three times, by
-#     three tickets, for three different purposes:
-#     `readings/ps171-2026-08-25/REPORT.md:405` (`proc_cmdline_n` 6 at one tab,
+#     Utility Process and up to four Web Content children, the count driven by
+#     how many tabs are open. Measured three times, by three tickets, for three
+#     different purposes — and the three figures are quoted rather than
+#     averaged into one range, because they disagree by design:
+#     `readings/ps171-2026-08-25/REPRO.md:407` (`proc_cmdline_n` 6 at one tab,
 #     11 at two), `readings/ps349-2026-09-09/jugwedge.txt` (nproc 10 across 300
 #     samples, 12 across 105), and `readings/ps402-2026-09-10/` (11 members,
 #     named process by process, on this engine under this check's own sampler).
@@ -1447,11 +1449,12 @@ def _survivor_profile(ctx: Context, name: str):
     used to end "and firefox is not the arm PS-192 was measured on", beside a
     module note claiming firefox is "a direct, single-process launch [that] does
     not leak on terminate() at all". A persona firefox launch is a FORK launch
-    above a 10-to-11 process Gecko tree (measured in
-    ``readings/ps171-2026-08-25/REPORT.md:405``,
-    ``readings/ps349-2026-09-09/jugwedge.txt`` and
-    ``readings/ps402-2026-09-10/``). The real obstacle is that the ENGINE calls
-    ``setsid``, so its tree is in its OWN session and NOT in the group
+    above a 6-to-12 process Gecko tree (measured in
+    ``readings/ps171-2026-08-25/REPRO.md:407`` — 6 at one tab, 11 at two —
+    ``readings/ps349-2026-09-09/jugwedge.txt`` — nproc 10 and 12 — and
+    ``readings/ps402-2026-09-10/`` — 11 on an 8-launch sample). The real
+    obstacle is that the ENGINE calls ``setsid``, so its tree is in its OWN
+    session and NOT in the group
     ``recorded_group`` returns — this module's whole instrument. The section
     header above states that in full; it is summarised here because this is the
     function a firefox arm would be tempted to reuse.
@@ -1762,8 +1765,9 @@ def _run_no_process_survives_a_closed_session(ctx: Context) -> Outcome:
                 "Linux only (the wrapper launch PS-192 was measured on). The "
                 "firefox arm is NOT observed here, and the reason is this "
                 "check's INSTRUMENT rather than firefox's shape: the engine "
-                "calls setsid, so its 10-to-11 process tree runs in its OWN "
-                "session and is not in the group recorded at launch — measured "
+                "calls setsid, so its multi-process tree (11 members on the "
+                "8-launch sample behind this note) runs in its OWN session and "
+                "is not in the group recorded at launch — measured "
                 "in readings/ps402-2026-09-10/. Gating it needs a "
                 "session-anchored counter, not a second profile. The other two "
                 "platforms are unobserved too."

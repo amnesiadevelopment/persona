@@ -143,8 +143,9 @@ def test_the_refuted_claim_is_never_left_standing_as_an_assertion(site: str) -> 
     assert any(mark in flat for mark in REPUDIATIONS), (
         f"{site} still carries the refuted claim {quoted!r} with nothing marking "
         "it as an error. A persona firefox launch is a FORK launch above a "
-        "10-to-11 process Gecko tree (readings/ps402-2026-09-10/, "
-        "readings/ps171-2026-08-25/, readings/ps349-2026-09-09/), so a "
+        "6-to-12 process Gecko tree (readings/ps402-2026-09-10/ measured 11; "
+        "readings/ps171-2026-08-25/ measured 6 and 11; "
+        "readings/ps349-2026-09-09/ measured 10 and 12), so a "
         "measurement taken there would NOT be vacuous. Either repudiate the "
         "quotation or drop it — do not leave it standing as a reason."
     )
@@ -175,6 +176,142 @@ def test_the_corrections_cite_a_reading_rather_than_restating_a_claim() -> None:
             "PS-402's own measurement is one host and one container; the "
             "corrections are load-bearing because two earlier tickets measured "
             "the same tree for unrelated purposes."
+        )
+
+
+#: A ``readings/<dir>/<file>`` citation, with the optional ``:N`` or ``:N-M``
+#: line anchor these notes use. Deliberately excludes whitespace, so a citation
+#: WRAPPED ACROSS A LINE BREAK does not silently reassemble into a path that
+#: resolves — it breaks into a fragment that does not, which is the honest
+#: outcome: a reader cannot follow a citation they have to reassemble either.
+_CITATION = re.compile(r"readings/[A-Za-z0-9._/-]+(?::\d+(?:-\d+)?)?")
+
+#: Trailing sentence punctuation that is not part of the path.
+_TRAILING = "`'\").,;:"
+
+
+def _cited_paths(text: str) -> list[tuple[str, int | None]]:
+    """Every ``readings/`` citation in ``text``, as ``(path, first_line)``."""
+    found: list[tuple[str, int | None]] = []
+    for raw in _CITATION.findall(text):
+        token = raw.rstrip(_TRAILING)
+        if not token:
+            continue
+        path, _, anchor = token.partition(":")
+        path = path.rstrip("/")
+        line = int(anchor.split("-")[0]) if anchor else None
+        found.append((path, line))
+    return found
+
+
+def test_every_citation_in_the_corrections_resolves_on_disk() -> None:
+    """⭐ THE GUARD THAT WOULD HAVE CAUGHT THIS PR'S OWN FIRST ROUND.
+
+    ⛔ THE SIBLING TEST ABOVE IS NOT ENOUGH, AND THE GAP IS NOT HYPOTHETICAL.
+    It asserts the TOKEN ``ps171-2026-08-25`` appears in the prose and never
+    resolves the path — so it was GREEN on four citations that named
+    ``readings/ps171-2026-08-25/REPORT.md``, a file that does not exist (the
+    reading is ``REPRO.md``). Three of those four sat INSIDE the replacement
+    sentences, in the clause doing the evidentiary work. A correction whose
+    evidence 404s is the defect this whole file exists to close, reproduced one
+    layer up: per PS-24, prose is the only unenforced assertion surface in the
+    repo, and a citation nothing resolves is exactly the carrier that rots.
+
+    So this resolves what the corrections cite, rather than pattern-matching it:
+
+    1. the path exists (catches a rename, a deletion, and a typo'd filename);
+    2. a ``:N`` anchor is inside the file (catches a citation that outlived the
+       lines it points at);
+    3. the ONE anchor carrying a quoted figure resolves to the line that
+       actually carries it — because (1) and (2) both passed on the wrong line
+       number this PR shipped (``:405`` exists; it is just not the figure).
+
+    ⚠️ SCOPED TO THE CORRECTED SITES, deliberately. `behaviour_checks.py` cites
+    four other readings this ticket did not author; widening the resolver to
+    every citation in the repo is a strictly better guard and a separate slice,
+    not something to smuggle in under a prose correction.
+    """
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    sites = {
+        "module scope note": _survivor_section(),
+        "survivor_profile docstring": behaviour_checks._survivor_profile.__doc__ or "",
+        "pass message": _source(
+            behaviour_checks._run_no_process_survives_a_closed_session
+        ),
+        "UNCOVERED_SURFACES": "\n".join(b for _, b in behaviour.UNCOVERED_SURFACES),
+        "workflow": _workflow(),
+    }
+
+    seen = 0
+    for name, text in sites.items():
+        # Un-wrap the comment/string prefixes so a citation split only by the
+        # source's own line-leading `#` / quote noise is still one token.
+        flat = re.sub(r"\n\s*(?:#|\"|')?\s*", " ", text)
+        for path, line in _cited_paths(flat):
+            seen += 1
+            target = root / path
+            assert target.exists(), (
+                f"{name} cites {path!r}, which does not exist. A correction "
+                "that points at a missing file is the same rot as the claim it "
+                "replaced — a reader who checks the evidence gets a 404 and "
+                "has no way to tell a mistyped path from a withdrawn reading."
+            )
+            if line is None:
+                continue
+            assert target.is_file(), (
+                f"{name} cites {path!r} with a line anchor ({line}), but that "
+                "path is a directory."
+            )
+            total = len(target.read_text(errors="replace").splitlines())
+            assert 1 <= line <= total, (
+                f"{name} cites {path}:{line}, but that file has {total} lines. "
+                "The anchor has outlived the lines it points at."
+            )
+
+    assert seen >= 5, (
+        "the corrected sites cite fewer readings than expected "
+        f"({seen}); this resolver is now guarding almost nothing."
+    )
+
+
+def test_the_quoted_tree_size_anchor_lands_on_the_figure_it_quotes() -> None:
+    """The anchor check one level sharper, on the citation that carries a number.
+
+    ⛔ EXISTENCE IS NOT ENOUGH FOR A CITATION THAT QUOTES A FIGURE. This PR's
+    first round cited ``REPRO.md:405``; line 405 exists, so both checks above
+    would pass — the figure it attributes to that line (``proc_cmdline_n`` 6 at
+    one tab, 11 at two) is three lines further down. A reader following the
+    anchor lands on a different sentence and cannot tell whether the prose or
+    the reading is wrong.
+    """
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    reading = root / "readings" / "ps171-2026-08-25" / "REPRO.md"
+    lines = reading.read_text().splitlines()
+
+    anchors = {
+        line
+        for text in (
+            _survivor_section(),
+            behaviour_checks._survivor_profile.__doc__ or "",
+            "\n".join(b for _, b in behaviour.UNCOVERED_SURFACES),
+            _workflow(),
+        )
+        for path, line in _cited_paths(re.sub(r"\n\s*(?:#|\"|')?\s*", " ", text))
+        if path == "readings/ps171-2026-08-25/REPRO.md" and line is not None
+    }
+    assert anchors, (
+        "no corrected site anchors the PS-171 tree-size reading to a line. The "
+        "figure the corrections quote lives at a specific line; cite it."
+    )
+    for line in anchors:
+        assert "proc_cmdline_n" in lines[line - 1], (
+            f"readings/ps171-2026-08-25/REPRO.md:{line} is "
+            f"{lines[line - 1]!r}, which is not the line carrying the "
+            "`proc_cmdline_n` figure the corrections quote."
         )
 
 
