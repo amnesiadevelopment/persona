@@ -61,6 +61,18 @@ import websockets
 ENGINE = sys.argv[1] if len(sys.argv) > 1 else "/tmp/ps406/enginedir/fpchrome.AppImage"
 SEED = int(os.environ.get("PS406_SEED", "24601"))
 
+# ⭐ HOW TO WATCH THE GUARD FAIL, and why that has to be committed rather than
+# improvised. `test_the_falsification_run_is_committed_and_went_red` requires a
+# recorded run in which arm B goes red — "a guard nobody has watched fail is not
+# evidence". Producing that needs the ON arm launched with the canvas protection
+# deliberately switched off, and a private local edit would make the resulting
+# log unreproducible: the reader could not tell a genuine red arm from a doctored
+# one. So the lever lives here.
+#
+# ⛔ It is INERT when unset, so a normal reading cannot be influenced by it, and
+# the flags it adds are recorded in the log's own header.
+EXTRA_FLAGS = [f for f in os.environ.get("PS406_EXTRA_FLAGS", "").split() if f]
+
 PAGE_JS = r"""
 (() => {
   const out = {};
@@ -156,7 +168,7 @@ def run_arm(fingerprint: bool):
             "about:blank"]
     if fingerprint:
         args[6:6] = [f"--fingerprint={SEED}", "--fingerprint-platform=windows",
-                     "--fingerprint-brand=Chrome"]
+                     "--fingerprint-brand=Chrome"] + EXTRA_FLAGS
     p = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
         port_file = os.path.join(udd, "DevToolsActivePort")
@@ -183,6 +195,10 @@ def run_arm(fingerprint: bool):
 
 def main():
     print(f"engine: {ENGINE}")
+    print(f"seed: {SEED}")
+    # Stated in the log itself so a reader can tell a genuine reading from a
+    # deliberately-falsified one without having to trust the filename.
+    print(f"extra flags on the ON arm: {' '.join(EXTRA_FLAGS) if EXTRA_FLAGS else '(none)'}")
     print(subprocess.run([ENGINE, "--appimage-extract-and-run", "--version"],
                          capture_output=True, text=True).stdout.strip())
     on = run_arm(True)
