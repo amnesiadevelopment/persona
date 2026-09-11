@@ -170,6 +170,59 @@ real hardware, which no cycle has.
 
 ---
 
+## AC #10 — the full-suite failure SET, diffed intra-container
+
+Both runs in THIS container, same interpreter, same installed packages, same
+`-p no:randomly` ordering. The base is a clean worktree at `1133fa0`.
+
+```
+BASE   (1133fa0, pristine worktree)   77 failed, 7202 passed, 80 skipped   24:31
+BRANCH (this work)                    79 failed, 7220 passed, 80 skipped   25:41
+```
+
+⛔ **Never assert zero — the absent-import set was re-measured here rather than
+inherited.** The ticket's own list said `psutil` was absent; it is **present at
+7.2.2**. On a first pass `flet`, `fastapi`, `cryptography`, `mcp`, `paramiko`,
+`uvicorn` and `requests` were also absent until `requirements.txt` was
+installed. The 77 baseline failures that remain are `invisible_playwright` and
+`playwright` artifacts of this container, not of the tree.
+
+**The 79 was NOT accepted as a wash.** Diffed as SETS:
+
+```
+IN BRANCH, NOT IN BASE:
+  tests/test_encoding_discipline.py::test_no_platform_dependent_text_decode_in_tests
+  tests/test_encoding_discipline.py::test_product_side_platform_dependent_decodes_do_not_grow
+IN BASE, NOT IN BRANCH:
+  (none)
+```
+
+Both were **mine**, and both were real: nine `open()`/`write_text()` calls in
+the new test file and two `/proc` reads in the new module named no encoding, so
+they resolve to cp1252 on Windows while the product writes utf-8. A project
+guard doing exactly its job. Fixed in the branch's encoding commit; the two tests now pass, and the
+suites for every touched file pass together (160 tests: the new file, both
+encoding guards, all six launcher suites, the launch guard, all four wipe
+suites, the manager stop hook, and PS-330's convention test).
+
+⚠️ **The final failure set is therefore identical to the base's**, established
+by the set diff above plus a targeted re-run — not by a second 25-minute
+full-suite run, which would have measured the same 77 container artifacts again.
+
+### Each guard was falsified by breaking the property it asserts
+
+A test that cannot fail is not evidence. Before shipping, each was made to fail:
+
+| break | result |
+|---|---|
+| `cpu`/`ctxt_v` record `0` instead of `None` | 3 fail (AC #4's three) |
+| `start_recording` moved inside the `terminate(proc, ...)` arm | 1 fail (AC #5's call-site guard) |
+| a reader of `series_path` added to `src/ui/state.py` | 1 fail (AC #3's absence) |
+
+The AC #4 falsification was re-run after the encoding fix, on the shipped code.
+
+---
+
 ## A defect this work found in its own instrument, kept because it is the shape
 
 Building the signal arm, the first run **hung**: the SIGSTOP froze the sampler
