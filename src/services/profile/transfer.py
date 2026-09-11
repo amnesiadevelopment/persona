@@ -32,7 +32,22 @@ _MAX_ENTRIES = 50_000
 #   exit, not just a crash. Without this line every profile export would grow by
 #   that much. Scratch is per-launch state that no importer wants and the child
 #   recreates on demand, so excluding it loses nothing.
-_EXPORT_EXCLUDE_DIRS = {".persona-mtls", ".persona-tmp"}
+# * ``.persona-session-series`` — the session's own cpu/ctxt record (PS-396,
+#   see browser/session_series.py). A PRIVACY exclusion, and it is the reason
+#   this entry exists rather than being waved through as small: the file is
+#   capped at 4 MiB so bulk is not the argument, but it is a timestamped record
+#   of WHEN THIS OPERATOR'S BROWSER WAS BUSY — a behavioural trace of the
+#   person, not a property of the profile. An export is a file the operator may
+#   share or hand to someone else, which is exactly the convention PS-330 wrote
+#   down ("Labels are user-identifying and are deliberately NOT recorded into a
+#   file the operator may share"); the series deliberately carries no profile
+#   NAME for that reason, and shipping it inside an export would put the same
+#   class of fact back into the same class of file by the back door.
+#
+#   ⚠️ THREE ENTRIES, THREE DIFFERENT REASONS — secrecy, bulk, privacy. Do not
+#   "tidy up" one by another's logic: a future reader who decides the bulk
+#   argument is obsolete must not conclude anything about the other two.
+_EXPORT_EXCLUDE_DIRS = {".persona-mtls", ".persona-tmp", ".persona-session-series"}
 
 # DESTINATION POLICY — export writes wherever the caller says, on BOTH lanes.
 # This is a decision (PS-180), not an oversight. It was raised as a defect,

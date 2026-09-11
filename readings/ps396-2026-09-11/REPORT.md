@@ -217,9 +217,54 @@ A test that cannot fail is not evidence. Before shipping, each was made to fail:
 |---|---|
 | `cpu`/`ctxt_v` record `0` instead of `None` | 3 fail (AC #4's three) |
 | `start_recording` moved inside the `terminate(proc, ...)` arm | 1 fail (AC #5's call-site guard) |
-| a reader of `series_path` added to `src/ui/state.py` | 1 fail (AC #3's absence) |
+| an importer of the recorder added to `src/ui/state.py` | 1 fail (AC #3's absence) |
+| `.persona-session-series` removed from `_EXPORT_EXCLUDE_DIRS` | 2 fail (the export guard + AC #3's pin) |
 
 The AC #4 falsification was re-run after the encoding fix, on the shipped code.
+
+⚠️ **The set diff above was taken before the export exclusion landed.** That
+change touches `transfer.py` and the new test file only; the suites for every
+file it touches were re-run together and pass (195 tests: the new file, both
+encoding guards, all four transfer/export/import suites, all six launcher
+suites, the launch guard, the four wipe suites, and PS-330's convention test).
+
+---
+
+## The perimeter cuts both ways — a second consumer, caught by a memory
+
+Putting the series inside the profile's data dir buys destruction for free.
+But *"inside the profile data dir"* is a property OTHER code reads too, and
+those consumers were written before this directory existed. PS-129 learned this
+the expensive way: a new `.persona-tmp` would have added ~714 MB of engine
+scratch to **every exported profile**, caught only by grepping for other
+walkers of the same directory.
+
+`export_to_zip` walks the whole profile data dir with exactly one pruning set,
+`_EXPORT_EXCLUDE_DIRS`. The series is now in it, and here the argument is
+**privacy rather than bulk**: the file is capped at 4 MiB, so size is not the
+objection — it is a timestamped record of **when this operator's browser was
+busy**, a behavioural trace of the person rather than a property of the
+profile. An export is precisely *"a file the operator may share"*, which is the
+PS-330 convention this record already answers by carrying no profile name;
+shipping it inside an export would put the same class of fact back into the
+same class of file by the back door.
+
+⚠️ **Three entries, three different reasons** — `.persona-mtls` is SECRECY (a
+cleartext client key), `.persona-tmp` is BULK, `.persona-session-series` is
+PRIVACY. Stated in the code so a future reader who decides one argument is
+obsolete concludes nothing about the other two.
+
+Pinned by a test **with a control**: an ordinary `prefs.js` must appear in the
+archive, so an export that shipped nothing at all cannot pass as a clean
+exclusion. Falsified by removing the entry.
+
+The same pass tightened AC #3's absence guard, which had flagged this exclusion
+as a third mention of the module. It now separates the two axes that matter —
+**importers** (parsed with `ast`, so naming a directory is not confused for
+using the module) and **readers** (anything opening the file) — and pins the
+excluder by name. ⭐ **An excluder is not a reader:** it keeps the record out of
+a shared file and consumes nothing, which is the opposite of a step toward a
+verdict.
 
 ---
 
