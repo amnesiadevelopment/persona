@@ -1317,8 +1317,21 @@ def test_workflow_verdict_step_names_the_unreadable_baseline_case(watch):
     assert "CURRENT_TAG.txt" in y
 
 
-def test_a_readable_baseline_still_takes_the_normal_path(watch, tmp_path):
-    """The guard must not swallow the happy path it sits in front of."""
+def test_a_readable_baseline_still_takes_the_normal_path(watch, tmp_path, monkeypatch):
+    """The guard must not swallow the happy path it sits in front of.
+
+    ⛔ THE PROBE IS STUBBED, AND IT HAS TO BE. `--tag` sets `forced_tag`, and
+    `watch()` treats that as "measure this specific tag": it SKIPS the
+    up-to-date short-circuit and always calls `run_probe`. Every other test in
+    this file injects a `runner`, but `main()` takes none — so without this
+    stub the happy-path arm spawns the real rebase probe against the real
+    upstream, inside the suite that gates every release build.
+
+    Measured before this stub existed: the arm hung past pytest's 120s ceiling
+    and failed release dry run 34560781062, skipping all three OS builds. A
+    release gate that a third party's server can trip is not a gate on our code.
+    """
+    monkeypatch.setattr(watch, "run_probe", lambda tag, timeout=None, runner=None: (0, ""))
     out = tmp_path / "out"
     rc = watch.main(["--tag", "152.0.7977.75-1", "--github-output", str(out)])
     text = out.read_text(encoding="utf-8")
