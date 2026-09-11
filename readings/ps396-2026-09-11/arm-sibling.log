@@ -1,0 +1,17 @@
+⚠️ the three scans are SEQUENTIAL, not atomic: a renderer that starts or
+   exits between them moves a count by one. Read the SHAPE (overcount /
+   undercount / correct), not the last digit.
+
+matcher                                work     work2
+bare `in` (what shipped)                 20        11
+token-split (review's fix)                1         1
+boundary-anchored (SHIPPED)              11        11
+
+argv shape of the chromium processes on this box:
+   1 token(s):  16 processes
+   3 token(s):   2 processes
+  11 token(s):   4 processes
+  14 token(s):   2 processes
+
+  /proc/<renderer>/cmdline  ->  1 token:
+    ['/usr/lib/chromium/chromium --type=renderer --top-chrome-webui --crashpad-handler-pid=976 --enable-crash-reporter=,built on Debian GNU/Linux 13 (trixie'...]

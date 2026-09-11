@@ -161,7 +161,14 @@ MAX_BYTES = 4 * 1024 * 1024
 
 #: The schema version carried on the header line, so a file found later can be
 #: read without guessing which build wrote it.
-SCHEMA = 1
+#:
+#: ⛔ 1 → 2 IS NOT COSMETIC. Schema 1 was written by an UNANCHORED substring
+#: matcher, so a schema-1 file's ``nproc`` and every series on it may carry a
+#: PREFIX-SIBLING profile's processes (``work`` absorbing ``work2``'s cpu —
+#: the repo's #150 class, `invisible_launch.py:5150-5156`). This is how a
+#: reader of a file already on disk knows it is untrustworthy rather than
+#: merely older.
+SCHEMA = 2
 
 
 def series_path(profile_dir: str) -> str:
@@ -224,6 +231,74 @@ def series_capability() -> dict:
     }
 
 
+#: Bytes that may PRECEDE the profile path for it to be a real path argument
+#: rather than the tail of a longer name. `\0` is the argv separator, `=` is
+#: `--user-data-dir=`, whitespace covers a packed blob's internal spacing, and
+#: the quotes cover a quoted argument.
+_BOUNDARY_BEFORE = "\0= \t\n\r\"'"
+
+#: Bytes that may FOLLOW it. The same set plus ``os.sep``, which is what makes
+#: ``<profile>/.invisible-profile`` match while ``<profile>2`` does not.
+_BOUNDARY_AFTER = "\0= \t\n\r\"'" + os.sep
+
+#: The human-readable name of the matcher, written into the record's own
+#: header (see ``MATCHER_NOTE``) so a reader of a strange series has the same
+#: information the writer had.
+MATCHER = "cmdline-path-boundary-anchored"
+
+MATCHER_NOTE = (
+    "pids whose /proc/<pid>/cmdline carries this profile's data dir at a "
+    "token boundary (preceded by NUL/=/space/quote, followed by one of those "
+    "or a path separator). MEASURED on chromium: parent + every child. NOT "
+    "MEASURED on firefox: this repo records twice (invisible_launch.py:4409, "
+    ":4959) that firefox content children carry NO profile dir on their "
+    "command line, so on that engine this is expected to resolve the launcher "
+    "parent and little else — check `nproc`, because a tree of 1 may mean a "
+    "one-process session OR a matcher that cannot see the children."
+)
+
+
+def _carries_profile(raw: bytes, profile_dir: str) -> bool:
+    """Is ``profile_dir`` present in ``raw`` as a whole path, not as a prefix?
+
+    ⛔ THIS IS A BOUNDARY SCAN AND NOT A TOKEN SPLIT, AND THE DIFFERENCE WAS
+    MEASURED RATHER THAN REASONED. The obvious fix for the prefix-sibling
+    defect is to split the cmdline on its NUL separators and compare whole
+    tokens. Against two live chromium trees that drops EVERY child — 20 and 11
+    processes down to 1 and 1 (``readings/ps396-2026-09-11/arm-sibling.py``,
+    ``.log``) — because chromium's children do not have a conventional argv:
+
+        argv shape of the chromium processes on this box:
+           1 token(s):  16 processes   <- every child: zygote, gpu, renderers
+          11 token(s):   4 processes
+          14 token(s):   2 processes   <- the parents
+
+        /proc/<renderer>/cmdline  ->  1 token:
+          ['/usr/lib/chromium/chromium --type=renderer --crashpad-handler-pid=976 ...']
+
+    The whole command line arrives as ONE NUL-terminated entry with its spaces
+    inside it, so a whole-token comparison sees the two parents alone. That is
+    the PS-171 arm-H UNDERCOUNT arriving through the fix for the overcount, and
+    trading an overcount for an undercount is not a fix. A boundary scan is
+    indifferent to how the engine packs its argv, which is the property that
+    matters: this matcher must not need to know.
+    """
+    text = raw.decode("utf-8", "replace")
+    if not profile_dir:
+        return False
+    start = 0
+    while True:
+        at = text.find(profile_dir, start)
+        if at < 0:
+            return False
+        start = at + 1
+        before_ok = at == 0 or text[at - 1] in _BOUNDARY_BEFORE
+        end = at + len(profile_dir)
+        after_ok = end >= len(text) or text[end] in _BOUNDARY_AFTER
+        if before_ok and after_ok:
+            return True
+
+
 def engine_pids_for(profile_dir: str, proc_root: str = "/proc") -> "list[int]":
     """The session's process tree, matched on the PROFILE DIR PATH in cmdline.
 
@@ -236,21 +311,49 @@ def engine_pids_for(profile_dir: str, proc_root: str = "/proc") -> "list[int]":
     none of which contains the substring "firefox". A matcher that sees one
     process of an eleven-process tree reports a busy session as idle.
 
-    ONE ADAPTATION, deliberate: observe.py matched the ENGINE DIR, which finds
-    every engine process on the box. This matches the PROFILE'S OWN DATA DIR,
-    which finds the processes of THIS session and no other — the engine passes
-    it as ``--user-data-dir=`` (chromium) and as the profile path (firefox), so
-    it appears in the argv of every child of the tree. Two profiles running at
-    once therefore record two separate series instead of two copies of their
-    sum. Measured on this box against a real chromium: 11 processes.
+    ⚠️ A MATCHER HAS TWO INDEPENDENT DEGREES OF FREEDOM — the SOURCE (`comm`
+    vs `cmdline`) and the KEY (what token you look for) — and fixing only the
+    source leaves the fault live (PS-212, measured). The SOURCE here is
+    inherited from observe.py unchanged. The KEY is an adaptation: observe.py
+    matched the ENGINE DIR, which finds every engine process on the box and
+    would fold two concurrent profiles into one series. This matches the
+    PROFILE'S OWN DATA DIR, so two profiles running at once record two separate
+    series instead of two copies of their sum.
+
+    ⛔ COVERAGE IS STATED PER ENGINE, BECAUSE IT IS NOT THE SAME ON BOTH.
+
+    * **chromium — MEASURED.** The parent and every child carry
+      ``--user-data-dir=<profile dir>``; measured on this box against two live
+      trees at 20 and 11 processes (``arm-sibling.py``).
+    * **firefox — NOT MEASURED, AND EXPECTED TO SEE THE PARENT ALONE.** No
+      firefox engine exists in the container this was built in, so no
+      measurement is claimed. What this repo records twice, in its own words,
+      is the opposite of a full tree: *"The content procs don't carry the
+      profile dir on their command line, so they're matched to this profile by
+      descending from the profile's launcher parent"*
+      (``invisible_launch.py:4409-4411``) and *"Firefox content/GPU children
+      don't carry the profile dir on their command line, so the pid match only
+      sees the parent"* (``:4959-4961``). PS-212's QA seat measured the same
+      question on a live 7-process firefox tree and the profile-dir key
+      returned **1**. So on firefox this matcher is expected to resolve the
+      launcher parent and little else, and ``nproc`` is the field that says so:
+      a tree of 1 may mean a one-process session or a matcher that cannot see
+      the children, and the record does not let you tell them apart.
+
+    ⛔ THE HONEST ALTERNATIVE IS NAMED, NOT HIDDEN: a two-stage match (anchor
+    on the parent by profile path, then descend by ppid, which is what
+    ``_firefox_content_proc_count`` already does via ``_descendant_pids``)
+    would widen firefox coverage. It is deliberately NOT done here, because
+    this module must not be the site where an unmeasured claim about firefox
+    is introduced, and widening the tree on an engine nobody in this container
+    can run would be exactly that. The scope is stated instead — in the
+    docstring, in ``MATCHER_NOTE``, and in the record's own header line.
 
     ⛔ IT DOES NOT MATCH PERSONA ITSELF, and that is correct on both launch
     arms. On the Linux fork arm the forked shim carries persona's own cmdline,
     not the profile's; on the in-process thread arm there is no separate
     process at all. In both cases the processes that DO carry the profile path
-    are the real engine processes, which is the tree being asked about. This is
-    therefore the one matcher that works on both arms without being told which
-    arm it is on.
+    are the real engine processes, which is the tree being asked about.
 
     ⛔ AND IT EXCLUDES THE OBSERVER'S OWN PID EXPLICITLY, which is not
     paranoia — it FIRED. Building this module's own falsification harness, the
@@ -286,7 +389,7 @@ def engine_pids_for(profile_dir: str, proc_root: str = "/proc") -> "list[int]":
             # Gone between listdir and open, or not ours to read. Not a denial
             # of a KNOWN member — we do not yet know it is one.
             continue
-        if profile_dir not in raw.decode("utf-8", "replace"):
+        if not _carries_profile(raw, profile_dir):
             continue
         with contextlib.suppress(ValueError):
             found.append(int(entry))
@@ -541,6 +644,14 @@ class SessionSeriesRecorder:
                 "max_bytes": self._max_bytes,
                 "engine": self._engine,
                 "capability": capability,
+                # ⛔ WHAT THE MATCHER MATCHED ON, IN THE FILE. `nproc` alone
+                # cannot distinguish "one process" from "one process because
+                # the matcher is blind to this engine's children" — so the
+                # file says which matcher produced its numbers and what that
+                # matcher is and is not measured on. The person holding a
+                # strange series then has the information the writer had.
+                "matcher": MATCHER,
+                "matcher_note": MATCHER_NOTE,
                 # ⛔ Said in the file itself, because the file is what outlives
                 # this module and a reader of it will not have this docstring.
                 "note": (

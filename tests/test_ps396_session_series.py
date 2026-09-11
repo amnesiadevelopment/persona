@@ -13,6 +13,7 @@ the specific lies this module exists to refuse.
 
 import json
 import os
+import pathlib
 import threading
 
 import pytest
@@ -147,15 +148,20 @@ def test_the_module_contains_no_threshold_and_no_termination_path():
 
     # A threshold would need a constant to compare against. The module's only
     # numeric constants are the cadence, the byte cap and the schema — all
-    # bounds on the RECORD, none a judgement about the session.
+    # bounds on the RECORD, none a judgement about the session. The two
+    # `MATCHER*` entries are STRINGS describing what the matcher matched on,
+    # written into the file's header for a reader; a string cannot be a
+    # threshold a series is compared against, and the type assertion below
+    # keeps it that way if somebody later reuses the name for a number.
     assert sorted(
         n for n in dir(ss) if n.isupper() and not n.startswith("_")
-    ) == ["IS_LINUX", "MAX_BYTES", "PERIOD_S", "SCHEMA", "SERIES_DIRNAME",
-          "SERIES_FILENAME"], (
+    ) == ["IS_LINUX", "MATCHER", "MATCHER_NOTE", "MAX_BYTES", "PERIOD_S",
+          "SCHEMA", "SERIES_DIRNAME", "SERIES_FILENAME"], (
         "a new module-level constant appeared. If it is a threshold the "
         "series is compared against, that is exactly what PS-349 "
         "Recommendation 1 refuses; see this module's docstring."
     )
+    assert isinstance(ss.MATCHER, str) and isinstance(ss.MATCHER_NOTE, str)
 
 
 # ───────────── AC #4 — UNREADABLE IS UNREAD, NEVER A ZERO ─────────────
@@ -337,16 +343,172 @@ def test_the_matcher_reads_cmdline_not_comm(tmp_path):
     proc_root = tmp_path / "proc"
     proc_root.mkdir()
     pdir = "/data/profiles/subject"
-    # A child whose comm says nothing, whose cmdline says everything.
-    _fake_proc(proc_root, 111, f"/engine/firefox --profile {pdir}/.inv",
+    # A child whose comm says nothing, whose cmdline says everything: a
+    # chromium renderer, whose whole command line is ONE packed argv entry.
+    _fake_proc(proc_root, 111, f"/engine/chromium --user-data-dir={pdir}",
                stat=_stat_line(1, 1), status=_status_body(1, 1))
-    _fake_proc(proc_root, 222, f"Web Content -childID 3 -parentBuildID {pdir}",
+    _fake_proc(proc_root, 222,
+               f"/engine/chromium --type=renderer --user-data-dir={pdir} --x",
                stat=_stat_line(1, 1), status=_status_body(1, 1))
     # And a process of ANOTHER profile, which must not be counted.
-    _fake_proc(proc_root, 333, "/engine/firefox --profile /data/profiles/other",
+    _fake_proc(proc_root, 333, "/engine/chromium --user-data-dir=/data/profiles/other",
                stat=_stat_line(1, 1), status=_status_body(1, 1))
 
     assert ss.engine_pids_for(pdir, proc_root=str(proc_root)) == [111, 222]
+
+
+def test_a_prefix_sibling_profile_is_not_absorbed(tmp_path):
+    """⛔ THE ROUND-1 BLOCKER: `work` matched `work2`, with `denied` 0.
+
+    `validate_profile_name` permits digits freely, so `work`/`work2` and
+    `client`/`client-2` are ordinary. An unanchored `profile_dir in cmdline`
+    made the SHORTER name absorb the longer one's whole tree, so the first
+    profile an operator creates is the one whose record silently accumulates
+    its neighbours' cpu — recorded as a confident reading, which is the class
+    of forged value AC #4 exists to refuse.
+
+    This repo already names the defect class and its fix shape at two sites
+    (`invisible_launch.py:5150-5156`, `:5458-5460`) as the #150 wrong-kill
+    between prefix-sibling personas. Reproduced against two LIVE chromium
+    trees in `readings/ps396-2026-09-11/arm-sibling.py`: bare `in` read 20 and
+    11 where the truth was 11 for the sibling.
+    """
+    proc_root = tmp_path / "proc"
+    proc_root.mkdir()
+    work = "/data/profiles/work"
+    _fake_proc(proc_root, 101, f"/engine/chromium --user-data-dir={work}",
+               stat=_stat_line(1, 1), status=_status_body(1, 1))
+    # The prefix sibling — a DIFFERENT profile whose path merely starts with
+    # the first one's.
+    _fake_proc(proc_root, 202, f"/engine/chromium --user-data-dir={work}2",
+               stat=_stat_line(1, 1), status=_status_body(1, 1))
+    # And a hyphenated sibling, the other shape the validator permits.
+    _fake_proc(proc_root, 303, f"/engine/chromium --user-data-dir={work}-2",
+               stat=_stat_line(1, 1), status=_status_body(1, 1))
+
+    assert ss.engine_pids_for(work, proc_root=str(proc_root)) == [101]
+    assert ss.engine_pids_for(work + "2", proc_root=str(proc_root)) == [202]
+
+
+def test_a_child_inside_the_profile_dir_still_matches(tmp_path):
+    """A path UNDER the profile dir is this session's, and must still count.
+
+    Firefox is launched with `-profile <profile_dir>/.invisible-profile`, so
+    the anchoring must admit a following path separator. This is the boundary
+    that the sibling test above forbids crossing for `2` and `-2` — the two
+    properties are one rule and must be pinned together, or a later edit
+    tightens one and silently breaks the other.
+    """
+    proc_root = tmp_path / "proc"
+    proc_root.mkdir()
+    pdir = "/data/profiles/subject"
+    _fake_proc(proc_root, 700,
+               f"/engine/firefox -no-remote -profile {pdir}/.invisible-profile",
+               stat=_stat_line(1, 1), status=_status_body(1, 1))
+
+    assert ss.engine_pids_for(pdir, proc_root=str(proc_root)) == [700]
+
+
+def test_a_packed_single_argv_blob_still_matches(tmp_path):
+    """⛔ DO NOT TIDY THE BOUNDARY SCAN BACK INTO A TOKEN SPLIT.
+
+    The obvious fix for the prefix-sibling defect is to split cmdline on its
+    NUL separators and compare whole tokens. Measured against two live
+    chromium trees (`readings/ps396-2026-09-11/arm-sibling.py`), that drops
+    EVERY child — 20 and 11 processes down to 1 and 1 — because chromium's
+    children do not have a conventional argv: 16 of the box's chromium
+    processes carried their ENTIRE command line as ONE argv entry with spaces
+    inside it, so a whole-token comparison sees the two parents alone.
+
+    That is the PS-171 arm-H UNDERCOUNT arriving through the fix for the
+    overcount. This test pins the packed shape so it cannot come back.
+    """
+    proc_root = tmp_path / "proc"
+    proc_root.mkdir()
+    pdir = "/data/profiles/subject"
+    packed = (
+        f"/usr/lib/chromium/chromium --type=renderer --crashpad-handler-pid=976 "
+        f"--user-data-dir={pdir} --enable-crash-reporter=,built on Debian"
+    )
+    d = proc_root / "808"
+    d.mkdir()
+    # ONE NUL-terminated entry, spaces inside it — the measured shape.
+    (d / "cmdline").write_bytes(packed.encode() + b"\0")
+    (d / "stat").write_text(_stat_line(1, 1), encoding="utf-8")
+    (d / "status").write_text(_status_body(1, 1), encoding="utf-8")
+
+    assert ss.engine_pids_for(pdir, proc_root=str(proc_root)) == [808]
+
+
+def test_the_firefox_tree_is_pinned_as_a_LIMITATION_not_as_a_feature(tmp_path):
+    """⛔ THIS TEST PINS A LIMITATION. What retires it is a MEASUREMENT.
+
+    Round 1 shipped a docstring claiming the profile path *"appears in the
+    argv of every child of the tree"* for firefox, and a fixture that INVENTED
+    a `Web Content` child carrying the path to prove it. This repo says the
+    opposite twice, in its own words:
+
+      `invisible_launch.py:4409-4411` — *"The content procs don't carry the
+      profile dir on their command line, so they're matched to this profile by
+      descending from the profile's launcher parent."*
+
+      `invisible_launch.py:4959-4961` — *"Firefox content/GPU children don't
+      carry the profile dir on their command line, so the pid match only sees
+      the parent."*
+
+    and PS-212's QA seat measured exactly this key against a LIVE 7-process
+    firefox tree: the profile-dir key returned **1**.
+
+    So the fixture below is the tree as those comments describe it — content
+    children with `-contentproc -isForBrowser` and NO profile path — and the
+    assertion is the honest, narrow answer: the launcher parent alone. No
+    firefox engine exists in this container, so no measurement is claimed
+    either way; what is asserted is that the matcher behaves as the repo's own
+    record predicts, and that the record SAYS SO (`MATCHER_NOTE`, carried on
+    every file's header line).
+
+    ⚠️ If a future cycle MEASURES a real firefox tree and finds otherwise, or
+    widens the matcher to a two-stage parent+descendants match (which is what
+    `_firefox_content_proc_count` already does via `_descendant_pids`), this
+    test should be REPLACED by that measurement — not edited to agree with a
+    new guess.
+    """
+    proc_root = tmp_path / "proc"
+    proc_root.mkdir()
+    pdir = "/data/profiles/subject"
+    _fake_proc(proc_root, 700,
+               f"/engine/firefox -no-remote -profile {pdir}/.invisible-profile "
+               f"-juggler-pipe",
+               stat=_stat_line(1, 1), status=_status_body(1, 1))
+    # The content children, AS THE REPO DESCRIBES THEM: no profile path.
+    for pid, child in ((701, 1), (702, 2), (703, 3)):
+        _fake_proc(proc_root, pid,
+                   f"/engine/firefox -contentproc -childID {child} "
+                   f"-isForBrowser -prefsLen 1234",
+                   stat=_stat_line(1, 1), status=_status_body(1, 1))
+
+    assert ss.engine_pids_for(pdir, proc_root=str(proc_root)) == [700]
+
+
+def test_the_record_says_what_its_matcher_matched_on(tmp_path):
+    """`nproc: 1` is ambiguous, so the FILE carries the matcher's own scope.
+
+    A tree of 1 may mean a one-process session or a matcher blind to this
+    engine's children (see the firefox test above). The reader of a strange
+    series must have the information the writer had, and a docstring is not
+    something the file outlives with.
+    """
+    rec = ss.SessionSeriesRecorder(str(tmp_path))
+    stop = threading.Event()
+    stop.set()
+    rec.run(stop)
+
+    header = json.loads(pathlib.Path(rec.path).read_text(encoding="utf-8")
+                        .splitlines()[0])
+    assert header["schema"] == 2, "schema 1 files were written by the broken matcher"
+    assert header["matcher"] == ss.MATCHER
+    assert "firefox" in header["matcher_note"].lower()
+    assert "not measured" in header["matcher_note"].lower()
 
 
 def test_the_matcher_never_returns_the_observer(tmp_path):
