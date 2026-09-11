@@ -47,6 +47,7 @@ from .engine_version import (
     ChromiumVersion,
     EngineVersionUnreadableError,
     installed_chromium_version,
+    measuretext_repair_required,
 )
 from .gpu_ext import build_gpu_extension
 from .canvas_ctx_ext import build_canvas_ctx_extension
@@ -1009,11 +1010,85 @@ def spawn_browser(profile: Profile, *, in_process: bool = False) -> subprocess.P
                 os.path.join(profile_dir, ".persona-stealth-ext")
             )
         )
-        extensions.append(
-            build_measuretext_extension(
-                os.path.join(profile_dir, ".persona-measuretext-ext")
+        # ⭐ THE MEASURETEXT REPAIR IS GATED ON THE INSTALLED ENGINE (PS-409).
+        #
+        # `measuretext_ext` exists ONLY to repair the ~1e-6 multiplicative scale
+        # the UNFIXED engine applies to every Canvas `measureText` metric — its
+        # own header names what breaks without it (Google Sheets' canvas grid
+        # laying glyphs against a width of ~0; the date-cell popover collapsing
+        # off-screen). PS-345 fixed that IN THE ENGINE, and the repair's guard
+        # (`var corrupt = hasText && !(Math.abs(m.width) >= 1)`) only fires on
+        # absurdly small widths — so on a fixed engine, where real widths are
+        # ~200, it CAN NEVER FIRE.
+        #
+        # ⭐ MEASURED ON BOTH ARMS, readings/ps409-2026-09-11/: the same FIXED
+        # binary launched with the repair installed and with it omitted reports
+        # BYTE-IDENTICAL widths (15.82 / 56.44 / 298.41, ratio 1.0000 against an
+        # un-noised DOM reference). The wrapper is a structural no-op there. On
+        # the SHIPPED engine with the repair omitted the same probe reads
+        # 0.0000366 / 0.00013 / 0.00069 — ratio 2.3e-6, which is the Sheets
+        # failure above, measured.
+        #
+        # ⚠️ AND THE READING CORRECTED THIS TICKET'S OBSERVABILITY PREMISE — do
+        # not restate the old one. PS-409 argued the leftover wrapper is a TELL
+        # because it stringifies as `m() { return inner.apply(...) }` instead of
+        # `[native code]`. That is PR #327's Arm N, which is FIREFOX. On Chromium
+        # PS-368 gave every leaf its own toString cloak, so the wrapper reads
+        # `function measureText() { [native code] }` with exactly
+        # ["length","name"] — identical to native, on every arm. What a page CAN
+        # still see is that the repair returns a Proxy when it fires (a native
+        # accessor invoked with it as receiver throws TypeError), which is a
+        # SHARPER tell but only reachable where the repair actually fires. So the
+        # measured cost of leaving the extension on a fixed engine is "a wrapper
+        # no probe in that reading could see" rather than "an observable tell" —
+        # a weaker claim than the ticket makes, and the gate still earns its place
+        # on the narrower ground that a no-benefit extension should not be loaded.
+        #
+        # ⛔ OMITTED, NOT NEUTERED. A wrapper that installs and returns early is
+        # still an installed extension — a file on disk and a content script in
+        # every frame — so the extension is left off the command line entirely
+        # rather than built with its repair disabled. (The neutered variant was
+        # run: readings/ps409-2026-09-11/falsification-neutered.txt.)
+        #
+        # ⛔ AND IT FAILS OPEN, WHICH IS THE WHOLE RISK ORDERING. The engine
+        # update is offered on a strict version compare, so every user who does
+        # not take it stays on the old engine indefinitely, and that population
+        # is large. Getting this wrong in the PERMISSIVE direction leaves a tell;
+        # getting it wrong in the STRICT direction hands those users ~1e-6
+        # geometry with nothing repairing it — a working product broken to remove
+        # a tell. So `measuretext_repair_required()` answers True on every
+        # uncertainty: no threshold committed, an unreadable `version.txt`, an
+        # unparseable tag. See `engine_version.carries_measuretext_fix` for why
+        # it compares the RAW TAG rather than `ChromiumVersion.full`.
+        if measuretext_repair_required():
+            extensions.append(
+                build_measuretext_extension(
+                    os.path.join(profile_dir, ".persona-measuretext-ext")
+                )
             )
-        )
+        else:
+            # ⚠️ THE OMISSION IS LOGGED, BECAUSE IT CHANGES WHAT THE BROWSER
+            # CARRIES — exactly as the `--fingerprint-brand-version` skip above
+            # is logged. An operator whose Sheets geometry breaks after an engine
+            # change needs one searchable line naming the decision and the engine
+            # version it was taken on, rather than having to diff a command line.
+            #
+            # Imported function-locally like every other browser→engine
+            # reference in this package (a module-level one closes a cycle
+            # through `browser/__init__`).
+            from ..engine import policy as _engine_policy
+
+            logger.info(
+                "Profile %r launches WITHOUT the measureText repair extension: "
+                "the installed engine carries the PS-345 fix (policy threshold "
+                "%s), so the repair's guard could never fire and the wrapper "
+                "would be an observable tell with no benefit. If canvas text "
+                "geometry misbehaves on this engine, clear "
+                "measuretext_fix_min_version in your engine policy file to "
+                "restore it.",
+                profile.name,
+                _engine_policy.measuretext_fix_min_version(),
+            )
         # On Windows/macOS the seeded default_search_provider_data pref is reset by
         # tracked-preference (default-search) enforcement, so a settings-override
         # extension is the per-profile mechanism that actually applies the chosen

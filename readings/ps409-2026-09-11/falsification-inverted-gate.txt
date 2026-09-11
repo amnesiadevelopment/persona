@@ -1,0 +1,13 @@
+probe origin: http://127.0.0.1:45095/ps409
+Traceback (most recent call last):
+  File "/workspace/persona/scripts/ps409_gate_reading.py", line 805, in <module>
+    sys.exit(main())
+             ~~~~^^
+  File "/workspace/persona/scripts/ps409_gate_reading.py", line 658, in main
+    arms["A"] = run_arm("A-shipped-gated-on", SHIPPED, SHIPPED_TAG, FIXED_TAG, True)
+                ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/persona/scripts/ps409_gate_reading.py", line 511, in run_arm
+    raise RuntimeError(
+        f"{label}: expected {want} extensions, got {len(vectors)}: {vectors}"
+    )
+RuntimeError: A-shipped-gated-on: expected 10 extensions, got 9: ['audio', 'canvas-ctx', 'device', 'gpu', 'locale', 'native', 'stealth', 'voice', 'webgl']

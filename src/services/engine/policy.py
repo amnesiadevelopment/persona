@@ -123,6 +123,54 @@ KNOWN_BAD_VERSIONS: frozenset[str] = frozenset()
 # numeric compare instead of growing a None branch at each call site.
 NO_CEILING = float("inf")
 
+# The FIRST engine tag that carries the PS-345 measureText fix, or ``""`` for
+# "no published engine carries it yet".
+#
+# WHY A VERSION THRESHOLD LIVES IN THE GOVERNANCE MODULE
+# -----------------------------------------------------
+# ``browser/measuretext_ext.py`` exists only to repair the ~1e-6 multiplicative
+# scale the UNFIXED engine applies to every ``measureText`` metric. PS-345 fixed
+# that in the engine (``engine/patches/fingerprint/015-canvas-measure-text.patch``
+# feeds ``TextMetrics::Shuffle()`` a factor centred on 1 instead of an offset
+# centred on 0), and PS-406 read positive, plausible widths off a built artefact
+# — so on a fixed engine the repair's own guard
+# (``!(Math.abs(m.width) >= 1)``) can never fire and the extension repairs
+# nothing. ``browser/process.py`` asks THIS module whether the installed engine
+# still needs the repair. (⚠️ PS-409 argued the leftover wrapper is also an
+# observable TELL. Measured, that is true on FIREFOX and not on Chromium, where
+# PS-368's leaf cloak makes it stringify as native — see
+# ``readings/ps409-2026-09-11/EVIDENCE.md`` §3. The gate stands on the narrower
+# ground that a no-benefit extension should not be loaded.)
+#
+# It is a statement about WHICH BUILDS BEHAVE HOW, which is precisely the
+# knowledge this module already owns for ``KNOWN_BAD_VERSIONS`` — so it gets the
+# same two layers (a committed default, plus an operator override read at call
+# time) rather than a second mechanism.
+#
+# ⛔ IT IS EMPTY, AND THAT IS THE HONEST STATE RATHER THAN AN OVERSIGHT.
+# No PUBLISHED engine carries the fix: ``personium-152.0.7977.75`` is the only
+# release in ``engine/releases/`` and PS-406 measured its shipped binary
+# returning −0.0006. An invented threshold here would be a claim about a release
+# that does not exist — and because the comparison is ``>=``, a threshold equal
+# to or below an installed version SWITCHES THE REPAIR OFF. Guessing in that
+# direction breaks Google Sheets for every user who never updated, which this
+# ticket's own bounds name as the far worse of the two failures.
+#
+# ⭐ THE RELEASE OBLIGATION, stated here because this is the line that must be
+# edited: when the fixed assets are published, set this to the tag they are
+# published under. PS-406 established that the tag cannot be
+# ``152.0.7977.75`` again (every existing install already carries that string,
+# so ``updater.is_newer`` would offer nobody the update) and must not bump the
+# fourth component (every profile would then advertise a Chromium build that
+# does not exist) — so the expected shape is a FIFTH component,
+# ``152.0.7977.75.1``. ``updater.parse_version`` sorts five components above
+# four, and ``browser/engine_version.parse`` truncates to four so the advertised
+# Chromium version stays honest. That is exactly why the gate compares RAW TAGS
+# through ``parse_version`` and never ``ChromiumVersion.full``: the truncation
+# that keeps the advertised version honest would destroy the only component that
+# distinguishes a fixed engine from the broken one it replaces.
+MEASURETEXT_FIX_MIN_VERSION: str = ""
+
 # Operator override, read at call time (not import time) so an edit takes effect
 # without restarting the app.
 POLICY_FILE = os.getenv(
@@ -220,6 +268,44 @@ def max_tested_major() -> float:
     except (TypeError, ValueError):
         return NO_CEILING
     return num if num >= 0 else NO_CEILING
+
+
+def measuretext_fix_min_version() -> str:
+    """The first engine tag carrying the PS-345 measureText fix, or ``""``.
+
+    ``""`` means NO THRESHOLD IS IN FORCE, and every caller must read it as
+    "every engine still needs the repair" rather than as "no engine does".
+    That direction is not a preference: ``browser/measuretext_ext.py`` repairs
+    geometry Google Sheets lays its grid out against, so a threshold that is
+    absent, malformed or unreadable must leave the repair INSTALLED. Erring the
+    other way silently breaks a working product to remove a tell.
+
+    Two layers, exactly as :func:`known_bad_versions` and
+    :func:`max_tested_major` above, and for the same reason: the committed
+    default is what this persona build ships knowing, and the operator's local
+    policy file is the escape hatch that does not need a persona release. An
+    operator who installs a fixed engine before persona's own constant catches
+    up can set ``measuretext_fix_min_version`` and stop carrying the wrapper.
+
+    ⚠️ THE OVERRIDE MUST BE A TAG, AND THE TYPE CHECK IS THE GUARD. A
+    non-string is refused OUTRIGHT rather than coerced, which is a deliberate
+    difference from :func:`max_tested_major` beside it: that function accepts an
+    ``int`` because a ceiling IS a number, while this one is a version STRING
+    and a number here states no build. ⛔ The value most worth refusing is
+    ``true`` — "trust me, the fix is in", with no version to check it against,
+    which is the inherited-claim error PS-406's thread was written to stamp out.
+    An empty string, whitespace, and a tag carrying no digits are refused too:
+    ``updater.parse_version`` yields an empty tuple for each, and an empty tuple
+    compares at or below every installed version — i.e. it would read as "every
+    engine is fixed" and switch the repair off everywhere. So a typo cannot do
+    that; it falls back to the committed default.
+    """
+    val = _local_policy().get("measuretext_fix_min_version")
+    if isinstance(val, str):
+        tag = val.strip()
+        if tag and any(c.isdigit() for c in tag):
+            return tag
+    return MEASURETEXT_FIX_MIN_VERSION
 
 
 def check(tag: str) -> tuple[str, str]:

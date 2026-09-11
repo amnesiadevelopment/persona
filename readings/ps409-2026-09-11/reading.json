@@ -1,0 +1,286 @@
+{
+  "arms": {
+    "A": {
+      "probeResults": {
+        "toStringOfToString": "function toString() { [native code] }",
+        "toStringIsNative": true,
+        "metricOwnProps": [],
+        "metricHasOwnWidth": false,
+        "metricProtoIsTextMetrics": true,
+        "widthGetterOnProxy": "threw: TypeError"
+      },
+      "toStringSrc": "function measureText() { [native code] }",
+      "isNativeCode": true,
+      "ownProps": [
+        "length",
+        "name"
+      ],
+      "fnLength": 1,
+      "fnName": "measureText",
+      "hasPrototype": false,
+      "protoOwnProps": [],
+      "realmSlotNames": [
+        "__pnaRealm"
+      ],
+      "widths": {
+        "W": 15.828125000000002,
+        "Sheet1": 56.46537037037037,
+        "Personium measureText probe 12345": 298.5536111111112
+      },
+      "metricKinds": {
+        "W": {
+          "proto": "[object TextMetrics]",
+          "isTextMetrics": true
+        },
+        "Sheet1": {
+          "proto": "[object TextMetrics]",
+          "isTextMetrics": true
+        },
+        "Personium measureText probe 12345": {
+          "proto": "[object TextMetrics]",
+          "isTextMetrics": true
+        }
+      },
+      "domWidth": 298.40625,
+      "_arm": "A-shipped-gated-on",
+      "_page_url": "http://127.0.0.1:43019/ps409",
+      "_engine": "/tmp/ps409/shipped.AppImage",
+      "_version_txt": "152.0.7977.75",
+      "_threshold": "152.0.7977.75.1",
+      "_vectors": [
+        "audio",
+        "canvas-ctx",
+        "device",
+        "gpu",
+        "locale",
+        "measuretext",
+        "native",
+        "stealth",
+        "voice",
+        "webgl"
+      ],
+      "_extension_count": 10,
+      "_extra_flags": [
+        "--headless=new",
+        "--no-sandbox",
+        "--disable-dev-shm-usage"
+      ]
+    },
+    "B": {
+      "probeResults": {
+        "toStringOfToString": "function toString() { [native code] }",
+        "toStringIsNative": true,
+        "metricOwnProps": [],
+        "metricHasOwnWidth": false,
+        "metricProtoIsTextMetrics": true,
+        "widthGetterOnProxy": "56.437630476408515"
+      },
+      "toStringSrc": "function measureText() { [native code] }",
+      "isNativeCode": true,
+      "ownProps": [
+        "length",
+        "name"
+      ],
+      "fnLength": 1,
+      "fnName": "measureText",
+      "hasPrototype": false,
+      "protoOwnProps": [],
+      "realmSlotNames": [
+        "__pnaRealm"
+      ],
+      "widths": {
+        "W": 15.820349074574645,
+        "Sheet1": 56.437630476408515,
+        "Personium measureText probe 12345": 298.40693987775467
+      },
+      "metricKinds": {
+        "W": {
+          "proto": "[object TextMetrics]",
+          "isTextMetrics": true
+        },
+        "Sheet1": {
+          "proto": "[object TextMetrics]",
+          "isTextMetrics": true
+        },
+        "Personium measureText probe 12345": {
+          "proto": "[object TextMetrics]",
+          "isTextMetrics": true
+        }
+      },
+      "domWidth": 298.40625,
+      "_arm": "B-fixed-gated-off",
+      "_page_url": "http://127.0.0.1:43019/ps409",
+      "_engine": "/tmp/ps409/package-out/patched/ps218-patched-ungoogled-chromium-152.0.7977.75-1-x86_64.AppImage",
+      "_version_txt": "152.0.7977.75.1",
+      "_threshold": "152.0.7977.75.1",
+      "_vectors": [
+        "audio",
+        "canvas-ctx",
+        "device",
+        "gpu",
+        "locale",
+        "native",
+        "stealth",
+        "voice",
+        "webgl"
+      ],
+      "_extension_count": 9,
+      "_extra_flags": [
+        "--headless=new",
+        "--no-sandbox",
+        "--disable-dev-shm-usage"
+      ]
+    },
+    "C": {
+      "probeResults": {
+        "toStringOfToString": "function toString() { [native code] }",
+        "toStringIsNative": true,
+        "metricOwnProps": [],
+        "metricHasOwnWidth": false,
+        "metricProtoIsTextMetrics": true,
+        "widthGetterOnProxy": "56.437630476408515"
+      },
+      "toStringSrc": "function measureText() { [native code] }",
+      "isNativeCode": true,
+      "ownProps": [
+        "length",
+        "name"
+      ],
+      "fnLength": 1,
+      "fnName": "measureText",
+      "hasPrototype": false,
+      "protoOwnProps": [],
+      "realmSlotNames": [
+        "__pnaRealm"
+      ],
+      "widths": {
+        "W": 15.820349074574645,
+        "Sheet1": 56.437630476408515,
+        "Personium measureText probe 12345": 298.40693987775467
+      },
+      "metricKinds": {
+        "W": {
+          "proto": "[object TextMetrics]",
+          "isTextMetrics": true
+        },
+        "Sheet1": {
+          "proto": "[object TextMetrics]",
+          "isTextMetrics": true
+        },
+        "Personium measureText probe 12345": {
+          "proto": "[object TextMetrics]",
+          "isTextMetrics": true
+        }
+      },
+      "domWidth": 298.40625,
+      "_arm": "C-fixed-gated-on",
+      "_page_url": "http://127.0.0.1:43019/ps409",
+      "_engine": "/tmp/ps409/package-out/patched/ps218-patched-ungoogled-chromium-152.0.7977.75-1-x86_64.AppImage",
+      "_version_txt": "152.0.7977.75",
+      "_threshold": "152.0.7977.75.1",
+      "_vectors": [
+        "audio",
+        "canvas-ctx",
+        "device",
+        "gpu",
+        "locale",
+        "measuretext",
+        "native",
+        "stealth",
+        "voice",
+        "webgl"
+      ],
+      "_extension_count": 10,
+      "_extra_flags": [
+        "--headless=new",
+        "--no-sandbox",
+        "--disable-dev-shm-usage"
+      ]
+    },
+    "D": {
+      "probeResults": {
+        "toStringOfToString": "function toString() { [native code] }",
+        "toStringIsNative": true,
+        "metricOwnProps": [],
+        "metricHasOwnWidth": false,
+        "metricProtoIsTextMetrics": true,
+        "widthGetterOnProxy": "0.00013047640851775392"
+      },
+      "toStringSrc": "function measureText() { [native code] }",
+      "isNativeCode": true,
+      "ownProps": [
+        "length",
+        "name"
+      ],
+      "fnLength": 1,
+      "fnName": "measureText",
+      "hasPrototype": false,
+      "protoOwnProps": [],
+      "realmSlotNames": [
+        "__pnaRealm"
+      ],
+      "widths": {
+        "W": 3.6574574646795635e-05,
+        "Sheet1": 0.00013047640851775392,
+        "Personium measureText probe 12345": 0.0006898777546711142
+      },
+      "metricKinds": {
+        "W": {
+          "proto": "[object TextMetrics]",
+          "isTextMetrics": true
+        },
+        "Sheet1": {
+          "proto": "[object TextMetrics]",
+          "isTextMetrics": true
+        },
+        "Personium measureText probe 12345": {
+          "proto": "[object TextMetrics]",
+          "isTextMetrics": true
+        }
+      },
+      "domWidth": 298.40625,
+      "_arm": "D-shipped-gated-off",
+      "_page_url": "http://127.0.0.1:43019/ps409",
+      "_engine": "/tmp/ps409/shipped.AppImage",
+      "_version_txt": "152.0.7977.75",
+      "_threshold": "152.0.7977.75",
+      "_vectors": [
+        "audio",
+        "canvas-ctx",
+        "device",
+        "gpu",
+        "locale",
+        "native",
+        "stealth",
+        "voice",
+        "webgl"
+      ],
+      "_extension_count": 9,
+      "_extra_flags": [
+        "--headless=new",
+        "--no-sandbox",
+        "--disable-dev-shm-usage"
+      ]
+    }
+  },
+  "ratios": {
+    "A": 1.0004938271604942,
+    "B": 1.000002311874348,
+    "C": 1.000002311874348,
+    "D": 2.3118743480443663e-06
+  },
+  "verdicts": {
+    "AC1/repair-PRESENT-and-FIRING-on-unfixed": true,
+    "AC1/geometry-is-sheets-shaped": true,
+    "AC2/native-code-on-fixed": true,
+    "AC2/no-added-own-property": true,
+    "AC2/NO-PROXY-on-fixed": true,
+    "CONTROL/gate-reinstalls-on-the-SAME-binary": true,
+    "CONTROL/wrapper-is-a-STRUCTURAL-NO-OP-on-fixed": true,
+    "FALSIFY/unfixed-WITHOUT-repair-is-broken": true,
+    "FALSIFY/and-carries-no-wrapper": true,
+    "CLAIM/omitting-on-fixed-costs-NOTHING": true,
+    "CLAIM/omitting-on-unfixed-would-BREAK-SHEETS": true,
+    "AC4/full-extension-set-on-every-arm": true
+  }
+}
