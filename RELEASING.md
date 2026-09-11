@@ -190,6 +190,28 @@ publish them under a `personium-<version>` tag **with the prerelease box
 ticked**. Building and packaging the engine artifacts is not automated yet —
 see PS-299 for the patch rebase and compile.
 
+⚠️ **The tag must be STRICTLY NEWER than the newest already-published
+`personium-` release, and `engine-release-preflight.yml` refuses it if it is
+not** (PS-410). This is the engine's counterpart to the app's tag↔APP_VERSION
+preflight, and it exists because the engine's version mistake is the SILENT
+one: the update offer is a strict compare (`engine.is_newer`), so an engine
+published under a version users already carry never fires the offer at all —
+the release page looks perfect and every installed persona keeps the old engine
+forever. A same-version or regressing tag is refused on the tag push, before
+any assets are uploaded to it, with a message naming what to bump. Dry-run a
+tag before pushing it:
+
+```bash
+python3 scripts/ps410_engine_release_preflight.py --tag personium-<version>
+#   0 = strictly newer   1 = REFUSED   2 = could not read the published set
+```
+
+⚠️ **If a Chromium version has to be re-cut, append a revision component**
+(`personium-152.0.7977.75.1`). `updater.parse_version` keeps every numeric
+chunk, so a five-component revision sorts correctly above its four-component
+predecessor — which is exactly why the gate uses that function rather than a
+comparator of its own.
+
 ⚠️ **The three assets do not have equal provenance in this repository, and the
 gap is per-platform.** `engine-trial-build.yml` builds the **Linux** engine and
 is the only arm that reaches a compile. PS-361 added
