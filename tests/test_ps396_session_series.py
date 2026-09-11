@@ -469,6 +469,41 @@ def test_a_child_inside_the_profile_dir_still_matches(tmp_path):
     assert ss.engine_pids_for(pdir, proc_root=str(proc_root)) == [700]
 
 
+@pytest.mark.parametrize("sep", ["/", "\\"])
+def test_both_path_separators_are_boundaries_not_just_the_hosts(tmp_path, sep):
+    """⛔ CI FOUND THIS: keying the boundary on `os.sep` is a PLATFORM BUG.
+
+    Round 2 first wrote `_BOUNDARY_AFTER = ... + os.sep`, which reads as
+    obviously right and is wrong in a way only a non-Linux runner can show.
+    On Windows `os.sep` is `\\`, so a cmdline carrying a FORWARD-slash path —
+    ordinary, since the engine is free to normalise either way — stopped
+    matching, and two of this file's own matcher tests went red on the
+    windows-latest lane while passing everywhere else.
+
+    That is the PS-171 arm-H UNDERCOUNT once more, arriving through a platform
+    assumption rather than through a `comm` read or a token split. A matcher
+    that silently sees fewer processes reports a busy session as idle.
+
+    Accepting BOTH separators is safe in the other direction too: `\\` is not a
+    legal profile-name character (`validate_profile_name`'s `_INVALID_CHARS`),
+    so admitting it as a boundary cannot let a prefix sibling through — the
+    sibling defect turns on `2` and `-2` FOLLOWING the path, never on a
+    separator. The sibling test above is the control for exactly that.
+    """
+    proc_root = tmp_path / "proc"
+    proc_root.mkdir()
+    pdir = "/data/profiles/subject"
+    _fake_proc(proc_root, 700,
+               f"/engine/firefox -profile {pdir}{sep}.invisible-profile",
+               stat=_stat_line(1, 1), status=_status_body(1, 1))
+
+    assert ss.engine_pids_for(pdir, proc_root=str(proc_root)) == [700], (
+        f"a child under the profile dir went unmatched with {sep!r} as the "
+        "separator. Keying the boundary on the HOST's os.sep is a platform "
+        "bug: it undercounts the tree on the platform whose separator differs."
+    )
+
+
 def test_a_packed_single_argv_blob_still_matches(tmp_path):
     """⛔ DO NOT TIDY THE BOUNDARY SCAN BACK INTO A TOKEN SPLIT.
 

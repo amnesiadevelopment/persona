@@ -255,9 +255,22 @@ def series_capability() -> dict:
 #: the quotes cover a quoted argument.
 _BOUNDARY_BEFORE = "\0= \t\n\r\"'"
 
-#: Bytes that may FOLLOW it. The same set plus ``os.sep``, which is what makes
-#: ``<profile>/.invisible-profile`` match while ``<profile>2`` does not.
-_BOUNDARY_AFTER = "\0= \t\n\r\"'" + os.sep
+#: Bytes that may FOLLOW it. The same set plus BOTH path separators, which is
+#: what makes ``<profile>/.invisible-profile`` match while ``<profile>2`` does
+#: not.
+#:
+#: ⛔ BOTH SEPARATORS, NOT ``os.sep``, AND CI IS WHY. Using the host's own
+#: separator looks obviously right and is wrong in two directions. On Windows
+#: ``os.sep`` is ``\``, so a cmdline carrying a forward-slash path — which is
+#: ordinary, since chromium accepts one and the engine is free to normalise
+#: either way — would fail to match a real child of the tree: the PS-171 arm-H
+#: UNDERCOUNT again, arriving through a platform assumption. The converse
+#: (``\`` inside a path on a POSIX box) cannot occur in a path this module
+#: builds, but accepting it costs nothing: ``\`` is not a legal profile-name
+#: character (``validate_profile_name``'s ``_INVALID_CHARS``), so admitting it
+#: as a BOUNDARY can never let a prefix sibling through — the sibling defect
+#: turns on ``2`` and ``-2`` following the path, never on a separator.
+_BOUNDARY_AFTER = "\0= \t\n\r\"'" + "/" + "\\"
 
 #: The human-readable name of the matcher, written into the record's own
 #: header (see ``MATCHER_NOTE``) so a reader of a strange series has the same
