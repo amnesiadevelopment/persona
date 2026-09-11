@@ -362,7 +362,8 @@ def _sample(
 
     for pid in pids:
         try:
-            with open(os.path.join(proc_root, str(pid), "stat")) as fh:
+            with open(os.path.join(proc_root, str(pid), "stat"),
+                      encoding="utf-8", errors="replace") as fh:
                 raw = fh.read()
         except PermissionError:
             denied += 1
@@ -386,7 +387,8 @@ def _sample(
 
         try:
             vol = nonvol = None
-            with open(os.path.join(proc_root, str(pid), "status")) as fh:
+            with open(os.path.join(proc_root, str(pid), "status"),
+                      encoding="utf-8", errors="replace") as fh:
                 for line in fh:
                     if line.startswith("voluntary_ctxt_switches:"):
                         vol = int(line.split()[1])

@@ -140,9 +140,9 @@ def _fake_proc(tmp_path, pid, cmdline, *, stat=None, status=None):
     d.mkdir()
     (d / "cmdline").write_bytes(cmdline.encode() + b"\0")
     if stat is not None:
-        (d / "stat").write_text(stat)
+        (d / "stat").write_text(stat, encoding="utf-8")
     if status is not None:
-        (d / "status").write_text(status)
+        (d / "status").write_text(status, encoding="utf-8")
     return d
 
 
@@ -257,8 +257,8 @@ def test_a_real_delta_is_a_number_so_the_null_means_something(tmp_path):
 
     prev = ss._Readings()
     ss._sample(pdir, prev, 0.0, 100.0, now=1.0, proc_root=str(proc_root))
-    (d / "stat").write_text(_stat_line(150, 0))       # +50 ticks
-    (d / "status").write_text(_status_body(40, 9))    # +30 vol, +7 nonvol
+    (d / "stat").write_text(_stat_line(150, 0), encoding="utf-8")       # +50 ticks
+    (d / "status").write_text(_status_body(40, 9), encoding="utf-8")    # +30 vol, +7 nonvol
     second = ss._sample(pdir, prev, 0.0, 100.0, now=2.0, proc_root=str(proc_root))
 
     # 50 ticks / 100 Hz / 1.0 s = 0.5 core = 50%.
@@ -442,7 +442,7 @@ def test_wipe_all_profiles_destroys_the_series(tmp_path, monkeypatch):
     pdir.mkdir(exist_ok=True)
     series = pdir / ss.SERIES_DIRNAME / ss.SERIES_FILENAME
     series.parent.mkdir(parents=True, exist_ok=True)
-    series.write_text('{"t":1.0,"cpu":12.5}\n')
+    series.write_text('{"t":1.0,"cpu":12.5}\n', encoding="utf-8")
     assert series.exists()
 
     mgr.wipe_all_profiles()
@@ -503,7 +503,7 @@ def test_each_session_truncates_the_previous_series(tmp_path):
     pdir.mkdir()
     rec = ss.SessionSeriesRecorder(str(pdir), period_s=0.01)
     os.makedirs(os.path.dirname(rec.path), exist_ok=True)
-    with open(rec.path, "w") as fh:
+    with open(rec.path, "w", encoding="utf-8") as fh:
         fh.write("PREVIOUS SESSION\n" * 100)
 
     stop = threading.Event()
@@ -514,7 +514,7 @@ def test_each_session_truncates_the_previous_series(tmp_path):
     stop.set()
     t.join(5)
 
-    assert "PREVIOUS SESSION" not in open(rec.path).read()
+    assert "PREVIOUS SESSION" not in open(rec.path, encoding="utf-8").read()
 
 
 def test_the_cap_stops_the_record_and_says_that_it_did(tmp_path):
@@ -536,7 +536,7 @@ def test_the_cap_stops_the_record_and_says_that_it_did(tmp_path):
     stop.set()
     t.join(5)
 
-    rows = [json.loads(ln) for ln in open(rec.path) if ln.strip()]
+    rows = [json.loads(ln) for ln in open(rec.path, encoding="utf-8") if ln.strip()]
     assert rows[-1].get("meta") == "capped", (
         "the record stopped without saying so; a reader cannot tell that from "
         "a session that ended."
@@ -590,7 +590,7 @@ def test_a_raising_sampler_does_not_escape_run(tmp_path, monkeypatch):
     t.join(5)
 
     assert calls, "the sampler was never called, so nothing was proven"
-    rows = [json.loads(ln) for ln in open(rec.path) if ln.strip()]
+    rows = [json.loads(ln) for ln in open(rec.path, encoding="utf-8") if ln.strip()]
     assert any(r.get("meta") == "sample-error" for r in rows), (
         "a failed sample left no trace; the gap is indistinguishable from a "
         "quiet interval."
