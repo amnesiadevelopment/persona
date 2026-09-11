@@ -23,10 +23,14 @@ the ticket names explicitly:
   platform layer to find and launch the downloaded binary. Renaming it breaks
   the download and the launch.
 * ``fingerprint-chromium/<version>`` — the verification tooling's recorded
-  engine identifier. 36 committed reading sets carry it (26 of them as an
-  ``"engine":`` header value), and
+  engine identifier. ⭐ THAT DEFERRAL EXPIRED IN PS-411 AND THE NAME NOW
+  DEPENDS ON THE BUILD: ``persona-chromium/<version>`` for an engine persona
+  published, ``fingerprint-chromium/<version>`` for one from the dead upstream.
+  36 committed reading sets carry the upstream spelling (26 of them as an
+  ``"engine":`` header value) and they are LEFT EXACTLY AS THEY ARE — every one
+  was taken on an upstream build, so that is what they should say.
   ``pool_depth.engine_report`` finds an arm by substring-matching "chromium"
-  against it.
+  against the header, which is why BOTH names still contain it.
 * the stored engine key ``"chromium"`` — a display rename must not become a
   data migration.
 """
@@ -308,72 +312,207 @@ def test_the_stored_engine_key_is_unchanged():
     )
 
 
-def test_the_verification_engine_identifier_is_unchanged(monkeypatch):
-    """The DELIBERATE non-change the ticket asked to be decided rather than
-    let drift (see ``checker_cli._chromium_label``'s docstring for the full
-    reasoning).
+def test_the_verification_engine_identifier_names_the_project_that_BUILT_the_engine(
+        monkeypatch, tmp_path):
+    """THE DEFERRAL THIS TEST USED TO PIN HAS EXPIRED, AND THIS IS ITS RELEASE.
 
-    Pinned as a test because the cost of it drifting is SILENT: 26 committed
-    reading sets carry this identifier as an ``"engine":`` header value (36
-    carry it somewhere) — re-derive with ``git ls-files readings/ | xargs grep
-    -lE '"engine"[[:space:]]*:[[:space:]]*"fingerprint-chromium/'`` — and a
-    comparison against a record with a different header does not announce that
-    it is comparing incomparable things.
+    ⛔ THIS IS AN UPDATE, NOT A RELAXATION. It used to be
+    ``test_the_verification_engine_identifier_is_unchanged`` and it asserted
+    ``fingerprint-chromium/<version>`` unconditionally. That was correct while
+    every binary we launched came from the dead upstream, and
+    ``_chromium_label``'s own docstring named the condition under which it would
+    stop being correct: *"when we ship a binary we built ourselves … the label
+    becomes factually wrong"*. We ship one (``engine/releases/
+    personium-152.0.7977.75.json``, published 2026-09-06), so the tripwire has
+    fired and the test now pins the REPLACEMENT rule rather than the old
+    constant. The name changed with it, because a test's name is a contract and
+    "is unchanged" is no longer what this one claims (PS-411).
 
-    ⚠️ THE VERSION-BEARING PATH IS DRIVEN EXPLICITLY, and that is the whole
-    point of the stub. In a container with no engine installed
-    ``current_version()`` returns "" and the label falls to the
-    ``…/unknown`` branch — so a test that just called the function would
-    exercise ONE of the three return paths and MISS the branch that actually
-    lands in a reading header. Measured: a mutant that renamed only the
-    version-bearing f-string passed against the un-stubbed version of this
-    test. Both branches are asserted below.
+    WHAT IS PINNED NOW: the label names the PROJECT THAT BUILT the installed
+    engine, established from the committed provenance record rather than
+    assumed.
+
+    ⚠️ AND THE ASSUMPTION THE TICKET MADE IS PINNED AS FALSE, because it is the
+    trap the next reader will fall into too. ``version.txt`` does NOT hold the
+    published ``personium-`` tag: ``updater.version_from_tag`` strips the prefix
+    at the module's API boundary, deliberately, so a bare ``148.0.7778.215``
+    (upstream) and a bare ``152.0.7977.75`` (ours) are indistinguishable BY
+    SHAPE. A label renamed unconditionally would therefore claim an upstream
+    binary as ours on every machine that installed before PS-305 — fixing one
+    false claim by minting another. The third arm below is that machine, and it
+    is the load-bearing one.
+
+    ⚠️ BOTH RETURN BRANCHES ARE DRIVEN EXPLICITLY, and that is still the whole
+    point of the stub — the reason is unchanged and was MEASURED. In a container
+    with no engine installed ``current_version()`` returns "" and the label
+    falls to the ``…/unknown`` branch, so a test that merely CALLED the function
+    would exercise one path and miss the branch that actually lands in a reading
+    header. A mutant that renamed only the version-bearing f-string passed
+    against the un-stubbed version of this test. Do not reintroduce that hole.
     """
     from src.services.verify import checker_cli
     from src.services.engine import updater
 
-    # The branch that produces a real reading header.
-    monkeypatch.setattr(updater, "current_version", lambda: "148.0.7778.215")
-    label = checker_cli._chromium_label()
-    assert label == "fingerprint-chromium/148.0.7778.215", label
-    assert CHROMIUM_ENGINE_NAME.lower() not in label.lower()
+    # A build persona PUBLISHED: there is a provenance record for it in the
+    # tree, so the reading may say we built it.
+    monkeypatch.setattr(updater, "current_version", lambda: "152.0.7977.75")
+    ours = checker_cli._chromium_label()
+    assert ours == "persona-chromium/152.0.7977.75", ours
+    assert "fingerprint-chromium" not in ours, (
+        "a reading taken on an engine WE built must not name the upstream "
+        f"project it is no longer taken against: {ours!r}"
+    )
 
-    # And the no-engine-installed branch, which must not drift either.
+    # THE ARM THAT STOPS AN UNCONDITIONAL RENAME. An upstream build — same
+    # bare-dotted SHAPE, no provenance record — must still be named as
+    # upstream's. Claiming it as ours would be the same defect with the sign
+    # flipped, and harder to notice.
+    monkeypatch.setattr(updater, "current_version", lambda: "148.0.7778.215")
+    theirs = checker_cli._chromium_label()
+    assert theirs == "fingerprint-chromium/148.0.7778.215", theirs
+
+    # And the no-engine-installed branch, which must not drift either. It says
+    # upstream because that is the WEAKER claim: declining to assert provenance
+    # is not an assertion, and this is the branch that fires when we know least.
     monkeypatch.setattr(updater, "current_version", lambda: "")
     unknown = checker_cli._chromium_label()
     assert unknown == "fingerprint-chromium/unknown", unknown
-    assert CHROMIUM_ENGINE_NAME.lower() not in unknown.lower()
+
+    # OUR BRAND STILL NEVER APPEARS. `Personium` is the display name and the
+    # PS-224 fence keeps it off anything a page can read; the verification
+    # header uses the lowercase product word instead, which is not that name.
+    for label in (ours, theirs, unknown):
+        assert CHROMIUM_ENGINE_NAME.lower() not in label.lower(), label
 
 
-def test_renaming_the_verification_identifier_would_break_the_pool_depth_lookup():
-    """WHY that identifier is not merely 'left alone for now'.
+def test_an_unreadable_provenance_record_fails_toward_the_WEAKER_claim(
+        monkeypatch):
+    """The failure direction is a decision, so it is asserted rather than left
+    to whatever the code happens to do.
 
-    ``PoolDepthReport.engine_report`` finds an arm by case-insensitive
-    SUBSTRING of the engine header. The current identifier contains
-    "chromium"; our name does not. This test states that consequence as an
-    executable fact rather than a claim in a comment, so a future rename fails
-    HERE — with the reason attached — instead of raising a bare KeyError deep
-    in a pool-depth run.
+    When the provenance records cannot be read at all, the label must answer
+    ``fingerprint-chromium`` — NOT ``persona-chromium``. Claiming a build as
+    ours is an assertion about provenance; declining to is not. A record that
+    understates what we know is recoverable; one that overstates it is a false
+    claim in a corpus whose whole value is that its claims can be trusted.
+
+    ⚠️ BOTH GUARDS ARE DRIVEN, AND THE FIRST VERSION OF THIS TEST DROVE ONLY
+    ONE — measured, not supposed. There are TWO ``except`` arms on this path:
+    ``_chromium_provenance``'s own (the filesystem read fails) and
+    ``_chromium_label``'s outer one (anything else fails). Stubbing
+    ``_chromium_provenance`` to raise exercises the OUTER arm only, and a mutant
+    that flipped the INNER arm to return ``_PERSONA_CHROMIUM`` — i.e. "if we
+    cannot check, assume we built it", exactly the defect this test is named
+    after — PASSED against that version. So the inner arm is now driven at its
+    own level, by breaking the filesystem call it makes.
     """
+    from src.services.verify import checker_cli
+    from src.services.engine import updater
+
+    # (a) THE INNER ARM. The record lookup itself fails — a missing tree, an
+    # unreadable filesystem, a permissions error. This is the arm the mutant
+    # above walked straight through.
+    def _boom(_path):
+        raise OSError("engine/releases is unreadable")
+
+    monkeypatch.setattr(os.path, "isfile", _boom)
+    assert checker_cli._chromium_provenance("152.0.7977.75") == (
+        "fingerprint-chromium"
+    ), (
+        "an UNREADABLE provenance record must not be read as 'we built it' — "
+        "failing toward the stronger claim mints a false provenance on every "
+        "machine we cannot check"
+    )
+    monkeypatch.undo()
+
+    # ...and the same through the public label, so the caller sees it too.
+    monkeypatch.setattr(os.path, "isfile", _boom)
+    monkeypatch.setattr(updater, "current_version", lambda: "152.0.7977.75")
+    inner = checker_cli._chromium_label()
+    assert inner == "fingerprint-chromium/152.0.7977.75", inner
+    monkeypatch.undo()
+
+    # (b) THE OUTER ARM. Anything at all failing above the provenance lookup
+    # falls to the unknown branch — which still names upstream, never us.
+    def _boom_provenance(_version):
+        raise RuntimeError("resolver is broken")
+
+    monkeypatch.setattr(checker_cli, "_chromium_provenance", _boom_provenance)
+    monkeypatch.setattr(updater, "current_version", lambda: "152.0.7977.75")
+    outer = checker_cli._chromium_label()
+    assert "persona-chromium" not in outer, (
+        f"a broken resolver must NOT be read as 'we built it': {outer!r}"
+    )
+    assert outer == "fingerprint-chromium/unknown", outer
+
+
+def test_the_new_identifier_STILL_keeps_the_pool_depth_lookup_working():
+    """WHY the replacement label is these two names and not any other.
+
+    ⛔ AN UPDATE OF ``test_renaming_the_verification_identifier_would_break_the
+    _pool_depth_lookup``, NOT A DELETION. That test stated a CONSEQUENCE as an
+    executable fact — ``PoolDepthReport.engine_report`` finds an arm by
+    case-insensitive SUBSTRING of the engine header, so a label dropping
+    "chromium" blinds it — so that a future rename would fail HERE, with the
+    reason attached, instead of raising a bare KeyError deep in a pool-depth
+    run. That reasoning is untouched and is exactly why it still exists: the
+    rename it was built to catch HAS NOW HAPPENED, and this is the test doing
+    its job — it constrained which label PS-411 was allowed to choose.
+
+    Both new names keep the substring, which is not a coincidence: they are
+    BUILT from ``checker_cli._CHROMIUM_FAMILY`` rather than spelled out, so the
+    property cannot be lost by editing one branch and forgetting the other.
+
+    ⚠️ A SINGLE-ARM report is asserted, deliberately. A report spanning TWO
+    chromium builds already raises on the ambiguity — by design, and with no
+    rename anywhere: ``engine_report`` "refuses an ambiguous match rather than
+    picking one". Asserting that a mixed report resolves would pin a behaviour
+    change nobody asked for; the CONTROL below states the pre-existing refusal
+    so the next reader does not mistake it for damage this rename did.
+    """
+    from src.services.verify import checker_cli
     from src.services.verify.browser_tier import CHROMIUM
     from src.services.verify.pool_depth import EngineReport, PoolDepthReport
 
-    def _report(engine_label):
+    def _report(*engine_labels):
         return PoolDepthReport(
-            engines=(
-                EngineReport(engine=engine_label, identities=(), vectors=()),
+            engines=tuple(
+                EngineReport(engine=e, identities=(), vectors=())
+                for e in engine_labels
             ),
             excluded=(),
         )
 
-    # Today's identifier: the lookup resolves.
+    # BOTH new labels resolve on a single-arm report.
+    assert _report("persona-chromium/152.0.7977.75").engine_report(
+        CHROMIUM
+    ).engine == "persona-chromium/152.0.7977.75"
     assert _report("fingerprint-chromium/148.0.7778.215").engine_report(
         CHROMIUM
-    ).engine.startswith("fingerprint-chromium/")
+    ).engine == "fingerprint-chromium/148.0.7778.215"
 
-    # Renamed: the lookup goes blind.
+    # The property that constrains every future rename, stated on the constant
+    # the labels are built from rather than on today's spellings.
+    assert "chromium" in checker_cli._CHROMIUM_FAMILY.lower()
+    for name in (checker_cli._PERSONA_CHROMIUM, checker_cli._UPSTREAM_CHROMIUM):
+        assert checker_cli._CHROMIUM_FAMILY in name, name
+
+    # RED ARM, unchanged in spirit: a label that drops the substring goes blind.
     with pytest.raises(KeyError):
-        _report(f"{CHROMIUM_ENGINE_NAME}/148.0.7778.215").engine_report(CHROMIUM)
+        _report(f"{CHROMIUM_ENGINE_NAME}/152.0.7977.75").engine_report(CHROMIUM)
+    with pytest.raises(KeyError):
+        _report("personium/152.0.7977.75").engine_report(CHROMIUM)
+
+    # THE CONTROL. Two chromium arms raise the AMBIGUITY error with no rename
+    # involved at all — two UPSTREAM versions do it too. So "a mixed-build
+    # lookup raises" is pre-existing behaviour, NOT a cost of this rename, and
+    # must not be attributed to it or "fixed" here.
+    for mixed in (
+        ("fingerprint-chromium/148.0.7778.215", "fingerprint-chromium/152.0.7977.75"),
+        ("fingerprint-chromium/148.0.7778.215", "persona-chromium/152.0.7977.75"),
+    ):
+        with pytest.raises(KeyError, match="more than one engine arm"):
+            _report(*mixed).engine_report(CHROMIUM)
 
 
 # ---------------------------------------------------------------------------
@@ -641,10 +780,25 @@ _NOT_OUR_ENGINE_NAME = {
     # gone the file has no matching literal, so the entry became a STALE standing
     # excuse — precisely what the assertion below refuses to let accumulate.
     "services/browser/worker_wrap.py",
-    # MEASUREMENT PROVENANCE, explicitly deferred by the PS-318 ticket: these
-    # values are written into committed reading artifacts, and changing one
-    # makes a new reading incomparable with 36 recorded ones without saying so.
-    # `test_the_verification_engine_identifier_is_unchanged` pins this.
+    # MEASUREMENT PROVENANCE. These values are written into committed reading
+    # artifacts, so changing one makes a new reading incomparable with the
+    # recorded ones — which `matrix_diff`/`diff` REFUSE by name rather than
+    # silently absorbing.
+    #
+    # ⭐ `services/verify/checker_cli.py`'s DEFERRAL EXPIRED IN PS-411 AND THE
+    # ENTRY SURVIVED ANYWAY — which is worth stating, because the honesty test
+    # below could easily have gone red here and the reason it did not is a
+    # measurement rather than luck. That file's label now reads its engine's
+    # PROVENANCE (`persona-chromium/…` for a build we published,
+    # `fingerprint-chromium/…` for one from the dead upstream) and both names
+    # are BUILT from a constant, so neither is a typed literal any more. What
+    # keeps the entry earning its place is the three remaining `"Chromium"`
+    # literals in that file — operator prose about the upstream project
+    # ("Chromium cannot authenticate to a SOCKS5 proxy", "Chromium pins no zone
+    # of its own", and the geolocation-extension note), which are legitimate
+    # uses of the upstream name and not our brand. RE-MEASURE THAT COUNT rather
+    # than trusting this comment; it was 6 before PS-411 and is 3 now, and the
+    # day it reaches 0 this entry must go.
     "services/verify/checker_cli.py",
     "services/verify/chromium_tier.py",
     "services/verify/baseline.py",
