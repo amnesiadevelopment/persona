@@ -1,0 +1,27 @@
+engine: /home/builder/actions-runner/_work/persona/persona/package-out/patched/ps218-patched-ungoogled-chromium-152.0.7977.75-1-x86_64.AppImage
+seed: 24601
+extra flags on the ON arm: (none)
+Chromium 152.0.7977.75
+
+=== A. REFERENCE RENDER (PS-373 guard) ===
+distinct colours: ON=15  OFF=15
+hash  ON=b0becdc5  OFF=b0becdc5
+modified bytes (first 4096): 0
+VERDICT: guard PRESENT
+
+=== B. REALISTIC CANVAS (protection still intact) ===
+distinct colours: ON=1911  OFF=1904
+hash  ON=9aa1331d  OFF=77b3d0a8
+modified bytes (first 4096): 13
+VERDICT: protection INTACT
+
+=== C. measureText (PS-345 fix) ===
+  'Personium measureText probe 12345'    ON=        298.406078  OFF=  298.4062  ratio=0.999999
+  'W'                                    ON=         15.820303  OFF=   15.8203  ratio=0.999999
+  'iiiii'                                ON=         22.226550  OFF=   22.2266  ratio=0.999999
+  'The quick brown fox'                  ON=        161.617094  OFF=  161.6172  ratio=0.999999
+VERDICT: fix PRESENT (positive and plausible)
+
+wrote /tmp/ps406/reading-24601.json
+
+OVERALL: the artefact carries BOTH fixes.
