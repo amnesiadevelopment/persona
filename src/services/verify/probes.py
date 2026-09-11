@@ -828,17 +828,23 @@ PROBES: tuple[Probe, ...] = (
         #      engine forever: a widened baseline that records nothing, which
         #      is worse than no row because it reads like coverage.
         #
-        #   2. CHILD_FRAME is the right realm and is NOT RECORDED AT ALL. The
-        #      committed artifact's `realms` is ["window","worker"], so
-        #      `ALL_REALMS` cannot be honoured by the current recorder.
-        #      Widening BASELINE_REALMS to carry `child_frame` is its own slice
-        #      — PS-316, open — and doing it here would silently re-record every
-        #      probe in a new realm under a ticket about one vector's delivery.
+        #   2. CHILD_FRAME is the right realm, and the RECORDER now reaches it
+        #      (PS-316 widened `BASELINE_REALMS` and re-recorded, so the
+        #      committed artifact's `realms` is
+        #      ["window","worker","child_frame"]). ⛔ THAT REMOVES THE
+        #      MECHANICAL OBSTACLE AND NOT THE ARGUMENT: `ALL_REALMS` is the
+        #      only way to declare the child realm here alongside the window
+        #      one, and it drags in WORKER too — where reason 1 says the row is
+        #      null by construction. And PS-330 measured the reason that
+        #      survives the recorder entirely: on firefox the device ids are
+        #      the EMPTY STRING on every profile and every seed, so the row
+        #      would enlarge the baseline without carrying a fingerprint
+        #      dimension. The vector stays WINDOW_ONLY on its own merits, and
+        #      this entry is no longer waiting on PS-316.
         #
-        # So the honest position is: this probe stays WINDOW_ONLY, the vector is
-        # guarded instead by a test that reads the value a CHILD REALM receives
-        # (tests/test_ps320_enumerate_devices_realm.py), and the probe widens
-        # when PS-316 gives the baseline a child_frame realm to record into.
+        # So the honest position is: this probe stays WINDOW_ONLY and the
+        # vector is guarded instead by a test that reads the value a CHILD
+        # REALM receives (tests/test_ps320_enumerate_devices_realm.py).
         #
         # Kind counts only — labels are user-identifying and are deliberately
         # NOT recorded into a file the operator may share.
@@ -1185,13 +1191,21 @@ PROBES: tuple[Probe, ...] = (
     # exactly the thing that has to be per-realm for the realm to be validated
     # on its own evidence.
     #
-    # CHILD_FRAME_ONLY, not (WINDOW, CHILD_FRAME). `BASELINE_REALMS` is
-    # (WINDOW, WORKER) and the committed baseline records the probe-id SET for
-    # those two realms exactly; declaring the window realm here would add these
-    # ids to `probes_for_realm("window")` and trip
+    # CHILD_FRAME_ONLY, not (WINDOW, CHILD_FRAME). The committed baseline
+    # records the probe-id SET for every realm it covers exactly, so declaring
+    # the window realm here would add these ids to `probes_for_realm("window")`
+    # and trip
     # test_the_committed_baseline_records_exactly_the_live_probe_inventory for
     # readings the window realm already has under the ids above. The window
     # readings are not missing; they belong to the other records.
+    #
+    # ⚠️ PS-316 CHANGED WHAT THAT ARGUMENT RESTS ON WITHOUT CHANGING THE
+    # ANSWER. It used to read "`BASELINE_REALMS` is (WINDOW, WORKER)" — i.e.
+    # the child realm was not recorded at all, so these records were compared
+    # against nothing. It is now recorded, and they are compared on their own
+    # evidence, which is the whole of PS-316. The per-realm-record shape is
+    # what made that widening a clean +4 rows rather than a re-shaping of
+    # existing ones, so the rule stands on stronger ground, not weaker.
     #
     # SHARED, not INDEPENDENT. diff.py records that `masking.*` and `realm.*`
     # observe the MECHANISM rather than the identity and should agree across
@@ -1308,12 +1322,23 @@ def must_differ_realms() -> tuple[str, ...]:
     failure to be entered a caller has to reason about. This returns what is
     ASKED ABOUT, which is the set the answer actually depends on.
 
-    NOT ``BASELINE_REALMS`` EITHER, and the two are not interchangeable. The
-    committed baseline ARTIFACT is a fixed two-realm document by design
-    (``baseline.BASELINE_REALMS``, pinned by its own guard); this is the realm
-    set of a LIVE two-profile comparison. Same shape, different jobs — see
+    NOT ``BASELINE_REALMS`` EITHER, and the two are not interchangeable even
+    now that they are equal. The committed baseline ARTIFACT's realm set
+    (``baseline.BASELINE_REALMS``, pinned by its own guard) answers "what does
+    the reference document cover?"; this answers "what does a LIVE two-profile
+    comparison have to read?". Same shape, different jobs — see
     ``baseline.py``'s note. Widening one must never be read as licence to
     widen the other.
+
+    ⚠️ THEY NOW HAPPEN TO BE THE SAME TUPLE, WHICH MAKES THIS WARNING MATTER
+    MORE RATHER THAN LESS. PS-316 widened the artifact to cover ``child_frame``
+    for its own reason — three residue probes that existed only there had no
+    comparator — arriving at the same three realms this returns, by a
+    completely independent route. A coincidence of VALUE is not an identity of
+    MEANING: this one is derived from the must-differ inventory and follows it
+    automatically, while that one is a recorded decision about a committed
+    document. If the inventory ever stops declaring a must-differ vector in a
+    realm, this shrinks and the artifact does not. Do not collapse them.
     """
     return tuple(
         realm

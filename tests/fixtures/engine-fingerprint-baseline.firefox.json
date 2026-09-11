@@ -1,8 +1,37 @@
 {
-  "app_version": "3.1.0",
+  "app_version": "3.1.1",
   "engine": "firefox",
   "engine_build": "firefox-20",
   "probes": {
+    "child_frame": {
+      "realm.bootMarkers.childFrame": {
+        "value": {
+          "markerCount": 0,
+          "markers": []
+        }
+      },
+      "realm.frameIdentity": {
+        "value": {
+          "frameDepth": 1,
+          "hasParent": true,
+          "hasTop": true,
+          "selfIsTop": false
+        }
+      },
+      "realm.seedRecoverable.childFrame": {
+        "value": {
+          "candidateCount": 0,
+          "candidates": []
+        }
+      },
+      "webgl.readback.childFrame": {
+        "value": {
+          "bytes": 4096,
+          "digest": 1121969883,
+          "mid": 3072
+        }
+      }
+    },
     "window": {
       "audio.digest": {
         "value": {
@@ -654,6 +683,7 @@
       "webgl.extensions",
       "webgl.parameters",
       "webgl.readback",
+      "webgl.readback.childFrame",
       "webgl.unmasked",
       "stealth.apiPresence"
     ],
@@ -663,7 +693,8 @@
     "proxy": "none",
     "realms": [
       "window",
-      "worker"
+      "worker",
+      "child_frame"
     ],
     "resolution": "1920x1080",
     "search_engine": "duckduckgo",
@@ -674,7 +705,8 @@
   },
   "realms": [
     "window",
-    "worker"
+    "worker",
+    "child_frame"
   ],
   "schema_version": 1
 }
