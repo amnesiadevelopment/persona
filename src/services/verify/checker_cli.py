@@ -249,6 +249,82 @@ def _firefox_label() -> str:
         return "invisible_playwright/unknown"
 
 
+#: The engine family every chromium reading header begins with, and the ONE
+#: property of this label that other code depends on: ``pool_depth
+#: .engine_report`` finds an arm by case-insensitive SUBSTRING of the header,
+#: so ``"chromium"`` must survive in whatever we call the build. Sourced from
+#: here rather than typed at each return so the two branches below cannot drift
+#: apart — the exact hole PS-224 measured, where a mutant renamed only the
+#: version-bearing f-string and the ``…/unknown`` branch kept the old spelling.
+_CHROMIUM_FAMILY = "chromium"
+
+#: What we call a build we PUBLISHED ourselves, and what we call one that came
+#: from the dead upstream. Two names because the machine can genuinely be
+#: running either (see ``_chromium_label``), and a reading that cannot say
+#: which is a reading whose provenance is a guess.
+_PERSONA_CHROMIUM = f"persona-{_CHROMIUM_FAMILY}"
+_UPSTREAM_CHROMIUM = f"fingerprint-{_CHROMIUM_FAMILY}"
+
+
+def _chromium_provenance(version: str) -> str:
+    """Which PROJECT built the installed chromium — ``_PERSONA_CHROMIUM`` when
+    persona published it, ``_UPSTREAM_CHROMIUM`` when the dead upstream did.
+
+    ⛔ ESTABLISHED FROM A RECORD, NOT ASSUMED FROM THE DATE. This is the whole
+    reason this function exists rather than the label simply being renamed, and
+    the reasoning is the opposite of what it looks like from the ticket.
+
+    ``version.txt`` holds a BARE dotted version under BOTH regimes. It is not
+    the published tag: ``updater.version_from_tag`` strips the ``personium-``
+    prefix at the module's API boundary — deliberately, because that file is
+    the sole source of the Chromium version an Android profile advertises and a
+    prefixed string there would leak straight onto the wire (see that
+    function's docstring, and ``test_ps375``'s
+    ``test_a_dispatched_published_tag_is_normalised_before_it_is_echoed``).
+    So an upstream ``148.0.7778.215`` and a persona-built ``152.0.7977.75`` are
+    BYTE-INDISTINGUISHABLE in shape, and a machine that installed before
+    PS-305 moved engine releases into persona's own repository is still running
+    the upstream binary today.
+
+    Renaming the label unconditionally would therefore fix one false claim by
+    minting another — calling somebody else's binary ours on exactly the
+    machines that never took a persona build. That is the same defect with the
+    sign flipped, and it would be harder to notice.
+
+    The provenance records under ``engine/releases/`` are what settle it: one
+    file per PUBLISHED persona engine, named for its tag, committed to the tree
+    precisely so a claim about a build can be checked rather than believed (see
+    ``engine/releases/README.md``). A version with a record is one we published.
+    A version without one is not — which is the honest answer for an upstream
+    build AND for anything else that ended up in ``version.txt``.
+
+    FAILS TOWARD UPSTREAM, and that direction is deliberate. When the records
+    cannot be read at all, this answers ``_UPSTREAM_CHROMIUM`` — the WEAKER
+    claim, and the one that was true for this project's whole history before
+    the self-build. Claiming a build as ours is an assertion about provenance;
+    declining to is not, and a record that understates what we know is
+    recoverable in a way that one overstating it is not.
+    """
+    if not version:
+        return _UPSTREAM_CHROMIUM
+    try:
+        from ..engine.updater import ENGINE_TAG_PREFIX
+
+        # …/src/services/verify/checker_cli.py -> the repo root, four up.
+        root = os.path.dirname(
+            os.path.dirname(os.path.dirname(os.path.dirname(
+                os.path.abspath(__file__)
+            )))
+        )
+        record = os.path.join(
+            root, "engine", "releases",
+            f"{ENGINE_TAG_PREFIX}{version}.json",
+        )
+        return _PERSONA_CHROMIUM if os.path.isfile(record) else _UPSTREAM_CHROMIUM
+    except Exception:
+        return _UPSTREAM_CHROMIUM
+
+
 def _chromium_label() -> str:
     """The Chromium engine build, read from what is actually installed.
 
@@ -258,50 +334,75 @@ def _chromium_label() -> str:
     that could not distinguish them would let a stock reading masquerade as a
     persona one. This names persona's own installed build or says unknown.
 
-    ⚠️ DELIBERATELY NOT RENAMED TO ``Personium`` (PS-224). This is a RECORDED
-    MEASUREMENT IDENTIFIER, not a display name, and the ticket asked for the
-    decision to be made rather than let drift out of a UI rename. It stays for
-    three reasons, in order of how expensive changing it would be:
+    WHAT THIS SAYS, AND WHY IT IS TWO NAMES RATHER THAN ONE
+    ------------------------------------------------------
+    ``persona-chromium/<version>`` for a build persona published;
+    ``fingerprint-chromium/<version>`` for one from the dead upstream;
+    ``fingerprint-chromium/unknown`` when no engine is installed at all.
+    ``_chromium_provenance`` establishes which from the committed release
+    record, and its docstring holds the reasoning — read it before touching
+    either name, because the obvious simplification (one name, applied
+    unconditionally) mints a NEW false claim on pre-PS-305 machines.
 
-    1. IT WOULD SILENTLY BREAK EXISTING COMPARISONS. 26 committed reading sets
-       under ``readings/`` carry ``"engine": "fingerprint-chromium/<version>"``
-       as a header value, and 36 carry the identifier somewhere. Re-derive
-       either figure rather than trusting this one::
+    ⚠️ THIS WAS A RECORDED DEFERRAL AND THIS IS ITS STATED EXPIRY (PS-224 ->
+    PS-318 -> PS-411). The three reasons the old label stayed are kept below
+    WITH WHAT HAPPENED TO EACH, rather than deleted, because a deferral that
+    vanishes when it expires teaches the next reader nothing:
+
+    1. IT WOULD SILENTLY BREAK EXISTING COMPARISONS — ⛔ THE ADJECTIVE WAS
+       FALSE, and it was the load-bearing word. The counts are real and
+       reproduce exactly (26 header values, 36 occurrences; re-derive rather
+       than trusting them)::
 
            git ls-files readings/ | xargs grep -lE \
                '"engine"[[:space:]]*:[[:space:]]*"fingerprint-chromium/' | wc -l
            git ls-files readings/ | xargs grep -l 'fingerprint-chromium/' | wc -l
 
-       ``compare`` and the matrix tooling hold a new record against an old one;
-       a changed header makes old and new readings incomparable, and NOTHING
-       would report that — the exact silent-drift failure the ticket names.
-    2. IT WOULD BREAK A LIVE LOOKUP, TODAY. ``pool_depth.engine_report`` finds
-       an arm by case-insensitive SUBSTRING of the engine header:
-       ``"chromium" in "fingerprint-chromium/148...".lower()`` is True, and
-       ``"chromium" in "personium/148...".lower()`` is False. Renaming this
-       would raise ``KeyError: no engine arm matching 'chromium'`` on every
-       chromium pool-depth lookup.
-    3. NO OPERATOR READS IT AS OUR ENGINE'S NAME. It appears in a reading
-       record's JSON header, produced by a developer-facing CLI. It names the
-       UPSTREAM BUILD a measurement was taken against, which is exactly what
-       it should say while the binary we launch IS that upstream build.
+       But nothing breaks SILENTLY. ``matrix_diff`` refuses a cross-build
+       comparison by name (``ComparisonNotControlled``: "the records were taken
+       under different engine builds") and ``diff`` carries the same refusal
+       for snapshots. An old record against a new one is REFUSED, loudly, which
+       is those layers working — so the cost is a refusal an operator can read,
+       not a wrong answer they cannot.
+    2. IT WOULD BREAK A LIVE LOOKUP, TODAY — ✅ STILL TRUE, AND HONOURED.
+       ``pool_depth.engine_report`` matches by case-insensitive SUBSTRING, so
+       any label dropping ``"chromium"`` blinds it. Both names above keep it,
+       which is why ``_CHROMIUM_FAMILY`` is a constant they are BUILT from
+       rather than a spelling each repeats.
+    3. NO OPERATOR READS IT AS OUR ENGINE'S NAME — ⛔ ITS PREMISE EXPIRED. It
+       rested on "while the binary we launch IS that upstream build", and since
+       2026-09-06 we publish and launch our own (``engine/releases/
+       personium-152.0.7977.75.json``; the 3.1.0 changelog entry). A header
+       reading ``fingerprint-chromium/152.0.7977.75`` on a persona-built engine
+       names the wrong project — the record's own account of itself is false,
+       which is an evidence-hygiene defect in a corpus that IS this direction's
+       product.
 
-    WHEN IT SHOULD CHANGE: when we ship a binary we built ourselves, the thing
-    being measured genuinely stops being ``fingerprint-chromium`` and the label
-    becomes factually wrong. At that point the change is a MEASUREMENT-BASELINE
-    decision — old readings describe a different engine and must not be
-    compared against new ones as though they were the same — and it belongs
-    with the self-build work, not with a UI rename.
+    ⛔ WHAT THIS DOES NOT DO, because it was measured rather than assumed: the
+    OLD COMMITTED HEADERS ARE LEFT EXACTLY AS THEY ARE. They are recorded
+    measurements, and rewriting one is worse than holding an incomparable one —
+    the refusal in (1) already reports the boundary. The corpus carries FIVE
+    distinct chromium header shapes (19 ``fingerprint-chromium/148.0.7778.215``,
+    11 ``chromium``, 8 bare ``fingerprint-chromium``, 8 ``fingerprint-chromium
+    (persona engine binary)``, 7 ``fingerprint-chromium/unknown``), and two of
+    them carry no version at all — so there is no version to check a record
+    against and they could not be re-labelled truthfully even in principle.
+    Every one of those readings was taken on an upstream build, so
+    ``fingerprint-chromium`` is what they should say and they already say it.
+
+    THE UPSTREAM NAME IS NOT DEPRECATED. It stays for as long as a machine can
+    be running an upstream build, which is for as long as one that installed
+    before PS-305 never takes an update.
     """
     try:
         from ..engine.updater import current_version
 
         version = (current_version() or "").strip()
-        return f"fingerprint-chromium/{version}" if version else (
-            "fingerprint-chromium/unknown"
-        )
+        if not version:
+            return f"{_UPSTREAM_CHROMIUM}/unknown"
+        return f"{_chromium_provenance(version)}/{version}"
     except Exception:
-        return "fingerprint-chromium/unknown"
+        return f"{_UPSTREAM_CHROMIUM}/unknown"
 
 
 def _engine_label(engine: str) -> str:
