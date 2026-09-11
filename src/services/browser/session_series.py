@@ -111,12 +111,30 @@ defaults, and each one is asserted by a test).
    product exists to avoid. A record that grows forever on the operator's
    machine is not a neutral addition.
 
-   The cap is a second, independent bound for the session that never ends: at
-   the 2 s cadence a line is ~140 bytes, so ~250 KB/hour, and ``MAX_BYTES``
-   (4 MiB) is reached after roughly 17 hours of continuous session. On reaching
-   it the sampler writes ONE final ``capped`` line and stops writing — it does
-   not wrap, because a wrapped file whose beginning is missing reads as a
-   session that started later than it did.
+   The cap is a second, independent bound for the session that never ends.
+   MEASURED rather than estimated (``readings/ps396-2026-09-11/arm-cost.py``,
+   ``.log``, an instrument that is COMMITTED so it can be re-taken when this
+   module changes under it): at the 2 s cadence a sample line is 103 bytes, so
+   181 KiB/hour, and ``MAX_BYTES`` (4 MiB) is reached after roughly 22.6 hours
+   of continuous session. On reaching it the sampler writes ONE final
+   ``capped`` line and stops writing — it does not wrap, because a wrapped file
+   whose beginning is missing reads as a session that started later than it
+   did.
+
+   ⚠️ AND THE COST IS BOUNDED BY THE BOX, NOT BY THE BROWSER — which Rec 2's
+   "two /proc reads per sample" under-describes. ``engine_pids_for`` opens
+   ``cmdline`` for EVERY numeric entry under ``/proc``, so the walk dominates
+   and the curve is linear in the machine's process count, not the tree's:
+
+       /proc entries   walk time   % of one core at the 2 s cadence
+                 100     2.98 ms        0.15 %
+                 400    12.01 ms        0.60 %
+                 800    22.86 ms        1.14 %
+                1600    51.50 ms        2.57 %
+
+   Measured here (41 /proc entries, an 11-process chromium tree): 2.83 ms
+   median per sample, 0.14% of one core. A cost figure quoted WITHOUT its
+   /proc population is not reproducible, which is why both are stated.
 
 4. FAILURE IS CONTAINED, AND IT COSTS THE SERIES, NEVER THE SESSION.
 
@@ -154,7 +172,7 @@ SERIES_FILENAME = "series.jsonl"
 #: cadence its cost figure ("two /proc reads per sample") was measured for.
 PERIOD_S = 2.0
 
-#: The hard bound on the file. See decision 3 — roughly 17 hours at the 2 s
+#: The hard bound on the file. See decision 3 — roughly 22.6 hours at the 2 s
 #: cadence, after which one `capped` line is written and sampling stops
 #: WRITING (the thread still exits with the session).
 MAX_BYTES = 4 * 1024 * 1024
