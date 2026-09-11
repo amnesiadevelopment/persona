@@ -1,0 +1,78 @@
+name: engine-release-preflight
+
+# THE ENGINE'S COUNTERPART TO release.yml's `preflight` JOB.
+#
+# The APPLICATION release is gated: `release.yml`'s `preflight` refuses a `v*`
+# tag that does not equal APP_VERSION, before a single OS spends build time,
+# because a mismatch ships a manifest version the installed code disagrees with.
+#
+# The ENGINE release was gated by NOTHING, and its failure is SILENT. Publishing
+# engine assets under a version users already carry is refused nowhere, and the
+# update offer is a strict compare (`src/ui/app.py` ->
+# `engine.is_newer(latest, current_version())`), so the offer simply never
+# fires: the release page looks perfect and every existing install keeps the old
+# engine forever. The app's mismatch is caught before a byte is built; the
+# engine's was found by hand weeks later by reading the update path.
+#
+# WHY A SEPARATE WORKFLOW RATHER THAN A JOB IN release.yml. `release.yml`
+# triggers on `tags: v*` and never sees a `personium-` tag at all, so there is
+# no run to add a job to. This is the run.
+#
+# WHY IT STILL HELPS THOUGH THE ENGINE ASSETS ARE BUILT BY HAND (RELEASING.md:
+# "Building and packaging the engine artifacts is not automated yet"). The TAG
+# is the whole of what the client discovers by — `git/matching-refs/tags/
+# personium-`, then that tag's release — so the tag push is exactly the moment
+# the mistake becomes consequential, and it is before the assets are uploaded
+# to it. A refusal here is loud, early, cheap, and names what to bump.
+on:
+  push:
+    tags:
+      - "personium-*"
+  # Dry-run a tag you are ABOUT to push, and — more importantly — the
+  # FALSIFICATION arm: naming a version that is NOT newer is how this gate is
+  # shown to REFUSE rather than only ever observed passing.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: >-
+          Judge this tag instead of the pushed one, e.g.
+          personium-152.0.7977.75 (already published — must be REFUSED) or
+          personium-152.0.7977.75.1 (must PASS).
+        required: true
+        type: string
+
+# Reads the public releases API and nothing else. Nothing here writes.
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: "3.13"
+
+      - name: Tag must be strictly newer than the newest published engine release
+        # NO `pip install` STEP, DELIBERATELY. The gate imports
+        # src/services/engine/updater.py so the comparison is the CLIENT'S OWN
+        # (`parse_version`, which keeps every numeric chunk and therefore sorts
+        # a five-component revision correctly) rather than a re-implementation
+        # that could drift from it. That import chain is stdlib-only — verified
+        # by tests/test_ps410_engine_release_preflight.py, which fails if it
+        # ever stops being true — so a dependency install would buy nothing and
+        # would add a way for this cheap gate to go red for an unrelated reason.
+        #
+        # Exit 2 (the published set could not be READ) fails this job on
+        # purpose: a gate that waves a tag through when it could not look is
+        # the green-that-proves-nothing this exists to remove.
+        run: python3 scripts/ps410_engine_release_preflight.py --tag "${TAG}"
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
