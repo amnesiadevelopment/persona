@@ -335,6 +335,68 @@ verdict.
 
 ---
 
+## ⛔ ROUND 2 — CI FOUND A DEFECT THIS CONTAINER STRUCTURALLY CANNOT SEE
+
+⭐ **This is the round's most useful finding, and it came from the one venue a
+Linux container cannot substitute for.** The touched suites were green here on
+every run; the macOS and Windows `main` lanes were red — on **six of this
+branch's own tests**. In both classes the *instrument* was lying, not the
+product.
+
+### Class 1 — five record-lifecycle tests assumed a file that off Linux is
+### deliberately never written
+
+`test_each_session_truncates_the_previous_series`,
+`test_the_cap_stops_the_record_and_says_that_it_did`,
+`test_a_raising_sampler_does_not_escape_run`,
+`test_no_profile_name_is_written_into_the_record` and
+`test_the_record_says_what_its_matcher_matched_on` all opened `rec.path`
+unconditionally. Off Linux `series_capability()["recorded"]` is **False** and
+the recorder writes **nothing at all** — which is decision 1 working exactly as
+designed (recording psutil's hard-coded nonvoluntary `0` would forge the
+`sigstop` signature). So they died with `FileNotFoundError`.
+
+⚠️ **The point is not the five red tests, it is that no amount of local
+re-running would ever have found them.** The property each one pins is the
+WRITER's own contract — truncation, the byte cap, the error line, the name
+absence — and none of it is platform-specific: the sampler underneath resolves
+an empty tree on a box with no `/proc` (`engine_pids_for` returns `[]`), which
+is a legitimate reading rather than a broken one. So the **capability gate** is
+now forced by a named `recording_platform` fixture whose docstring says why,
+and the gate ITSELF stays pinned by
+`test_a_platform_that_cannot_measure_writes_no_file_at_all` — the one test that
+must **not** use the fixture, because it asserts the gate.
+
+### Class 2 — the denial test could not arrange the denial it asserted
+
+`test_a_denied_sample_is_null_and_counted_never_zero` arranged its denial with
+`os.chmod(path, 0o000)`. **Windows' mode bits are advisory** — the owner still
+opens the file. So on Windows the test believed it had arranged a denial, had
+not, and **asserted the ORDINARY path while reporting green**.
+
+⛔ That is the worst shape a guard can have, and it is the PS-299 / PS-341
+family one level in: a guard that cannot arrange the state it is guarding
+against does not fail loudly, it passes quietly. AC #4 — *"an unreadable sample
+is recorded as unread, never as a zero"* — was the single most important
+property in the module, and on two of three platforms its guard was inert.
+Denial is now injected at the `open` boundary, which is the same code path the
+module actually meets, on all three platforms.
+
+### Falsified, with a control
+
+| arrangement | result |
+|---|---|
+| the fix, under a simulated non-Linux platform (`IS_LINUX` forced False) | **26 passed** (control) |
+| drop `recording_platform` from one lifecycle test, same simulation | **1 fail** |
+| restore `os.chmod` as the denial, under simulated *advisory* chmod | **1 fail** |
+
+⭐ **AC #9 arriving from the other side.** The ticket asked that the platform
+scope be *named* rather than papered over, and it is — in the product. What CI
+showed is that the **tests** have to say it deliberately too, rather than by
+accident of where they happened to run.
+
+---
+
 ## ⛔ ROUND 2 — the matcher was WRONG IN TWO DIRECTIONS AT ONCE, and the
 ## suggested fix was wrong in a third
 
@@ -516,3 +578,10 @@ everyone; the one process it may never count is the one asking.
 5. **The cost figure is container-specific.** `0.14%` of one core was measured
    in a 41-process `/proc`; the scaling arm shows `2.57%` at 1600 processes.
    Neither is "the" cost — see AC #8.
+6. ⛔ **The macOS/Windows arms of the RECORDER are still unmeasured, and the
+   round-2 test fix does not change that.** What CI found was that five tests
+   asserted a file the product deliberately never writes off Linux, and that
+   the denial guard was inert on Windows. Both are now fixed — but the fixture
+   forces the capability GATE so the WRITER's contract can be tested; it does
+   not measure a macOS or Windows `/proc`, because there is none. AC #9's scope
+   stands exactly as stated: this series exists on Linux alone.
