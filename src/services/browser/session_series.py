@@ -252,17 +252,32 @@ def engine_pids_for(profile_dir: str, proc_root: str = "/proc") -> "list[int]":
     therefore the one matcher that works on both arms without being told which
     arm it is on.
 
+    ⛔ AND IT EXCLUDES THE OBSERVER'S OWN PID EXPLICITLY, which is not
+    paranoia — it FIRED. Building this module's own falsification harness, the
+    harness took the profile dir as ``argv[1]``, so its cmdline contained the
+    path, so this matcher returned the harness's pid as a member of the tree it
+    was observing. That is PS-185's lesson one level down (a worker lost two
+    cycles to a ``pkill -f chromium`` that matched its own command line), and
+    for a RECORDER the damage is quieter than a kill and no less wrong: every
+    sample would carry the observer's own cpu folded into the session's, and
+    the record would attribute persona's work to the engine. A path matcher is
+    a substring test and a substring test sees everyone; the one process it may
+    never count is the one asking.
+
     Returns a sorted list; an unreadable ``/proc`` entry is SKIPPED here (the
     process exited between listdir and open, which is ordinary) and the
     caller's per-pid read is where a DENIAL is counted — see ``_sample``.
     """
     found: "list[int]" = []
+    self_pid = os.getpid()
     try:
         entries = os.listdir(proc_root)
     except OSError:
         return []
     for entry in entries:
         if not entry.isdigit():
+            continue
+        if int(entry) == self_pid:
             continue
         try:
             with open(os.path.join(proc_root, entry, "cmdline"), "rb") as fh:
