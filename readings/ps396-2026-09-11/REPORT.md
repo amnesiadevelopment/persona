@@ -209,6 +209,29 @@ suites, the manager stop hook, and PS-330's convention test).
 by the set diff above plus a targeted re-run — not by a second 25-minute
 full-suite run, which would have measured the same 77 container artifacts again.
 
+### The set diff's own blind spot, checked rather than assumed
+
+A **counting** test (a ratchet, a coverage floor, a lint total) that is red on
+BOTH sides **cancels out of a set diff** while the number inside it moves — a
+PR can add eleven violations and still truthfully report "failure sets
+identical" (measured on PS-202, where exactly that hid eleven new encoding
+violations). So the both-red set was examined rather than waved through:
+
+```
+comm -12 base.txt mine.txt              -> 77 tests, in 6 files
+grep -lE "ratchet|must stay at zero|do not grow|no new "  -> none of them
+normalise every numeric assertion message to N, diff the multiset
+                                        -> the only difference is the
+                                           encoding ratchet's own message,
+                                           present in the branch run and
+                                           absent after the fix
+```
+
+All 77 both-red tests are plain `invisible_playwright` / `playwright` import
+failures carrying no counting assertion. And the closing check is stronger than
+the diff: both encoding ratchets now **pass outright** — zero, not a lowered
+number.
+
 ### Each guard was falsified by breaking the property it asserts
 
 A test that cannot fail is not evidence. Before shipping, each was made to fail:
