@@ -28,7 +28,7 @@ import sys
 import threading
 import time
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 
 from src.services.browser.session_series import (  # noqa: E402
     SessionSeriesRecorder,
