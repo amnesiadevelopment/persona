@@ -2111,6 +2111,162 @@ def test_the_open_cells_are_the_deliverable_and_are_named():
     # for: it shrinks only against a reading.
 
 
+def _harness_builder_census():
+    """Every ``build_*_extension`` call in ``masking_layer._chromium_builders``,
+    with its condition — the HARNESS's answer to :func:`_builder_census`.
+
+    Same AST walk as the product's, over the harness's own list, so the two are
+    directly comparable. ``IfExp`` and the starred-list-comprehension form are
+    walked as conditions too: a gate written ``*([...] if cond else [])`` is a
+    gate, and a census that only understood ``if`` statements would read it as
+    unconditional — which is exactly the false green this pair exists to refuse.
+
+    Returns ``{vector: condition_source}``; ``""`` for an unconditional call.
+    """
+    src = inspect.cleandoc(inspect.getsource(masking_layer._chromium_builders))
+    tree = ast.parse(src)
+    fn = tree.body[0]
+    found = {}
+
+    def walk(node, stack):
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, ast.If):
+                test = ast.get_source_segment(src, child.test)
+                for sub in child.body:
+                    walk(sub, stack + [test])
+                for sub in child.orelse:
+                    walk(sub, stack + [f"NOT ({test})"])
+                continue
+            if isinstance(child, ast.IfExp):
+                test = ast.get_source_segment(src, child.test)
+                walk(child.body, stack + [test])
+                walk(child.orelse, stack + [f"NOT ({test})"])
+                continue
+            if (
+                isinstance(child, ast.Call)
+                and isinstance(child.func, ast.Name)
+                and child.func.id.startswith("build_")
+                and child.func.id.endswith("_extension")
+            ):
+                found[child.func.id[len("build_") : -len("_extension")]] = (
+                    " and ".join(stack)
+                )
+            walk(child, stack)
+
+    walk(fn, [])
+    return found
+
+
+# The vectors the harness deliberately does NOT carry, each with the reason
+# ``masking_layer`` states for it IN ITS OWN WORDS. Named as data rather than
+# subtracted inline so the exclusion cannot quietly widen to cover a vector
+# somebody would rather not state a position on — the same discipline
+# ``NON_MASKING_BUILDERS`` applies on the product side.
+HARNESS_EXCLUDED_BUILDERS = {
+    # A settings override rather than masking. The harness and the matrix
+    # exclude it on the PRODUCT's own grounds — see
+    # ``test_search_extension_is_excluded_on_the_products_own_grounds``.
+    "search",
+    # Belongs to a mobile profile, which a desktop checker run is not.
+    "mobile",
+}
+
+# Vectors the product gates and the harness does NOT — because the harness has
+# already SETTLED the product's condition at construction, so the gate has
+# nothing left to decide. ``{vector: the product condition it settles}``.
+#
+# ⛔ THIS IS NOT AN ESCAPE HATCH, AND THE PINNED CONDITION TEXT IS WHY. The
+# value is the product's condition VERBATIM, re-derived from its AST below, so a
+# gate that MOVES turns this red and the settlement has to be re-argued against
+# the new condition rather than inherited. Adding an entry is a claim that the
+# harness cannot reach the other branch AT ALL; if it can, the entry is wrong
+# and the drift is real.
+HARNESS_SETTLED_CONDITIONS = {
+    # ``device`` is the ELSE of the product's mobile branch, and a
+    # ``build_chromium_layer`` run is a DESKTOP checker run BY CONSTRUCTION: it
+    # declares one of ``browser_tier.DECLARED_MACHINES`` (windows/macos/linux)
+    # and carries no mobile preset, so ``is_mobile`` is false for every run this
+    # harness can be asked for and the else-branch is the only reachable one.
+    # ``masking_layer`` states the same fact in the same words at its ``gpu``
+    # thunk ("a DESKTOP checker run by construction ... a mobile declared
+    # machine is not a thing this tier can be asked for"), which is why its
+    # sibling ``mobile`` is an EXCLUSION above rather than a settlement here.
+    "device": "NOT (is_mobile and preset is not None)",
+}
+
+
+def test_the_harness_gates_every_vector_the_product_gates():
+    """⭐ THE DRIFT INSTRUMENT THIS CLASS HAS BEEN MISSING (PS-423).
+
+    Four instances of ONE mechanism, each found by a PERSON rather than by an
+    instrument: PS-103 and PS-150 (a harness vector set quietly diverged from
+    the product's), PS-415/PS-211 (the tier's argv drifted by three fingerprint
+    switches), and this one — PS-409 made the product's ``measuretext``
+    extension CONDITIONAL and the harness went on loading it unconditionally,
+    so a harness run on a fixed engine would measure a browser persona does not
+    ship.
+
+    Every earlier instrument in this file compares MEMBERSHIP — which vectors
+    each side carries — and membership is precisely the dimension in which this
+    fourth instance did NOT differ. ``measuretext`` was in both lists; what
+    diverged was the CONDITION one of them sat under, a dimension no check had.
+    So this asserts the two censuses agree on CONDITIONALITY, which is the
+    generalisation: make any product builder conditional and this goes red until
+    the harness follows it or states why.
+
+    ⚠️ IT COMPARES WHETHER, NOT HOW. The two conditions are written in different
+    vocabularies on purpose — the product reads the engine at the launch site
+    (``measuretext_repair_required()``), the harness takes the answer as a
+    parameter (``install_measuretext``), which is what keeps its two authorities
+    separately stated and both arms testable with no engine on disk. Demanding
+    identical SOURCE would force the harness to re-read on-disk engine state
+    inside its builder list, so the claim is deliberately the weaker, true one.
+
+    A vector the harness deliberately does not carry at all is named in
+    ``HARNESS_EXCLUDED_BUILDERS`` with its stated reason, and ``geo`` is
+    conditional on BOTH sides already (``proxy`` there, ``include_geo`` here).
+    A vector whose product condition the harness has SETTLED at construction is
+    named in ``HARNESS_SETTLED_CONDITIONS`` against that condition's verbatim
+    source, so a gate that moves re-opens the settlement instead of inheriting
+    it.
+    """
+    product = {
+        v: c
+        for v, c in _builder_census().items()
+        if v not in HARNESS_EXCLUDED_BUILDERS
+    }
+    harness = _harness_builder_census()
+
+    assert set(product) == set(harness), (
+        "the harness's builder list and the product's no longer carry the same "
+        "vectors. That is PS-103/PS-150's drift class: a harness measuring a "
+        "browser persona does not ship. Follow the product, or state the "
+        "exclusion in HARNESS_EXCLUDED_BUILDERS with its reason."
+    )
+    # The settlements are checked against the CURRENT product source first, so a
+    # gate that moved cannot keep its exemption on the strength of the old one.
+    for vector, settled in HARNESS_SETTLED_CONDITIONS.items():
+        assert product.get(vector) == settled, (
+            f"{vector!r} is exempted from the conditionality check on the "
+            f"grounds that the harness settles {settled!r} by construction, but "
+            f"the product's condition now reads {product.get(vector)!r}. "
+            "Re-argue the settlement against the NEW condition — an exemption "
+            "is a claim about a specific gate, not a permanent pass."
+        )
+    for vector in sorted(product):
+        if vector in HARNESS_SETTLED_CONDITIONS:
+            continue
+        assert bool(product[vector]) == bool(harness[vector]), (
+            f"{vector!r} is conditional in the PRODUCT ({product[vector]!r}) "
+            f"and unconditional in the HARNESS ({harness[vector]!r}) — or the "
+            "reverse. This is PS-423's drift class and it is invisible to every "
+            "membership check in this file: both lists name the vector, and "
+            "only one of them gates it. Follow the gate in BOTH of the "
+            "harness's authorities (the builder list AND "
+            "chromium_expected_vectors), or record why it must not be followed."
+        )
+
+
 def test_no_cell_claims_coverage_without_a_route():
     # The invariant that makes the matrix worth asserting: a COVERED cell must
     # be traceable to a route the product actually takes — a Chromium builder or
