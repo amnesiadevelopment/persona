@@ -1,0 +1,38 @@
+INSTRUMENT CHECK: arm=signal matched 11 engine processes
+SIGSTOP -> 11 pids at t~16s
+
+FILE /tmp/ps396-arm/s2/.persona-session-series/series.jsonl  4273 bytes, 30 lines (28 samples)
+     t nproc      cpu  ctxt_v ctxt_nv denied  gone
+   0.0     3     None    None    None      0     0
+   1.0    11     47.9     914     451      0     0
+   2.0    11    117.0     166      79      0     0
+   3.0    11    107.4      50      17      0     0
+   4.0    11    105.4      34      27      0     0
+   5.1    11    106.2      84      29      0     0
+   6.1    11    101.4      50      18      0     0
+   7.1    11    102.4      72      20      0     0
+   8.1    11    103.1      91      48      0     0
+   9.1    11    103.3      64      72      0     0
+  10.1    11    103.4      54      23      0     0
+  11.1    11    106.3      64      30      0     0
+  12.1    11    102.3      33      16      0     0
+  13.1    11    107.2      49       9      0     0
+  14.1    11    103.2      40      92      0     0
+  15.1    11    102.5      80      77      0     0
+  16.1    11     88.9     112      38      0     0
+  17.1    11      0.0       0       0      0     0
+  18.2    11      0.0       0       0      0     0
+  19.2    11      0.0       0       0      0     0
+  20.2    11      0.0       0       0      0     0
+  21.2    11      0.0       0       0      0     0
+  22.2    11      0.0       0       0      0     0
+  23.2    11      0.0       0       0      0     0
+  24.2    11      0.0       0       0      0     0
+  25.2    11      0.0       0       0      0     0
+  26.2    11      0.0       0       0      0     0
+  27.2    11      0.0       0       0      0     0
+
+BEFORE half: cpu med=103.4 ctxt_v med=64
+AFTER  half: cpu med=0.0 ctxt_v med=0
+
+COST: 28 samples over 27.2s = 1.03 samples/s; 4273 bytes -> 552.3 KiB/hour at this cadence

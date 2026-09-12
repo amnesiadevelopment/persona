@@ -1,5 +1,6 @@
 import atexit
 import contextlib
+import os
 import re
 import subprocess
 import threading
@@ -825,6 +826,48 @@ class BrowserLauncher:
                         self._forget_session_facts(profile.name)
                     self._lock.notify_all()
                 raise
+
+            # PS-396 — THE SESSION RECORDS ITS OWN cpu/ctxt SERIES. NOTHING
+            # READS IT.
+            #
+            # A third per-session daemon thread, on the established pattern of
+            # the two above, writing the OS's own view of the engine tree into
+            # the profile's own directory for the life of the session. It is a
+            # RECORDING, not a detection: there is no threshold, no verdict, no
+            # watchdog and no termination path, because the reading that
+            # authorised it measured a HEALTHY session scoring worse on the
+            # discriminating axis than a WEDGED one (PS-349 Recommendation 1;
+            # readings/ps349-2026-09-09/PROBE.md:228-239). See
+            # session_series.py, which states the four decisions in full.
+            #
+            # ⛔ ITS OWN try/except, DELIBERATELY OUTSIDE THE ARM ABOVE, and
+            # this is the whole reason it is a separate block rather than a
+            # third `threading.Thread(...)` line inside that try. That arm
+            # calls `terminate(proc, ...)` and unregisters the session, which
+            # is CORRECT for the monitor and wait threads — without them a live
+            # browser is never drained or reaped — and CATASTROPHIC here. A
+            # thread-table exhaustion that stopped a RECORDING thread from
+            # starting must not tear down a live browser with the operator's
+            # account sessions open. The sampler's failure costs the series and
+            # never the session, on the shape this file already states twice in
+            # its own words ("A registry write that cannot happen must cost us
+            # the guard, never the session"; "Losing the record costs the
+            # guard; losing the monitor costs the session").
+            #
+            # It is handed `stop_event` — the session's own notifier — so the
+            # thread ends WITH the session and holds nothing that could keep it
+            # alive. It receives the profile DIRECTORY and never the profile,
+            # so it cannot write the operator's private label into the file
+            # (PS-330's sharing convention; see session_series.py decision 2).
+            with contextlib.suppress(Exception):
+                from ...core.config import DATA_DIR
+                from .session_series import start_recording
+
+                start_recording(
+                    os.path.join(DATA_DIR, profile.name),
+                    stop_event,
+                    engine=engine_name,
+                )
         except Exception as e:
             # Classify BEFORE taking the lock. classify_refusal is pure and
             # allocation-only, so holding the lock across it is safe today —

@@ -1,0 +1,20 @@
+/proc population                41 numeric entries
+tree size (nproc)               11 processes
+samples measured                30
+per-sample median             2.83 ms
+per-sample mean               2.80 ms
+cadence                        2.0 s
+samples/second               0.500
+bytes/sample                   103 B
+bytes/hour                   181.1 KiB
+cap reached after             22.6 h
+⚠️ cpu cost                   0.14 % of ONE core
+   (= per-sample wall time / cadence; wall time, not cpu time, so
+    it is an upper bound — a sample blocked on a /proc read is
+    counted as if it were spinning.)
+
+/proc entries   walk time   extrapolated % of one core at 2 s
+          100      2.98 ms         0.15 %
+          400     12.01 ms         0.60 %
+          800     22.86 ms         1.14 %
+         1600     51.50 ms         2.57 %
