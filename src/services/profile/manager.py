@@ -52,6 +52,12 @@ logger = get_logger("profile.manager")
 #: BESIDE DATA_DIR, never inside it.
 TRASH_DIR_NAME = "trash_data"
 
+#: Persisted per-profile fields whose recorded verdict is only meaningful for
+#: the engine it was recorded under, and which ``update_profile`` therefore
+#: clears when the engine actually changes. See the comment at the clear site.
+#: A third such field is one line here, not a fourth branch there.
+ENGINE_SCOPED_VERDICT_FIELDS = ("cookie_import_status", "cert_trust_status")
+
 
 def trash_data_root() -> str:
     """The park area for trashed profile data dirs: a SIBLING of DATA_DIR, never
@@ -766,6 +772,46 @@ class ProfileManager(StoreGuardMixin, TrashableMixin):
             if new_device_type is not None:
                 profile.device_type = new_device_type
             if new_engine is not None:
+                if normalize_engine(new_engine) != normalize_engine(
+                    profile.engine
+                ):
+                    # Both verdicts in ENGINE_SCOPED_VERDICT_FIELDS record the
+                    # outcome of an operation performed under the engine being
+                    # replaced here, and neither claim survives the swap:
+                    #
+                    #   cookie_import_status — the cookie store is
+                    #   Chromium-shaped end to end (`Default/Cookies`, values in
+                    #   Chromium's v10/AES scheme). Firefox opens
+                    #   `cookies.sqlite` at the profile root and never reads that
+                    #   tree, which is why `_cookie_engine_refusal` (ui/app.py)
+                    #   refuses import AND export outright on that engine. Kept,
+                    #   "creep.json · 11 cookies" renders on every dialog open
+                    #   beside the button that calls the same operation
+                    #   unavailable — an affirmative claim of a warm identity
+                    #   the new engine cannot see.
+                    #
+                    #   cert_trust_status — a Firefox-only verdict; the Chromium
+                    #   arm trusts via --ignore-certificate-errors-spki-list and
+                    #   cannot soft-fail this way. Kept, a stale "trusted" is a
+                    #   clean bill of health for a CA trust attempt made on the
+                    #   other engine.
+                    #
+                    # None is each field's own "never attempted" — the same
+                    # reading the conditional cert clear below relies on.
+                    #
+                    # Conditional for the reason written out at the cert clear
+                    # below: update_profile runs on EVERY field edit, so an
+                    # unconditional clear would discard a real verdict on a
+                    # rename or a notes edit — and a PATCH that re-sends the
+                    # SAME engine value is not a change.
+                    #
+                    # Compared through normalize_engine because "camoufox" is
+                    # the retired spelling of the Firefox engine: a raw `!=`
+                    # would read a legacy record's camoufox -> firefox as an
+                    # engine change and discard two verdicts that are still
+                    # exactly about the engine the profile already had.
+                    for _field in ENGINE_SCOPED_VERDICT_FIELDS:
+                        setattr(profile, _field, None)
                 profile.engine = new_engine
             if new_resolution is not None:
                 profile.resolution = new_resolution
