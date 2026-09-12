@@ -100,7 +100,14 @@ ANDROID_PRESETS = [
             "(KHTML, like Gecko) Chrome/{chrome} Mobile Safari/537.36"
         ),
         width=393, height=873, dpr=2.75,
-        device_memory=12, hardware_concurrency=8,
+        # ⛔ 8, NOT 12 — and the 12 was not a typo about this device. The Xiaomi
+        # 13 genuinely ships 12 GB of RAM, so 12 is the true hardware figure and
+        # the wrong value to DECLARE: `navigator.deviceMemory` reports RAM
+        # rounded DOWN to a power of two and capped at 8, so a real Xiaomi 13
+        # reports 8. Declaring the hardware truth published a number the API
+        # cannot produce, which identified persona to any script that knows the
+        # legal set — no baseline, no comparison (PS-395).
+        device_memory=8, hardware_concurrency=8,
         platform="Android", model="2211133G",
     ),
 ]
