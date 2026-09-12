@@ -20,6 +20,7 @@ from .worker_wrap import (
     CHROMIUM_WORKER_CLOAK,
     WorkerCloak,
     chromium_leaf_cloak_js,
+    chromium_native_wrap_js,
     firefox_native_wrap_js,
     firefox_worker_cloak,
     realm_bootstrap_js,
@@ -81,60 +82,28 @@ _BUDGET = 512
 # shared, and the two engines differ solely in how a wrapper is made to
 # stringify as a native built-in.
 #
-# Chromium's form is the ORIGINAL text, unchanged and pinned byte-for-byte by
-# tests/test_webgl_ext.py. Chromium's readback is the baseline every prior
-# reading was taken against (PS-78 boundary: "Chromium is unchanged"), so this
-# seam must reproduce it EXACTLY, not merely equivalently.
+# Chromium's form comes from ONE emitter, `worker_wrap.chromium_native_wrap_js`
+# (PS-425) — it used to be a pasted copy here, with two more in audio_ext and
+# gpu_ext, and `db774ef` had already drifted one of them by a word. What pins it
+# is EXECUTION, not text: `tests/test_ps314_native_wrapper_shape.py` builds the
+# real extension, runs the generated script in a realm and asserts `readPixels`
+# reads `["length","name"]` with arity 7 (:328), against a positive control at
+# :242 that proves that green can go red.
+# `tests/test_ps215_cross_realm_buffer.py` binds the `_CHROMIUM_NATIVE_WRAP`
+# name below.
+#
+# (An earlier note here claimed the bytes were "pinned byte-for-byte by
+# tests/test_webgl_ext.py". They were not — that file never mentioned
+# `nativeWrap`. The execution-based control above is the stronger one, and it is
+# what makes a single emitter safe.)
+#
+# Chromium's readback is the baseline every prior reading was taken against
+# (PS-78 boundary: "Chromium is unchanged"), so this seam must reproduce it
+# EXACTLY, not merely equivalently.
 _CHROMIUM_NATIVE_WRAP = (
     chromium_leaf_cloak_js(2)
     + "\n"
-    + r"""  function nativeWrap(orig, replacement) {
-    // RE-HOUSE the caller's function EXPRESSION inside a real method shorthand.
-    //
-    // A sloppy-mode function expression owns `prototype`, `arguments` and
-    // `caller`; a native method owns exactly ["length","name"]. So the FORM the
-    // callsite happened to type is a one-line tell, readable by
-    // Object.getOwnPropertyNames without calling anything — an axis entirely
-    // independent of the toString cloak below. `delete replacement.prototype`
-    // cannot repair it (non-configurable: it returns false in sloppy mode and
-    // throws in strict), so the shape has to be right AT CREATION. Doing it
-    // here rather than at ~18 callsites means no spoofed VALUE is disturbed.
-    //
-    // `.apply(this, arguments)` keeps the receiver and the full argument list,
-    // so a re-housed wrapper is behaviourally identical to the expression.
-    var shell;
-    try {
-      shell = ({ m() { return replacement.apply(this, arguments); } }).m;
-    } catch (e) {
-      // If the shorthand form is somehow unavailable, a correctly-spoofing
-      // wrapper with a wrong shape beats no wrapper at all.
-      shell = replacement;
-    }
-    try {
-      // Arity is a second axis: a shape fix that moves `length` swaps one tell
-      // for another. Copy it from the ORIGINAL at runtime — never a literal,
-      // which would go stale silently against a future engine.
-      Object.defineProperty(shell, 'length', { value: orig.length });
-      Object.defineProperty(shell, 'name', { value: orig.name });
-    } catch (e) {}
-    // Register for THIS LEAF's own Function.prototype.toString cloak (spliced
-    // above it) so a detector calling
-    // Function.prototype.toString.call(replacement) reads native. A plain
-    // replacement.toString override is bypassed by that .call form.
-    //
-    // ⛔ THE MARK LIVES IN A CLOSURE WEAKMAP, NOT AN OWN PROPERTY (PS-368).
-    // This used to pin `__pnaName`, read cross-script by native_ext's
-    // applyNativePatch — which is what made a marker work at all across twelve
-    // content scripts with no shared closure, and what made every wrapper own
-    // ["__pnaName","length","name"] where a native function owns two names.
-    // That third name was readable in one line by
-    // `Object.getOwnPropertyNames(fn)`, entirely independently of the toString
-    // cloak it existed to serve, and it identified persona SPECIFICALLY rather
-    // than a wrapper generically. It was recorded here as a deliberate trade;
-    // measurement on the wrappers refuted the trade, and this leaf now carries
-    // its own cloak so the marker has nothing left to buy.
-    return __pncMark(shell, orig.name);
-  }"""
+    + chromium_native_wrap_js(2)
 )
 
 _CONTENT_SCRIPT = r"""
