@@ -1510,6 +1510,105 @@ def firefox_native_wrap_js() -> str:
 
 
 # ---------------------------------------------------------------------------
+# The CHROMIUM `nativeWrap` seam (PS-314/PS-368), as ONE emitter (PS-425)
+# ---------------------------------------------------------------------------
+#
+# This text used to exist as THREE pasted copies — audio_ext.py, webgl_ext.py
+# and gpu_ext.py — while its Firefox twin above was already a single emitter.
+# The drift that argument predicts had already happened by the time it was
+# extracted: `db774ef` (PS-368) edited all three copies in ONE commit and landed
+# `+37 / +38 / +37` lines, the odd count being a one-word divergence inside a
+# comment (`// above)` on gpu where audio and webgl carry `// above it)`). The
+# copies were behaviourally identical, so nothing was detectable — but a coupled
+# edit to a three-copy masking seam is exactly how a wrapper-shape tell comes
+# back on one leaf while the other two stay clean.
+#
+# The divergence is resolved toward the audio/webgl wording, which two of three
+# copies carried and which is the grammatical form; the gpu variant is what the
+# partial edit produced.
+#
+# ⛔ SAME RULE AS `chromium_leaf_cloak_js` BELOW: do NOT paste the emitted body
+# back into a leaf. A leaf fills it from here — through a `__NATIVE_WRAP__`
+# placeholder in its template, or by concatenation into its own
+# `_CHROMIUM_NATIVE_WRAP` — so the seam has ONE source.
+#
+# ⚠️ DISTINCT FROM `_FIREFOX_NATIVE_WRAP` ABOVE, which is NOT a duplicate of
+# this and must not be merged into it: that form reaches SpiderMonkey's exact
+# native set through the `__nm` WeakMap its own leaf-side cloak reads, and
+# carries `configurable: true` on `name`/`length` where this one does not. Two
+# engines, two native shapes, two emitters.
+_CHROMIUM_NATIVE_WRAP_BODY = r"""function nativeWrap(orig, replacement) {
+  // RE-HOUSE the caller's function EXPRESSION inside a real method shorthand.
+  //
+  // A sloppy-mode function expression owns `prototype`, `arguments` and
+  // `caller`; a native method owns exactly ["length","name"]. So the FORM the
+  // callsite happened to type is a one-line tell, readable by
+  // Object.getOwnPropertyNames without calling anything — an axis entirely
+  // independent of the toString cloak below. `delete replacement.prototype`
+  // cannot repair it (non-configurable: it returns false in sloppy mode and
+  // throws in strict), so the shape has to be right AT CREATION. Doing it
+  // here rather than at ~18 callsites means no spoofed VALUE is disturbed.
+  //
+  // `.apply(this, arguments)` keeps the receiver and the full argument list,
+  // so a re-housed wrapper is behaviourally identical to the expression.
+  var shell;
+  try {
+    shell = ({ m() { return replacement.apply(this, arguments); } }).m;
+  } catch (e) {
+    // If the shorthand form is somehow unavailable, a correctly-spoofing
+    // wrapper with a wrong shape beats no wrapper at all.
+    shell = replacement;
+  }
+  try {
+    // Arity is a second axis: a shape fix that moves `length` swaps one tell
+    // for another. Copy it from the ORIGINAL at runtime — never a literal,
+    // which would go stale silently against a future engine.
+    Object.defineProperty(shell, 'length', { value: orig.length });
+    Object.defineProperty(shell, 'name', { value: orig.name });
+  } catch (e) {}
+  // Register for THIS LEAF's own Function.prototype.toString cloak (spliced
+  // above it) so a detector calling
+  // Function.prototype.toString.call(replacement) reads native. A plain
+  // replacement.toString override is bypassed by that .call form.
+  //
+  // ⛔ THE MARK LIVES IN A CLOSURE WEAKMAP, NOT AN OWN PROPERTY (PS-368).
+  // This used to pin `__pnaName`, read cross-script by native_ext's
+  // applyNativePatch — which is what made a marker work at all across twelve
+  // content scripts with no shared closure, and what made every wrapper own
+  // ["__pnaName","length","name"] where a native function owns two names.
+  // That third name was readable in one line by
+  // `Object.getOwnPropertyNames(fn)`, entirely independently of the toString
+  // cloak it existed to serve, and it identified persona SPECIFICALLY rather
+  // than a wrapper generically. It was recorded here as a deliberate trade;
+  // measurement on the wrappers refuted the trade, and this leaf now carries
+  // its own cloak so the marker has nothing left to buy.
+  return __pncMark(shell, orig.name);
+}"""
+
+
+def chromium_native_wrap_js(indent: int = 2) -> str:
+    """The ``nativeWrap`` seam a CHROMIUM leaf splices beside its own cloak.
+
+    THE ONLY SOURCE OF THIS TEXT, on the same terms as
+    ``chromium_leaf_cloak_js`` and ``firefox_native_wrap_js``.
+
+    Returns the Chromium form: re-houses the caller's function expression in a
+    method shorthand so the wrapper owns exactly ``["length","name"]``, copies
+    arity and name off the ORIGINAL at runtime, and registers the wrapper with
+    the leaf's own closure-WeakMap cloak via ``__pncMark``.
+
+    It therefore REQUIRES ``__pncMark`` to be in scope, which means
+    ``chromium_leaf_cloak_js`` must be spliced into the same leaf body — every
+    caller already does this, and the two belong together.
+
+    ``indent`` is the leaf body's own indentation. All three Chromium leaves
+    splice this at 2, which is why that is the default; a wrong value here is a
+    real mismatch rather than cosmetic, exactly as for the sibling emitters.
+    """
+    return textwrap.indent(_CHROMIUM_NATIVE_WRAP_BODY, " " * indent)
+
+
+# ---------------------------------------------------------------------------
 # The CHROMIUM LEAF's own closure-WeakMap cloak (PS-368)
 # ---------------------------------------------------------------------------
 #
