@@ -140,6 +140,7 @@ The matrix, for ONE profile per column:
 import ast
 import inspect
 import json
+import textwrap
 from pathlib import Path, PurePath
 
 import pytest
@@ -648,25 +649,40 @@ DEVICE_EXT_RATIONALE = (
 # --- census helpers: read the product's own AST ------------------------------
 
 
-def _builder_census():
-    """Every ``build_*_extension`` call in ``spawn_browser``, with its condition.
+def _census_builders(src, fn):
+    """``{vector: condition_source}`` for every ``build_*_extension`` call under
+    ``fn``, walking the AST rather than matching text.
 
-    Walks the PRODUCT's AST rather than matching text, and rather than importing
-    a hand-written list. That is the whole drift-proofing: a thirteenth masking
-    builder appears here the moment it is added to ``spawn_browser``, and the
-    census tests below fail because the matrix does not know it — which is the
-    parity question being asked out loud.
+    ⭐ ONE WALKER, SHARED BY BOTH SIDES, AND THAT IS THE POINT (PS-423 rework).
+    :func:`_builder_census` (the PRODUCT) and :func:`_harness_builder_census`
+    (the HARNESS) both call this, so the two censuses cannot differ in FIDELITY
+    — only in which function they are pointed at.
 
-    Returns ``{vector: condition_source}``; ``""`` for an unconditional call and
-    ``"NOT (...)"`` for one on an ``else`` branch.
+    That asymmetry was a real defect, not a tidiness concern. This helper was
+    first written with the ``IfExp`` arm on the harness side ONLY, because the
+    harness's gate is written as a ternary and the product's as a statement.
+    The result was two censuses of unequal fidelity feeding ONE equality
+    assertion, and the gap ran in the dangerous direction: a PRODUCT gate
+    written ``extensions.extend([...] if native_repair_required() else [])``
+    read as UNCONDITIONAL, matched an unconditional harness, and
+    ``test_the_harness_gates_every_vector_the_product_gates`` passed on exactly
+    the fifth instance it exists to catch. Measured, both forms, in
+    ``test_the_conditionality_instrument_reads_a_TERNARY_gate_as_a_gate``. A
+    shared walker makes that class of divergence UNREPRESENTABLE rather than
+    merely fixed, which is the right shape for a test whose whole subject is
+    two authorities drifting apart.
+
+    Both gate FORMS are walked, because both are gates:
+
+    * ``ast.If`` — the statement form, with ``"NOT (...)"`` for an ``else``
+      branch;
+    * ``ast.IfExp`` — the ternary/starred-comprehension form
+      ``*([...] if cond else [])``. A census that only understood ``if``
+      statements would read this as unconditional, which is the false green.
+
+    ``""`` means unconditional. ``src`` must be the exact source ``fn`` was
+    parsed from — ``ast.get_source_segment`` reads offsets back out of it.
     """
-    src = inspect.getsource(process_mod)
-    tree = ast.parse(src)
-    fn = next(
-        n
-        for n in ast.walk(tree)
-        if isinstance(n, ast.FunctionDef) and n.name == "spawn_browser"
-    )
     found = {}
 
     def walk(node, stack):
@@ -677,6 +693,11 @@ def _builder_census():
                     walk(sub, stack + [test])
                 for sub in child.orelse:
                     walk(sub, stack + [f"NOT ({test})"])
+                continue
+            if isinstance(child, ast.IfExp):
+                test = ast.get_source_segment(src, child.test)
+                walk(child.body, stack + [test])
+                walk(child.orelse, stack + [f"NOT ({test})"])
                 continue
             if (
                 isinstance(child, ast.Call)
@@ -690,6 +711,43 @@ def _builder_census():
 
     walk(fn, [])
     return found
+
+
+def _census_function(func):
+    """``(src, fn)`` for :func:`_census_builders`, from a function OBJECT.
+
+    ``textwrap.dedent`` rather than ``inspect.cleandoc``: a nested definition
+    comes back indented and will not parse, and ``cleandoc`` is docstring
+    normalisation that happens to dedent — reaching for it here reads as a
+    difference where there is none. Verified identical output for both census
+    subjects.
+    """
+    src = textwrap.dedent(inspect.getsource(func))
+    return src, ast.parse(src).body[0]
+
+
+def _builder_census(subject=None):
+    """Every ``build_*_extension`` call in ``spawn_browser``, with its condition.
+
+    Walks the PRODUCT's AST rather than matching text, and rather than importing
+    a hand-written list. That is the whole drift-proofing: a thirteenth masking
+    builder appears here the moment it is added to ``spawn_browser``, and the
+    census tests below fail because the matrix does not know it — which is the
+    parity question being asked out loud.
+
+    Returns ``{vector: condition_source}``; ``""`` for an unconditional call and
+    ``"NOT (...)"`` for one on an ``else`` branch. The walk itself is
+    :func:`_census_builders`, shared verbatim with the HARNESS census so the two
+    cannot read the same gate form differently — see that docstring.
+
+    ``subject`` overrides the function censused, and exists so the falsification
+    arms can push a SIMULATED fifth drift instance through THIS door — the real
+    product census, delegation included — rather than through a paraphrase of
+    it. Every real caller passes nothing.
+    """
+    return _census_builders(
+        *_census_function(subject or process_mod.spawn_browser)
+    )
 
 
 def _firefox_spoof_census():
@@ -2111,50 +2169,24 @@ def test_the_open_cells_are_the_deliverable_and_are_named():
     # for: it shrinks only against a reading.
 
 
-def _harness_builder_census():
+def _harness_builder_census(subject=None):
     """Every ``build_*_extension`` call in ``masking_layer._chromium_builders``,
     with its condition — the HARNESS's answer to :func:`_builder_census`.
 
-    Same AST walk as the product's, over the harness's own list, so the two are
-    directly comparable. ``IfExp`` and the starred-list-comprehension form are
-    walked as conditions too: a gate written ``*([...] if cond else [])`` is a
-    gate, and a census that only understood ``if`` statements would read it as
-    unconditional — which is exactly the false green this pair exists to refuse.
+    THE SAME WALKER, not merely the same algorithm: both censuses are
+    :func:`_census_builders` pointed at a different function, so the pair cannot
+    read one gate form on one side and miss it on the other. See that
+    docstring — the first cut of this file had the ternary arm HERE and not on
+    the product side, and the resulting fidelity gap let a product gate written
+    as a ternary read as unconditional.
 
     Returns ``{vector: condition_source}``; ``""`` for an unconditional call.
+    ``subject`` is the same falsification door :func:`_builder_census` carries,
+    and every real caller likewise passes nothing.
     """
-    src = inspect.cleandoc(inspect.getsource(masking_layer._chromium_builders))
-    tree = ast.parse(src)
-    fn = tree.body[0]
-    found = {}
-
-    def walk(node, stack):
-        for child in ast.iter_child_nodes(node):
-            if isinstance(child, ast.If):
-                test = ast.get_source_segment(src, child.test)
-                for sub in child.body:
-                    walk(sub, stack + [test])
-                for sub in child.orelse:
-                    walk(sub, stack + [f"NOT ({test})"])
-                continue
-            if isinstance(child, ast.IfExp):
-                test = ast.get_source_segment(src, child.test)
-                walk(child.body, stack + [test])
-                walk(child.orelse, stack + [f"NOT ({test})"])
-                continue
-            if (
-                isinstance(child, ast.Call)
-                and isinstance(child.func, ast.Name)
-                and child.func.id.startswith("build_")
-                and child.func.id.endswith("_extension")
-            ):
-                found[child.func.id[len("build_") : -len("_extension")]] = (
-                    " and ".join(stack)
-                )
-            walk(child, stack)
-
-    walk(fn, [])
-    return found
+    return _census_builders(
+        *_census_function(subject or masking_layer._chromium_builders)
+    )
 
 
 # The vectors the harness deliberately does NOT carry, each with the reason
@@ -2193,6 +2225,55 @@ HARNESS_SETTLED_CONDITIONS = {
     # sibling ``mobile`` is an EXCLUSION above rather than a settlement here.
     "device": "NOT (is_mobile and preset is not None)",
 }
+
+
+def _assert_conditionality_parity(product, harness, *, settled=None):
+    """The PS-423 instrument's comparison, as one callable.
+
+    Extracted so the falsification arms below drive THE REAL ASSERTION over a
+    simulated fifth instance rather than a reimplementation of it — a
+    falsification test that re-states the logic it is falsifying proves only
+    that the restatement agrees with itself.
+
+    ``product`` / ``harness`` are censuses in :func:`_census_builders` shape.
+
+    ``settled`` defaults to :data:`HARNESS_SETTLED_CONDITIONS` — the REAL
+    tree's settlements — and is a parameter only so a SYNTHETIC census pair can
+    pass ``{}``. That is not an escape hatch for the real check: a settlement
+    is a claim about a specific product gate, and the real tree's one (about
+    ``device``) is not a claim about a two-builder simulation that has no
+    ``device`` in it at all. The real caller passes nothing.
+    """
+    if settled is None:
+        settled = HARNESS_SETTLED_CONDITIONS
+    assert set(product) == set(harness), (
+        "the harness's builder list and the product's no longer carry the same "
+        "vectors. That is PS-103/PS-150's drift class: a harness measuring a "
+        "browser persona does not ship. Follow the product, or state the "
+        "exclusion in HARNESS_EXCLUDED_BUILDERS with its reason."
+    )
+    # The settlements are checked against the CURRENT product source first, so a
+    # gate that moved cannot keep its exemption on the strength of the old one.
+    for vector, condition in settled.items():
+        assert product.get(vector) == condition, (
+            f"{vector!r} is exempted from the conditionality check on the "
+            f"grounds that the harness settles {condition!r} by construction, "
+            f"but the product's condition now reads {product.get(vector)!r}. "
+            "Re-argue the settlement against the NEW condition — an exemption "
+            "is a claim about a specific gate, not a permanent pass."
+        )
+    for vector in sorted(product):
+        if vector in settled:
+            continue
+        assert bool(product[vector]) == bool(harness[vector]), (
+            f"{vector!r} is conditional in the PRODUCT ({product[vector]!r}) "
+            f"and unconditional in the HARNESS ({harness[vector]!r}) — or the "
+            "reverse. This is PS-423's drift class and it is invisible to every "
+            "membership check in this file: both lists name the vector, and "
+            "only one of them gates it. Follow the gate in BOTH of the "
+            "harness's authorities (the builder list AND "
+            "chromium_expected_vectors), or record why it must not be followed."
+        )
 
 
 def test_the_harness_gates_every_vector_the_product_gates():
@@ -2236,35 +2317,138 @@ def test_the_harness_gates_every_vector_the_product_gates():
         if v not in HARNESS_EXCLUDED_BUILDERS
     }
     harness = _harness_builder_census()
+    _assert_conditionality_parity(product, harness)
 
-    assert set(product) == set(harness), (
-        "the harness's builder list and the product's no longer carry the same "
-        "vectors. That is PS-103/PS-150's drift class: a harness measuring a "
-        "browser persona does not ship. Follow the product, or state the "
-        "exclusion in HARNESS_EXCLUDED_BUILDERS with its reason."
+
+# --- the simulated FIFTH drift instance, in both gate forms ------------------
+#
+# Real module-level functions rather than source strings, so the falsification
+# arms below push them through the REAL census entry points
+# (``_builder_census(subject=...)`` / ``_harness_builder_census(subject=...)``)
+# — delegation included — instead of through a paraphrase. An arm that censuses
+# by calling the shared walker directly would stay green if a census stopped
+# delegating to it, which is exactly the regression being guarded against.
+#
+# ⛔ THE TERNARY ARM IS NOT A STYLE NOBODY USES. It is the form THIS ticket's
+# own harness gate is written in (``masking_layer._chromium_builders``:
+# ``*([...] if install_measuretext else [])``), and the first cut of this file
+# understood it on the harness side ONLY — so a product gate written the same
+# way read as unconditional, matched an unconditional harness, and the
+# instrument passed on the instance it exists to catch.
+#
+# These are never called. ``build_*_extension`` is not even in scope here; the
+# censuses read the AST.
+
+
+def _fifth_instance_product_gate_as_statement():  # pragma: no cover - AST only
+    extensions = []
+    extensions.append(build_stealth_extension("s"))  # noqa: F821
+    if native_repair_required():  # noqa: F821
+        extensions.append(build_native_extension("n"))  # noqa: F821
+    return extensions
+
+
+def _fifth_instance_product_gate_as_ternary():  # pragma: no cover - AST only
+    return [
+        build_stealth_extension("s"),  # noqa: F821
+        *(
+            [build_native_extension("n")]  # noqa: F821
+            if native_repair_required()  # noqa: F821
+            else []
+        ),
+    ]
+
+
+def _fifth_instance_harness_ungated():  # pragma: no cover - AST only
+    return [
+        build_stealth_extension("s"),  # noqa: F821
+        build_native_extension("n"),  # noqa: F821
+    ]
+
+
+_FIFTH_INSTANCE_FORMS = {
+    "statement": _fifth_instance_product_gate_as_statement,
+    "ternary": _fifth_instance_product_gate_as_ternary,
+}
+
+
+@pytest.mark.parametrize("form", sorted(_FIFTH_INSTANCE_FORMS))
+def test_the_conditionality_instrument_reads_a_TERNARY_gate_as_a_gate(form):
+    """⭐ THE FALSIFICATION ARM FOR THE INSTRUMENT ABOVE, AND IT FOUND A REAL
+    DEFECT (PS-423 rework).
+
+    The instrument compares two censuses for equality, so it is only as good as
+    the WEAKER of them — and the first cut of this file taught the ``IfExp``
+    (ternary) form to the HARNESS census alone, leaving the PRODUCT census
+    understanding ``if`` statements only. Measured on a simulated fifth
+    instance, product gains a gate on ``native``, harness untouched:
+
+    | product gate form                              | census reads | verdict   |
+    |------------------------------------------------|--------------|-----------|
+    | ``if native_repair_required(): append(...)``    | the gate     | ❌ fails  |
+    | ``*([...] if native_repair_required() else [])``| ``''``       | ✅ PASSED |
+
+    The second row is a FALSE GREEN on precisely the drift this test exists to
+    refuse, and nothing else in the file covered it: the condition-table test
+    (``test_chromium_conditions_match_the_source``) is green there too, because
+    the census reports ``''`` and the table says ``''``.
+
+    So this drives BOTH forms through the real census entry points and the real
+    assertion, and demands a failure from each. Verified by reverting the fix
+    (product census given back its own ``ast.If``-only walk): the ``ternary``
+    arm goes red here, the ``statement`` arm stays green, which is the
+    asymmetry named exactly.
+
+    ``settled={}`` because a settlement is a claim about a SPECIFIC product
+    gate, and the real tree's one is about ``device`` — not about a two-builder
+    simulation that has no ``device`` in it. The real caller passes nothing.
+    """
+    product = _builder_census(subject=_FIFTH_INSTANCE_FORMS[form])
+    harness = _harness_builder_census(subject=_fifth_instance_harness_ungated)
+
+    assert product["native"], (
+        f"the {form} gate form was censused as UNCONDITIONAL ({product!r}). "
+        "The census cannot see this gate at all, so the parity instrument "
+        "above it is blind to a product builder gated this way — which is the "
+        "false green PS-423's rework closed. Teach _census_builders the form."
     )
-    # The settlements are checked against the CURRENT product source first, so a
-    # gate that moved cannot keep its exemption on the strength of the old one.
-    for vector, settled in HARNESS_SETTLED_CONDITIONS.items():
-        assert product.get(vector) == settled, (
-            f"{vector!r} is exempted from the conditionality check on the "
-            f"grounds that the harness settles {settled!r} by construction, but "
-            f"the product's condition now reads {product.get(vector)!r}. "
-            "Re-argue the settlement against the NEW condition — an exemption "
-            "is a claim about a specific gate, not a permanent pass."
-        )
-    for vector in sorted(product):
-        if vector in HARNESS_SETTLED_CONDITIONS:
-            continue
-        assert bool(product[vector]) == bool(harness[vector]), (
-            f"{vector!r} is conditional in the PRODUCT ({product[vector]!r}) "
-            f"and unconditional in the HARNESS ({harness[vector]!r}) — or the "
-            "reverse. This is PS-423's drift class and it is invisible to every "
-            "membership check in this file: both lists name the vector, and "
-            "only one of them gates it. Follow the gate in BOTH of the "
-            "harness's authorities (the builder list AND "
-            "chromium_expected_vectors), or record why it must not be followed."
-        )
+    assert harness["native"] == "", "the harness arm must be the ungated one"
+
+    with pytest.raises(AssertionError, match="conditional in the PRODUCT"):
+        _assert_conditionality_parity(product, harness, settled={})
+
+
+def test_both_censuses_are_THE_SAME_WALKER_not_two_that_agree_today():
+    """PS-423 rework: the defect was an ASYMMETRY, so pin the symmetry itself.
+
+    The fix is not "the product census now also handles ternaries" — that is a
+    state two functions can drift out of again, silently, exactly as they did
+    once. It is that there is ONE walker, so a form either census understands
+    is a form BOTH understand.
+
+    Asserted BY MEASUREMENT, over a gate form each census must read the same
+    way, rather than by looking for a call in the source text: a text check
+    reads the docstrings too, so a census that kept its prose and grew its own
+    walk would sail through it — I verified that exact false green before
+    replacing it. Behaviour over one shared form plus the ternary arm above is
+    the honest pair: this says the two are interchangeable on a gate, and the
+    arm above says the gate form in question is one neither may miss.
+    """
+    as_product = _builder_census(subject=_fifth_instance_product_gate_as_ternary)
+    as_harness = _harness_builder_census(
+        subject=_fifth_instance_product_gate_as_ternary
+    )
+
+    assert as_product == as_harness, (
+        "the two censuses read the SAME function differently "
+        f"({as_product!r} vs {as_harness!r}). They must be one walker pointed "
+        "at two functions; a fidelity difference between them is what let a "
+        "ternary-form product gate read as unconditional (PS-423 rework)."
+    )
+    assert as_product["native"] == "native_repair_required()", (
+        "both censuses agree — and agree on reading the gate as UNCONDITIONAL. "
+        "Symmetric blindness is still blindness; see the ternary arm above."
+    )
 
 
 def test_no_cell_claims_coverage_without_a_route():
