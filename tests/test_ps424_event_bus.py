@@ -50,22 +50,37 @@ plausibly write:
   `try/except ValueError` — **the value-equality idiom a maintainer actually
   reaches for**, and the exact shape property B exists to catch →
   **1 failed / 16 passed**, and it is
-  `test_unsubscribe_removes_by_identity_not_equality`. ⚠️ This arm passed 17/17
-  before PS-424's review: the original arrangement unsubscribed the FIRST of
-  the two equal callables, where an `==` scan and an identity scan remove the
-  same element. Unsubscribing the SECOND is what makes the two distinguishable.
+  `test_unsubscribe_removes_by_identity_not_equality`.
+* the same removal written as a **REVERSE** scan
+  (`for i in range(len(...) - 1, -1, -1): if ... == callback: del ...; break`)
+  → **1 failed / 16 passed**, the same test. ⭐ THIS ARM IS WHY THE TEST
+  SUBSCRIBES THREE CALLABLES AND UNSUBSCRIBES THE MIDDLE ONE. Value-equality
+  removal deletes whichever element its scan reaches first, so with only TWO
+  equal subscribers the arrangement can disagree with a scan in one direction
+  only: unsubscribing the second catches a forward scan and is *coincidentally
+  correct* under a reverse one (measured at `db925df`: **17 passed**, mutant
+  survived). With three, a forward scan drops `x`, a reverse scan drops `z`,
+  identity drops `y`, and only identity produces the expected `["x", "z"]`.
 * the same `list.remove` UNGUARDED (no `except ValueError`) →
   **2 failed / 15 passed**: the identity test above, plus
   `test_unsubscribe_is_a_no_op_for_a_callback_never_added`, which is the only
   test in the file that catches the unguarded form *specifically* (the guarded
   mutant leaves it green). The two removal mutants are therefore separated by
   that one test, which is what a properly pinned pair looks like.
+* `emit` on an `RLock` iterating the LIVE list (drop the snapshot copy but keep
+  re-entrancy, i.e. the "simplify away that pointless-looking `list()`"
+  refactor) → **2 failed / 15 passed**:
+  `test_emit_iterates_a_snapshot_taken_under_the_lock` and
+  `test_subscribing_during_emit_does_not_deadlock`. ⚠️ This is the DANGEROUS
+  one because it does NOT hang — a reviewer eyeballing a passing suite would
+  see nothing — so the snapshot test pins the COPY in its own right, not merely
+  its deadlock consequence.
 * `unsubscribe` using `!=` instead of `is not` →
   **1 failed / 16 passed** — only `test_unsubscribe_removes_by_identity_not_equality`.
   ⚠️ Read this arm narrowly: with `__ne__` returning False for everything the
   comprehension keeps NOTHING, so what it establishes is "the roster was
   emptied", NOT that value-equality removal was ruled out. That stronger claim
-  is the `list.remove` arm's, above.
+  is the `list.remove` and reverse-scan arms', above.
 
 NEGATIVE CONTROL: unmutated, 17/17 pass. LINE COVERAGE: a `sys.settrace` +
 `threading.settrace` pass over this file alone executes every line this ticket
@@ -128,10 +143,13 @@ JOIN_TIMEOUT_SECONDS = 5.0
 class _EqualsAnything:
     """A callable that claims equality with everything.
 
-    This is the instrument for property B. `list.remove` and an `==`-based
-    comprehension would both delete the FIRST element here — i.e. the wrong one
-    when the SECOND is the one named — while `is not` deletes only the object
-    actually named.
+    This is the instrument for property B. With THREE of these subscribed and
+    the MIDDLE one unsubscribed, a value-equality removal deletes whichever
+    element its scan reaches first — the first for a forward scan
+    (`list.remove`, `index()`, a comprehension), the last for a reverse one —
+    while `is not` deletes only the object actually named. That is what makes
+    the arrangement independent of scan direction; see
+    `test_unsubscribe_removes_by_identity_not_equality`.
 
     ⚠️ `__hash__` returns a constant, which is correct-but-degenerate: it is
     harmless because `EventBus._subscribers` is a LIST, where hashing is never
@@ -265,16 +283,30 @@ def test_emit_logs_the_subscriber_error_it_swallows(caplog):
 
 
 def test_unsubscribe_removes_by_identity_not_equality():
-    """Two callables that compare equal; only the one NAMED is removed.
+    """Three callables that all compare equal; only the one NAMED is removed.
 
-    ⭐ THE ORDERING IS THE WHOLE TEST, and it is the SECOND subscriber that is
-    unsubscribed. `x == y` is True here, so any `==`-based removal — most
-    plausibly `self._subscribers.remove(callback)`, which is the idiom a
-    maintainer reaches for — scans from index 0 and deletes **`x`**, the
-    callback that was NOT named, while `y` survives. Unsubscribing `x` instead
-    would be indiscriminate: it sits at index 0, so an `==` scan and an
-    identity scan remove the same element and the arrangement could not tell
-    them apart. Identity removal here leaves exactly `x`.
+    ⭐ THE ARRANGEMENT IS THE WHOLE TEST, and what makes it discriminating is
+    that the unsubscribed callback is the MIDDLE one of three. All three
+    compare `==` to each other, so a value-equality removal deletes whichever
+    element its scan reaches first — and which one that is depends on the scan
+    DIRECTION, which is why two subscribers are not enough:
+
+    * forward `==` scan  (`list.remove`, `index()`, a comprehension) → drops
+      **`x`**, leaving `["y", "z"]`
+    * reverse `==` scan  (`for i in range(len-1, -1, -1)`)           → drops
+      **`z`**, leaving `["x", "y"]`
+    * correct `is not`                                                → drops
+      **`y`**, leaving `["x", "z"]`
+
+    So the expected survivor list `["x", "z"]` is reachable by identity removal
+    ALONE, and both scan directions go red. ⚠️ TWO WEAKER ARRANGEMENTS WERE
+    TRIED AND ARE RECORDED HERE so nobody restores one: unsubscribing the FIRST
+    of two equal callables is indiscriminate outright (an `==` scan and an
+    identity scan remove the same element — that version passed a guarded
+    `list.remove` mutant 17/17, which is what PS-424's first review caught), and
+    unsubscribing the SECOND of two catches a forward scan but is coincidentally
+    correct under a reverse one (measured: reverse-scan mutant, 17/17). Only the
+    middle-of-three arrangement is direction-independent.
 
     That is the realistic failure shape for property B: not "everything is
     dropped" but "the WRONG callback is silently dropped while the named one
@@ -285,19 +317,22 @@ def test_unsubscribe_removes_by_identity_not_equality():
     calls: list[str] = []
     x = _EqualsAnything("x", calls)
     y = _EqualsAnything("y", calls)
-    assert x == y, "the instrument is broken: these must compare equal"
-    assert x is not y
+    z = _EqualsAnything("z", calls)
+    assert x == y == z, "the instrument is broken: these must compare equal"
+    assert x is not y and y is not z and x is not z
 
     bus.subscribe(x)
     bus.subscribe(y)
-    bus.unsubscribe(y)  # y is at index 1; an ==-scan removes x instead
+    bus.subscribe(z)
+    bus.unsubscribe(y)  # the MIDDLE one: a forward ==-scan drops x, a reverse one drops z
 
     bus.emit()
 
-    assert calls == ["x"], (
-        "unsubscribe did not remove by identity: the callback that was NOT "
-        "named should be the survivor, so an ==-based removal shows up here "
-        f"as the wrong one being dropped. got {calls!r}"
+    assert calls == ["x", "z"], (
+        "unsubscribe did not remove by identity: only the callback that was "
+        "NAMED should be gone, so a value-equality removal shows up here as "
+        "the wrong one being dropped — ['y', 'z'] means a forward ==-scan, "
+        f"['x', 'y'] means a reverse one. got {calls!r}"
     )
 
 
