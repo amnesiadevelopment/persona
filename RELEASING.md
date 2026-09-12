@@ -232,6 +232,18 @@ the verifier against the published assets:
 python3 scripts/ps343_verify_release_provenance.py --download   # exit 0 is the bar
 ```
 
+⭐ **And if you forget, something now notices.** That step is still a checklist
+line a human must remember, but `.github/workflows/engine-release-provenance-audit.yml`
+runs daily and reconciles the **published** engine tags against
+`engine/releases/personium-*.json`, filing an issue that **names** any published
+release with no record. It answers only *does a record exist* — whether that
+record agrees with the bytes is the verifier's separate answer above, and the
+audit makes no claim about it.
+
+⛔ **Do not write a record for a release you cannot account for.** A
+plausible-looking manifest assembled from assumptions reads as evidence and is
+worse than a stated gap; set `unknown` where you tried and could not.
+
 ---
 
 ## Accounting for an engine we have published

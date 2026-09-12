@@ -85,7 +85,55 @@ main = _V.main
 normalise_digest = _V.normalise_digest
 walk_fields = _V.walk_fields
 verify_asset = _V.verify_asset
-SHIPPED_TAG = "personium-152.0.7977.75"
+
+# ⭐ DERIVED, NOT A LITERAL (PS-385). This was `SHIPPED_TAG =
+# "personium-152.0.7977.75"` — a compile-time literal, which meant the territory
+# test below asserted that ONE HARDCODED RELEASE has a record. "One hardcoded
+# release has a record" and "every published release has a record" are two
+# different claims, and only the second is the sentence
+# `engine/releases/README.md` opens with.
+#
+# It is derived from the RECORD DIRECTORY and deliberately NOT from the
+# published set: this fixture is read by every record-lint test in this file, so
+# a network-dependent derivation here would make ~30 currently-hermetic tests
+# depend on GitHub. The published-set quantifier is evaluated by
+# `.github/scripts/ps343_release_audit.py`, on its own schedule, and pinned by
+# `tests/test_ps385_release_provenance_audit.py`.
+def _newest_record_tag(records_dir: Path | None = None) -> str:
+    """The newest provenance record on disk, by version rather than by string.
+
+    Numeric, because lexicographically `personium-99.…` sorts above
+    `personium-152.…` — the same reason `updater.engine_versions_newest_first`
+    sorts by `parse_version` rather than taking the API's ref order.
+
+    ⚠️ `records_dir` IS A TEST HOOK AND NOTHING ELSE. Today this repository
+    carries exactly one record, so the derived value and the literal it replaced
+    are the SAME STRING — which means reverting the derivation does not fail
+    anything, and a derivation nothing can falsify is decoration. The parameter
+    exists so `tests/test_ps385_release_provenance_audit.py` can drive it at a
+    record set this repository does not have (two records, and a `99` that must
+    not outsort a `152`) and observe that it actually follows the directory.
+    """
+    directory = records_dir or RECORDS_DIR
+    tags = sorted(p.stem for p in directory.glob("personium-*.json"))
+    if not tags:
+        raise AssertionError(
+            f"no personium-*.json provenance record in {directory} — the "
+            "record set this suite lints is empty"
+        )
+
+    def _key(tag: str):
+        version = tag[len("personium-"):]
+        parts = []
+        for chunk in version.split("."):
+            digits = "".join(c for c in chunk if c.isdigit())
+            parts.append(int(digits) if digits else 0)
+        return parts
+
+    return max(tags, key=_key)
+
+
+SHIPPED_TAG = _newest_record_tag()
 
 SWITCHES = [
     "fingerprint",
@@ -110,11 +158,58 @@ def shipped_record() -> dict:
     )
 
 
-def test_the_shipped_engine_has_a_record_in_the_repository():
-    """The ticket's territory in one assertion: a published engine's provenance
-    is answerable FROM THE REPOSITORY, not from a CI artifact that may have
-    expired."""
-    assert (RECORDS_DIR / f"{SHIPPED_TAG}.json").is_file()
+def test_every_engine_release_this_repository_records_is_answerable_from_it():
+    """The ticket's territory, WIDENED (PS-385).
+
+    This used to read `assert (RECORDS_DIR / f"{SHIPPED_TAG}.json").is_file()`
+    against a hardcoded tag, which asserted that ONE release has a record. The
+    territory sentence `engine/releases/README.md` opens with is a QUANTIFIER —
+    *"For every Personium engine we have **published**, a record here says…"* —
+    and a literal cannot express it.
+
+    So this half asserts what can be asserted HERMETICALLY: the record set is
+    non-empty and every record in it is a real, readable file, answerable from
+    the repository rather than from a CI artifact that may have expired.
+
+    ⭐ THE PUBLISHED HALF OF THE QUANTIFIER IS EVALUATED ELSEWHERE, and
+    deliberately: it needs the network, and this suite must stay hermetic. It is
+    `.github/scripts/ps343_release_audit.py`, which reconciles
+    `updater.engine_versions_newest_first()` against this same directory and
+    goes RED naming any published release with no record. The test below drives
+    that judgement — still without a network call — so this file does not merely
+    point at a gate it never exercises.
+    """
+    records = sorted(RECORDS_DIR.glob("personium-*.json"))
+    assert records, f"no provenance record at all in {RECORDS_DIR}"
+    for record in records:
+        assert record.is_file()
+        assert json.loads(record.read_text(encoding="utf-8")).get("tag") == record.stem
+
+
+def test_the_published_side_of_the_quantifier_has_a_gate_that_can_go_red():
+    """The half a literal could never assert, driven hermetically.
+
+    A published release with no record must be a NAMED red row, never an
+    absence — which is what it was for this verifier, whose `load_records()`
+    globs the RECORD SET and whose `main()` iterates that list.
+    """
+    import importlib.util as _ilu
+
+    audit_path = REPO_ROOT / ".github" / "scripts" / "ps343_release_audit.py"
+    assert audit_path.is_file(), "the published-set reconciliation does not exist"
+    spec = _ilu.spec_from_file_location("ps343_release_audit_from_ps343_suite", audit_path)
+    audit = _ilu.module_from_spec(spec)
+    spec.loader.exec_module(audit)
+
+    on_disk = audit.record_tags(RECORDS_DIR)
+    recorded = [t[len("personium-"):] for t in on_disk]
+
+    # QUIET: every published release recorded.
+    assert audit.classify(recorded, on_disk)[0] == audit.QUIET
+    # RED: one more published release than we have records for, and NAMED.
+    code, body = audit.classify(recorded + ["999.0.0.0"], on_disk)
+    assert code == audit.UNRECORDED_RELEASE
+    assert body["unrecorded"] == ["personium-999.0.0.0"]
 
 
 def test_the_record_lints_clean(shipped_record):
