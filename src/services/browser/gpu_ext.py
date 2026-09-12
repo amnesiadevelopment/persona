@@ -86,6 +86,7 @@ from .engine_platform import ENGINE_HONOURED_PLATFORMS as _ENGINE_HONOURED_PLATF
 from .engine_platform import engine_honours
 from .worker_wrap import (
     chromium_leaf_cloak_js,
+    chromium_native_wrap_js,
     realm_bootstrap_js,
     realm_guard_js,
 )
@@ -509,53 +510,7 @@ __LEAF_CLOAK__
     return pool[h32(salt) % pool.length];
   }
 
-  function nativeWrap(orig, replacement) {
-    // RE-HOUSE the caller's function EXPRESSION inside a real method shorthand.
-    //
-    // A sloppy-mode function expression owns `prototype`, `arguments` and
-    // `caller`; a native method owns exactly ["length","name"]. So the FORM the
-    // callsite happened to type is a one-line tell, readable by
-    // Object.getOwnPropertyNames without calling anything — an axis entirely
-    // independent of the toString cloak below. `delete replacement.prototype`
-    // cannot repair it (non-configurable: it returns false in sloppy mode and
-    // throws in strict), so the shape has to be right AT CREATION. Doing it
-    // here rather than at ~18 callsites means no spoofed VALUE is disturbed.
-    //
-    // `.apply(this, arguments)` keeps the receiver and the full argument list,
-    // so a re-housed wrapper is behaviourally identical to the expression.
-    var shell;
-    try {
-      shell = ({ m() { return replacement.apply(this, arguments); } }).m;
-    } catch (e) {
-      // If the shorthand form is somehow unavailable, a correctly-spoofing
-      // wrapper with a wrong shape beats no wrapper at all.
-      shell = replacement;
-    }
-    try {
-      // Arity is a second axis: a shape fix that moves `length` swaps one tell
-      // for another. Copy it from the ORIGINAL at runtime — never a literal,
-      // which would go stale silently against a future engine.
-      Object.defineProperty(shell, 'length', { value: orig.length });
-      Object.defineProperty(shell, 'name', { value: orig.name });
-    } catch (e) {}
-    // Register for THIS LEAF's own Function.prototype.toString cloak (spliced
-    // above) so a detector calling
-    // Function.prototype.toString.call(replacement) reads native. A plain
-    // replacement.toString override is bypassed by that .call form.
-    //
-    // ⛔ THE MARK LIVES IN A CLOSURE WEAKMAP, NOT AN OWN PROPERTY (PS-368).
-    // This used to pin `__pnaName`, read cross-script by native_ext's
-    // applyNativePatch — which is what made a marker work at all across twelve
-    // content scripts with no shared closure, and what made every wrapper own
-    // ["__pnaName","length","name"] where a native function owns two names.
-    // That third name was readable in one line by
-    // `Object.getOwnPropertyNames(fn)`, entirely independently of the toString
-    // cloak it existed to serve, and it identified persona SPECIFICALLY rather
-    // than a wrapper generically. It was recorded here as a deliberate trade;
-    // measurement on the wrappers refuted the trade, and this leaf now carries
-    // its own cloak so the marker has nothing left to buy.
-    return __pncMark(shell, orig.name);
-  }
+__NATIVE_WRAP__
 
   var WIN_GPUS = __WIN_GPUS__;
   var MAC_GPUS = __MAC_GPUS__;
@@ -1536,6 +1491,7 @@ def build_gpu_extension(
         .replace("__REALM_BOOTSTRAP__", realm_bootstrap_js("applyGpuPatch"))
         .replace("__REALM_GUARD__", realm_guard_js("gpu"))
         .replace("__LEAF_CLOAK__", chromium_leaf_cloak_js(4))
+        .replace("__NATIVE_WRAP__", chromium_native_wrap_js(2))
     )
     (ext_dir / "gpu.js").write_text(script, encoding="utf-8")
     (ext_dir / "manifest.json").write_text(
