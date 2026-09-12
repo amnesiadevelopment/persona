@@ -622,13 +622,27 @@ def test_the_chromium_expected_set_is_declared_INDEPENDENTLY_of_the_builders():
     assert isinstance(masking_layer.CHROMIUM_VECTORS, tuple)
     assert all(isinstance(v, str) for v in masking_layer.CHROMIUM_VECTORS)
     assert len(masking_layer.CHROMIUM_VECTORS) == 10, (
-        "the ten base vectors; geo is configuration, see chromium_expected_vectors"
+        "the ten base vectors. TWO of them are configuration-dependent and they "
+        "sit on OPPOSITE sides of this tuple, deliberately (PS-423): `geo` is "
+        "OUT and added by chromium_expected_vectors(include_geo=True), because "
+        "a default run is not asking for it; `measuretext` is IN and SUBTRACTED "
+        "by chromium_expected_vectors(install_measuretext=False), because the "
+        "product's PS-409 gate FAILS OPEN and this tuple is what an unstated "
+        "expectation defaults to — a measuretext added only when asked would "
+        "let a run that SHOULD have installed the repair and did not read "
+        "complete: true. See chromium_expected_vectors."
     )
     # The declared set is not a function of any report: an empty report must
     # still be measured against all ten.
     assert set(
         masking_layer.LayerReport(route="extensions").missing
     ) == set(masking_layer.CHROMIUM_VECTORS)
+    # ...and that default is the FAIL-OPEN one: an unstated expectation names
+    # `measuretext`, so a harness that omitted the repair without saying so is
+    # caught rather than agreed with.
+    assert masking_layer.MEASURETEXT in masking_layer.LayerReport(
+        route="extensions"
+    ).missing
 
 
 def test_a_DEGENERATE_empty_layer_is_the_same_defect_at_its_limit(tmp_path):
@@ -695,6 +709,236 @@ def test_a_match_product_geo_run_EXPECTS_geo_and_reports_it(tmp_path):
     assert masking_layer.GEO in record["expected"]
     assert masking_layer.GEO in record["installed"]
     assert record["complete"] is True, record["failed"]
+
+
+# --- PS-423: the harness follows the product's PS-409 measuretext gate --------
+
+
+def test_an_engine_that_CARRIES_the_fix_omits_measuretext_from_BOTH_authorities(
+    tmp_path,
+):
+    """PS-423 AC1. On a fixed engine the product does not install the repair
+    (``process.py``: ``if measuretext_repair_required():``), so the harness must
+    not either — and the record of that faithful run must read COMPLETE.
+
+    The two halves are asserted separately because they are two authorities and
+    this ticket exists because they moved apart:
+
+    * the BUILDER did not run — no extension directory on disk;
+    * the DECLARED set does not name the vector — so ``missing`` is empty and
+      ``complete`` is true.
+
+    A half-fix that gated only the builder produces ``missing:
+    ['measuretext']`` and ``complete: false`` on a run that was exactly right,
+    which is why the second assertion is not redundant with the first.
+    """
+    _dirs, report = build_chromium_layer(
+        str(tmp_path), SEED, os_type="windows", install_measuretext=False
+    )
+    record = report.as_record()
+
+    assert masking_layer.MEASURETEXT not in record["installed"]
+    assert masking_layer.MEASURETEXT not in record["expected"]
+    assert record["missing"] == []
+    assert record["complete"] is True, record["failed"]
+    # The extension really was not built — a bookkeeping-only omission would
+    # still hand the engine a directory to load.
+    assert not (tmp_path / ".persona-measuretext-ext").exists()
+
+
+def test_an_engine_WITHOUT_the_fix_still_installs_measuretext(tmp_path):
+    """PS-423 AC2. The other arm, and the DEFAULT one: an engine that does not
+    provably carry the PS-345 fix still gets the repair, exactly as today.
+
+    Driven through the default rather than through an explicit ``True`` on
+    purpose — the default IS the claim. The product's gate fails open on every
+    uncertainty (no committed threshold, an unreadable ``version.txt``, an
+    unparseable tag) because the strict error hands a user ~1e-6 canvas-text
+    geometry with nothing repairing it, and a harness whose default went the
+    other way would diverge on precisely those cases.
+    """
+    _dirs, report = build_chromium_layer(str(tmp_path), SEED, os_type="windows")
+    record = report.as_record()
+
+    assert masking_layer.MEASURETEXT in record["installed"]
+    assert masking_layer.MEASURETEXT in record["expected"]
+    assert record["missing"] == []
+    assert record["complete"] is True, record["failed"]
+    assert (tmp_path / ".persona-measuretext-ext").exists()
+
+
+def test_the_measuretext_gate_still_catches_a_DROPPED_builder_on_the_fixed_arm(
+    tmp_path, monkeypatch
+):
+    """PS-423 AC3 on the arm that could hide it. The subtraction must narrow
+    the DECLARATION, never turn it into a projection of the builder list.
+
+    So: ask for the fixed-engine configuration (``measuretext`` legitimately
+    absent from both) AND drop a second, unrelated builder. The record must
+    still catch the dropped one. A derived ``expected`` shrinks with the builder
+    list and reads ``complete: true`` here — which is the blindness
+    ``CHROMIUM_VECTORS`` exists to close, reappearing behind a new parameter.
+    """
+    real_builders = masking_layer._chromium_builders
+
+    def short_builders(*args, **kwargs):
+        return [
+            (vector, thunk)
+            for vector, thunk in real_builders(*args, **kwargs)
+            if vector != masking_layer.CANVAS_CTX
+        ]
+
+    monkeypatch.setattr(masking_layer, "_chromium_builders", short_builders)
+    _dirs, report = build_chromium_layer(
+        str(tmp_path), SEED, os_type="windows", install_measuretext=False
+    )
+    record = report.as_record()
+
+    assert record["failed"] == {}, "a DROPPED builder is not a FAILED one"
+    assert record["missing"] == [masking_layer.CANVAS_CTX]
+    assert record["complete"] is False
+    assert masking_layer.CANVAS_CTX in record["expected"]
+    # ...and the gated vector is absent from BOTH, so the narrowing itself did
+    # not become the thing reported.
+    assert masking_layer.MEASURETEXT not in record["expected"]
+    assert masking_layer.MEASURETEXT not in record["missing"]
+
+
+def test_the_harness_gate_FAILS_OPEN_when_the_engine_cannot_be_asked(monkeypatch):
+    """PS-423 AC2's uncertainty half, at the resolver rather than the builder.
+
+    ``measuretext_expected`` is the harness's single consult of the product's
+    gate, and the direction it fails in is the whole risk ordering: a wrong
+    "install it" leaves an extension that repairs nothing, a wrong "omit it"
+    breaks Google Sheets for the population the repair exists to protect.
+
+    Both failure shapes are driven, because they fail at different places: the
+    gate ANSWERING True (its own documented uncertainty answer), and the call
+    RAISING (an engine package this harness cannot reach at all) — which the
+    product's gate cannot answer for and which a bare re-export would let
+    propagate as a crash.
+    """
+    from src.services.browser import engine_version
+
+    monkeypatch.setattr(engine_version, "measuretext_repair_required", lambda: True)
+    assert masking_layer.measuretext_expected() is True
+
+    monkeypatch.setattr(engine_version, "measuretext_repair_required", lambda: False)
+    assert masking_layer.measuretext_expected() is False
+
+    def _unreachable():
+        raise RuntimeError("no engine package on this host")
+
+    monkeypatch.setattr(
+        engine_version, "measuretext_repair_required", _unreachable
+    )
+    assert masking_layer.measuretext_expected() is True, (
+        "a question that could not be asked is not a 'no' — the harness must "
+        "fail open exactly where the product does"
+    )
+
+
+def test_the_harness_gate_TRACKS_THE_INSTALLED_ENGINE_not_a_constant(monkeypatch):
+    """PS-423 AC1/AC2 at the strongest available grain: the two arms are
+    produced by MOVING THE ENGINE, not by moving the code.
+
+    Each arm stubs only the two inputs the real gate reads — what
+    ``version.txt`` says and what the policy threshold is — and then runs the
+    unmodified resolver. The test above patches ``measuretext_repair_required``
+    itself, which asserts that an ``if`` branches; this asserts the claim the
+    ticket actually makes, that the INSTALLED ENGINE'S VERSION decides. It is
+    the same construction ``test_chromium_measuretext_is_gated_on_the_engine_
+    version`` uses on the product side, so the two halves of the mirror are
+    measured the same way.
+
+    The three uncertainty arms are the load-bearing ones. The product's gate
+    fails open on each — no committed threshold, an unreadable ``version.txt``,
+    an unparseable tag — because a wrong "omit it" hands the user ~1e-6
+    canvas-text geometry with nothing repairing it. A harness that answered
+    differently on any of them would diverge on exactly the cases the product
+    treats as dangerous.
+    """
+    from src.services.engine import policy as engine_policy
+    import src.services.engine.updater as updater_mod
+
+    def arm(installed_tag, threshold):
+        # The resolver reaches ``current_version`` through a function-local
+        # import, so the patch has to land on the module it is imported FROM.
+        monkeypatch.setattr(updater_mod, "current_version", lambda: installed_tag)
+        monkeypatch.setattr(
+            engine_policy, "measuretext_fix_min_version", lambda: threshold
+        )
+        return masking_layer.measuretext_expected()
+
+    # An engine that PROVABLY carries the PS-345 fix — at the threshold and
+    # above it. These are the only two arms that may omit the repair.
+    assert arm("152.0.7977.75.1", "152.0.7977.75.1") is False
+    assert arm("152.0.7977.75.2", "152.0.7977.75.1") is False
+
+    # Below the threshold: the repair is still needed, exactly as today.
+    assert arm("152.0.7977.75", "152.0.7977.75.1") is True, (
+        "an engine BELOW the fix threshold would not get the repair. That is "
+        "the STRICT failure the fail-open design exists to prevent."
+    )
+
+    # ⭐ AND THE COMPONENT THAT DISTINGUISHES THEM IS THE FIFTH ONE. PS-406
+    # publishes the fixed assets under a fifth component because the tag cannot
+    # repeat the string every existing install carries; ``ChromiumVersion.full``
+    # truncates to four, so a harness that compared THAT would read the fixed
+    # and unfixed engines as identical. The first two arms differ from this one
+    # in the fifth component alone, so a truncating comparison collapses them.
+
+    # Every uncertainty fails OPEN, on the product's own risk ordering.
+    for installed, threshold, why in (
+        ("152.0.7977.75.1", "", "no threshold committed"),
+        ("", "152.0.7977.75.1", "unreadable version.txt"),
+        ("not-a-version", "152.0.7977.75.1", "unparseable tag"),
+        ("152.0.7977.75.1", "not-a-version", "unparseable threshold"),
+    ):
+        assert arm(installed, threshold) is True, why
+
+
+def test_the_chromium_session_RESOLVES_the_gate_and_passes_it_down(monkeypatch):
+    """PS-423: the wiring, pinned where it can actually break.
+
+    The two tests above would both pass with the parameter never threaded from
+    the launcher — which is the shape of THIS ticket's defect, not a
+    hypothetical: PS-409 changed the product and the harness's call site stayed
+    exactly as it was. So this drives ``ChromiumSession`` and asserts the
+    engine's answer reaches ``build_chromium_layer``, on both arms.
+    """
+    from src.services.verify import chromium_tier
+
+    seen = {}
+
+    def _spy_layer(profile_dir, seed, **kwargs):
+        seen.update(kwargs)
+        raise chromium_tier.ChromiumUnavailable("stop here: layer call captured")
+
+    monkeypatch.setattr(chromium_tier, "_engine_binary", lambda: "/engine/fp")
+    monkeypatch.setattr(chromium_tier, "sandbox_available", lambda: True)
+    monkeypatch.setattr(
+        chromium_tier, "dev_shm_bytes", lambda: 1024 * 1024 * 1024
+    )
+    monkeypatch.setattr(chromium_tier, "_ensure_display", lambda: (":99", None))
+    monkeypatch.setattr(
+        chromium_tier,
+        "_proxy_server_and_bridge",
+        lambda url, allow_no_proxy=False: ("socks5://127.0.0.1:5555", None),
+    )
+    monkeypatch.setattr(masking_layer, "build_chromium_layer", _spy_layer)
+
+    for engine_carries_fix in (True, False):
+        monkeypatch.setattr(
+            masking_layer, "measuretext_expected", lambda: not engine_carries_fix
+        )
+        seen.clear()
+        with pytest.raises(chromium_tier.ChromiumUnavailable):
+            chromium_tier.ChromiumSession("socks5h://u:p@host:1080")
+        assert seen["install_measuretext"] is (not engine_carries_fix), (
+            "the session must carry the ENGINE's answer down to the layer "
+            "builder, not a constant"
+        )
 
 
 def test_the_documented_EXCLUSIONS_do_not_make_a_record_incomplete(tmp_path):

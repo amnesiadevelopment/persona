@@ -700,7 +700,11 @@ class ChromiumSession:
         # engine itself is: `build_chromium_layer` reaches into
         # `services/browser`, and importing an engine's spoof builders must not
         # be a cost of merely importing this module or of printing --help.
-        from .masking_layer import absent_layer, build_chromium_layer
+        from .masking_layer import (
+            absent_layer,
+            build_chromium_layer,
+            measuretext_expected,
+        )
 
         # persona's masking layer, BUILT BEFORE THE PROCESS STARTS because
         # chromium takes it on the command line and has no post-launch
@@ -708,11 +712,19 @@ class ChromiumSession:
         # session's own user-data-dir, so close() removes them with everything
         # else rather than leaking a spoof set into /tmp.
         if self.install_layer:
+            # PS-423: the PS-409 gate is resolved HERE, in the harness's
+            # launcher, because this is where `spawn_browser` resolves its own —
+            # the layer builder is handed the answer rather than asking for it.
+            # That keeps `build_chromium_layer` free of on-disk engine state at
+            # call time and makes both arms exercisable with no engine present.
+            # `measuretext_expected` fails open (see its docstring), so a
+            # harness that cannot ask behaves like a product that does not know.
             extension_dirs, self.layer_report = build_chromium_layer(
                 self._profile_dir,
                 self.seed,
                 os_type=self.declared_machine,
                 include_geo=self.include_geo,
+                install_measuretext=measuretext_expected(),
             )
         else:
             # The differential's control arm: the packaged engine with NONE of

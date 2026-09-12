@@ -76,6 +76,27 @@ desktop entries and the proxy bridge. Those are launcher furniture; including
 them would widen the seam past the thing being measured and pull the harness
 toward being a second copy of ``spawn_browser``.
 
+What is installed CONDITIONALLY, because the product installs it conditionally
+------------------------------------------------------------------------------
+Two vectors are not a flat yes/no, and both mirror a condition that is in the
+product rather than a preference of this module's:
+
+* ``geo`` — ``build_chromium_layer``'s ``include_geo``, off by default because a
+  default run genuinely is not asking for it.
+* ``measuretext`` — ``install_measuretext``, ON by default, following PS-409's
+  gate in ``process.py`` (``if measuretext_repair_required():``): the PS-345
+  repair is loaded only while the installed engine still needs it, so a harness
+  run on a FIXED engine that loaded it anyway would be measuring a browser
+  persona does not ship. The default is the opposite of ``geo``'s because the
+  product's gate FAILS OPEN — on every uncertainty the repair is installed —
+  and the harness must fail open in the same direction (PS-423).
+
+**Both move TWO authorities, never one.** The builder list and
+:func:`chromium_expected_vectors` are separately-stated declarations of the same
+configuration, so gating only the builder would make a faithful run read
+``complete: false``, and deriving one from the other would reproduce the
+blindness :data:`CHROMIUM_VECTORS` exists to close.
+
 The PS-78 rule this module obeys
 --------------------------------
 ``add_init_script`` reaches only documents created AFTER it is registered.
@@ -145,6 +166,29 @@ FIREFOX_VECTORS = (LOCALE, WEBGL, AUDIO)
 # install it and must not start reporting ``complete: false`` for not having
 # been asked. See :func:`chromium_expected_vectors`, which adds it when — and
 # only when — the configuration asked for it.
+#
+# ``measuretext`` IS here, and it is here CONDITIONALLY-BY-SUBTRACTION rather
+# than conditionally-by-addition the way ``geo`` is. That asymmetry is the
+# decision, not an oversight (PS-423):
+#
+# PS-409 made the PRODUCT's ``build_measuretext_extension`` conditional —
+# ``process.py`` appends it only ``if measuretext_repair_required()``, i.e. only
+# while the installed engine does not carry the PS-345 fix — and this module did
+# not follow, so a harness run on a FIXED engine would load an extension the
+# product omits and measure a browser persona does not ship. :func:`chromium_
+# expected_vectors` follows it now, by SUBTRACTING the vector when the engine
+# provably carries the fix.
+#
+# It is subtraction and not addition because the product's gate FAILS OPEN: the
+# repair is installed on every uncertainty (no threshold committed, an
+# unreadable ``version.txt``, an unparseable tag — see
+# ``engine_version.carries_measuretext_fix``). The DECLARED set has to fail open
+# in the same direction, and this tuple is what an UNSTATED expectation defaults
+# to (``_ROUTE_EXPECTATIONS``). Were the vector merely added-when-asked like
+# ``geo``, a report that stated no expectation would not name it, and a run that
+# SHOULD have installed the repair and did not would read ``complete: true`` —
+# the precise blindness this constant exists to close, in the one direction the
+# product says is the dangerous one.
 CHROMIUM_VECTORS = (
     NATIVE,
     LOCALE,
@@ -177,11 +221,42 @@ DEFAULT_LOCALE = "en-US"
 DEFAULT_OS_TYPE = "windows"
 
 
-def chromium_expected_vectors(*, include_geo: bool = False) -> "tuple[str, ...]":
+def measuretext_expected() -> bool:
+    """Would the PRODUCT install ``measuretext_ext`` on the engine installed HERE?
+
+    The harness's single consult of the product's own gate
+    (:func:`browser.engine_version.measuretext_repair_required`, the same
+    function ``process.py:1064`` branches on), wrapped for two reasons that are
+    both about the harness rather than about the gate:
+
+    * **It fails open even harder than the gate does.** The gate already answers
+      ``True`` on every uncertainty it can see (no threshold committed, an
+      unreadable ``version.txt``, an unparseable tag). This adds the one
+      uncertainty the gate cannot answer for: anything that makes the CALL
+      itself fail — an import error, an engine package that is not installed in
+      this harness's environment at all. A harness that cannot ask must behave
+      like a product that does not know, which is "install the repair".
+    * **It is one function to monkeypatch.** Both arms of this gate must be
+      exercisable with no engine on disk, and a test that has to patch two call
+      sites can silently exercise a tree where the two authorities disagree —
+      which is the very state this whole change exists to make impossible.
+    """
+    try:
+        from ..browser.engine_version import measuretext_repair_required
+
+        return bool(measuretext_repair_required())
+    except Exception:
+        # See the docstring: a question that could not be asked is not a "no".
+        return True
+
+
+def chromium_expected_vectors(
+    *, include_geo: bool = False, install_measuretext: bool = True
+) -> "tuple[str, ...]":
     """The vectors a Chromium layer of THIS CONFIGURATION should install.
 
     Declared from :data:`CHROMIUM_VECTORS` — never from the builder list — and
-    parameterised by the one documented configuration switch, so it states "the
+    parameterised by the documented configuration switches, so it states "the
     set this configuration should install" rather than "the set the loop
     happened to enumerate".
 
@@ -190,8 +265,30 @@ def chromium_expected_vectors(*, include_geo: bool = False) -> "tuple[str, ...]"
     profile respectively — see the module docstring). Their absence is a
     property of the configuration, not a gap, so they must never make a record
     incomplete.
+
+    ``install_measuretext`` is the PS-423 parameter and it is the product's
+    PS-409 gate, passed in rather than read here. ``False`` subtracts
+    ``measuretext``, because on an engine that carries the PS-345 fix the
+    product does not install the repair either (``process.py``: ``if
+    measuretext_repair_required():``) — and a harness that loaded it anyway
+    would be measuring a browser persona does not ship, while a harness that
+    merely stopped BUILDING it would report ``missing: ['measuretext']`` and
+    read ``complete: false`` on a run that was perfectly faithful. Both
+    authorities move, which is why they are two parameters of two functions and
+    not one derived list; see :data:`CHROMIUM_VECTORS`.
+
+    ⛔ IT IS A PARAMETER, NOT A READ, AND THE DEFAULT IS THE FAIL-OPEN ONE.
+    ``True`` here is not "the usual case" but the SAFE case: the product's gate
+    fails open on every uncertainty because the strict direction hands a user
+    ~1e-6 canvas-text geometry with nothing repairing it. A caller that does not
+    state the engine's answer therefore gets the set that INCLUDES the repair,
+    so a harness that forgot to ask reads incomplete against a run that omitted
+    it — loud — rather than quietly agreeing with it.
     """
-    return CHROMIUM_VECTORS + ((GEO,) if include_geo else ())
+    declared = CHROMIUM_VECTORS if install_measuretext else tuple(
+        v for v in CHROMIUM_VECTORS if v != MEASURETEXT
+    )
+    return declared + ((GEO,) if include_geo else ())
 
 
 def firefox_expected_vectors(
@@ -581,6 +678,7 @@ def build_chromium_layer(
     locale: str = DEFAULT_LOCALE,
     generation: int = 0,
     include_geo: bool = False,
+    install_measuretext: bool = True,
 ) -> "tuple[list[str], LayerReport]":
     """Build persona's Chromium masking extensions into ``profile_dir``.
 
@@ -592,6 +690,31 @@ def build_chromium_layer(
     ``build_search_extension`` is a settings override rather than masking, and
     ``build_mobile_extension`` belongs to a mobile profile which a checker run
     is not.
+
+    ``install_measuretext`` MIRRORS THE PRODUCT'S PS-409 GATE (PS-423). The
+    product appends ``build_measuretext_extension`` only ``if
+    measuretext_repair_required()`` — only while the installed engine lacks the
+    PS-345 fix — so a harness that appended it unconditionally would load an
+    extension persona does not ship and measure a browser that does not exist.
+    ``False`` drops it from BOTH authorities at once: the builder list here and
+    the declared set in :func:`chromium_expected_vectors`, so a faithful run
+    reads ``complete: true`` with ``missing: []`` rather than reporting the
+    vector it correctly omitted.
+
+    It is a PARAMETER rather than a read, following ``include_geo``: this
+    function must not re-answer a question the caller may already have answered
+    differently, and the two authorities must stay separately stated. The
+    harness's launcher — :class:`chromium_tier.ChromiumSession`, the analogue of
+    ``spawn_browser`` — resolves it with :func:`measuretext_expected` and passes
+    it in, exactly where the product resolves its own.
+
+    ⛔ IT DEFAULTS TO ``True``, WHICH IS THE OPPOSITE SHAPE FROM ``include_geo``
+    AND IS DELIBERATE. ``include_geo`` defaults OFF because installing it is the
+    unusual ask; this defaults ON because the product's gate FAILS OPEN — on no
+    committed threshold, an unreadable ``version.txt`` or an unparseable tag the
+    repair is installed, since the strict error hands a user ~1e-6 canvas-text
+    geometry with nothing repairing it. A caller that does not state the
+    engine's answer therefore gets the product's own uncertainty answer.
 
     ``include_geo`` adds ``build_geo_extension`` in DENY mode, closing a
     TIER-VERSUS-PRODUCT gap rather than widening the seam. This exclusion used
@@ -625,6 +748,7 @@ def build_chromium_layer(
         locale=locale,
         generation=generation,
         include_geo=include_geo,
+        install_measuretext=install_measuretext,
     )
 
     dirs: "list[str]" = []
@@ -646,7 +770,16 @@ def build_chromium_layer(
         # `builders` — a set computed from the list above would equal
         # `installed | failed` by construction and could never catch a builder
         # that quietly went missing from it, which is the entire point.
-        expected=chromium_expected_vectors(include_geo=include_geo),
+        #
+        # ⛔ `install_measuretext` IS FORWARDED, NOT DERIVED, AND THAT IS THE
+        # WHOLE PS-423 CARE. The same boolean reaches two functions that decide
+        # separately what it means; it is never read back off `builders`. Drop
+        # `measuretext` from the builder list alone and this declaration still
+        # names it, so the record reads `complete: false` — which is the
+        # non-circularity working, not a bug.
+        expected=chromium_expected_vectors(
+            include_geo=include_geo, install_measuretext=install_measuretext
+        ),
     )
 
 
@@ -658,8 +791,19 @@ def _chromium_builders(
     locale: str,
     generation: int,
     include_geo: bool,
+    install_measuretext: bool,
 ) -> "list[tuple[str, Callable[[], str]]]":
     """The hand-maintained ``(vector, thunk)`` list, mirroring ``process.py``.
+
+    Every keyword here is REQUIRED, ``install_measuretext`` included. Its only
+    caller is :func:`build_chromium_layer`, which always states it, so a
+    default would buy nothing but the possibility of a half-threaded tree: a
+    future call site that forgot the gate would silently get the fail-open
+    answer from HERE while :func:`chromium_expected_vectors` got it from the
+    layer builder's own default — the two authorities agreeing by coincidence
+    rather than by being handed one boolean. The public default lives on
+    :func:`build_chromium_layer`, which is where the fail-open decision is
+    documented and where a caller can actually be uncertain.
 
     Split out of :func:`build_chromium_layer` so THIS list — the thing that
     drifts — can be shortened in a test while the real build loop, the real
@@ -694,8 +838,23 @@ def _chromium_builders(
         (VOICE, lambda: build_voice_extension(
             locale, _dir(".persona-voice-ext"), os_type=os_type)),
         (STEALTH, lambda: build_stealth_extension(_dir(".persona-stealth-ext"))),
-        (MEASURETEXT, lambda: build_measuretext_extension(
-            _dir(".persona-measuretext-ext"))),
+        # GATED, exactly as ``process.py:1064`` gates it (PS-409/PS-423). The
+        # repair is installed only while the installed engine still needs it;
+        # on a fixed engine the product leaves it off the command line
+        # entirely — OMITTED, NOT NEUTERED — because an extension that installs
+        # and returns early is still a file on disk and a content script in
+        # every frame. Appended in position rather than at the end, so a diff
+        # against the product's list still reads straight down.
+        #
+        # The condition arrives as a PARAMETER (see the docstring): this list
+        # does not consult the engine, so a test can exercise both arms with no
+        # engine on disk, and the declared set in
+        # :func:`chromium_expected_vectors` stays a separate statement of the
+        # same fact rather than a projection of this one.
+        *([
+            (MEASURETEXT, lambda: build_measuretext_extension(
+                _dir(".persona-measuretext-ext"))),
+        ] if install_measuretext else []),
         (AUDIO, lambda: build_audio_extension(
             seed, _dir(".persona-audio-ext"))),
         (DEVICE, lambda: build_device_extension(
@@ -754,6 +913,7 @@ __all__ = [
     "LayerReport",
     "absent_layer",
     "chromium_expected_vectors",
+    "measuretext_expected",
     "context_for",
     "build_chromium_layer",
     "firefox_expected_vectors",
