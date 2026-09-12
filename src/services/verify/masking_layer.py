@@ -791,9 +791,19 @@ def _chromium_builders(
     locale: str,
     generation: int,
     include_geo: bool,
-    install_measuretext: bool = True,
+    install_measuretext: bool,
 ) -> "list[tuple[str, Callable[[], str]]]":
     """The hand-maintained ``(vector, thunk)`` list, mirroring ``process.py``.
+
+    Every keyword here is REQUIRED, ``install_measuretext`` included. Its only
+    caller is :func:`build_chromium_layer`, which always states it, so a
+    default would buy nothing but the possibility of a half-threaded tree: a
+    future call site that forgot the gate would silently get the fail-open
+    answer from HERE while :func:`chromium_expected_vectors` got it from the
+    layer builder's own default — the two authorities agreeing by coincidence
+    rather than by being handed one boolean. The public default lives on
+    :func:`build_chromium_layer`, which is where the fail-open decision is
+    documented and where a caller can actually be uncertain.
 
     Split out of :func:`build_chromium_layer` so THIS list — the thing that
     drifts — can be shortened in a test while the real build loop, the real
