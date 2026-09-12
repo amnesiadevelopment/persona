@@ -38,15 +38,34 @@ byte-identical after each arm. Counts are of THIS file's 17 tests:
                     every mutant would be measuring its own imports.
 * ``emit``        → **13 failed / 4 passed.**
 
-Two SHARPER arms, because a planted `raise` only proves the line runs — it does
-not prove the property is pinned. Both are plausible wrong implementations:
+SHARPER arms, because a planted `raise` only proves the line runs — it does not
+prove the property is pinned. Each is a wrong implementation someone could
+plausibly write:
 
 * `emit` holding the lock ACROSS the callbacks (drop the snapshot copy) →
   **3 failed / 14 passed in 15.4s** — the three re-entrancy tests, each
   reporting `emit did not return within 5.0s` as a FAILURE. ⭐ It did not hang:
   15.4s ≈ 3 × the bound, which is the bounded join doing its job.
+* `unsubscribe` doing `self._subscribers.remove(callback)` inside a
+  `try/except ValueError` — **the value-equality idiom a maintainer actually
+  reaches for**, and the exact shape property B exists to catch →
+  **1 failed / 16 passed**, and it is
+  `test_unsubscribe_removes_by_identity_not_equality`. ⚠️ This arm passed 17/17
+  before PS-424's review: the original arrangement unsubscribed the FIRST of
+  the two equal callables, where an `==` scan and an identity scan remove the
+  same element. Unsubscribing the SECOND is what makes the two distinguishable.
+* the same `list.remove` UNGUARDED (no `except ValueError`) →
+  **2 failed / 15 passed**: the identity test above, plus
+  `test_unsubscribe_is_a_no_op_for_a_callback_never_added`, which is the only
+  test in the file that catches the unguarded form *specifically* (the guarded
+  mutant leaves it green). The two removal mutants are therefore separated by
+  that one test, which is what a properly pinned pair looks like.
 * `unsubscribe` using `!=` instead of `is not` →
   **1 failed / 16 passed** — only `test_unsubscribe_removes_by_identity_not_equality`.
+  ⚠️ Read this arm narrowly: with `__ne__` returning False for everything the
+  comprehension keeps NOTHING, so what it establishes is "the roster was
+  emptied", NOT that value-equality removal was ruled out. That stronger claim
+  is the `list.remove` arm's, above.
 
 NEGATIVE CONTROL: unmutated, 17/17 pass. LINE COVERAGE: a `sys.settrace` +
 `threading.settrace` pass over this file alone executes every line this ticket
@@ -65,8 +84,9 @@ B. **`unsubscribe` is IDENTITY-based** (`s is not callback`). A value-equality
    removal would silently drop the WRONG callback, and `ui/app.py` registers a
    *bound method* — `self.state.schedule_refresh` — whose equality is by
    `__self__`/`__func__`, so this is not a hypothetical distinction. The test
-   registers two callables whose `__eq__` returns True for anything and asserts
-   the survivor is the one that was not named.
+   registers two callables whose `__eq__` returns True for anything, names the
+   SECOND one, and asserts the survivor is the FIRST — the arrangement in which
+   an `==` scan (which starts at index 0) and an identity scan disagree.
 
 C. **A subscriber that subscribes DURING `emit` must not deadlock.** `emit`
    copies the list under the lock and calls OUTSIDE it (`:25-27`) — that copy is
@@ -110,7 +130,14 @@ class _EqualsAnything:
 
     This is the instrument for property B. `list.remove` and an `==`-based
     comprehension would both delete the FIRST element here — i.e. the wrong one
-    — while `is not` deletes only the object actually named.
+    when the SECOND is the one named — while `is not` deletes only the object
+    actually named.
+
+    ⚠️ `__hash__` returns a constant, which is correct-but-degenerate: it is
+    harmless because `EventBus._subscribers` is a LIST, where hashing is never
+    consulted. If that roster ever becomes a `set` or a `dict`, this class
+    silently turns into a hash-collision instrument and every instance collapses
+    to one slot — revisit it then. (Assumption recorded 2026-09-12, PS-424.)
     """
 
     def __init__(self, tag: str, calls: list[str]) -> None:
@@ -240,9 +267,19 @@ def test_emit_logs_the_subscriber_error_it_swallows(caplog):
 def test_unsubscribe_removes_by_identity_not_equality():
     """Two callables that compare equal; only the one NAMED is removed.
 
-    `x == y` is True here, so an `==`-based removal drops `x` *and* `y` (or
-    drops `y` while `x` survives, depending on the idiom). Identity removal
-    leaves exactly `y`.
+    ⭐ THE ORDERING IS THE WHOLE TEST, and it is the SECOND subscriber that is
+    unsubscribed. `x == y` is True here, so any `==`-based removal — most
+    plausibly `self._subscribers.remove(callback)`, which is the idiom a
+    maintainer reaches for — scans from index 0 and deletes **`x`**, the
+    callback that was NOT named, while `y` survives. Unsubscribing `x` instead
+    would be indiscriminate: it sits at index 0, so an `==` scan and an
+    identity scan remove the same element and the arrangement could not tell
+    them apart. Identity removal here leaves exactly `x`.
+
+    That is the realistic failure shape for property B: not "everything is
+    dropped" but "the WRONG callback is silently dropped while the named one
+    keeps firing". `ui/app.py` registers a bound method, whose equality is by
+    `__self__`/`__func__`, so equal-but-distinct callables are not contrived.
     """
     bus = EventBus()
     calls: list[str] = []
@@ -253,13 +290,14 @@ def test_unsubscribe_removes_by_identity_not_equality():
 
     bus.subscribe(x)
     bus.subscribe(y)
-    bus.unsubscribe(x)
+    bus.unsubscribe(y)  # y is at index 1; an ==-scan removes x instead
 
     bus.emit()
 
-    assert calls == ["y"], (
-        "unsubscribe did not remove by identity: expected only the callback "
-        f"that was NOT named to survive, got {calls!r}"
+    assert calls == ["x"], (
+        "unsubscribe did not remove by identity: the callback that was NOT "
+        "named should be the survivor, so an ==-based removal shows up here "
+        f"as the wrong one being dropped. got {calls!r}"
     )
 
 
