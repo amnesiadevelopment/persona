@@ -14,6 +14,22 @@ engine interpolates the constant — the next rename is one edit, not a sweep.
 from ..core.strings import CHROMIUM_ENGINE_NAME
 
 CHANGELOG: dict[str, list[str]] = {
+    "3.1.2": [
+        "Text measured on a canvas now comes back with a real width. It was "
+        "returning a value close to zero, which no browser does, and it broke "
+        "pages that size text before drawing it — spreadsheet cells overlapped "
+        "and date pickers collapsed out of view.",
+        "Checkers no longer see the browser as disguised. Two hardware "
+        "properties were being declared by a script instead of by the engine "
+        "itself, and that is the thing a fingerprint check looks for.",
+        "The window no longer reports a screen size that does not match the "
+        "one it is on, so the profile reads as internally consistent.",
+        "Mobile profiles report the same processor count everywhere on the "
+        "page, including in background workers, instead of leaking a desktop "
+        "figure into one of them.",
+        "Display-related media queries answer honestly. A page could ask one "
+        "question and its exact opposite and be told yes to both.",
+    ],
     "3.1.1": [
         "Google Sheets and other sites that enforce a strict script policy now "
         "load properly. Such a page could sit on its loading spinner and never "
