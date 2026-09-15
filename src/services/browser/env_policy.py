@@ -390,7 +390,77 @@ TEMP_DIR_VARS = ("TMPDIR", "TMP", "TEMP")
 
 # Dotted so it sorts beside the other persona-owned subdirectories the profile
 # already carries (.invisible-profile, .persona-mtls, .persona-*-ext).
-CHILD_TMPDIR_NAME = ".persona-tmp"
+#: The kernel's limit on a unix socket path, not ours: `sockaddr_un.sun_path` is
+#: 108 bytes and one of them is the terminator. Chromium binds its singleton socket
+#: under TMPDIR, so this ceiling lands on the profile path whether anyone planned
+#: for it or not.
+UNIX_SOCKET_PATH_MAX = 107
+
+#: What Chromium appends beneath TMPDIR, read off the crash it produced:
+#: "/org.chromium.Chromium.XXXXXX" plus "/SingletonSocket".
+_CHROMIUM_SOCKET_SUFFIX = len("/org.chromium.Chromium.XXXXXX") + len("/SingletonSocket")
+
+#: SHORT ON PURPOSE, and it used to be ".persona-tmp".
+#:
+#: Every character here is taken out of the operator's name budget. A profile called
+#: `CR-control-noproxy` — eighteen ordinary characters — made the engine abort at
+#: startup with `FATAL: Socket path too long`, exit code 133, while the operator saw
+#: only "Session ended unexpectedly". Renaming it to `ctl` and changing nothing else
+#: launched it in three seconds. Eleven characters back is eleven more an operator
+#: may spend on a name that means something.
+CHILD_TMPDIR_NAME = ".pt"
+
+
+class ProfilePathTooLong(Exception):
+    """A profile's scratch path cannot hold Chromium's singleton socket.
+
+    Raised BEFORE the launch, because the alternative is what this replaces: the
+    engine aborts, the app reports "Session ended unexpectedly", and nothing on
+    the operator's screen names the profile, the limit, or the remedy.
+    """
+
+
+def child_tmpdir_budget(profile_dir):
+    """Characters still available before the socket path overruns. Negative = won't fit.
+
+    Derived from `browser_child_tmpdir` rather than recomputed, so the guard measures
+    the path the launch will actually use. A check that builds its own idea of the path
+    can pass while the launch still fails.
+    """
+    return UNIX_SOCKET_PATH_MAX - (
+        len(browser_child_tmpdir(profile_dir)) + _CHROMIUM_SOCKET_SUFFIX
+    )
+
+
+def check_child_tmpdir_fits(profile_dir):
+    """Refuse a profile whose name cannot hold the socket, naming the cause.
+
+    The scratch directory stays INSIDE the profile — that placement is what lets
+    delete, trash and wipe reach it — so the budget is fixed and the name spends it.
+    When it runs out, say so here rather than letting a kernel error arrive as an
+    unexplained exit code.
+    """
+    import os
+
+    # POSIX ONLY, and the test that added this line is why it is here. The limit is
+    # `sockaddr_un.sun_path`; Windows has no unix socket in this path at all — Chromium
+    # coordinates single-instance there through a named mutex, which has no such
+    # ceiling. Applying the check everywhere refused ordinary Windows profiles whose
+    # paths are simply long, turning a Linux crash into a Windows outage.
+    if os.name == "nt":
+        return
+
+    short_by = -child_tmpdir_budget(profile_dir)
+    if short_by > 0:
+        raise ProfilePathTooLong(
+            "this profile's path is %d character(s) too long for Chromium's "
+            "singleton socket, which a unix socket path limit caps at %d:\n"
+            "    %s/org.chromium.Chromium.XXXXXX/SingletonSocket\n"
+            "Shorten the profile name by at least %d character(s). Left alone, the "
+            "engine aborts at startup and reports only that the session ended."
+            % (short_by, UNIX_SOCKET_PATH_MAX,
+               browser_child_tmpdir(profile_dir), short_by)
+        )
 
 
 def browser_child_tmpdir(profile_dir):
@@ -454,6 +524,12 @@ def prepare_child_tmpdir(profile_dir):
     """
     import os
     import shutil
+
+    # Before anything is created, because the failure this catches happens LATER and
+    # somewhere else: the directory is made fine, the engine starts, and Chromium then
+    # cannot bind a socket beneath it. Checking here turns that into a refusal that
+    # names the profile, while the launch has not begun.
+    check_child_tmpdir_fits(profile_dir)
 
     target = browser_child_tmpdir(profile_dir)
     shutil.rmtree(target, ignore_errors=True)
