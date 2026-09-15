@@ -69,6 +69,13 @@ _CURL_RANGE_DONE = (33, 36)
 
 _CHUNK = 1 << 20
 
+#: Seconds a connection may deliver nothing before it is presumed dead and the
+#: transfer reconnects. Public because it is a POLICY, and the project answers
+#: "how long is silence allowed to last" in exactly one place: the app updater's
+#: curl path spends the same 30 seconds via --speed-time. Two numbers here would
+#: be two policies, which is the drift this shared module exists to prevent.
+STALL_TIMEOUT = 30
+
 
 class KeepRangeRedirect(urllib.request.HTTPRedirectHandler):
     """Re-attach the Range header after a redirect.
@@ -744,6 +751,7 @@ def resumable_download(
     allow_missing: bool = False,
     max_attempts: int = 40,
     opener_factory=None,
+    stall_timeout: int = STALL_TIMEOUT,
 ) -> bool:
     """Download `url` to `path` over urllib, resuming across dropped connections
     (Tor), and verify its sha256 before publishing it.
@@ -756,23 +764,44 @@ def resumable_download(
     `opener_factory` lets a caller supply its own opener builder; it MUST still
     preserve Range across redirects (see KeepRangeRedirect). Defaults to this
     module's range_opener.
+
+    TWO CLOCKS, MEASURING DIFFERENT THINGS. `timeout` is the caller's TOTAL
+    budget for obtaining the file; `stall_timeout` is how long one connection may
+    deliver NOTHING before it is presumed dead. Only the first existed before,
+    and urllib applies its timeout PER READ — so the engine's 600s budget also
+    meant "a silent exit freezes the transfer for ten minutes". Measured against
+    a peer that sends headers and then goes quiet without closing: the stall
+    lasts exactly the timeout, 5s -> 5.0s, 15s -> 15.0s. Throughout it the
+    progress bar sits on one byte count, which reads as death, so an operator
+    restarts the app long before the resume they were waiting for would fire.
+
+    This is the policy the app updater's curl path has always had
+    (--speed-limit/--speed-time in app_update/updater.py); it simply never
+    reached this transport. Resuming is cheap here — Range survives the CDN
+    redirect — so abandoning a silent connection early costs one reconnection and
+    buys back minutes.
     """
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = path + ".part"
     attempts = 0
     total = 0
+    # The total budget has to be enforced here, because shortening the per-read
+    # timeout alone would turn one long wait into forty short ones.
+    deadline = (time.monotonic() + timeout) if timeout else None
     # GitHub 302s to a signed CDN URL; a range-preserving opener keeps the Range
     # header across that redirect so a resume gets the tail (206) instead of the
     # whole file (200), which over Tor would restart from zero every attempt.
     opener = (opener_factory or range_opener)()
     while attempts < max_attempts:
+        if deadline is not None and time.monotonic() > deadline:
+            break
         attempts += 1
         have = _size(tmp)
         req = urllib.request.Request(url)
         if have:
             req.add_header("Range", f"bytes={have}-")
         try:
-            with opener.open(req, timeout=timeout) as resp:
+            with opener.open(req, timeout=stall_timeout) as resp:
                 cr = resp.headers.get("Content-Range")
                 if cr and "/" in cr:
                     try:
