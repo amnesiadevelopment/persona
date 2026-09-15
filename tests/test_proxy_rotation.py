@@ -296,7 +296,7 @@ def _seeded_app(tmp_path, service, url, rotate_url=""):
     app = make_app(tmp_path, service)
     app.pstore.add("p", url, rotate_url)
     app.pstore.mark_checked(
-        "p", "PL", "Poland", "95.49.113.111", "Europe/Warsaw", 52.23, 21.01
+        "p", "PL", "Poland", "203.0.113.11", "Europe/Warsaw", 52.23, 21.01
     )
     assert proxy_indicator_state(app.pstore.get("p"), time.time()) == "verified"
     assert _proxy_timezone(app.pstore.get("p")) == "Europe/Warsaw"
@@ -463,10 +463,10 @@ def test_rotate_still_reports_unchanged_exit_after_the_invalidation(tmp_path):
     whose full geography was invalidated, so the ordering is pinned by a test
     that fails for the ORDERING reason specifically.
     """
-    svc = FakeService(ip="95.49.113.111")  # the check returns the SAME exit
+    svc = FakeService(ip="203.0.113.11")  # the check returns the SAME exit
     app = _seeded_app(tmp_path, svc, "socks5://u:p@backconnect:1080")
     app._rotate_proxy("p")
     _wait_done(app, "p")
     assert any("exit unchanged" in ln for ln in app.logs)
     assert not any("rotated to a new exit" in ln for ln in app.logs)
-    assert not any("95.49.113.111" in ln for ln in app.logs)
+    assert not any("203.0.113.11" in ln for ln in app.logs)

@@ -265,7 +265,7 @@ it was committed three days before this ticket was written:
 |---|---|---|
 | record | `ps128-2026-08-23/run1-matrix/reading.firefox.windows.seed1337.json` | `…seed4242.json` |
 | engine | `invisible_playwright/firefox-20` | identical |
-| exit | `95.49.113.111` Warsaw/PL | **identical** |
+| exit | `95.49.x.x` Warsaw/PL | **identical** |
 | masking layer | `init_scripts`, audio+locale+webgl, complete | **identical** |
 | observed | `2026-08-23T21:46:11Z` | `2026-08-23T21:42:42Z` |
 

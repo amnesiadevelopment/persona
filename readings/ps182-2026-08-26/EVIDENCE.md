@@ -194,7 +194,7 @@ and two different days:
 | `pixelscan :: webgl_hash` | `f8819d18…` | `70454ee8…` | **differs** |
 | **`creepjs :: webgl_pixel_hash`** | **`51df3565`** | **`51df3565`** | **IDENTICAL** |
 
-Reproduced identically in `ps128` (2026-08-23, exit `95.49.113.111`) and `ps137`
+Reproduced identically in `ps128` (2026-08-23, exit `95.49.x.x`) and `ps137`
 (2026-08-24, exit `83.175.185.209`).
 
 This is the control that makes §3 a statement about **this one row** rather than
@@ -262,7 +262,7 @@ Chromium-affecting* decision about the guard — a scoped ticket, not a blind ed
 |---|---|
 | **Live checker confirmation** | **NOT TAKEN.** Proxy credential rejected at account level (`User was rejected by the SOCKS5 server (1 3)`), re-verified by the planner 2026-08-26T07:2xZ; it refused 7 of PS-177's 8 arms. Operator fault, tracked separately. |
 | **Loopback probe reading** | Taken, at four seeds, against the shipped script — and validated bit-identically against real `firefox-20` engine output in `ps135`. |
-| **Engine build / exit IP** | Not applicable: no live arm was taken. The reproduced corpus rows carry `invisible_playwright/firefox-20` and exits `95.49.113.111` (`ps128`) / `83.175.185.209` (`ps137`). |
+| **Engine build / exit IP** | Not applicable: no live arm was taken. The reproduced corpus rows carry `invisible_playwright/firefox-20` and exits `95.49.x.x` (`ps128`) / `83.175.185.209` (`ps137`). |
 | **`declared_machine_honoured`** | `false` on the Firefox path by engine limitation (issue #211) — expected, not a finding. |
 
 **The loopback result is deliberately NOT substituted for the live one.** PS-97's

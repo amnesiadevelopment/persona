@@ -1054,7 +1054,7 @@ def test_rotation_within_poland_is_not_a_fault(monkeypatch):
 # the no-country branch below survived the first round.
 
 
-def _ipwho_payload(country_code="PL", ip="95.49.113.111"):
+def _ipwho_payload(country_code="PL", ip="203.0.113.11"):
     """The SECOND provider's dialect, matching the real body captured through
     the mobile exit on 2026-08-23.
 
@@ -1132,7 +1132,7 @@ def test_a_rate_limited_first_provider_falls_through_to_the_second(monkeypatch):
 
     assert isinstance(observed, Exit), f"refused a healthy exit: {observed}"
     assert observed.country == "PL"
-    assert observed.ip == "95.49.113.111"
+    assert observed.ip == "203.0.113.11"
     # It really did fall through rather than reading the 429 as an answer.
     assert len(asked) == 2
 
@@ -1154,7 +1154,7 @@ def test_a_provider_that_answers_without_a_country_is_not_an_answer(
         monkeypatch,
         {
             # Shape of a rate-limit/error body: parses fine, says nothing.
-            "ipinfo.io": {"ip": "95.49.113.111", "error": "rate limited"},
+            "ipinfo.io": {"ip": "203.0.113.11", "error": "rate limited"},
             "ipwho.is": _ipwho_payload(),
         },
     )
@@ -1220,8 +1220,8 @@ def test_every_provider_answering_without_a_country_refuses_the_run(
     observed, asked = _observe_scripted(
         monkeypatch,
         {
-            "ipinfo.io": {"ip": "95.49.113.111"},
-            "ipwho.is": {"ip": "95.49.113.111"},
+            "ipinfo.io": {"ip": "203.0.113.11"},
+            "ipwho.is": {"ip": "203.0.113.11"},
         },
     )
 
@@ -1298,7 +1298,7 @@ def test_a_name_without_a_code_advances_instead_of_refusing_as_POLAND(
     # string that a laxer guard might have let through as "close enough".
     assert observed.country not in ("POLAND", "Poland", "")
     # The ANSWER came from the second provider, not the degraded first one.
-    assert observed.ip == "95.49.113.111"
+    assert observed.ip == "203.0.113.11"
     assert observed.timezone == "Europe/Warsaw"
     assert asked == list(exit_guard.EXIT_OBSERVATION_URLS), (
         f"the degraded body was read as an answer — asked {asked}"
@@ -1318,7 +1318,7 @@ def test_a_name_without_a_code_from_EVERY_provider_still_refuses(monkeypatch):
         monkeypatch,
         {
             "ipinfo.io": _degraded_name_only(ip="203.0.113.7"),
-            "ipwho.is": _degraded_name_only(ip="95.49.113.111"),
+            "ipwho.is": _degraded_name_only(ip="203.0.113.11"),
         },
     )
 

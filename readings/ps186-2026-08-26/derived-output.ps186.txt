@@ -13,9 +13,9 @@ contributes nothing in either direction.
 
 
   === CHROMIUM ===
-    old seed 1337   hash f801a1b3   exit 95.49.113.111    Orange Polska Spolka Akcyjna       2026-08-23
-    old seed 1337   hash f801a1b3   exit 79.191.76.230    AS5617 Orange Polska Spolka Akcyjn 2026-08-23
-    old seed 1337   hash f801a1b3   exit 79.191.76.230    AS5617 Orange Polska Spolka Akcyjn 2026-08-23
+    old seed 1337   hash f801a1b3   exit 95.49.x.x    Orange Polska Spolka Akcyjna       2026-08-23
+    old seed 1337   hash f801a1b3   exit 79.191.x.x    AS5617 Orange Polska Spolka Akcyjn 2026-08-23
+    old seed 1337   hash f801a1b3   exit 79.191.x.x    AS5617 Orange Polska Spolka Akcyjn 2026-08-23
     old seed 1337   hash f801a1b3   exit 83.175.185.209   AS9141 P4 Sp. z o.o.               2026-08-24
     old seed 2024   hash a96eedf0   exit 83.175.185.209   AS9141 P4 Sp. z o.o.               2026-08-24
     NEW seed 5150   hash c893e6c9   exit 212.105.131.187  AS14593 Space Exploration Technolo 2026-08-26
@@ -35,9 +35,9 @@ contributes nothing in either direction.
     SEED-DERIVED: every seed reads a distinct value — this row does not link profiles.
 
   === FIREFOX ===
-    old seed 1337   hash 51df3565   exit 95.49.113.111    Orange Polska Spolka Akcyjna       2026-08-23
+    old seed 1337   hash 51df3565   exit 95.49.x.x    Orange Polska Spolka Akcyjna       2026-08-23
     old seed 1337   hash 51df3565   exit 83.175.185.209   AS9141 P4 Sp. z o.o.               2026-08-24
-    old seed 4242   hash 51df3565   exit 95.49.113.111    Orange Polska Spolka Akcyjna       2026-08-23
+    old seed 4242   hash 51df3565   exit 95.49.x.x    Orange Polska Spolka Akcyjna       2026-08-23
     old seed 4242   hash 51df3565   exit 83.175.185.209   AS9141 P4 Sp. z o.o.               2026-08-24
     NEW seed 5150   hash 51df3565   exit 109.243.64.38    AS39603 P4 Sp. z o.o.              2026-08-26
     NEW seed 24601  hash 51df3565   exit 109.243.69.197   AS39603 P4 Sp. z o.o.              2026-08-26

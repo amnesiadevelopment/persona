@@ -64,9 +64,9 @@ so it is recorded per run rather than once:
 
 | run | exit | country |
 |---|---|---|
-| run 1 (matrix, both engines) | `95.49.113.111` | Warsaw / PL / Orange Polska |
-| run 2 (chromium re-run) | `79.191.76.230` | Warsaw / PL / Orange Polska |
-| run 3 (chromium, order reversed) | `79.191.76.230` | Warsaw / PL / Orange Polska |
+| run 1 (matrix, both engines) | `95.49.x.x` | Warsaw / PL / Orange Polska |
+| run 2 (chromium re-run) | `79.191.x.x` | Warsaw / PL / Orange Polska |
+| run 3 (chromium, order reversed) | `79.191.x.x` | Warsaw / PL / Orange Polska |
 
 ---
 
@@ -81,8 +81,8 @@ Measured through the same credential, in the same minute:
 
 | probe (through proxy, `socks5h`) | result |
 |---|---|
-| `ipwho.is` | `95.49.113.111` · **Poland** · Warsaw |
-| `api.ipify.org` | `95.49.113.111` |
+| `ipwho.is` | `95.49.x.x` · **Poland** · Warsaw |
+| `api.ipify.org` | `95.49.x.x` |
 | `ipinfo.io` | **HTTP 429 Rate limit hit** |
 | `ipinfo.io` **direct** (control) | 200 — returns our real netcup address |
 
@@ -403,7 +403,7 @@ xvfb-run -a python scripts/ps90_crossread.py
 
 Records in this directory:
 
-- `run1-matrix/` — 4 records, both engines, both seeds, exit `95.49.113.111`
-- `run2-chromium-rerun/` — chromium, both seeds, exit `79.191.76.230`
+- `run1-matrix/` — 4 records, both engines, both seeds, exit `95.49.x.x`
+- `run2-chromium-rerun/` — chromium, both seeds, exit `79.191.x.x`
 - `run3-chromium-order-reversed/` — chromium, **1337 first**, the one-axis test
 - `ps90-internal-readback-crossread.json` — the internal probe, both seeds

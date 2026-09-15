@@ -98,7 +98,7 @@ EXPECTED_COUNTRY = "PL"
 # PS-128 measured this failing closed on a HEALTHY exit. ipinfo.io answered
 # `HTTP 429 Rate limit hit` through the proxy while the exit itself was
 # provably Polish: ipwho.is and api.ipify.org, asked through the same
-# credential in the same minute, both returned 95.49.113.111 / PL / Warsaw.
+# credential in the same minute, both returned 203.0.113.11 / PL / Warsaw.
 # The rate limit attaches to the EXIT's address, which is a shared mobile one
 # that other tenants also use — so it is not ours to clear, cannot be retried
 # around, and rotating is the operator's job. Every one of the four readings
