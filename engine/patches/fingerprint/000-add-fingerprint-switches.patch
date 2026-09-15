@@ -2,7 +2,7 @@ diff --git a/components/ungoogled/ungoogled_switches.cc b/components/ungoogled/u
 index c2f9515e91..49f325e01c 100644
 --- a/components/ungoogled/ungoogled_switches.cc
 +++ b/components/ungoogled/ungoogled_switches.cc
-@@ -15,4 +15,45 @@ const char kFingerprintingCanvasMeasureTextNoise[] = "fingerprinting-canvas-meas
+@@ -15,4 +15,53 @@ const char kFingerprintingCanvasMeasureTextNoise[] = "fingerprinting-canvas-meas
  // Enable fingerprinting deception for Canvas image data
  const char kFingerprintingCanvasImageDataNoise[] = "fingerprinting-canvas-image-data-noise";
  
@@ -47,12 +47,20 @@ index c2f9515e91..49f325e01c 100644
 +// Specify the timezone
 +const char kFingerprintTimezone[] = "timezone";
 +
++// Specify the locale the page and every worker should format in.
++// Separate from --lang on purpose: the browser RESOLVES --lang against the
++// locales it actually ships and hands children the resolved value, so a build
++// without Polish resources passes en-US to every renderer no matter what was
++// asked for. Measured: --lang=pl-PL, --lang=de-DE and --lang=ja-JP all arrive
++// as --lang=en-US. A fingerprint switch travels verbatim, like --timezone.
++const char kFingerprintLanguage[] = "fingerprint-language";
++
  }  // namespace switches
 diff --git a/components/ungoogled/ungoogled_switches.h b/components/ungoogled/ungoogled_switches.h
 index 7dace11f70..2ec06c3acd 100644
 --- a/components/ungoogled/ungoogled_switches.h
 +++ b/components/ungoogled/ungoogled_switches.h
-@@ -15,6 +15,19 @@ COMPONENT_EXPORT(UNGOOGLED) extern const char kFingerprintingClientRectsNoise[];
+@@ -15,6 +15,20 @@ COMPONENT_EXPORT(UNGOOGLED) extern const char kFingerprintingClientRectsNoise[];
  COMPONENT_EXPORT(UNGOOGLED) extern const char kFingerprintingCanvasMeasureTextNoise[];
  COMPONENT_EXPORT(UNGOOGLED) extern const char kFingerprintingCanvasImageDataNoise[];
  
@@ -69,6 +77,7 @@ index 7dace11f70..2ec06c3acd 100644
 +COMPONENT_EXPORT(UNGOOGLED) extern const char kFingerprintPlatformVersion[];
 +COMPONENT_EXPORT(UNGOOGLED) extern const char kFingerprintLocation[];
 +COMPONENT_EXPORT(UNGOOGLED) extern const char kFingerprintTimezone[];
++COMPONENT_EXPORT(UNGOOGLED) extern const char kFingerprintLanguage[];
  }
  
  #endif  // THIRD_PARTY_UNGOOGLED_FINGERPRINTING_SWITCHES_H_
@@ -76,7 +85,7 @@ diff --git a/content/browser/renderer_host/render_process_host_impl.cc b/content
 index c7d0fc0072..f5d2cc3684 100644
 --- a/content/browser/renderer_host/render_process_host_impl.cc
 +++ b/content/browser/renderer_host/render_process_host_impl.cc
-@@ -3724,6 +3724,19 @@ void RenderProcessHostImpl::PropagateBrowserCommandLineToRenderer(
+@@ -3724,6 +3724,20 @@ void RenderProcessHostImpl::PropagateBrowserCommandLineToRenderer(
        switches::kFingerprintingClientRectsNoise,
        switches::kFingerprintingCanvasMeasureTextNoise,
        switches::kFingerprintingCanvasImageDataNoise,
@@ -93,6 +102,8 @@ index c7d0fc0072..f5d2cc3684 100644
 +      switches::kFingerprintPlatformVersion,
 +      switches::kFingerprintLocation,
 +      switches::kFingerprintTimezone,
++      switches::kFingerprintLanguage,
        switches::kForceDeviceScaleFactor,
        switches::kForceDisplayColorProfile,
        switches::kForceHighContrast,
+

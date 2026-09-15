@@ -33,6 +33,25 @@ echo "into: ${DEST}"
 echo
 
 # Copy in numeric order and append to the series in that same order.
+#
+# IDEMPOTENT, because this script is not always run exactly once. A staging run that
+# fails LATE — the count guard below, say — has already appended by then, so its
+# non-zero exit reads as "it did nothing" while the series has in fact grown. Run it
+# again and every patch is listed twice; the series is applied in order, meets each
+# patch a second time, and `patch --forward` refuses it. The whole prepare then dies on
+# 000 with a rejected hunk, which looks exactly like the patch having rotted against a
+# new upstream. It cost a full re-extract and two wrong diagnoses to learn that.
+#
+# So: strip any previous staging block first. The marker line is the anchor, and
+# removing from it to the end is safe because staging always appends last.
+if grep -qF -- "--- persona: fingerprint patches" "$SERIES" 2>/dev/null; then
+  echo "note: a previous staging block is present; replacing it"
+  sed -i '/--- persona: fingerprint patches/,$d' "$SERIES"
+  # Drop the blank line that preceded the marker, so repeated runs do not grow the
+  # file by one line each time.
+  sed -i -e :a -e '/^\n*$/{$d;N;ba' -e '}' "$SERIES"
+fi
+
 count=0
 {
   echo ""
@@ -52,12 +71,22 @@ echo "staged ${count} fingerprint patches"
 
 # A guard rather than a comment. The ticket forbids making the build succeed by
 # quietly dropping a patch — "A build made to succeed by quietly dropping a
-# patch measures nothing." If the count is not 16 the staging is wrong, and
+# patch measures nothing." If the count is wrong the staging is wrong, and
 # failing here is far better than producing a compile result for an unknown
-# subset of our patch layer and reporting it as though it were all 16.
-if [ "$count" -ne 16 ]; then
-  echo "::error::Expected exactly 16 fingerprint patches, staged ${count}."
-  echo "::error::PS-218 measures OUR 16 PATCHES. A build of some other number measures nothing and must not be reported as this ticket's result."
+# subset of our patch layer and reporting it as though it were the whole thing.
+#
+# The number is derived from the patch directory rather than written here. A
+# literal was the right call while the set was frozen at 16, and it did its job:
+# it stopped a build the moment 019-webgpu-adapter-info and
+# 020-serviceworker-locale joined the set. But a literal also has to be edited in
+# lockstep with every addition, and the edit that gets forgotten is the one that
+# turns this guard off by making it wrong in the permissive direction. Counting
+# the source of truth keeps the check honest as the set grows, and it still fails
+# closed on the case that matters: a patch present on disk but not staged.
+expected=$(find "$PATCH_DIR" -maxdepth 1 -name '*.patch' | wc -l)
+if [ "$count" -ne "$expected" ]; then
+  echo "::error::Expected ${expected} fingerprint patches (the number in ${PATCH_DIR}), staged ${count}."
+  echo "::error::This measures OUR PATCH LAYER. A build of some other subset measures nothing and must not be reported as a result."
   exit 1
 fi
 

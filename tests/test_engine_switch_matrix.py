@@ -320,7 +320,24 @@ def launch_switches(monkeypatch, tmp_path):
 # it at its source.
 
 MATRIX = {
-    # --- the six that are declared, consumed AND passed ----------------------
+    # --- the seven that are declared, consumed AND passed ---------------------
+    "fingerprint-language": (
+        COVERED,
+        "⭐ ADDED BECAUSE --lang CANNOT DO THIS JOB. The browser resolves --lang "
+        "against the UI locales the build actually ships and hands children the "
+        "RESOLVED value; measured on an English-only build, --lang=pl-PL, "
+        "--lang=de-DE and --lang=ja-JP all arrive in the renderer as "
+        "--lang=en-US. A patch that read switches::kLang there compiled, ran, "
+        "and set the locale to en-US for every profile — faithful and useless. "
+        "Only the control arm caught it. Declared by 000 AND added to the "
+        "renderer forwarding list in the same patch, so it travels verbatim the "
+        "way `timezone` does. Consumed by 020, which sets the renderer's ICU "
+        "default locale from it: without that, any realm reaching ICU without "
+        "Blink in front — a service worker — formats currency and month names "
+        "in the HOST's language while the page formats them in the profile's, "
+        "which creepjs reports at confidence: high. Passed unconditionally as "
+        "--fingerprint-language=<lang>.",
+    ),
     "fingerprint": (
         COVERED,
         "The seed itself, and the most consumed switch in the set: patches "
@@ -688,11 +705,15 @@ def test_the_declaration_parse_excludes_ungoogled_context_constants():
     assert any(
         "kFingerprintingCanvasImageDataNoise" in line for line in context_declarations
     )
-    assert len(declared) == 13, (
+    assert len(declared) == 14, (
         f"000 declares {len(declared)} switches, not 13. If that is a real "
         "change, test_the_matrix_covers_every_declared_switch names which one "
         "moved and this count follows it — update both together.\n"
-        "⭐ WENT 12 -> 13 AT PS-392: fingerprint-device-memory was added so "
+        "⭐ WENT 13 -> 14: fingerprint-language was added because --lang is "
+        "resolved by the BROWSER before renderers see it — pl-PL, de-DE and "
+        "ja-JP all arrive as en-US — so the renderer needs a switch that "
+        "travels verbatim. WENT 12 -> 13 AT PS-392: fingerprint-device-memory "
+        "was added so "
         "deviceMemory could move off its JS descriptor into the engine."
     )
 
@@ -736,7 +757,10 @@ def test_the_consumer_column_is_read_from_the_other_patches():
 
     # POSITIVE: the switches that are read, are seen to be read.
     assert consumers["timezone"] == ["018"]
-    assert consumers["fingerprint-platform"] == ["002", "006", "011"]
+    # 019 joined at the WebGPU patch: it reads the claimed platform to decide
+    # whether the adapter should answer as Apple or as NVIDIA, so that WebGL and
+    # WebGPU cannot name two different machines.
+    assert consumers["fingerprint-platform"] == ["002", "006", "011", "019"]
     assert consumers["fingerprint-brand"] == ["002"]
     assert consumers["fingerprint-brand-version"] == ["002"]
     assert consumers["fingerprint-hardware-concurrency"] == ["005"]
@@ -871,6 +895,10 @@ def test_the_passed_column_is_read_off_a_real_launch(monkeypatch, tmp_path):
         "fingerprint-brand-version",
         "fingerprint-device-memory",
         "fingerprint-hardware-concurrency",
+        # Passed alongside --lang, not instead of it: --lang still selects the UI
+        # language, but the browser resolves it before renderers see it, so it
+        # cannot carry a per-profile locale. This one travels verbatim.
+        "fingerprint-language",
         "timezone",
     }, (
         "the set of fingerprint switches a launch passes has changed. If a "
@@ -961,6 +989,10 @@ def test_the_split_is_reproduced_as_data(monkeypatch, tmp_path):
             "fingerprint-brand-version",
             "fingerprint-device-memory",
             "fingerprint-hardware-concurrency",
+            # Joined the bucket with the service-worker locale fix: declared by 000
+            # (and added to the renderer forwarding list there, which is the part
+            # that makes it usable), consumed by 020, passed by spawn_browser.
+            "fingerprint-language",
             "fingerprint-platform",
             "timezone",
         ]
@@ -992,7 +1024,7 @@ def test_the_split_is_reproduced_as_data(monkeypatch, tmp_path):
     # enters the fully_wired bucket: declared, consumed by 005, passed).
     assert (
         len(fully_wired) + len(consumed_not_passed) + len(declared_not_consumed)
-    ) == len(declared) == 13
+    ) == len(declared) == 14
 
     # ⛔ A PASSED SWITCH THAT NOBODY CONSUMES IS THE WORST CELL IN THE TABLE and
     # must never appear silently: it is a flag the engine accepts and discards

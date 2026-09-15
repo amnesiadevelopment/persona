@@ -20,7 +20,7 @@ diff --git a/third_party/blink/renderer/platform/fonts/font_cache.cc b/third_par
  #include "build/build_config.h"
  #include "skia/ext/font_utils.h"
  #include "third_party/blink/public/common/features.h"
-@@ -152,6 +155,120 @@
+@@ -152,6 +155,114 @@
  }
  #endif
  
@@ -98,29 +98,23 @@ diff --git a/third_party/blink/renderer/platform/fonts/font_cache.cc b/third_par
 +}
 +
 +// 判断是否为基础字体（不应被处理）
-+static bool IsBasicFont(const std::string& font_family) {
-+  static const std::set<std::string> basic_fonts = {
++// Families that must NEVER be substituted, because they are not families: they are
++// the CSS generics and the system aliases every page resolves through. Swapping
++// one changes layout everywhere, which is a far louder signal than any font
++// census.
++//
++// This used to also list Arial, Segoe UI, Times New Roman, Courier New and the
++// rest of the common named faces, and returning early for them meant they NEVER
++// got the cross-platform substitution below — they went straight to the host. On
++// a machine without them that reads as ABSENT while the browser is claiming to
++// BE that platform. Measured on a bare Linux builder claiming Windows: 37 of the
++// 47 fonts pixelscan probes for resolved, and every one of the missing ten was on
++// this list. Named faces now fall through and are substituted like any other.
++static bool IsGenericFamily(const std::string& font_family) {
++  static const std::set<std::string> generic_families = {
 +    // 系统特殊字体
 +    "-webkit-standard",
 +    "system-ui",
-+
-+    // 基础西文字体
-+    "Arial",
-+    "Calibri",
-+    "Courier New",
-+    "Courier",
-+    "Helvetica",
-+    "Helvetica Neue",
-+    "Lucida Grande",
-+    "Microsoft Sans Serif",
-+    "MS Sans Serif",
-+    "MS Serif",
-+    "MS UI Gothic",
-+    "Roboto",
-+    "Sans",
-+    "Segoe UI",
-+    "Times New Roman",
-+    "Times",
 +
 +    // CSS通用字体
 +    "cursive",
@@ -134,14 +128,14 @@ diff --git a/third_party/blink/renderer/platform/fonts/font_cache.cc b/third_par
 +    "BlinkMacSystemFont"
 +  };
 +
-+  return basic_fonts.count(font_family) > 0;
++  return generic_families.count(font_family) > 0;
 +}
 +
 +
  const FontPlatformData* FontCache::GetFontPlatformData(
      const FontDescription& font_description,
      const FontFaceCreationParams& creation_params,
-@@ -165,6 +282,74 @@
+@@ -165,6 +282,105 @@
    }
  #endif
  
@@ -156,7 +150,7 @@ diff --git a/third_party/blink/renderer/platform/fonts/font_cache.cc b/third_par
 +    const std::string requested_family = creation_params.Family().Utf8();
 +
 +    // 基础字体直接返回，不进行任何处理
-+    if (IsBasicFont(requested_family)) {
++    if (IsGenericFamily(requested_family)) {
 +      return font_platform_data_cache_.GetOrCreateFontPlatformData(
 +          this, font_description, creation_params, alternate_font_name);
 +    }
@@ -190,11 +184,42 @@ diff --git a/third_party/blink/renderer/platform/fonts/font_cache.cc b/third_par
 +      bool is_platform_font = std::find(platform_fonts.begin(), platform_fonts.end(),
 +                                        requested_family) != platform_fonts.end();
 +      if (is_platform_font) {
-+        // 伪装平台的字体，用当前系统的字体替代
-+        size_t index = hash % current_os_fonts.size();
-+        FontFaceCreationParams substitute_params(AtomicString(current_os_fonts[index].c_str()));
-+        return font_platform_data_cache_.GetOrCreateFontPlatformData(
-+            this, font_description, substitute_params, alternate_font_name);
++        // Substitute a family this machine ACTUALLY HAS.
++        //
++        // Picking blind was the defect. current_os_fonts is the union of
++        // everything the platform has ever shipped, not what is installed, so
++        // `hash % size` regularly names a family that is absent here. The
++        // lookup then yields nothing, the page measures the requested font at
++        // its fallback width, and a checker reads the font as MISSING — while
++        // the browser is claiming to BE that platform.
++        //
++        // Measured on macOS claiming Windows: 12 of the 47 families pixelscan
++        // probes for came back absent, among them Segoe UI and Calibri. That is
++        // enough for its scan to report isCheckSuccessfull=false, and its UI
++        // renders no failed state, so the fingerprint tile collects forever.
++        //
++        // kNoAlternate is what makes this a real existence test: with it,
++        // GetOrCreateFontPlatformData returns nullptr for a family that is not
++        // installed, instead of quietly aliasing to a different one
++        // (font_platform_data_cache.cc). The walk starts at the same
++        // hash-derived index and only steps forward, so one seed still produces
++        // one stable substitute for a given family.
++        const size_t font_count = current_os_fonts.size();
++        for (size_t step = 0; step < font_count; ++step) {
++          const size_t index = (hash + step) % font_count;
++          FontFaceCreationParams substitute_params(
++              AtomicString(current_os_fonts[index].c_str()));
++          if (const FontPlatformData* substitute =
++                  font_platform_data_cache_.GetOrCreateFontPlatformData(
++                      this, font_description, substitute_params,
++                      AlternateFontName::kNoAlternate)) {
++            return substitute;
++          }
++        }
++        // Nothing in the catalogue resolves here. Hide, rather than fall
++        // through to the host's real font: falling through would disclose the
++        // very set this branch exists to conceal.
++        return nullptr;
 +      } else {
 +        // 非平台字体处理：95%概率隐藏
 +        float probability = static_cast<float>(hash) / static_cast<float>(std::numeric_limits<uint32_t>::max());
@@ -216,3 +241,4 @@ diff --git a/third_party/blink/renderer/platform/fonts/font_cache.cc b/third_par
    return font_platform_data_cache_.GetOrCreateFontPlatformData(
        this, font_description, creation_params, alternate_font_name);
  }
+

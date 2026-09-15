@@ -1,0 +1,104 @@
+Make WebGPU name the same GPU as WebGL.
+
+WebGPU reports the adapter through an API the existing GPU spoof never touched, so
+a profile claiming Windows + NVIDIA + Direct3D11 answered navigator.gpu with the
+host's real adapter. Measured on macOS: vendor "apple", architecture "metal-3",
+alongside a WebGL renderer string of ANGLE (NVIDIA, ... Direct3D11). Two graphics
+APIs naming two different machines, and the single item browserscan renders in a
+warning colour.
+
+The values are read from the SAME table the WebGL path uses
+(components/ungoogled/fingerprint_data.h) with the same seed % count selection, so
+the two surfaces cannot drift apart. The architecture is implied by the model and
+nothing else: a checker that knows the RTX 40 series is Ada Lovelace notices any
+other pairing, so inventing a value would replace one tell with another.
+
+Both construction branches read these members, so rewriting them once at the top of
+CreateAdapterInfoForAdapter covers the developer-features path as well as the
+default one. Default mode exposes only vendor and architecture, which is what every
+checker reads; device and description are cleared so the rarer path cannot disclose
+the host's real device.
+
+--- a/third_party/blink/renderer/modules/webgpu/gpu_adapter.cc
++++ b/third_party/blink/renderer/modules/webgpu/gpu_adapter.cc
+@@ -4,6 +4,11 @@
+
+ #include "third_party/blink/renderer/modules/webgpu/gpu_adapter.h"
+
++#include "base/command_line.h"
++#include "base/strings/string_number_conversions.h"
++#include "base/strings/string_util.h"
++#include "components/ungoogled/fingerprint_data.h"
++#include "components/ungoogled/ungoogled_switches.h"
+ #include "services/metrics/public/cpp/ukm_builders.h"
+ #include "third_party/blink/renderer/bindings/core/v8/script_promise_resolver.h"
+ #include "third_party/blink/renderer/bindings/core/v8/v8_object_builder.h"
+@@ -122,7 +127,67 @@ void GPUAdapter::Initialize(const wgpu::Adapter& handle) {
+   info_ = CreateAdapterInfoForAdapter();
+ }
+
++namespace {
++
++// The GPU generation is a property of the model number, not a free choice. Getting
++// it wrong would trade the leak below for a different inconsistency, so it is
++// derived from the same model string the WebGL renderer advertises.
++const char* WebGpuArchitectureForModel(const std::string& model) {
++  if (model.find("RTX 50") != std::string::npos) {
++    return "blackwell";
++  }
++  if (model.find("RTX 40") != std::string::npos) {
++    return "ada-lovelace";
++  }
++  if (model.find("RTX 30") != std::string::npos) {
++    return "ampere";
++  }
++  return "";
++}
++
++}  // namespace
++
+ GPUAdapterInfo* GPUAdapter::CreateAdapterInfoForAdapter() {
++  // WebGPU is a second route to the hardware, and until now it was unspoofed: a
++  // profile claiming Windows and Direct3D11 answered navigator.gpu with the host's
++  // real adapter (measured on macOS: vendor "apple", architecture "metal-3"). Two
++  // APIs naming two different machines is not a subtle tell.
++  //
++  // Read from the SAME table the WebGL spoof uses, selected with the same
++  // arithmetic, so the two surfaces cannot disagree.
++  const base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
++  if (command_line->HasSwitch(switches::kFingerprint)) {
++    std::string platform = "windows";
++    if (command_line->HasSwitch(switches::kFingerprintPlatform)) {
++      platform = base::ToLowerASCII(
++          command_line->GetSwitchValueASCII(switches::kFingerprintPlatform));
++    }
++
++    if (platform == "macos") {
++      // Measured on an arm64 Mac rather than invented; Apple reports no device or
++      // description here either.
++      vendor_ = String::FromUtf8("apple");
++      architecture_ = String::FromUtf8("metal-3");
++    } else {
++      uint32_t seed = 0;
++      base::StringToUint(
++          command_line->GetSwitchValueASCII(switches::kFingerprint), &seed);
++      const ungoogled::fingerprint::GpuModelInfo& model =
++          ungoogled::fingerprint::kGpuModels
++              [seed % ungoogled::fingerprint::kGpuModelCount];
++      const std::string model_name(model.model_name ? model.model_name : "");
++      vendor_ = String::FromUtf8("nvidia");
++      architecture_ =
++          String::FromUtf8(WebGpuArchitectureForModel(model_name));
++    }
++
++    // Default (non-developer) mode publishes only vendor and architecture, which is
++    // what every checker reads. Clearing these two stops the developer path from
++    // disclosing the real device on a build that happens to enable it.
++    device_ = String();
++    description_ = String();
++  }
++
+   bool is_fallback_adapter = adapter_type_ == wgpu::AdapterType::CPU;
+
+   GPUAdapterInfo* info;
+

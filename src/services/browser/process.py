@@ -1400,6 +1400,24 @@ def spawn_browser(profile: Profile, *, in_process: bool = False) -> subprocess.P
             # than silently converting a decision into an unexplained gap.
             f"--lang={lang}",
             f"--accept-lang={lang},{lang.split('-')[0]}",
+            # BOTH, because they reach different places and only one of them
+            # survives the trip.
+            #
+            # --lang is resolved by the BROWSER against the UI locales the build
+            # actually ships, and children receive the RESOLVED value. Measured on
+            # a build carrying English resources only: --lang=pl-PL, --lang=de-DE
+            # and --lang=ja-JP each arrive in the renderer as --lang=en-US. So it
+            # still sets the UI language, and it cannot be used to set anything
+            # per-profile.
+            #
+            # --fingerprint-language is forwarded verbatim, the way --timezone
+            # already is, and the engine uses it to set the renderer's ICU default
+            # locale. Without it Intl answers from the HOST locale in any realm
+            # that reaches ICU without Blink in front — a service worker formats
+            # currency and month names in the operator's own language while the
+            # page formats them in the profile's, which creepjs reports at
+            # "confidence: high".
+            f"--fingerprint-language={lang}",
             f"--load-extension={','.join(extensions)}",
             "--no-first-run",
             "--no-default-browser-check",
