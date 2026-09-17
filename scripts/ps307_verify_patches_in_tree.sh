@@ -1,5 +1,5 @@
 #!/bin/bash
-# PS-307 — PROVE our 16 fingerprint patches are in the tree about to be compiled.
+# PS-307 — PROVE our fingerprint patches are in the tree about to be compiled.
 #
 # ─────────────────────────────────────────────────────────────────────────────
 # THIS IS THE GUARD THE WHOLE TICKET EXISTS FOR
@@ -198,11 +198,28 @@ shopt -s nullglob
 PATCHES=( "${PATCH_DIR}"/*.patch )
 shopt -u nullglob
 
-# The same count guard ps218_stage_patches.sh carries, for the same reason. A
+# The count guard ps218_stage_patches.sh carries, for the same reason. A
 # verification of some other number of patches would report a verdict about a
 # patch layer that is not ours.
-if [ "${#PATCHES[@]}" -ne 16 ]; then
-  echo "::error::PS-307: expected exactly 16 fingerprint patches in ${PATCH_DIR}, found ${#PATCHES[@]}."
+#
+# ⚠️ THIS NUMBER IS A PINNED LITERAL, DELIBERATELY — the one place in the
+# census family a literal is load-bearing rather than rot (PS-437). Every other
+# guard DERIVES its count from the patch directory, so legitimate growth never
+# makes them fire. Here the directory IS the input: deriving the expectation
+# from it would make the guard a tautology and quietly retire the only runtime
+# tripwire on the vendored set itself — a patch deleted from the directory
+# after staging would verify, and the build would be labelled as carrying a
+# layer a patch smaller than the one it claims. A literal can only rot in the
+# LOUD direction: when the set legitimately grows, this refuses until a human
+# moves it, and the refusal IS the census being taken. The verifier also
+# deliberately never reads `patches/series` (see the header: the only thing
+# consulted is the content of the source files), so the series cannot serve as
+# a derived expectation here either.
+#
+# 18 = the set since 019-webgpu-adapter-info was rewritten and
+# 020-serviceworker-locale joined (PS-437).
+if [ "${#PATCHES[@]}" -ne 18 ]; then
+  echo "::error::PS-307: expected exactly 18 fingerprint patches in ${PATCH_DIR}, found ${#PATCHES[@]}."
   echo "::error::PS-307: a presence check over some other number measures a patch layer that is not the one this build claims to carry."
   exit 1
 fi

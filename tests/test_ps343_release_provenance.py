@@ -225,7 +225,10 @@ def test_the_switch_list_matches_the_patch_that_declares_them(shipped_record):
     )
 
     added_since_release = sorted(set(in_patch) - set(declared))
-    assert added_since_release == ["fingerprint-device-memory"], (
+    assert added_since_release == [
+        "fingerprint-device-memory",
+        "fingerprint-language",
+    ], (
         "the set of switches added to patch 000 SINCE the shipped release has "
         f"changed: {added_since_release}. This is not automatically wrong — a "
         "switch added after a release is absent from that release's record by "

@@ -46,10 +46,17 @@ echo
 # removing from it to the end is safe because staging always appends last.
 if grep -qF -- "--- persona: fingerprint patches" "$SERIES" 2>/dev/null; then
   echo "note: a previous staging block is present; replacing it"
-  sed -i '/--- persona: fingerprint patches/,$d' "$SERIES"
+  # ⚠️ NOT `sed -i`: that in-place form is GNU-only and dies on a macOS
+  # runner (test_ps374's `no_shell_script_uses_the_gnu_only_in_place_sed_form`
+  # is the guard that caught it here — the strip was written GNU-first and
+  # never re-checked). Write through a temp file and `mv`, the way
+  # ps374_falsify_patch_evidence.sh's sed_inplace() does.
+  sed '/--- persona: fingerprint patches/,$d' "$SERIES" > "${SERIES}.tmp"
+  mv "${SERIES}.tmp" "$SERIES"
   # Drop the blank line that preceded the marker, so repeated runs do not grow the
   # file by one line each time.
-  sed -i -e :a -e '/^\n*$/{$d;N;ba' -e '}' "$SERIES"
+  sed -e :a -e '/^\n*$/{$d;N;ba' -e '}' "$SERIES" > "${SERIES}.tmp"
+  mv "${SERIES}.tmp" "$SERIES"
 fi
 
 count=0

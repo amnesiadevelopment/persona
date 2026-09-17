@@ -38,11 +38,22 @@ CONTROL_RUN_ID="${CONTROL_RUN_ID:-}"
 # see that the two measure different things rather than a machine that got
 # faster.
 TREE_REUSED="${TREE_REUSED:-}"
-# PS-307 — the outcome of the tree-evidence check that our 16 fingerprint
+# PS-307 — the outcome of the tree-evidence check that our fingerprint
 # patches are actually IN the compiled tree. `success` is the only value that
-# licenses the "16 fingerprint patches" claim below; anything else means the
+# licenses the patch-layer claim below; anything else means the
 # claim is unbacked and the manifest says so instead of asserting it.
 PATCHES_VERIFIED="${PATCHES_VERIFIED:-}"
+# PS-437 — the patch COUNT is DERIVED from the staged series, never pinned: a
+# pinned number in a manifest row is the one that goes stale silently, and this
+# row is exactly the artifact label the whole PS-307 story is about. (The
+# ps307 verifier pins ITS count deliberately — the vendored directory is the
+# input it polices, and a literal there can only rot in the loud direction —
+# but a manifest row is a label, and a label derives.) Before staging has run
+# there is no series, and the row says so rather than inventing a number.
+PATCH_COUNT="count unavailable"
+if [ -f "${UCPL_DIR}/patches/series" ]; then
+  PATCH_COUNT=$(grep -c '^fingerprint/.*\.patch$' "${UCPL_DIR}/patches/series" || true)
+fi
 # PS-359 — the THIRD result: did the compiled tree become an artifact somebody
 # else can launch? Until PS-359 the binary upload shipped two files out of a
 # runtime tree, which died on any machine that had not built them with an ICU
@@ -103,16 +114,16 @@ say() {
     # them in the tree. The row now reports the tree-evidence check's verdict.
     case "$PATCHES_VERIFIED" in
       success)
-        echo "| our fingerprint patches | 16, from fingerprint-chromium \`${FINGERPRINT_TAG:-144.0.7559.132}\` — **VERIFIED PRESENT IN THE TREE** (see \`patch-presence-patched.txt\`) |"
+        echo "| our fingerprint patches | ${PATCH_COUNT}, from fingerprint-chromium \`${FINGERPRINT_TAG:-144.0.7559.132}\` — **VERIFIED PRESENT IN THE TREE** (see \`patch-presence-patched.txt\`) |"
         ;;
       failure)
         echo "| our fingerprint patches | ❌ **NOT ALL PRESENT IN THE TREE** — the presence check FAILED. Nothing here may be read as a measurement of our patch layer. See \`patch-presence-patched.txt\`. |"
         ;;
       "")
-        echo "| our fingerprint patches | 16 STAGED, presence in the tree NOT CHECKED (this run predates the PS-307 verification) |"
+        echo "| our fingerprint patches | ${PATCH_COUNT}, presence in the tree NOT CHECKED (this run predates the PS-307 verification) |"
         ;;
       *)
-        echo "| our fingerprint patches | 16 staged; presence check reported \`${PATCHES_VERIFIED}\` — treat the patch layer as UNCONFIRMED |"
+        echo "| our fingerprint patches | ${PATCH_COUNT}; presence check reported \`${PATCHES_VERIFIED}\` — treat the patch layer as UNCONFIRMED |"
         ;;
     esac
     # PS-244 — THE PROVENANCE OF THE CONTROL, IN THE SUMMARY TABLE.
@@ -179,7 +190,7 @@ say() {
     echo
     if [ "$TREE" = "patched" ]; then
       echo "This is the measurement PS-218 exists to produce: a patch set that lands as"
-      echo "text and still breaks the build. See \`attribution.txt\` for which of our 16"
+      echo "text and still breaks the build. See \`attribution.txt\` for which of our"
       echo "patches each error belongs to, and which errors the unmodified control had too."
     else
       echo "**This is a finding about the BUILD ENVIRONMENT, not about our patches.**"

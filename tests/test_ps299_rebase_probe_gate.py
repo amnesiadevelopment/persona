@@ -249,6 +249,58 @@ def test_wrong_patch_count_refuses_to_measure(tmp_path):
     assert mod.apply_ours(str(tree), 0) is None
 
 
+def test_a_blank_line_between_hunks_refuses_to_measure(tmp_path, capsys):
+    """A patch with a blank line between its hunks must be REFUSED, not measured.
+
+    GNU patch reads hunks one at a time and STOPS READING at a blank line once
+    the preceding hunk's counts are met: the hunks after it silently never
+    apply, `patch` exits 0, and no "Hunk #N FAILED" ever appears — so the
+    reject count this probe exists to report stayed at zero and the patch read
+    as clean. This is not hypothetical: 020-serviceworker-locale.patch shipped
+    exactly this defect (PS-437), its second hunk — the ICU locale assignment,
+    the actual fix — never reached the built engine, and the probe was the
+    instrument that certified the set "clean" anyway.
+
+    The refusal is structural, decided from the patch text before `patch` runs,
+    because patch's own output cannot be trusted to mention what it skipped.
+    """
+    mod = load_probe()
+    malformed = (
+        "--- a/f.txt\n"
+        "+++ b/f.txt\n"
+        "@@ -1,2 +1,3 @@\n"
+        " alpha\n"
+        " bravo\n"
+        "+INSERTED_BY_HUNK_ONE\n"
+        "\n"
+        "@@ -4,2 +5,3 @@\n"
+        " charlie\n"
+        " delta\n"
+        "+INSERTED_BY_HUNK_TWO\n"
+    )
+    pdir, tree = build_case(
+        tmp_path,
+        {"001-blank-separator.patch": malformed},
+        {"f.txt": "alpha\nbravo\n\ncharlie\ndelta\n"},
+    )
+    mod.PATCH_DIR = str(pdir)
+    mod.EXPECTED_PATCHES = 1
+
+    result = mod.apply_ours(str(tree), 0)
+    assert result is not None, "the patch set must be measured-and-refused, not skipped"
+    total_h, total_r, _total_fuzz = result
+    assert total_h == 2, "both hunks are declared in the patch header"
+    assert total_r == total_h, (
+        "a separator-truncated patch must fail closed — every hunk it declares "
+        "is a hunk this run cannot claim to have measured"
+    )
+    out = capsys.readouterr().out
+    assert "blank line between hunks at patch line 7" in out, (
+        "the refusal must name the malformation and where it sits, so the fix "
+        "is deleting one line rather than re-deriving the failure"
+    )
+
+
 # ── the fetch path: a network failure must not be laundered into "created" ────
 
 

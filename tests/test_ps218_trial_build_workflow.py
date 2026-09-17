@@ -48,6 +48,22 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "engine-trial-build.yml"
 PATCH_DIR = REPO_ROOT / "engine" / "patches" / "fingerprint"
 
+
+def _load_probe():
+    """Load scripts/ps299_rebase_probe.py as a module (it is script-shaped).
+
+    Used only to read its derived patch count: the census test cross-checks the
+    vendored directory against a second surface so that neither can silently
+    re-pin a stale literal (PS-437).
+    """
+    import importlib.util
+
+    probe_path = REPO_ROOT / "scripts" / "ps299_rebase_probe.py"
+    spec = importlib.util.spec_from_file_location("ps299_probe_ps218", probe_path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
 # The label the owner actually registered. The earlier recommendation
 # (`persona-build-linux`) is the WRONG one and is asserted against explicitly
 # below, because copying it out of the older comment is the exact mistake the
@@ -187,16 +203,31 @@ def test_trial_build_is_separate_from_the_ci_gate():
     )
 
 
-def test_all_sixteen_fingerprint_patches_are_vendored():
-    """The build must measure OUR 16 — a build of some other number measures nothing.
+def test_the_full_fingerprint_patch_set_is_vendored():
+    """The build must measure OUR patch set — a build of some other number
+    measures nothing.
 
-    The ticket forbids making the build succeed by quietly dropping a patch, so
-    the count is pinned here as well as guarded at staging time. `000` is called
-    out because it defines the command-line switches every later patch reads:
-    without it the others compile against symbols that do not exist.
+    The ticket forbids making the build succeed by quietly dropping a patch.
+    The count itself is DERIVED, the way ps218_stage_patches.sh derives its own
+    guard (PS-437): a pinned literal has to be edited in lockstep with every
+    patch the set gains, and the forgotten edit is the one that turns a guard
+    off in the permissive direction. What keeps this test from going vacuous is
+    that the count is cross-checked against the PROBE's derived constant — a
+    second module whose number must come from the same directory. If either
+    surface is ever re-pinned to a stale literal, this fails.
+
+    `000` is called out because it defines the command-line switches every later
+    patch reads: without it the others compile against symbols that do not
+    exist.
     """
+    probe = _load_probe()
     patches = sorted(p.name for p in PATCH_DIR.glob("*.patch"))
-    assert len(patches) == 16, f"expected 16 fingerprint patches, found {len(patches)}: {patches}"
+    assert patches, "the fingerprint patch set is empty — nothing to measure"
+    assert len(patches) == probe.EXPECTED_PATCHES, (
+        f"the vendored set ({len(patches)}) and the probe's derived count "
+        f"({probe.EXPECTED_PATCHES}) disagree — one of the two surfaces has "
+        "stopped reading the patch directory"
+    )
     assert patches[0].startswith("000-"), (
         "000-add-fingerprint-switches must sort first: it declares the switches "
         "every later patch reads."
@@ -228,13 +259,67 @@ def test_the_gpu_patch_still_hooks_only_the_two_getparameter_cases():
         "'no new plumbing needed' reasoning depends on it."
     )
 
-    # Zero references to the service-worker realm in ANY of the 16 — the gap
-    # the ticket describes. Asserted across the whole set rather than one file
-    # so a patch gaining coverage elsewhere is noticed.
-    for name in ("ServiceWorkerGlobalScope", "service_worker"):
-        hits = [p.name for p in PATCH_DIR.glob("*.patch")
-                if name in p.read_text(encoding="utf-8", errors="replace")]
-        assert not hits, f"unexpected {name!r} reference in {hits} — re-derive PS-218 step 3"
+
+#: Patches ALLOWED to expand the spoof into surfaces PS-218's original reading
+#: never covered, each with the reason the step-3 reasoning survives it. The
+#: sweep below fires on anything else.
+#:
+#: ⭐ THE SWEEP DID ITS JOB, AND THIS IS THE ANSWER IT ASKED FOR, in the same
+#: shape LOCALE_TOUCHING_PATCHES answered PS-397's fence (PS-437 re-land). The
+#: sweep used to assert a blanket zero — the gap the ticket described, so any
+#: hit meant "re-derive step 3". 019 and 020 are that re-derivation, recorded
+#: here rather than waved through.
+SPOOF_SURFACE_TOUCHING_PATCHES = {
+    "019-webgpu-adapter-info.patch":
+        "WebGPU named a different machine than WebGL: navigator.gpu was "
+        "untouched, so a profile claiming Windows + NVIDIA + Direct3D11 answered "
+        "with the host's real adapter (measured: vendor 'apple', architecture "
+        "'metal-3' beside a Direct3D11 renderer string). The patch touches "
+        "gpu_adapter.cc ONLY, reads kGpuModels from the SAME table with the same "
+        "seed % count arithmetic as the WebGL hook, and reads "
+        "base::CommandLine::ForCurrentProcess() — the same process-global state, "
+        "so step 3's no-plumbing reasoning carries to the new surface.",
+    "020-serviceworker-locale.patch":
+        "A service worker formatted in the operator's own language: Intl "
+        "resolved to the HOST locale inside a ServiceWorkerGlobalScope while "
+        "navigator.language was correct. The patch sets the renderer's ICU "
+        "default locale from kFingerprintLanguage — command-line state again, "
+        "not per-realm plumbing — and touches no spoofed value PS-218 measured.",
+}
+
+
+def test_the_spoof_expands_only_into_declared_surfaces():
+    """The realm-coverage sweep, re-declared for the patches that answered it.
+
+    This used to assert a blanket zero references to the service-worker realm
+    across the whole set — the gap PS-218 described, so any hit meant the step-3
+    reasoning had to be re-derived. 019 and 020 ARE that re-derivation: each is
+    recorded in SPOOF_SURFACE_TOUCHING_PATCHES with the reason the
+    process-global-state reasoning survives it, and the sweep now fires on any
+    OTHER patch growing the same reach.
+
+    Both directions are checked, the way LOCALE_TOUCHING_PATCHES is: an entry
+    naming a patch that no longer exists is a licence waiting to be inherited by
+    whatever takes that filename next.
+    """
+    present = {p.name for p in PATCH_DIR.glob("*.patch")}
+    missing = sorted(set(SPOOF_SURFACE_TOUCHING_PATCHES) - present)
+    assert missing == [], (
+        f"recorded as spoof-surface-touching but absent from the series: {missing}"
+    )
+
+    for name in ("ServiceWorkerGlobalScope", "service_worker", "gpu_adapter"):
+        hits = [
+            p.name for p in PATCH_DIR.glob("*.patch")
+            if name in p.read_text(encoding="utf-8", errors="replace")
+            and p.name not in SPOOF_SURFACE_TOUCHING_PATCHES
+        ]
+        assert not hits, (
+            f"unexpected {name!r} reference in {hits} — the spoof reached a "
+            "surface outside the declared set. Re-derive PS-218 step 3 for the "
+            "new patch and record it in SPOOF_SURFACE_TOUCHING_PATCHES with the "
+            "reason, the way 019 and 020 are recorded; do not silence this."
+        )
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -42,7 +42,6 @@ namespace scope".
  #include "third_party/webrtc_overrides/init_webrtc.h"  // nogncheck
  #include "ui/base/ui_base_switches.h"
 +#include "components/ungoogled/ungoogled_switches.h"
-
 @@ -179,4 +179,30 @@ int RendererMain(MainFunctionParams parameters) {
    chromeos::system::EnableCoreSchedulingIfAvailable();
  #endif  // BUILDFLAG(IS_CHROMEOS)
