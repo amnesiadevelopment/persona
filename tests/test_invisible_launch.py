@@ -1882,6 +1882,84 @@ def test_child_renders_chosen_resolution_at_host_dpr(monkeypatch, tmp_path):
     assert not (tmp_path / "content-prefs.sqlite").exists()
 
 
+def test_launch_pin_keys_are_valid_for_the_installed_engine(
+    monkeypatch, tmp_path
+):
+    # PS-442: the engine REFUSES unknown pin keys outright, and the refusal
+    # surfaces as LAUNCH_FAILED inside a browser session — invisible to the
+    # unit suite until a scheduled workflow provisions a bumped engine at
+    # 06:00 (invisible_core 31 removed screen.avail_width/avail_height from
+    # the pin table, and engine-autoupdate's after-recording was the first
+    # thing to find out). The contract this test owns: EVERY key the launch
+    # pins must validate against the INSTALLED core's pin table, so the next
+    # schema drop is a red test here rather than a red gate that never ran.
+    import os
+    import sys
+    import threading
+    import types
+
+    captured = {}
+
+    class FakeCtx:
+        pages = [object()]
+
+        def add_init_script(self, *_a, **_k):
+            pass
+
+    class FakeEngine:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def _default_context_kwargs(self):
+            return {}
+
+        def __enter__(self):
+            return FakeCtx()
+
+        def __exit__(self, *a):
+            return False
+
+    mod = types.ModuleType("invisible_playwright")
+    mod.InvisiblePlaywright = FakeEngine
+    monkeypatch.setitem(sys.modules, "invisible_playwright", mod)
+    monkeypatch.setattr(invisible_launch, "_work_area", lambda: (3840, 2088))
+    monkeypatch.setattr(invisible_launch, "_system_dpr", lambda: 1.5)
+    monkeypatch.setattr(
+        invisible_launch, "_thread_close_watch", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        invisible_launch, "_kill_profile_firefox", lambda d, pids=None, rescan=True: None
+    )
+    monkeypatch.setattr(
+        invisible_launch, "_raise_profile_window", lambda *a, **k: None
+    )
+
+    stop = threading.Event()
+    stop.set()
+    r, w = os.pipe()
+    invisible_launch._child(
+        {
+            "profile_dir": str(tmp_path),
+            "profile_name": "t",
+            "seed": 1,
+            "resolution": [1920, 1080],
+        },
+        w,
+        stop_event=stop,
+    )
+    os.close(r)
+
+    # A chosen resolution is the only path that pins at all. Assert the pin
+    # exists before validating it, so a silent regression to no-pin cannot
+    # read as "nothing to validate" and pass vacuously.
+    assert captured["pin"]["screen.width"] == 1920
+    pytest.importorskip("invisible_core")
+    from invisible_core._fpforge.profile import _validate_pin_key
+
+    for key in captured["pin"]:
+        _validate_pin_key(key)
+
+
 def test_child_hidpi_uses_no_zoom_or_uidensity_hack(monkeypatch, tmp_path):
     # #216/#196: rendering at the host dpr scales the whole browser (chrome +
     # content) together, so the old crutches are GONE — no content zoom
@@ -2182,8 +2260,7 @@ def test_devpixelsperpx_matches_host_dpr_in_engine_prefs():
         pin={
             "screen.width": 1920,
             "screen.height": 1080,
-            "screen.avail_width": 1920,
-            "screen.avail_height": 1040,
+            "screen.taskbar_px": 40,
             "screen.dpr": 1.5,
         },
     )
