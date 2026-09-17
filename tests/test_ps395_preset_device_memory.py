@@ -70,6 +70,15 @@ from src.services.browser.mobile_ext import build_mobile_extension
 #: Every preset a profile can be launched with, both OS arms.
 ALL_PRESETS = ANDROID_PRESETS + IOS_PRESETS
 
+#: The repo root, anchored to THIS FILE so the source-pinning assertion below
+#: never depends on the process CWD. ⛔ A CWD-relative path here passed on the
+#: dev box (pytest always ran from the repo root) and failed mid-suite in CI,
+#: where an earlier test in the 7400-test process can leak an ``os.chdir`` —
+#: CI read ``FileNotFoundError: 'src/services/browser/process.py'`` on a fix
+#: whose assertions were all true. The same rule ``test_ps215_tostring_chain``
+#: records: anchor to ``__file__``, never to the CWD.
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
+
 #: Any engine version; the deviceMemory path does not read it, but an Android
 #: build refuses to be built without one (it advertises the real Chromium major).
 _V = ChromiumVersion(full="152.0.7977.75")
@@ -244,7 +253,7 @@ def test_the_call_site_clamps_rather_than_passing_the_raw_preset_value():
     protects against. This asserts the wiring by name so that revert fails here
     with a reason attached.
     """
-    source = pathlib.Path("src/services/browser/process.py").read_text(encoding="utf-8")
+    source = (REPO_ROOT / "src/services/browser/process.py").read_text(encoding="utf-8")
     assert "device_memory=spec_device_memory(preset.device_memory)" in source, (
         "process.py no longer clamps the value it hands the mobile extension. "
         "The engine path clamps twice; the JS path has no other defence, and "
