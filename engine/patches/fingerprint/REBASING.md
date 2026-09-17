@@ -2,7 +2,8 @@
 
 **Current target: ungoogled-chromium-portablelinux `152.0.7977.75-1` (Chromium
 `152.0.7977.75`, v8 `3de6ffff`). All 16 patches apply: 81/81 hunks, 0 rejects,
-`--fuzz=0`.**
+`--fuzz=0`. (84/84 since PS-440 grew 011-gpu-info by the capability-limit
+hooks.)**
 
 Rebased from `144.0.7559.132-1` under PS-299, 2026-09-03.
 Compile fixes to 018-timezone under PS-309, 2026-09-04 — see

@@ -124,10 +124,10 @@ index 1f71cb43f9..23ca04113e 100644
      "nv_shader_noperspective_interpolation.cc",
 diff --git a/third_party/blink/renderer/modules/webgl/gpu_fingerprint.cc b/third_party/blink/renderer/modules/webgl/gpu_fingerprint.cc
 new file mode 100644
-index 0000000000..b3f2e51be4
+index 0000000000..75a4117ddad8fb82998b561d120f65f48d74f6d5
 --- /dev/null
 +++ b/third_party/blink/renderer/modules/webgl/gpu_fingerprint.cc
-@@ -0,0 +1,106 @@
+@@ -0,0 +1,174 @@
 +#include "third_party/blink/renderer/modules/webgl/gpu_fingerprint.h"
 +
 +#include "base/command_line.h"
@@ -179,70 +179,141 @@ index 0000000000..b3f2e51be4
 +  }
 +}
 +
++// The declared platform for this fingerprint, lower-cased. Windows is the
++// default when --fingerprint-platform is absent, matching how the identity
++// spoofs below resolve it.
++std::string GetDeclaredPlatform() {
++  const base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
++  if (command_line->HasSwitch(switches::kFingerprintPlatform)) {
++    return base::ToLowerASCII(
++        command_line->GetSwitchValueASCII(switches::kFingerprintPlatform));
++  }
++  return "windows";
++}
++
++// True when the engine is fingerprinting the GPU: --fingerprint is set and
++// disable-spoofing does not include "gpu".
++bool IsGpuFingerprintActive() {
++  const base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
++  // 如果 disable-spoofing 包含 gpu，不应用指纹
++  if (command_line->HasSwitch(switches::kDisableSpoofing) &&
++      command_line->GetSwitchValueASCII(switches::kDisableSpoofing).find("gpu") != std::string::npos) {
++    return false;
++  }
++  return command_line->HasSwitch(switches::kFingerprint);
++}
++
++// Capability limits are overridden ONLY on the windows arm — the one claimed
++// platform we hold a measured reference for (PS-440: a real RTX 3060 on D3D11
++// ANGLE, same engine build). The linux arm claims an NVIDIA desktop-GL card
++// and the macos arm claims Apple silicon; no real reference table was
++// measured for either, and inventing values would trade the SwiftShader
++// contradiction for a fabricated one. Those arms keep the host's real limits.
++bool IsWindowsGpuFingerprintActive() {
++  return IsGpuFingerprintActive() && GetDeclaredPlatform() == "windows";
++}
++
++// ─── The claimed card's capability limits (PS-440) ───
++//
++// Measured side by side against a real RTX 3060 on D3D11 ANGLE, same engine
++// build. These are the values every card in the claimed pool answers on that
++// backend — they are ANGLE's Direct3D11 feature-level-11 constants, not
++// per-card. SwiftShader, which actually renders on the Linux dev VM, answers
++// 8192/4096/32-class values that contradict the claimed card on every one of
++// them, and hands out a cube-map limit above its 2D texture limit, which no
++// real driver does.
++//
++// PAGE-VISIBLE ONLY: these feed getParameter() answers. The backend's real
++// limits stay authoritative for GL itself — a page that believes the claimed
++// card and asks for a 16384 texture gets the backend's own error, exactly as
++// it would from a real driver refusing the request.
++
++constexpr int32_t kSpoofedMaxTextureSize = 16384;            // GL_MAX_TEXTURE_SIZE (0x0D33)
++constexpr int32_t kSpoofedMaxRenderbufferSize = 16384;       // GL_MAX_RENDERBUFFER_SIZE (0x84E8)
++constexpr int32_t kSpoofedMaxCubeMapTextureSize = 16384;     // GL_MAX_CUBE_MAP_TEXTURE_SIZE (0x851C)
++constexpr int32_t kSpoofedMaxVertexUniformVectors = 4095;    // GL_MAX_VERTEX_UNIFORM_VECTORS (0x8DFB)
++constexpr int32_t kSpoofedMaxFragmentUniformVectors = 1024;  // GL_MAX_FRAGMENT_UNIFORM_VECTORS (0x8DFD)
++constexpr int32_t kSpoofedMaxVaryingVectors = 30;            // GL_MAX_VARYING_VECTORS (0x8DFC)
++constexpr int32_t kSpoofedMaxTextureImageUnits = 16;         // GL_MAX_TEXTURE_IMAGE_UNITS (0x8872)
++constexpr int32_t kSpoofedMaxVertexTextureImageUnits = 16;   // GL_MAX_VERTEX_TEXTURE_IMAGE_UNITS (0x8B4C)
++
++constexpr int32_t kSpoofedMaxViewportDims[2] = {32767, 32767};  // GL_MAX_VIEWPORT_DIMS (0x0D3A)
++constexpr float kSpoofedPointSizeRange[2] = {1.0f, 1024.0f};    // GL_ALIASED_POINT_SIZE_RANGE (0x846D)
++
 +}  // namespace
 +
 +// Public functions that will be used in WebGL code
 +std::string GetGLVendorStringForFingerprint() {
-+  const base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
-+
-+  // 如果 disable-spoofing 包含 gpu，不应用指纹
-+  if (command_line->HasSwitch(switches::kDisableSpoofing) &&
-+      command_line->GetSwitchValueASCII(switches::kDisableSpoofing).find("gpu") != std::string::npos) {
++  if (!IsGpuFingerprintActive()) {
 +    return "";
 +  }
-+
-+  // 如果指定了 fingerprint，根据平台生成
-+  if (command_line->HasSwitch(switches::kFingerprint)) {
-+    std::string platform = "windows";
-+    if (command_line->HasSwitch(switches::kFingerprintPlatform)) {
-+      platform = base::ToLowerASCII(
-+          command_line->GetSwitchValueASCII(switches::kFingerprintPlatform));
-+    }
-+    return GetGLVendorString(platform);
-+  }
-+
-+  return "";
++  return GetGLVendorString(GetDeclaredPlatform());
 +}
 +
 +std::string GetGLRendererStringForFingerprint() {
-+  const base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
-+
-+  // 如果 disable-spoofing 包含 gpu，不应用指纹
-+  if (command_line->HasSwitch(switches::kDisableSpoofing) &&
-+      command_line->GetSwitchValueASCII(switches::kDisableSpoofing).find("gpu") != std::string::npos) {
++  if (!IsGpuFingerprintActive()) {
 +    return "";
 +  }
++  std::string fingerprint_str =
++      base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(switches::kFingerprint);
++  uint32_t fingerprint = 0;
++  base::StringToUint(fingerprint_str, &fingerprint);
++  return GetGLRendererString(GetDeclaredPlatform(), fingerprint);
++}
 +
-+  // 如果指定了 fingerprint，根据平台和fingerprint值生成
-+  if (command_line->HasSwitch(switches::kFingerprint)) {
-+    std::string platform = "windows";
-+    uint32_t fingerprint = 0;
-+
-+    if (command_line->HasSwitch(switches::kFingerprintPlatform)) {
-+      platform = base::ToLowerASCII(
-+          command_line->GetSwitchValueASCII(switches::kFingerprintPlatform));
-+    }
-+
-+    std::string fingerprint_str =
-+        command_line->GetSwitchValueASCII(switches::kFingerprint);
-+    base::StringToUint(fingerprint_str, &fingerprint);
-+
-+    return GetGLRendererString(platform, fingerprint);
++std::optional<int32_t> GetSpoofedIntLimitForFingerprint(uint32_t pname) {
++  if (!IsWindowsGpuFingerprintActive()) {
++    return std::nullopt;
 +  }
++  switch (pname) {
++    case 0x0D33:  // GL_MAX_TEXTURE_SIZE
++      return kSpoofedMaxTextureSize;
++    case 0x84E8:  // GL_MAX_RENDERBUFFER_SIZE
++      return kSpoofedMaxRenderbufferSize;
++    case 0x851C:  // GL_MAX_CUBE_MAP_TEXTURE_SIZE
++      return kSpoofedMaxCubeMapTextureSize;
++    case 0x8DFB:  // GL_MAX_VERTEX_UNIFORM_VECTORS
++      return kSpoofedMaxVertexUniformVectors;
++    case 0x8DFD:  // GL_MAX_FRAGMENT_UNIFORM_VECTORS
++      return kSpoofedMaxFragmentUniformVectors;
++    case 0x8DFC:  // GL_MAX_VARYING_VECTORS
++      return kSpoofedMaxVaryingVectors;
++    case 0x8872:  // GL_MAX_TEXTURE_IMAGE_UNITS
++      return kSpoofedMaxTextureImageUnits;
++    case 0x8B4C:  // GL_MAX_VERTEX_TEXTURE_IMAGE_UNITS
++      return kSpoofedMaxVertexTextureImageUnits;
++    default:
++      return std::nullopt;
++  }
++}
 +
-+  return "";
++std::optional<std::array<int32_t, 2>> GetSpoofedViewportDimsForFingerprint() {
++  if (!IsWindowsGpuFingerprintActive()) {
++    return std::nullopt;
++  }
++  return std::array<int32_t, 2>{kSpoofedMaxViewportDims[0], kSpoofedMaxViewportDims[1]};
++}
++
++std::optional<std::array<float, 2>> GetSpoofedPointSizeRangeForFingerprint() {
++  if (!IsWindowsGpuFingerprintActive()) {
++    return std::nullopt;
++  }
++  return std::array<float, 2>{kSpoofedPointSizeRange[0], kSpoofedPointSizeRange[1]};
 +}
 +
 +}  // namespace blink
 diff --git a/third_party/blink/renderer/modules/webgl/gpu_fingerprint.h b/third_party/blink/renderer/modules/webgl/gpu_fingerprint.h
 new file mode 100644
-index 0000000000..c516e61b92
+index 0000000000..405e249255db6eebe6fc8bcf2f4dcdd5c7a2161c
 --- /dev/null
 +++ b/third_party/blink/renderer/modules/webgl/gpu_fingerprint.h
-@@ -0,0 +1,16 @@
+@@ -0,0 +1,33 @@
 +#ifndef THIRD_PARTY_BLINK_RENDERER_MODULES_WEBGL_GPU_FINGERPRINT_H_
 +#define THIRD_PARTY_BLINK_RENDERER_MODULES_WEBGL_GPU_FINGERPRINT_H_
 +
++#include <array>
++#include <cstdint>
++#include <optional>
 +#include <string>
 +
 +namespace blink {
@@ -252,6 +323,20 @@ index 0000000000..c516e61b92
 +
 +// Returns the GL_RENDERER string based on platform and fingerprint
 +std::string GetGLRendererStringForFingerprint();
++
++// Page-visible capability-limit overrides for the card the fingerprint
++// CLAIMS (PS-440). When the engine claims an NVIDIA GeForce RTX answered by
++// ANGLE on Direct3D11 (the windows platform arm), getParameter() must answer
++// that card's limits: the host backend's limits (SwiftShader on the Linux
++// dev VM) contradict the claimed renderer string, and SwiftShader's cube-map
++// limit above its 2D texture limit contradicts itself. Each getter returns
++// nullopt when no override applies (gpu spoofing off, or the declared
++// platform is not windows) so the call site falls through to the real GL
++// answer. These are PAGE-VISIBLE answers only — the backend keeps its own
++// real limits for GL itself, exactly like the identity pair above.
++std::optional<int32_t> GetSpoofedIntLimitForFingerprint(uint32_t pname);
++std::optional<std::array<int32_t, 2>> GetSpoofedViewportDimsForFingerprint();
++std::optional<std::array<float, 2>> GetSpoofedPointSizeRangeForFingerprint();
 +
 +}  // namespace blink
 +
@@ -405,10 +490,10 @@ index 0000000000..0def6f5a37
 +
 +#endif  // THIRD_PARTY_BLINK_RENDERER_MODULES_WEBGL_GPU_INFO_H_
 diff --git a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc b/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
-index 139b7ef0ac..95e6caf973 100644
+index e7ef36a812c4c57ff2b6adc4ab7ab4b2edf8c4a6..dfd7b714b0db4d1e413b24c27d331699b42fdaca 100644
 --- a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
 +++ b/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
-@@ -91,6 +91,7 @@
+@@ -105,6 +105,7 @@
  #include "third_party/blink/renderer/modules/webgl/ext_shader_texture_lod.h"
  #include "third_party/blink/renderer/modules/webgl/ext_texture_filter_anisotropic.h"
  #include "third_party/blink/renderer/modules/webgl/gl_string_query.h"
@@ -416,7 +501,77 @@ index 139b7ef0ac..95e6caf973 100644
  #include "third_party/blink/renderer/modules/webgl/oes_element_index_uint.h"
  #include "third_party/blink/renderer/modules/webgl/oes_standard_derivatives.h"
  #include "third_party/blink/renderer/modules/webgl/oes_texture_float.h"
-@@ -3979,6 +3980,10 @@ ScriptValue WebGLRenderingContextBase::getParameter(ScriptState* script_state,
+@@ -3998,8 +3999,18 @@
+       return GetUnsignedIntParameter(script_state, pname);
+     case GL_ALIASED_LINE_WIDTH_RANGE:
+       return GetWebGLFloatArrayParameter(script_state, pname);
+-    case GL_ALIASED_POINT_SIZE_RANGE:
++    case GL_ALIASED_POINT_SIZE_RANGE: {
++      // PS-440: the claimed card's point-size range answers for it, so the
++      // page-visible value never contradicts the renderer string.
++      std::optional<std::array<float, 2>> spoofed_point_range =
++          GetSpoofedPointSizeRangeForFingerprint();
++      if (spoofed_point_range.has_value()) {
++        return WebGLAny(
++            script_state,
++            DOMFloat32Array::Create(base::span(*spoofed_point_range)));
++      }
+       return GetWebGLFloatArrayParameter(script_state, pname);
++    }
+     case GL_ALPHA_BITS:
+       if (drawing_buffer_->RequiresAlphaChannelToBePreserved())
+         return WebGLAny(script_state, 0);
+@@ -4073,25 +4084,39 @@
+     case GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS:
+       return GetIntParameter(script_state, pname);
+     case GL_MAX_CUBE_MAP_TEXTURE_SIZE:
+-      return GetIntParameter(script_state, pname);
+     case GL_MAX_FRAGMENT_UNIFORM_VECTORS:
+-      return GetIntParameter(script_state, pname);
+     case GL_MAX_RENDERBUFFER_SIZE:
+-      return GetIntParameter(script_state, pname);
+     case GL_MAX_TEXTURE_IMAGE_UNITS:
+-      return GetIntParameter(script_state, pname);
+     case GL_MAX_TEXTURE_SIZE:
+-      return GetIntParameter(script_state, pname);
+     case GL_MAX_VARYING_VECTORS:
+-      return GetIntParameter(script_state, pname);
+-    case GL_MAX_VERTEX_ATTRIBS:
+-      return GetIntParameter(script_state, pname);
+     case GL_MAX_VERTEX_TEXTURE_IMAGE_UNITS:
++    case GL_MAX_VERTEX_UNIFORM_VECTORS: {
++      // PS-440: when the fingerprint claims a card, that card's capability
++      // limits answer for it. The host backend's limits contradict the
++      // claimed renderer string (SwiftShader answering 8192 under a claimed
++      // RTX), and its cube-map limit above its 2D texture limit contradicts
++      // itself. Page-visible only: the backend keeps its own real limits for
++      // GL itself. WebGL2 reaches these same cases through the default
++      // fall-through of WebGL2RenderingContextBase::getParameter.
++      std::optional<int32_t> spoofed_limit =
++          GetSpoofedIntLimitForFingerprint(static_cast<uint32_t>(pname));
++      if (spoofed_limit.has_value()) {
++        return WebGLAny(script_state, spoofed_limit.value());
++      }
+       return GetIntParameter(script_state, pname);
+-    case GL_MAX_VERTEX_UNIFORM_VECTORS:
++    }
++    case GL_MAX_VERTEX_ATTRIBS:
+       return GetIntParameter(script_state, pname);
+-    case GL_MAX_VIEWPORT_DIMS:
++    case GL_MAX_VIEWPORT_DIMS: {
++      std::optional<std::array<int32_t, 2>> spoofed_viewport_dims =
++          GetSpoofedViewportDimsForFingerprint();
++      if (spoofed_viewport_dims.has_value()) {
++        return WebGLAny(
++            script_state,
++            DOMInt32Array::Create(base::span(*spoofed_viewport_dims)));
++      }
+       return GetWebGLIntArrayParameter(script_state, pname);
++    }
+     case GL_PACK_ALIGNMENT:
+       return GetIntParameter(script_state, pname);
+     case GL_POLYGON_OFFSET_FACTOR:
+@@ -4201,6 +4226,10 @@
        return ScriptValue::CreateNull(script_state->GetIsolate());
      case WebGLDebugRendererInfo::kUnmaskedRendererWebgl:
        if (ExtensionEnabled(kWebGLDebugRendererInfoName)) {
@@ -427,7 +582,7 @@ index 139b7ef0ac..95e6caf973 100644
          if (base::FeatureList::IsEnabled(blink::features::kSpoofWebGLInfo))
            return WebGLAny(script_state, String(blink::features::kSpoofWebGLRendererParam.Get()));
          return WebGLAny(script_state,
-@@ -3990,10 +3995,13 @@ ScriptValue WebGLRenderingContextBase::getParameter(ScriptState* script_state,
+@@ -4212,10 +4241,13 @@
        return ScriptValue::CreateNull(script_state->GetIsolate());
      case WebGLDebugRendererInfo::kUnmaskedVendorWebgl:
        if (ExtensionEnabled(kWebGLDebugRendererInfoName)) {

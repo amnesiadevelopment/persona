@@ -205,19 +205,22 @@ def test_all_sixteen_fingerprint_patches_are_vendored():
         assert p.stat().st_size > 0, f"{p.name} is empty"
 
 
-def test_the_gpu_patch_still_hooks_only_the_two_getparameter_cases():
+def test_the_gpu_patch_still_hooks_the_identity_getparameter_cases():
     """Pins the premise step 3 rests on, so a silent upstream change is visible.
 
-    PS-218 states the GPU patch hooks EXACTLY TWO switch cases in
-    `WebGLRenderingContextBase::getParameter`, and that the spoofed identity is
-    read from PROCESS-GLOBAL command-line state rather than per-realm context —
-    which is why covering another realm needs no plumbing to carry identity
-    across a realm boundary.
-
+    PS-218 states the GPU patch hooks the IDENTITY pair of switch cases in
+    `WebGLRenderingContextBase::getParameter` (unmasked renderer/vendor), and
+    that the spoofed identity is read from PROCESS-GLOBAL command-line state
+    rather than per-realm context — which is why covering another realm needs
+    no plumbing to carry identity across a realm boundary.
     That second half is the load-bearing claim, and it is what this asserts: the
     hook reads `base::CommandLine::ForCurrentProcess()`. If a future rebase made
     the spoof context-dependent, this fails and the step-3 reasoning must be
     re-derived rather than inherited.
+
+    (Since PS-440 the patch also hooks the capability-limit cases in the same
+    switch, gated on the same process-global command line — see
+    test_ps440_gpu_limits_patch.py. The identity hooks below are unchanged.)
     """
     gpu = (PATCH_DIR / "011-gpu-info.patch").read_text(encoding="utf-8", errors="replace")
 
