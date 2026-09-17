@@ -1338,7 +1338,7 @@ def test_the_product_hands_one_string_to_both_consumers(tmp_path, monkeypatch):
     # creatable pairs would not have covered the pair that leaked.
     for os_type in ("windows", "macos", "linux", "android", "ios", "win", "freebsd"):
         for device_type in ("desktop", "mobile"):
-            d = tmp_path / f"{os_type or 'empty'}-{device_type}"
+            d = tmp_path / f"{os_type or 'e'}-{device_type[0]}"
             monkeypatch.setattr(process, "DATA_DIR", str(d))
             monkeypatch.setattr(process, "ProxyStore", _Store)
             monkeypatch.setattr(process, "BookmarkStore", _Bookmarks)
@@ -1346,7 +1346,7 @@ def test_the_product_hands_one_string_to_both_consumers(tmp_path, monkeypatch):
             monkeypatch.setattr(process.subprocess, "Popen", _FakePopen)
             monkeypatch.setattr(process._platform, "IS_LINUX", False)
             process.spawn_browser(Profile(
-                name=f"{os_type}-{device_type}",
+                name=device_type,
                 os_type=os_type, device_type=device_type))
 
             flag = next(

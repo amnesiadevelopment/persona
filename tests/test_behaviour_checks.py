@@ -780,19 +780,33 @@ class TestSingletonSocketBudget:
         This exact string came off chromium's stdout on the product launch path
         while reproducing the defect, and it is 113 bytes. A formula validated
         only against its own re-derivation would agree with a wrong constant.
+
+        PS-438 renamed the scratch directory (``.persona-tmp`` ->
+        ``env_policy.CHILD_TMPDIR_NAME``), so the formula can no longer
+        reproduce the HISTORICAL line byte for byte — the engine printed it
+        under the old name. What is still pinned is the formula against the
+        same path spelled with the CURRENT name, the length of the historical
+        line, and the 9-byte gap between them being exactly the rename.
         """
+        from src.services.browser.env_policy import CHILD_TMPDIR_NAME
         from src.services.verify.behaviour import singleton_socket_length
 
         observed = (
             "/tmp/persona-behaviour-SidVU7bF/persona_data/ps347-live"
             "/.persona-tmp/org.chromium.Chromium.eAfYAT/SingletonSocket"
         )
-        assert len(observed) == 113  # the engine's own FATAL line
+        assert len(observed) == 113  # the engine's own FATAL line, pre-rename
+
+        today = (
+            "/tmp/persona-behaviour-SidVU7bF/persona_data/ps347-live"
+            f"/{CHILD_TMPDIR_NAME}/org.chromium.Chromium.eAfYAT/SingletonSocket"
+        )
+        assert len(today) == len(observed) - (len("/.persona-tmp") - len(f"/{CHILD_TMPDIR_NAME}"))
 
         assert (
             singleton_socket_length("/tmp/persona-behaviour-SidVU7bF", "ps347-live")
-            == 113
-        ), "the formula does not reproduce a socket path the engine reported"
+            == len(today)
+        ), "the formula does not reproduce the socket path the launch would use now"
 
     def test_the_default_scratch_home_leaves_room_for_the_checks_own_profiles(
         self,
@@ -1033,7 +1047,10 @@ class TestSingletonSocketBudget:
             singleton_socket_length,
         )
 
-        assert singleton_socket_length("/tmp/pb-abcdefgh", "p347a") == 93
+        # 84 = 16 + 5 + 63. 93 was the pin under the pre-PS-438 scratch name
+        # (".persona-tmp"); the rename to ".pt" shaved 9 bytes off the fixed
+        # cost, so the pin moves with it rather than masking the rename.
+        assert singleton_socket_length("/tmp/pb-abcdefgh", "p347a") == 84
         assert isinstance(profile_name_budget("/tmp/pb-abcdefgh"), int)
 
     def test_the_check_reads_its_profile_names_from_the_pinned_constant(self):

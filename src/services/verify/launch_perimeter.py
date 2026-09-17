@@ -73,6 +73,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from ..browser.env_policy import CHILD_TMPDIR_NAME
+
 # --- the two circles --------------------------------------------------------
 
 #: Outside ``PERSONA_HOME`` altogether — on the host, where neither
@@ -387,7 +389,7 @@ PERIMETER_ARTIFACTS: tuple[Artifact, ...] = (
         ),
     ),
     Artifact(
-        artifact="the engine child's scratch directory (.persona-tmp)",
+        artifact=f"the engine child's scratch directory ({CHILD_TMPDIR_NAME})",
         site="src/services/browser/env_policy.py:browser_child_tmpdir",
         scope=SCOPE_HOME,
         platforms=ALL_PLATFORMS,

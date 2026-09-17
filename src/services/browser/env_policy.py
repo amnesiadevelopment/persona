@@ -388,26 +388,31 @@ def browser_child_cwd():
 # developer's platform and is not on the operator's.
 TEMP_DIR_VARS = ("TMPDIR", "TMP", "TEMP")
 
-# Dotted so it sorts beside the other persona-owned subdirectories the profile
-# already carries (.invisible-profile, .persona-mtls, .persona-*-ext).
 #: The kernel's limit on a unix socket path, not ours: `sockaddr_un.sun_path` is
 #: 108 bytes and one of them is the terminator. Chromium binds its singleton socket
 #: under TMPDIR, so this ceiling lands on the profile path whether anyone planned
 #: for it or not.
 UNIX_SOCKET_PATH_MAX = 107
 
-#: What Chromium appends beneath TMPDIR, read off the crash it produced:
-#: "/org.chromium.Chromium.XXXXXX" plus "/SingletonSocket".
-_CHROMIUM_SOCKET_SUFFIX = len("/org.chromium.Chromium.XXXXXX") + len("/SingletonSocket")
+#: The upstream engine's OWN singleton-socket path beneath TMPDIR, spelled the
+#: way the binary lays it down on disk — a measured fact about the artifact we
+#: ship, not our brand, which is why it is typed literally and why
+#: test_ps224_engine_name's fragment list allows exactly this spelling. PS-438.
+_CHROMIUM_SOCKET_SAMPLE = "/org.chromium.Chromium.XXXXXX/SingletonSocket"
 
-#: SHORT ON PURPOSE, and it used to be ".persona-tmp".
+#: What Chromium appends beneath TMPDIR, read off the crash it produced.
+_CHROMIUM_SOCKET_SUFFIX = len(_CHROMIUM_SOCKET_SAMPLE)
+
+#: Dotted so it sorts beside the other persona-owned subdirectories the profile
+#: already carries (.invisible-profile, .persona-mtls, .persona-*-ext), and
+#: SHORT ON PURPOSE — every character here is taken out of the operator's name
+#: budget (it used to be ".persona-tmp"):
 #:
-#: Every character here is taken out of the operator's name budget. A profile called
-#: `CR-control-noproxy` — eighteen ordinary characters — made the engine abort at
-#: startup with `FATAL: Socket path too long`, exit code 133, while the operator saw
-#: only "Session ended unexpectedly". Renaming it to `ctl` and changing nothing else
-#: launched it in three seconds. Eleven characters back is eleven more an operator
-#: may spend on a name that means something.
+#: A profile called `CR-control-noproxy` — eighteen ordinary characters — made the
+#: engine abort at startup with `FATAL: Socket path too long`, exit code 133, while
+#: the operator saw only "Session ended unexpectedly". Renaming it to `ctl` and
+#: changing nothing else launched it in three seconds. Eleven characters back is
+#: eleven more an operator may spend on a name that means something.
 CHILD_TMPDIR_NAME = ".pt"
 
 
@@ -452,14 +457,22 @@ def check_child_tmpdir_fits(profile_dir):
 
     short_by = -child_tmpdir_budget(profile_dir)
     if short_by > 0:
+        # The engine's display name is SOURCED, never typed (PS-318/PS-224):
+        # this package cannot even import core.strings, so the name reaches the
+        # refusal through the engine_naming seam — the same one invisible_launch
+        # uses. The socket path spelled into the message is the UPSTREAM
+        # engine's own mkdtemp template (see _CHROMIUM_SOCKET_SAMPLE), not our
+        # brand.
+        from ..engine_naming import engine_display_name
+
         raise ProfilePathTooLong(
-            "this profile's path is %d character(s) too long for Chromium's "
+            "this profile's path is %d character(s) too long for %s's "
             "singleton socket, which a unix socket path limit caps at %d:\n"
-            "    %s/org.chromium.Chromium.XXXXXX/SingletonSocket\n"
+            "    %s%s\n"
             "Shorten the profile name by at least %d character(s). Left alone, the "
             "engine aborts at startup and reports only that the session ended."
-            % (short_by, UNIX_SOCKET_PATH_MAX,
-               browser_child_tmpdir(profile_dir), short_by)
+            % (short_by, engine_display_name(), UNIX_SOCKET_PATH_MAX,
+               browser_child_tmpdir(profile_dir), _CHROMIUM_SOCKET_SAMPLE, short_by)
         )
 
 

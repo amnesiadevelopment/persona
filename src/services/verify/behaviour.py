@@ -64,6 +64,8 @@ import os
 from dataclasses import dataclass, field
 from typing import Callable
 
+from ..browser.env_policy import CHILD_TMPDIR_NAME, UNIX_SOCKET_PATH_MAX
+
 # --- verdicts ---------------------------------------------------------------
 
 #: The check ran, its falsification went red, and the behaviour held.
@@ -586,11 +588,14 @@ def require_scratch_home() -> str:
 # persona pins the browser child's scratch directory INSIDE the profile
 # (`env_policy.browser_child_tmpdir`, PS-129), so the socket lands at:
 #
-#     <PERSONA_HOME>/persona_data/<profile>/.persona-tmp/
+#     <PERSONA_HOME>/persona_data/<profile>/<CHILD_TMPDIR_NAME>/
 #         org.chromium.Chromium.XXXXXX/SingletonSocket
 #
 # Everything except the home and the profile name is fixed, and that fixed
-# part is what `_SINGLETON_SOCKET_FIXED_COST` counts.
+# part is what `_SINGLETON_SOCKET_FIXED_COST` counts. The scratch directory's
+# NAME is read from env_policy rather than spelled here — PS-438 renamed it
+# once already (``.persona-tmp`` -> ``.pt``) and a second copy of the name is
+# how the next rename silently breaks this arithmetic.
 #
 # THE BOUNDARY, ISOLATED ON THIS ENGINE (personium-152.0.7977.75, one variable
 # — the home path's length — moved by ONE byte between the two arms):
@@ -605,16 +610,18 @@ def require_scratch_home() -> str:
 # that is wrong in two of them.
 
 #: Usable bytes in a UNIX socket address — ``sizeof(sun_path)`` is 108 and the
-#: last byte is the terminator.
-SUN_PATH_LIMIT = 107
+#: last byte is the terminator. The KERNEL fact lives in env_policy; this is
+#: the verify harness's name for the same number.
+SUN_PATH_LIMIT = UNIX_SOCKET_PATH_MAX
 
 #: Everything in the singleton socket path that is NOT the home or the profile
-#: name: ``/persona_data/`` + ``/.persona-tmp`` + the engine's own
+#: name: ``/persona_data/`` + the scratch directory (``env_policy.
+#: CHILD_TMPDIR_NAME``) + the engine's own
 #: ``/org.chromium.Chromium.XXXXXX/SingletonSocket`` (45 bytes, its mkdtemp
 #: suffix being a fixed six characters).
 _SINGLETON_SOCKET_FIXED_COST = (
     len("/persona_data/")
-    + len("/.persona-tmp")
+    + len("/" + CHILD_TMPDIR_NAME)
     + len("/org.chromium.Chromium.XXXXXX/SingletonSocket")
 )
 

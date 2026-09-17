@@ -162,3 +162,49 @@ def _isolate_settings_file(tmp_path, monkeypatch):
         "PERSONA_SETTINGS_FILE", str(tmp_path / "persona-settings.json")
     )
     yield
+
+
+def pytest_configure(config):
+    """Root pytest's tmp area SHORT, because a profile name has a byte budget.
+
+    PS-438. The launch seams pin the browser child's scratch directory inside
+    the profile, and a guard added with that ticket refuses — BEFORE the
+    launch, naming the fix — any profile whose path cannot hold chromium's
+    singleton socket under POSIX's 108-byte ``sun_path``. That limit is real:
+    a launch persona would refuse is a launch the engine would die on mid-run,
+    and the suite contains dozens of launch-backed tests that seed profiles
+    under ``tmp_path``.
+
+    pytest's default basetemp — ``/tmp/pytest-of-<user>/pytest-<n>/<test>0`` —
+    is deeper than the budget on most runners, so those tests would seed
+    launches the real engine could never have survived and fail not on their
+    own subject but on their own address. Re-rooting the WHOLE suite's tmp
+    area once, here, keeps every test's simulated launch realistic without
+    each launch-backed test having to restate a "short base" provisioning of
+    its own — a path-depth requirement fixed in one place rather than
+    restated per test.
+
+    The arithmetic (why ``/tmp/pt`` is short enough): the per-test directory
+    carries the test name truncated to 30 characters plus a counter, so a
+    profile dir lands at ``/tmp/pt/<test><n>`` = 39, leaving
+    ``107 - 45 (the engine's socket suffix) - 4 (the scratch dir) - 1`` = 57
+    for dir + profile name, i.e. a profile name of up to 18 characters. The
+    longest profile name the suite launches with is 18 after PS-438's
+    masking-matrix renames; a longer-than-that test does not need a new
+    fixture, it needs a shorter name, because the engine itself could not
+    launch it.
+
+    Scoped to POSIX, where the 108-byte wall exists. Windows coordinates the
+    engine's single-instance through a named mutex with no path ceiling, so
+    the guard does not fire there and the default layout is fine. An explicit
+    ``--basetemp`` on the command line always wins. The suite runs without
+    xdist (not a dev requirement, not used by CI), so no two sessions share
+    the directory; pytest clears a basetemp it chose this way at session
+    start.
+    """
+    import os
+
+    if os.name != "posix" or config.option.basetemp:
+        return
+    if os.path.isdir("/tmp") and os.access("/tmp", os.W_OK):
+        config.option.basetemp = "/tmp/pt"

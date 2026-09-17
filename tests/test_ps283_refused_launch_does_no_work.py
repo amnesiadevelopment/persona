@@ -775,14 +775,14 @@ def test_falsification_the_parity_assertion_fails_against_the_old_ordering(
 
     with pytest.raises(GeographyUnknownError):
         _spawn_with_the_gate_back_at_the_arg_builder(
-            Profile(name="falsify-parity", proxy="p1")
+            Profile(name="fals-parity", proxy="p1")
         )
     with pytest.raises(GeographyUnknownError):
         process.spawn_browser(
             Profile(name="falsify-firefox", engine="firefox", proxy="p1")
         )
 
-    chromium = launch_env.profile_files("falsify-parity")
+    chromium = launch_env.profile_files("fals-parity")
     firefox = launch_env.profile_files("falsify-firefox")
     assert chromium != firefox, (
         "under the OLD ordering the two arms must differ; if they do not, the "
