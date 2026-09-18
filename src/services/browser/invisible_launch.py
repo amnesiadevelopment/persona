@@ -62,6 +62,7 @@ from .env_policy import (
     browser_child_cwd,
     chdir_current_process,
     pin_current_process_tmpdir,
+    ProfilePathTooLong,
     scrub_current_process_environ,
 )
 from .firefox_bookmarks import places_ready
@@ -3322,6 +3323,25 @@ def _child(cfg: dict, write_fd: int, stop_event=None) -> None:
             return
         try:
             _pinned_tmp = pin_current_process_tmpdir(_child_tmp_root)
+        except ProfilePathTooLong as e:
+            # PS-438's refusal, seen from the fork path. This one cannot ride
+            # the OSError arm beside it — it subclasses Exception, not OSError —
+            # and letting it past that arm was the defect: the child died with a
+            # traceback on inherited stderr and ZERO bytes on this pipe, and the
+            # parent read a bare EOF before BROWSER_STARTED — an unexplained
+            # session end, the exact operator experience the guard exists to
+            # replace. The exception already carries the full sentence (which
+            # profile, which limit, how many characters to cut), so it is
+            # forwarded whole, down the same audited path as every other
+            # child-side failure. WHOLE ON ONE LINE, and that is protocol, not
+            # taste: the parent's monitor breaks on the LAUNCH_FAILED line, so
+            # anything composed after the first newline would never be read.
+            # Nothing to tear down either — the guard raises BEFORE the scratch
+            # directory is created and the engine is touched.
+            emit("LAUNCH_FAILED: " + " ".join(str(e).split()))
+            emit("BROWSER_CLOSED")
+            _finish()
+            return
         except OSError as e:
             emit(f"LAUNCH_FAILED: browser scratch directory in {_child_tmp_root!r}: {e}")
             emit("BROWSER_CLOSED")

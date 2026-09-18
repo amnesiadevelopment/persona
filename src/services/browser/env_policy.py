@@ -388,11 +388,41 @@ def browser_child_cwd():
 # developer's platform and is not on the operator's.
 TEMP_DIR_VARS = ("TMPDIR", "TMP", "TEMP")
 
-#: The kernel's limit on a unix socket path, not ours: `sockaddr_un.sun_path` is
-#: 108 bytes and one of them is the terminator. Chromium binds its singleton socket
-#: under TMPDIR, so this ceiling lands on the profile path whether anyone planned
-#: for it or not.
-UNIX_SOCKET_PATH_MAX = 107
+#: The kernel's limit on a unix socket path, not ours: ``sockaddr_un.sun_path``
+#: is 108 bytes on Linux and 104 on darwin, one of them the terminator. Chromium
+#: binds its singleton socket under TMPDIR, so this ceiling lands on the profile
+#: path whether anyone planned for it or not.
+#:
+#: PER PLATFORM, and the difference is not a rounding note: the refusal below
+#: gates every POSIX platform (Windows is the only one with no unix socket in
+#: this path), so a single Linux-derived number leaves darwin's 22–25-character
+#: band unguarded — the guard would pass launches there that the engine dies on,
+#: the one outcome a pre-launch guard exists to prevent. Every darwin byte is
+#: also 3 characters an operator cannot spend on a name. The gate therefore
+#: budgets against :func:`unix_socket_path_max`, which reads the platform at
+#: call time; this module constant is that same value, resolved once, for
+#: import-time readers (behaviour.py's verify arithmetic).
+_UNIX_SOCKET_PATH_MAX_LINUX = 107
+_UNIX_SOCKET_PATH_MAX_DARWIN = 104
+
+
+def unix_socket_path_max():
+    """The kernel's usable ``sun_path`` length ON THIS PLATFORM, read per call.
+
+    A function and not only a constant because a test running on either platform
+    must be able to pin BOTH values, and a guard must measure the platform it is
+    ON rather than the one it was written on.
+    """
+    import sys
+
+    if sys.platform == "darwin":
+        return _UNIX_SOCKET_PATH_MAX_DARWIN
+    return _UNIX_SOCKET_PATH_MAX_LINUX
+
+
+#: Resolved once on this platform, for import-time readers. Same value
+#: :func:`unix_socket_path_max` returns here.
+UNIX_SOCKET_PATH_MAX = unix_socket_path_max()
 
 #: The upstream engine's OWN singleton-socket path beneath TMPDIR, spelled the
 #: way the binary lays it down on disk — a measured fact about the artifact we
@@ -415,6 +445,17 @@ _CHROMIUM_SOCKET_SUFFIX = len(_CHROMIUM_SOCKET_SAMPLE)
 #: eleven more an operator may spend on a name that means something.
 CHILD_TMPDIR_NAME = ".pt"
 
+#: Names this directory has carried in the past, newest last, with the upgrade
+#: that renamed it: profiles created before PS-438 still hold a ``.persona-tmp``
+#: on disk — per-launch scratch, and under it the engine's ~714MB AppImage
+#: extraction. FROZEN HISTORY, which is why it is a literal and not a second
+#: constant: the old name can never change again, so there is nothing here to
+#: drift. Everything that sweeps or excludes must know both spellings, or the
+#: first launch after an upgrade sweeps only the new name while the old
+#: extraction sits on the profile forever, and the first export of such a
+#: profile grows by the exact bulk PS-129 exists to prevent.
+LEGACY_CHILD_TMPDIR_NAMES = (".persona-tmp",)
+
 
 class ProfilePathTooLong(Exception):
     """A profile's scratch path cannot hold Chromium's singleton socket.
@@ -430,9 +471,11 @@ def child_tmpdir_budget(profile_dir):
 
     Derived from `browser_child_tmpdir` rather than recomputed, so the guard measures
     the path the launch will actually use. A check that builds its own idea of the path
-    can pass while the launch still fails.
+    can pass while the launch still fails. The platform limit is read per call for the
+    same reason: darwin's ``sun_path`` is 3 bytes shorter than Linux's, and a budget
+    frozen at import time is a budget that lies on one of them.
     """
-    return UNIX_SOCKET_PATH_MAX - (
+    return unix_socket_path_max() - (
         len(browser_child_tmpdir(profile_dir)) + _CHROMIUM_SOCKET_SUFFIX
     )
 
@@ -471,7 +514,7 @@ def check_child_tmpdir_fits(profile_dir):
             "    %s%s\n"
             "Shorten the profile name by at least %d character(s). Left alone, the "
             "engine aborts at startup and reports only that the session ended."
-            % (short_by, engine_display_name(), UNIX_SOCKET_PATH_MAX,
+            % (short_by, engine_display_name(), unix_socket_path_max(),
                browser_child_tmpdir(profile_dir), _CHROMIUM_SOCKET_SAMPLE, short_by)
         )
 
@@ -546,6 +589,15 @@ def prepare_child_tmpdir(profile_dir):
 
     target = browser_child_tmpdir(profile_dir)
     shutil.rmtree(target, ignore_errors=True)
+    # A profile that last launched before PS-438's rename still carries scratch
+    # under the OLD name — dead weight the new sweep never touches, and under it
+    # the engine's ~714MB extraction. Same disposition as the new name's sweep:
+    # per-launch state, recreated on demand, nothing identity-bearing, so it is
+    # swept rather than preserved. Removing ~714MB of stale files costs a moment
+    # on the first post-upgrade launch; keeping it costs the space forever.
+    for legacy in LEGACY_CHILD_TMPDIR_NAMES:
+        if legacy != CHILD_TMPDIR_NAME:
+            shutil.rmtree(os.path.join(profile_dir, legacy), ignore_errors=True)
     os.makedirs(target, exist_ok=True)
     return target
 
