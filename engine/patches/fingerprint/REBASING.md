@@ -2,7 +2,15 @@
 
 **Current target: ungoogled-chromium-portablelinux `152.0.7977.75-1` (Chromium
 `152.0.7977.75`, v8 `3de6ffff`). All 16 patches apply: 81/81 hunks, 0 rejects,
-`--fuzz=0`.**
+`--fuzz=0`. (85/85 since PS-440 grew 011-gpu-info by the capability-limit
+clamp.)**
+
+**Measured at `153.0.8010.47-1` on 2026-09-19 (PS-440): 011-gpu-info applies
+clean there too — 12 hunks, 0 rejects, `--fuzz=0`. One hunk of
+`014-client-rects` (`element.h` hunk #1 at line 633) DOES reject at 153, and it
+rejects identically on `main`, so it is upstream drift awaiting its own rebase
+and not a regression from any patch listed here. `CURRENT_TAG.txt` still pins
+152; nothing in this file has been bumped.**
 
 Rebased from `144.0.7559.132-1` under PS-299, 2026-09-03.
 Compile fixes to 018-timezone under PS-309, 2026-09-04 — see
