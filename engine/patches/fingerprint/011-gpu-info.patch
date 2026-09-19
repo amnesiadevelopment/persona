@@ -633,7 +633,12 @@ index e7ef36a812c4c57ff2b6adc4ab7ab4b2edf8c4a6..dfd7b714b0db4d1e413b24c27d331699
    }
    return WebGLAny(script_state, value);
  }
-@@ -7975,6 +8033,15 @@
+@@ -7970,16 +8028,25 @@
+       break;
+     case GL_BLEND_COLOR:
+     case GL_COLOR_CLEAR_VALUE:
+       length = 4;
+       break;
      default:
        NOTIMPLEMENTED();
    }
@@ -649,7 +654,17 @@ index e7ef36a812c4c57ff2b6adc4ab7ab4b2edf8c4a6..dfd7b714b0db4d1e413b24c27d331699
    return WebGLAny(script_state,
                    DOMFloat32Array::Create(base::span(value).first(length)));
  }
-@@ -7997,6 +8064,16 @@
+ 
+ ScriptValue WebGLRenderingContextBase::GetWebGLIntArrayParameter(
+     ScriptState* script_state,
+     GLenum pname) {
+   std::array<GLint, 4> value = {0};
+@@ -7992,16 +8059,26 @@
+       break;
+     case GL_SCISSOR_BOX:
+     case GL_VIEWPORT:
+       length = 4;
+       break;
      default:
        NOTIMPLEMENTED();
    }
@@ -666,3 +681,8 @@ index e7ef36a812c4c57ff2b6adc4ab7ab4b2edf8c4a6..dfd7b714b0db4d1e413b24c27d331699
    return WebGLAny(script_state,
                    DOMInt32Array::Create(base::span(value).first(length)));
  }
+ 
+ WebGLTexture* WebGLRenderingContextBase::ValidateTexture2DBinding(
+     const char* function_name,
+     GLenum target,
+     bool validate_opaque_textures) {

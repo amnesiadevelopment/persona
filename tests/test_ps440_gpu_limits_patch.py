@@ -579,6 +579,47 @@ def test_the_getparameter_switch_is_left_at_its_upstream_shape(patch_text):
         f"Get*Parameter helpers, where the real value is in hand: {stray}")
 
 
+def test_no_two_hunks_share_identical_leading_context(patch_text):
+    """A hunk must be anchorable, not merely correct.
+
+    CAUGHT IN CI, NOT BY REVIEW: the two array-helper hunks
+    (GetWebGLFloatArrayParameter and GetWebGLIntArrayParameter) end their
+    switch the same way, so at the default 3 lines of context BOTH carried the
+    identical leading context `default:` / `NOTIMPLEMENTED();` / `}`. GNU
+    patch matched the first hunk fuzzily at the second one's site, consumed
+    it, and the second then had nowhere to land — `Hunk #6 FAILED`. The real
+    Chromium tree happened to absorb this; the synthetic fixture tree that
+    PS-307 builds did not, which is exactly what that fixture is for.
+
+    It is not enough to widen the context once and move on: the next hunk
+    added near a `default:`/`NOTIMPLEMENTED();` pair would reintroduce it
+    silently, and the failure surfaces far from the edit as a mis-anchored
+    apply. So the property is asserted directly — every hunk in the patch
+    must be distinguishable from every other by its leading context alone.
+    """
+    for section_path in (WEBGL_BASE_CC, GPU_FINGERPRINT_CC):
+        try:
+            section = _section(patch_text, section_path)
+        except AssertionError:
+            continue  # a new-file section has a single hunk; nothing to clash
+        leads: dict[tuple[str, ...], str] = {}
+        for h in re.finditer(r"(?m)^(@@ -\d+,\d+ \+\d+,\d+ @@.*?)(?=^@@ -|\Z)",
+                             section, re.S):
+            body = h.group(0).splitlines()[1:]
+            lead = tuple(l[1:].strip() for l in body
+                         if l.startswith(" "))[:3]
+            lead = tuple(l for l in lead if l)
+            if not lead:
+                continue
+            header = h.group(0).splitlines()[0]
+            assert lead not in leads, (
+                f"in {section_path}, two hunks share the identical leading "
+                f"context {list(lead)}:\n  {leads[lead]}\n  {header}\n"
+                f"patch(1) can anchor one on the other's site — widen the "
+                f"context of at least one until they differ")
+            leads[lead] = header
+
+
 def test_identity_spoof_still_reads_process_global_state(patch_text):
     """The PS-218 premise survives the limits work unchanged.
 
