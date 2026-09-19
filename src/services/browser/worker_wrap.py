@@ -187,9 +187,30 @@ class WorkerCloak(NamedTuple):
 
     Chromium's form was the ORIGINAL text, kept byte-identical because it is the
     baseline every prior readback was taken against (the PS-78 boundary,
-    "Chromium is unchanged"). Its frame pair and both delivery fields are still
+    "Chromium is unchanged"). Its frame pair and both delivery fields were all
     EMPTY STRINGS spliced at points chosen so that the empty case reproduces the
     old template exactly — no stray blank line, no moved indentation.
+
+    ⛔ THE FRAME PAIR IS NO LONGER EMPTY ON CHROMIUM EITHER (PS-449), which is
+    the SECOND scoped break of the "Chromium is unchanged" sentence above and is
+    recorded here rather than tidied into it. Those two accessors were the last
+    wrappers this bootstrap installed uncloaked on the engine: ``Worker`` and
+    ``SharedWorker`` go through ``apply``, the eight DOM inserters and the
+    ``innerHTML`` setter through ``hook_mark``, and the iframe pair through
+    nothing at all — so a page reading
+    ``getOwnPropertyDescriptor(HTMLIFrameElement.prototype, "contentWindow").get``
+    got 290 characters of our own source naming ``__pnaInstall``, ``LEAF`` and
+    the ``fresh`` dedup check. ``contentWindow`` is the ordinary door into a
+    child frame, so that is read by detectors not looking for us specifically.
+    The pair now splices :data:`_CHROMIUM_HOOK_CLOAK_SETUP`'s ``__hcloak``.
+
+    ⚠️ THE TWO ARMS PASS DIFFERENT SOURCE NAMES AND MUST: V8 keeps the ``get ``
+    prefix in an accessor's source text where SpiderMonkey drops it, so the
+    Chromium seam passes ``"get " + prop`` where the Firefox one passes a bare
+    ``prop``. Copying either across emits the other engine's native form, which
+    is itself a masking tell. See ``__hcloak``'s note for the measurements.
+
+    Both DELIVERY fields remain empty on this engine.
 
     ⚠️ ``setup`` IS NO LONGER EMPTY ON CHROMIUM, and that is a deliberate,
     scoped break of the sentence above rather than an oversight. PS-215 added
@@ -437,7 +458,52 @@ _CHROMIUM_HOOK_CLOAK_SETUP = r"""
         // reports 0. Copied from the original rather than hard-coded.
         Object.defineProperty(__hts, "length", { value: __hpts.length, configurable: true });
         if (__hF && __hF.prototype) { __hF.prototype.toString = __hts; }
-      } catch (e) {}"""
+      } catch (e) {}
+
+      // --- cloak for the two iframe ACCESSORS (Chromium) -------------------
+      // `frame_open`/`frame_close` wrap the accessor's function expression,
+      // which is an ARGUMENT position and so cannot take a statement -- hence a
+      // helper that returns `f` rather than the statement pair the other seams
+      // splice. The Firefox arm fills the same seam with `__bcloak`; this one
+      // was left EMPTY, which made these two the only wrappers the Chromium
+      // bootstrap installed uncloaked. See PS-449.
+      //
+      // ⭐ TWO NAMES, AND THEY ARE NOT THE SAME NAME -- but the SOURCE name is
+      // NOT the bare `prop` the Firefox arm passes. V8 KEEPS the `get ` prefix
+      // in an accessor's SOURCE TEXT, measured off real accessors on the
+      // shipped engine:
+      //
+      //     Map.prototype.size            -> function get size...
+      //     iframe contentWindow          -> function get contentWindow...
+      //     the innerHTML SETTER          -> function set innerHTML...
+      //     Element.prototype.appendChild -> function appendChild...
+      //
+      // so a plain method carries no prefix and an accessor does. SPIDERMONKEY
+      // DROPS IT, which is exactly why the Firefox seam passes bare `prop` --
+      // and why copying that convention here would emit the WRONG ENGINE'S
+      // FORM, the same class of tell this seam exists to close and one
+      // `Map.prototype.size` comparison away. `device_ext.py` records the same
+      // measurement beside its own `def`, and `invisible_launch.py` records the
+      // SpiderMonkey half. Both names therefore carry the prefix ON THIS
+      // ENGINE, and they still differ from each other in the general case, so
+      // they stay two arguments rather than being collapsed into one.
+      //
+      // `.name` is a SECOND, independent axis, readable with no stringification
+      // at all: a function expression written at a `get:` key infers its name
+      // from that key, so before this the getter reported `.name === "get"` --
+      // a name no engine produces for that property.
+      //
+      // ⛔ NO `.length` PIN, deliberately, mirroring `__bcloak`'s trailing
+      // optional: a native accessor reports 0 and so does this wrapper, which
+      // takes no declared arguments. Pinning it would be a no-op that could
+      // only drift.
+      var __hcloak = function (f, prop) {
+        try {
+          Object.defineProperty(f, "name", { value: "get " + prop, configurable: true });
+          if (__hnm) { __hnm.set(f, "get " + prop); }
+        } catch (e) {}
+        return f;
+      };"""
 
 
 # Chromium: the Worker/SharedWorker constructor wrapper, registered in the SAME
@@ -468,8 +534,8 @@ CHROMIUM_WORKER_CLOAK = WorkerCloak(
         # the spec still matches itself.
         '        try { Object.defineProperty(W, "length", { value: Orig.length, configurable: true }); } catch (e) {}'
     ),
-    frame_open="",
-    frame_close="",
+    frame_open="__hcloak(",
+    frame_close=", prop)",
     hook_mark=(
         "\n            try { if (__hnm) { __hnm.set(f, __sn); } } catch (e) {}"
     ),

@@ -477,8 +477,8 @@ def test_the_worker_realm_is_reached_under_the_default_start_pages_csp(tmp_path)
 
 
 @pytest.mark.parametrize("wrapper", ("contentWindow", "contentDocument"))
-def test_the_pre_fix_cloak_leaks_patch_source_to_the_window_realm(tmp_path, wrapper):
-    """Reverting the fix turns the check red on the stringification itself.
+def test_the_pre_fix_cloak_emits_the_wrong_engines_native_form(tmp_path, wrapper):
+    """Reverting the fix turns the check red ON THE STRINGIFICATION ITSELF.
 
     This is what binds the seats above to the mechanism rather than to code that
     happens to be green. The pre-fix state is reconstructed through the real
@@ -494,36 +494,81 @@ def test_the_pre_fix_cloak_leaks_patch_source_to_the_window_realm(tmp_path, wrap
     `SharedWorker`: under the Chromium cloak those took a `__pnaName` own
     property and NO in-page toString registration, so on an engine with no
     extension to read the marker they stringified as raw patch source — 2109
-    characters, the original PS-128 measurement.
+    characters, the original PS-128 measurement. PS-368 removed that marker and
+    registered `W` in the bootstrap's own `__hnm` WeakMap, so `Worker` now reads
+    `function Worker() { [native code] }` under this very counterfactual and can
+    no longer witness the defect. The arm then moved to the two iframe
+    accessors, which the Chromium seam still left bare.
 
-    PS-368 removed that marker. `W` is built inside `__pnaInstall`, where the DOM
-    inserters' `__hnm` WeakMap already lives, so it now registers THERE and the
-    Chromium cloak covers it IN-PAGE on any engine. Measured under this very
-    counterfactual: `Worker` reads `function Worker() { [native code] }`. That is
-    a genuine improvement to the Chromium seam and NOT a reason to relax the
-    assertion — but it does mean `Worker` can no longer witness the PS-131
-    defect, and an arm left pointing at it would pass while testing nothing.
+    ⭐ AND NOW IT HAS LOST THAT WITNESS TOO — THE SECOND TIME, SO THE PATTERN IS
+    THE POINT. PS-449 filled `CHROMIUM_WORKER_CLOAK`'s `frame_open`/`frame_close`
+    with `__hcloak`, closing the last wrapper on this path that stringified as
+    raw source under EITHER cloak. Measured under this counterfactual after that
+    fix, all six wrappers the probe reads carry the native marker. This file's
+    own docstring directs re-grounding rather than deletion, and deleting it
+    would leave the seats above pinned to nothing.
 
-    So the arm moves to the two wrappers the Chromium seam still leaves bare, by
-    design: the iframe accessors. `CHROMIUM_WORKER_CLOAK` supplies empty
-    `frame_open`/`frame_close`, where `firefox_worker_cloak()` splices `__bcloak`
-    around them — which is precisely the per-engine difference PS-131 is about,
-    and it is untouched by this ticket. Their seats above assert the native form
-    under the correct cloak, so this reads the same two under the wrong one.
+    SO THE ARM NOW ASSERTS THE **FORM** RATHER THAN THE PRESENCE OF RAW SOURCE,
+    which is the axis on which `CHROMIUM_WORKER_CLOAK` is still WRONG on this
+    engine — and the file already names it: the Chromium cloak emits V8's
+    ONE-LINE native string where SpiderMonkey prints THREE lines, a tell one
+    `Array.prototype.map.toString()` comparison away. Measured, both cloaks,
+    same probe, same wrapper::
+
+        CHROMIUM cloak  'function get contentWindow() { [native code] }'
+        FIREFOX  cloak  'function contentWindow() {\\n    [native code]\\n}'
+
+    ⭐ TWO AXES SEPARATE THEM, NOT ONE, and PS-449 is what added the second.
+    Besides the line count, V8 KEEPS the `get ` prefix in an accessor's source
+    text while SpiderMonkey DROPS it — so the Chromium seam correctly passes
+    `"get " + prop` as its source name and the Firefox seam correctly passes a
+    bare `prop`. Both are asserted here, because each independently identifies
+    the wrong engine's cloak and a future change could plausibly repair one
+    while leaving the other.
+
+    This goes RED if the Chromium cloak ever learns to derive the HOST's shape
+    instead of emitting V8's — at which point the two cloaks really would be
+    interchangeable here, and the honest response is to re-ground this arm a
+    third time rather than to relax it.
     """
     report = _probe(tmp_path, cloak=CHROMIUM_WORKER_CLOAK)
     # The realm is genuinely patched — this is a real leak, not an empty realm.
     _assert_realm_was_reached(report, "window")
 
     read = report["realms"]["window"]["stringified"][wrapper]
-    assert "[native code]" not in read, (
-        "the pre-fix cloak no longer leaks, so the seats above are no longer "
-        "pinned to anything — this counterfactual has stopped witnessing the "
-        "defect and must be re-grounded."
+
+    # AXIS 1 — the LINE COUNT. SpiderMonkey's native form is three lines; V8's
+    # is one. The Chromium cloak derives its shape from the running engine, so
+    # under a V8 host it emits the one-liner on both arms.
+    assert "\n" not in read, (
+        f"the Chromium cloak no longer emits V8's ONE-LINE native form off "
+        f"{wrapper}, so this counterfactual has stopped distinguishing the two "
+        f"cloaks on the line-count axis and the seats above are no longer "
+        f"pinned to the mechanism. If the Chromium arm has learned to derive "
+        f"the host engine's shape, re-ground this arm rather than relaxing it. "
+        f"Read: {read!r}"
     )
-    assert len(read) > 100, (
-        f"expected the raw patch source a page could read off {wrapper}; got "
-        f"{len(read)} characters"
+
+    # AXIS 2 — the `get ` PREFIX, which PS-449 added. V8 carries it in an
+    # accessor's source text and SpiderMonkey does not, so the correct Firefox
+    # form has NO prefix and the Chromium one does. Independent of axis 1: a
+    # change could repair either alone.
+    assert read.startswith("function get " + wrapper), (
+        f"the Chromium cloak no longer emits V8's prefixed accessor name off "
+        f"{wrapper}. SpiderMonkey drops the `get ` prefix from an accessor's "
+        f"source text and V8 keeps it, which is why the two seams pass "
+        f"different source names; this arm witnesses that difference. "
+        f"Read: {read!r}"
+    )
+
+    # And the CORRECT cloak must differ from it — otherwise both assertions
+    # above would be satisfied by a probe that cannot tell the arms apart at
+    # all, which is the failure mode that cost this arm its witness twice.
+    correct = _probe(tmp_path / "correct")["realms"]["window"]["stringified"][wrapper]
+    assert correct != read, (
+        f"the two cloaks now emit the IDENTICAL string off {wrapper}, so this "
+        f"counterfactual distinguishes nothing whatever it asserts. Read: "
+        f"{read!r}"
     )
 
 
