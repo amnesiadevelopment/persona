@@ -124,11 +124,13 @@ index 1f71cb43f9..23ca04113e 100644
      "nv_shader_noperspective_interpolation.cc",
 diff --git a/third_party/blink/renderer/modules/webgl/gpu_fingerprint.cc b/third_party/blink/renderer/modules/webgl/gpu_fingerprint.cc
 new file mode 100644
-index 0000000000..75a4117ddad8fb82998b561d120f65f48d74f6d5
+index 0000000000..c9951800bdd394894fbb812365933659338a3121
 --- /dev/null
 +++ b/third_party/blink/renderer/modules/webgl/gpu_fingerprint.cc
-@@ -0,0 +1,174 @@
+@@ -0,0 +1,235 @@
 +#include "third_party/blink/renderer/modules/webgl/gpu_fingerprint.h"
++
++#include <algorithm>
 +
 +#include "base/command_line.h"
 +#include "base/strings/string_number_conversions.h"
@@ -219,26 +221,76 @@ index 0000000000..75a4117ddad8fb82998b561d120f65f48d74f6d5
 +// build. These are the values every card in the claimed pool answers on that
 +// backend — they are ANGLE's Direct3D11 feature-level-11 constants, not
 +// per-card. SwiftShader, which actually renders on the Linux dev VM, answers
-+// 8192/4096/32-class values that contradict the claimed card on every one of
-+// them, and hands out a cube-map limit above its 2D texture limit, which no
-+// real driver does.
++// 8192/4096/32-class values that contradict the claimed card on almost every
++// one of them, and hands out a cube-map limit ABOVE its own 2D texture limit,
++// which no real driver does.
 +//
-+// PAGE-VISIBLE ONLY: these feed getParameter() answers. The backend's real
-+// limits stay authoritative for GL itself — a page that believes the claimed
-+// card and asks for a 16384 texture gets the backend's own error, exactly as
-+// it would from a real driver refusing the request.
++// ⚠️ WE NEVER REPORT ABOVE WHAT THE BACKEND CAN ACTUALLY DO.
++//
++// Every getter below takes the backend's real answer and returns
++// min(claimed, real) — a DOWNWARD lie only. That is not caution, it is the
++// difference between a spoof a checker must compare against a reference card
++// and one it can catch from our own context alone. Blink's internal
++// validation keeps reading the real backend limits (max_texture_size_ off
++// ContextGL is untouched), so an UPWARD claim is not merely cosmetic.
++// Measured on SwiftShader under persona's own Linux flags
++// (--use-gl=angle --use-angle=swiftshader --enable-unsafe-swiftshader),
++// reading the limit and then allocating at it:
++//
++//   texImage2D(..., 16384, 16384, ...)       -> GL_INVALID_VALUE
++//   renderbufferStorage(..., 16384, 16384)   -> GL_INVALID_VALUE
++//   viewport(0, 0, 32767, 32767)             -> no error, READS BACK 8192
++//
++// The viewport case is the worst of the three: it fails silently, so a page
++// that advertises 32767, sets exactly that, and reads back 8192 has caught us
++// with no reference card and no error to check. That is the same
++// self-contained-impossibility class as the cube-map pair this patch removes,
++// so claiming upward would trade one such tell for three.
++//
++// THE CLAMP IS A NO-OP WHERE THE CLAIM IS TRUE. On a real D3D11 backend the
++// measured answers ARE 16384/32767, so min(claimed, real) is the claim and
++// the windows arm is unaffected. It bites only where the backend cannot back
++// the claim, which means it degrades correctly by platform without having to
++// know which backend it is running on — and it stays correct by itself if
++// Linux later gets a real GPU (PS-445).
 +
-+constexpr int32_t kSpoofedMaxTextureSize = 16384;            // GL_MAX_TEXTURE_SIZE (0x0D33)
-+constexpr int32_t kSpoofedMaxRenderbufferSize = 16384;       // GL_MAX_RENDERBUFFER_SIZE (0x84E8)
-+constexpr int32_t kSpoofedMaxCubeMapTextureSize = 16384;     // GL_MAX_CUBE_MAP_TEXTURE_SIZE (0x851C)
-+constexpr int32_t kSpoofedMaxVertexUniformVectors = 4095;    // GL_MAX_VERTEX_UNIFORM_VECTORS (0x8DFB)
-+constexpr int32_t kSpoofedMaxFragmentUniformVectors = 1024;  // GL_MAX_FRAGMENT_UNIFORM_VECTORS (0x8DFD)
-+constexpr int32_t kSpoofedMaxVaryingVectors = 30;            // GL_MAX_VARYING_VECTORS (0x8DFC)
-+constexpr int32_t kSpoofedMaxTextureImageUnits = 16;         // GL_MAX_TEXTURE_IMAGE_UNITS (0x8872)
-+constexpr int32_t kSpoofedMaxVertexTextureImageUnits = 16;   // GL_MAX_VERTEX_TEXTURE_IMAGE_UNITS (0x8B4C)
++constexpr int32_t kClaimedMaxTextureSize = 16384;            // GL_MAX_TEXTURE_SIZE (0x0D33)
++constexpr int32_t kClaimedMaxRenderbufferSize = 16384;       // GL_MAX_RENDERBUFFER_SIZE (0x84E8)
++constexpr int32_t kClaimedMaxCubeMapTextureSize = 16384;     // GL_MAX_CUBE_MAP_TEXTURE_SIZE (0x851C)
++constexpr int32_t kClaimedMaxVertexUniformVectors = 4095;    // GL_MAX_VERTEX_UNIFORM_VECTORS (0x8DFB)
++constexpr int32_t kClaimedMaxFragmentUniformVectors = 1024;  // GL_MAX_FRAGMENT_UNIFORM_VECTORS (0x8DFD)
++constexpr int32_t kClaimedMaxVaryingVectors = 30;            // GL_MAX_VARYING_VECTORS (0x8DFC)
++constexpr int32_t kClaimedMaxTextureImageUnits = 16;         // GL_MAX_TEXTURE_IMAGE_UNITS (0x8872)
++constexpr int32_t kClaimedMaxVertexTextureImageUnits = 16;   // GL_MAX_VERTEX_TEXTURE_IMAGE_UNITS (0x8B4C)
 +
-+constexpr int32_t kSpoofedMaxViewportDims[2] = {32767, 32767};  // GL_MAX_VIEWPORT_DIMS (0x0D3A)
-+constexpr float kSpoofedPointSizeRange[2] = {1.0f, 1024.0f};    // GL_ALIASED_POINT_SIZE_RANGE (0x846D)
++constexpr int32_t kClaimedMaxViewportDims[2] = {32767, 32767};  // GL_MAX_VIEWPORT_DIMS (0x0D3A)
++constexpr float kClaimedPointSizeRange[2] = {1.0f, 1024.0f};    // GL_ALIASED_POINT_SIZE_RANGE (0x846D)
++
++// The value we would LIKE to claim for a pname, before clamping. nullopt for
++// a pname this patch does not claim at all, which is how the call site knows
++// to fall through untouched.
++std::optional<int32_t> ClaimedIntLimit(uint32_t pname) {
++  switch (pname) {
++    case 0x0D33:  // GL_MAX_TEXTURE_SIZE
++      return kClaimedMaxTextureSize;
++    case 0x84E8:  // GL_MAX_RENDERBUFFER_SIZE
++      return kClaimedMaxRenderbufferSize;
++    case 0x851C:  // GL_MAX_CUBE_MAP_TEXTURE_SIZE
++      return kClaimedMaxCubeMapTextureSize;
++    case 0x8DFB:  // GL_MAX_VERTEX_UNIFORM_VECTORS
++      return kClaimedMaxVertexUniformVectors;
++    case 0x8DFD:  // GL_MAX_FRAGMENT_UNIFORM_VECTORS
++      return kClaimedMaxFragmentUniformVectors;
++    case 0x8DFC:  // GL_MAX_VARYING_VECTORS
++      return kClaimedMaxVaryingVectors;
++    case 0x8872:  // GL_MAX_TEXTURE_IMAGE_UNITS
++      return kClaimedMaxTextureImageUnits;
++    case 0x8B4C:  // GL_MAX_VERTEX_TEXTURE_IMAGE_UNITS
++      return kClaimedMaxVertexTextureImageUnits;
++    default:
++      return std::nullopt;
++  }
++}
 +
 +}  // namespace
 +
@@ -261,53 +313,62 @@ index 0000000000..75a4117ddad8fb82998b561d120f65f48d74f6d5
 +  return GetGLRendererString(GetDeclaredPlatform(), fingerprint);
 +}
 +
-+std::optional<int32_t> GetSpoofedIntLimitForFingerprint(uint32_t pname) {
++int32_t GetSpoofedIntLimitForFingerprint(uint32_t pname,
++                                         int32_t real_value,
++                                         int32_t reported_max_texture_size) {
 +  if (!IsWindowsGpuFingerprintActive()) {
-+    return std::nullopt;
++    return real_value;
 +  }
-+  switch (pname) {
-+    case 0x0D33:  // GL_MAX_TEXTURE_SIZE
-+      return kSpoofedMaxTextureSize;
-+    case 0x84E8:  // GL_MAX_RENDERBUFFER_SIZE
-+      return kSpoofedMaxRenderbufferSize;
-+    case 0x851C:  // GL_MAX_CUBE_MAP_TEXTURE_SIZE
-+      return kSpoofedMaxCubeMapTextureSize;
-+    case 0x8DFB:  // GL_MAX_VERTEX_UNIFORM_VECTORS
-+      return kSpoofedMaxVertexUniformVectors;
-+    case 0x8DFD:  // GL_MAX_FRAGMENT_UNIFORM_VECTORS
-+      return kSpoofedMaxFragmentUniformVectors;
-+    case 0x8DFC:  // GL_MAX_VARYING_VECTORS
-+      return kSpoofedMaxVaryingVectors;
-+    case 0x8872:  // GL_MAX_TEXTURE_IMAGE_UNITS
-+      return kSpoofedMaxTextureImageUnits;
-+    case 0x8B4C:  // GL_MAX_VERTEX_TEXTURE_IMAGE_UNITS
-+      return kSpoofedMaxVertexTextureImageUnits;
-+    default:
-+      return std::nullopt;
++  std::optional<int32_t> claimed = ClaimedIntLimit(pname);
++  if (!claimed.has_value()) {
++    return real_value;
 +  }
++  // Downward only — never advertise a capability the backend will refuse.
++  int32_t answer = std::min(*claimed, real_value);
++
++  // The cube-map limit is additionally capped by the 2D texture size we
++  // REPORT, not merely by its own backend value. SwiftShader answers 16384
++  // here beside a real 8192 texture limit, so clamping cube against its own
++  // backend value alone would leave the impossible pair fully intact: no
++  // driver hands out a cube map larger than its 2D texture limit, and that
++  // is the one contradiction a checker can catch from our own two numbers
++  // with no reference card at all.
++  if (pname == 0x851C) {  // GL_MAX_CUBE_MAP_TEXTURE_SIZE
++    answer = std::min(answer, reported_max_texture_size);
++  }
++  return answer;
 +}
 +
-+std::optional<std::array<int32_t, 2>> GetSpoofedViewportDimsForFingerprint() {
++std::array<int32_t, 2> GetSpoofedViewportDimsForFingerprint(
++    const std::array<int32_t, 2>& real_dims) {
 +  if (!IsWindowsGpuFingerprintActive()) {
-+    return std::nullopt;
++    return real_dims;
 +  }
-+  return std::array<int32_t, 2>{kSpoofedMaxViewportDims[0], kSpoofedMaxViewportDims[1]};
++  return std::array<int32_t, 2>{
++      std::min(kClaimedMaxViewportDims[0], real_dims[0]),
++      std::min(kClaimedMaxViewportDims[1], real_dims[1])};
 +}
 +
-+std::optional<std::array<float, 2>> GetSpoofedPointSizeRangeForFingerprint() {
++std::array<float, 2> GetSpoofedPointSizeRangeForFingerprint(
++    const std::array<float, 2>& real_range) {
 +  if (!IsWindowsGpuFingerprintActive()) {
-+    return std::nullopt;
++    return real_range;
 +  }
-+  return std::array<float, 2>{kSpoofedPointSizeRange[0], kSpoofedPointSizeRange[1]};
++  // The LOW end is a floor, not a ceiling: claiming a smaller minimum point
++  // size than the backend supports would be the same upward lie in the other
++  // direction, so it is clamped upward to the backend's own minimum.
++  return std::array<float, 2>{
++      std::max(kClaimedPointSizeRange[0], real_range[0]),
++      std::min(kClaimedPointSizeRange[1], real_range[1])};
 +}
 +
 +}  // namespace blink
 diff --git a/third_party/blink/renderer/modules/webgl/gpu_fingerprint.h b/third_party/blink/renderer/modules/webgl/gpu_fingerprint.h
 new file mode 100644
-index 0000000000..405e249255db6eebe6fc8bcf2f4dcdd5c7a2161c
+index 0000000000..e5262820a56b8f80fc4ced3093722e6b6f210613
 --- /dev/null
 +++ b/third_party/blink/renderer/modules/webgl/gpu_fingerprint.h
-@@ -0,0 +1,33 @@
+@@ -0,0 +1,50 @@
 +#ifndef THIRD_PARTY_BLINK_RENDERER_MODULES_WEBGL_GPU_FINGERPRINT_H_
 +#define THIRD_PARTY_BLINK_RENDERER_MODULES_WEBGL_GPU_FINGERPRINT_H_
 +
@@ -326,17 +387,34 @@ index 0000000000..405e249255db6eebe6fc8bcf2f4dcdd5c7a2161c
 +
 +// Page-visible capability-limit overrides for the card the fingerprint
 +// CLAIMS (PS-440). When the engine claims an NVIDIA GeForce RTX answered by
-+// ANGLE on Direct3D11 (the windows platform arm), getParameter() must answer
-+// that card's limits: the host backend's limits (SwiftShader on the Linux
-+// dev VM) contradict the claimed renderer string, and SwiftShader's cube-map
-+// limit above its 2D texture limit contradicts itself. Each getter returns
-+// nullopt when no override applies (gpu spoofing off, or the declared
-+// platform is not windows) so the call site falls through to the real GL
-+// answer. These are PAGE-VISIBLE answers only — the backend keeps its own
-+// real limits for GL itself, exactly like the identity pair above.
-+std::optional<int32_t> GetSpoofedIntLimitForFingerprint(uint32_t pname);
-+std::optional<std::array<int32_t, 2>> GetSpoofedViewportDimsForFingerprint();
-+std::optional<std::array<float, 2>> GetSpoofedPointSizeRangeForFingerprint();
++// ANGLE on Direct3D11 (the windows platform arm), getParameter() should
++// answer that card's limits: the host backend's limits (SwiftShader on the
++// Linux dev VM) contradict the claimed renderer string, and SwiftShader's
++// cube-map limit above its 2D texture limit contradicts itself.
++//
++// ⚠️ EACH GETTER TAKES THE BACKEND'S REAL ANSWER AND RETURNS min(claimed,
++// real) — never more than the backend can actually do. An upward claim is
++// not cosmetic: Blink's internal validation still reads the real backend
++// limit, so a page that believes it is handed GL_INVALID_VALUE on allocation
++// (measured), or — for the viewport — silently reads back the real value it
++// was just told was smaller. Both are catchable with no reference card,
++// which is strictly worse than the numeric mismatch they would fix.
++//
++// The clamp is a no-op where the claim is true: on a real D3D11 backend the
++// measured answers ARE the claimed ones. Each getter returns the real value
++// unchanged when no override applies (gpu spoofing off, or the declared
++// platform is not windows), so the call site can use the result directly.
++//
++// `reported_max_texture_size` is the value the caller is ALREADY reporting
++// for GL_MAX_TEXTURE_SIZE. The cube-map limit is capped against it so the
++// pair can never come back impossible.
++int32_t GetSpoofedIntLimitForFingerprint(uint32_t pname,
++                                         int32_t real_value,
++                                         int32_t reported_max_texture_size);
++std::array<int32_t, 2> GetSpoofedViewportDimsForFingerprint(
++    const std::array<int32_t, 2>& real_dims);
++std::array<float, 2> GetSpoofedPointSizeRangeForFingerprint(
++    const std::array<float, 2>& real_range);
 +
 +}  // namespace blink
 +
@@ -493,7 +571,7 @@ diff --git a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_ba
 index e7ef36a812c4c57ff2b6adc4ab7ab4b2edf8c4a6..dfd7b714b0db4d1e413b24c27d331699b42fdaca 100644
 --- a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
 +++ b/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
-@@ -105,6 +105,7 @@
+@@ -105,6 +107,7 @@
  #include "third_party/blink/renderer/modules/webgl/ext_shader_texture_lod.h"
  #include "third_party/blink/renderer/modules/webgl/ext_texture_filter_anisotropic.h"
  #include "third_party/blink/renderer/modules/webgl/gl_string_query.h"
@@ -501,77 +579,7 @@ index e7ef36a812c4c57ff2b6adc4ab7ab4b2edf8c4a6..dfd7b714b0db4d1e413b24c27d331699
  #include "third_party/blink/renderer/modules/webgl/oes_element_index_uint.h"
  #include "third_party/blink/renderer/modules/webgl/oes_standard_derivatives.h"
  #include "third_party/blink/renderer/modules/webgl/oes_texture_float.h"
-@@ -3998,8 +3999,18 @@
-       return GetUnsignedIntParameter(script_state, pname);
-     case GL_ALIASED_LINE_WIDTH_RANGE:
-       return GetWebGLFloatArrayParameter(script_state, pname);
--    case GL_ALIASED_POINT_SIZE_RANGE:
-+    case GL_ALIASED_POINT_SIZE_RANGE: {
-+      // PS-440: the claimed card's point-size range answers for it, so the
-+      // page-visible value never contradicts the renderer string.
-+      std::optional<std::array<float, 2>> spoofed_point_range =
-+          GetSpoofedPointSizeRangeForFingerprint();
-+      if (spoofed_point_range.has_value()) {
-+        return WebGLAny(
-+            script_state,
-+            DOMFloat32Array::Create(base::span(*spoofed_point_range)));
-+      }
-       return GetWebGLFloatArrayParameter(script_state, pname);
-+    }
-     case GL_ALPHA_BITS:
-       if (drawing_buffer_->RequiresAlphaChannelToBePreserved())
-         return WebGLAny(script_state, 0);
-@@ -4073,25 +4084,39 @@
-     case GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS:
-       return GetIntParameter(script_state, pname);
-     case GL_MAX_CUBE_MAP_TEXTURE_SIZE:
--      return GetIntParameter(script_state, pname);
-     case GL_MAX_FRAGMENT_UNIFORM_VECTORS:
--      return GetIntParameter(script_state, pname);
-     case GL_MAX_RENDERBUFFER_SIZE:
--      return GetIntParameter(script_state, pname);
-     case GL_MAX_TEXTURE_IMAGE_UNITS:
--      return GetIntParameter(script_state, pname);
-     case GL_MAX_TEXTURE_SIZE:
--      return GetIntParameter(script_state, pname);
-     case GL_MAX_VARYING_VECTORS:
--      return GetIntParameter(script_state, pname);
--    case GL_MAX_VERTEX_ATTRIBS:
--      return GetIntParameter(script_state, pname);
-     case GL_MAX_VERTEX_TEXTURE_IMAGE_UNITS:
-+    case GL_MAX_VERTEX_UNIFORM_VECTORS: {
-+      // PS-440: when the fingerprint claims a card, that card's capability
-+      // limits answer for it. The host backend's limits contradict the
-+      // claimed renderer string (SwiftShader answering 8192 under a claimed
-+      // RTX), and its cube-map limit above its 2D texture limit contradicts
-+      // itself. Page-visible only: the backend keeps its own real limits for
-+      // GL itself. WebGL2 reaches these same cases through the default
-+      // fall-through of WebGL2RenderingContextBase::getParameter.
-+      std::optional<int32_t> spoofed_limit =
-+          GetSpoofedIntLimitForFingerprint(static_cast<uint32_t>(pname));
-+      if (spoofed_limit.has_value()) {
-+        return WebGLAny(script_state, spoofed_limit.value());
-+      }
-       return GetIntParameter(script_state, pname);
--    case GL_MAX_VERTEX_UNIFORM_VECTORS:
-+    }
-+    case GL_MAX_VERTEX_ATTRIBS:
-       return GetIntParameter(script_state, pname);
--    case GL_MAX_VIEWPORT_DIMS:
-+    case GL_MAX_VIEWPORT_DIMS: {
-+      std::optional<std::array<int32_t, 2>> spoofed_viewport_dims =
-+          GetSpoofedViewportDimsForFingerprint();
-+      if (spoofed_viewport_dims.has_value()) {
-+        return WebGLAny(
-+            script_state,
-+            DOMInt32Array::Create(base::span(*spoofed_viewport_dims)));
-+      }
-       return GetWebGLIntArrayParameter(script_state, pname);
-+    }
-     case GL_PACK_ALIGNMENT:
-       return GetIntParameter(script_state, pname);
-     case GL_POLYGON_OFFSET_FACTOR:
-@@ -4201,6 +4226,10 @@
+@@ -4201,6 +4205,10 @@
        return ScriptValue::CreateNull(script_state->GetIsolate());
      case WebGLDebugRendererInfo::kUnmaskedRendererWebgl:
        if (ExtensionEnabled(kWebGLDebugRendererInfoName)) {
@@ -582,7 +590,7 @@ index e7ef36a812c4c57ff2b6adc4ab7ab4b2edf8c4a6..dfd7b714b0db4d1e413b24c27d331699
          if (base::FeatureList::IsEnabled(blink::features::kSpoofWebGLInfo))
            return WebGLAny(script_state, String(blink::features::kSpoofWebGLRendererParam.Get()));
          return WebGLAny(script_state,
-@@ -4212,10 +4241,13 @@
+@@ -4212,10 +4220,13 @@
        return ScriptValue::CreateNull(script_state->GetIsolate());
      case WebGLDebugRendererInfo::kUnmaskedVendorWebgl:
        if (ExtensionEnabled(kWebGLDebugRendererInfoName)) {
@@ -598,3 +606,63 @@ index e7ef36a812c4c57ff2b6adc4ab7ab4b2edf8c4a6..dfd7b714b0db4d1e413b24c27d331699
        }
        SynthesizeGLError(
            GL_INVALID_ENUM, "getParameter",
+@@ -7933,6 +7971,26 @@
+       default:
+         break;
+     }
++    // PS-440: when the fingerprint claims a card, that card's capability
++    // limits answer for it — clamped to what this backend can actually do,
++    // so we never advertise a capability the page would be refused. The hook
++    // sits here, in the page-facing getParameter helper, so it sees the real
++    // value it is clamping against; Blink's internal validation reads
++    // ContextGL directly and is untouched. WebGL2 reaches this same helper,
++    // so one hook answers both contexts.
++    GLint reported_max_texture_size = 0;
++    if (pname == GL_MAX_CUBE_MAP_TEXTURE_SIZE) {
++      // Resolve what we are reporting for the 2D texture limit first, so the
++      // cube-map answer can be capped against it. Cube > 2D is impossible on
++      // any real driver and is catchable from our own two numbers alone.
++      GLint real_max_texture_size = 0;
++      ContextGL()->GetIntegerv(GL_MAX_TEXTURE_SIZE, &real_max_texture_size);
++      reported_max_texture_size = GetSpoofedIntLimitForFingerprint(
++          static_cast<uint32_t>(GL_MAX_TEXTURE_SIZE), real_max_texture_size,
++          real_max_texture_size);
++    }
++    value = GetSpoofedIntLimitForFingerprint(static_cast<uint32_t>(pname),
++                                             value, reported_max_texture_size);
+   }
+   return WebGLAny(script_state, value);
+ }
+@@ -7975,6 +8033,15 @@
+     default:
+       NOTIMPLEMENTED();
+   }
++  // PS-440: the claimed card's point-size range answers for it, clamped to
++  // the backend's own range so the advertised bounds are always ones the
++  // backend can honour.
++  if (pname == GL_ALIASED_POINT_SIZE_RANGE && !isContextLost()) {
++    std::array<float, 2> spoofed = GetSpoofedPointSizeRangeForFingerprint(
++        std::array<float, 2>{value[0], value[1]});
++    value[0] = spoofed[0];
++    value[1] = spoofed[1];
++  }
+   return WebGLAny(script_state,
+                   DOMFloat32Array::Create(base::span(value).first(length)));
+ }
+@@ -7997,6 +8064,16 @@
+     default:
+       NOTIMPLEMENTED();
+   }
++  // PS-440: the claimed card's viewport bounds answer for it, clamped to the
++  // backend's own. An UPWARD claim here fails SILENTLY rather than loudly —
++  // measured: viewport(0,0,32767,32767) on SwiftShader raises no error and
++  // then reads back 8192 — so it is the one that most needs the clamp.
++  if (pname == GL_MAX_VIEWPORT_DIMS && !isContextLost()) {
++    std::array<int32_t, 2> spoofed = GetSpoofedViewportDimsForFingerprint(
++        std::array<int32_t, 2>{value[0], value[1]});
++    value[0] = spoofed[0];
++    value[1] = spoofed[1];
++  }
+   return WebGLAny(script_state,
+                   DOMInt32Array::Create(base::span(value).first(length)));
+ }

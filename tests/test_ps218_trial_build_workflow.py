@@ -218,8 +218,11 @@ def test_the_gpu_patch_still_hooks_the_identity_getparameter_cases():
     the spoof context-dependent, this fails and the step-3 reasoning must be
     re-derived rather than inherited.
 
-    (Since PS-440 the patch also hooks the capability-limit cases in the same
-    switch, gated on the same process-global command line — see
+    (Since PS-440 the patch also spoofs capability limits, but those hooks sit
+    in the page-facing `Get*Parameter` HELPERS rather than in this switch —
+    they need the backend's real value in hand to clamp against it. They are
+    gated on the same process-global command line, so the claim this test
+    pins covers them too; their own properties are in
     test_ps440_gpu_limits_patch.py. The identity hooks below are unchanged.)
     """
     gpu = (PATCH_DIR / "011-gpu-info.patch").read_text(encoding="utf-8", errors="replace")
