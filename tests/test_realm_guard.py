@@ -335,9 +335,15 @@ def test_the_marker_set_is_a_strict_subset_and_gains_no_new_name(shipped, realm)
     # tests/test_realm_value_channels.py, on the realms that actually carry
     # device_ext and measuretext_ext (this probe drives the audio leaf alone).
     #
-    # `__pnaRealm` stays allowed and that bound is inherited, not closed: it
-    # hangs off `Object`, so a detector walking getOwnPropertyNames(Object)
-    # still finds it. worker_wrap.py states that in place.
+    # `__pnaRealm` stays allowed, and PS-400 turned that from an open bound into
+    # a RECORDED DECISION: closure, Symbol, per-profile name and name-hiding
+    # were each executed with controls and each is worse than what ships. It
+    # still hangs off `Object`, so a detector walking getOwnPropertyNames(Object)
+    # still finds it — structurally, because a cross-realm channel must hang off
+    # something another realm's global can reach. worker_wrap.py states the
+    # ruling in place above `realm_guard_js`; tests/test_ps400_realm_slot_name.py
+    # pins it, including that the name must stay a SHARED CONSTANT across
+    # profiles (a per-profile name would be a supercookie, not a fix).
     #
     # ⭐ `__pnaName` LEFT THIS SET IN PS-368 rather than being tolerated
     # indefinitely. It was excused here because it is per-FUNCTION rather than a
