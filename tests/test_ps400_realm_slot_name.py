@@ -88,6 +88,17 @@ that reworded a comment — sensitive to exactly the wrong thing. The behavioura
 tests below run real JS under node and read what a fingerprinter reads. The one
 test that DOES read generated source is the shared-constant test, which is
 legitimate precisely because the thing under test IS a literal in emitted text.
+
+⚠️ AND THAT ONE TEST IS WHERE THIS FILE ALREADY GOT CAUGHT ONCE. Reading
+generated source is legitimate here, but it is not free: the built `device.js`
+contains `defineProperty` calls that have nothing to do with the realm slot (the
+toString cloak copies `length` and `name` onto wrapped functions), so the
+shape-matched extraction returned `{'__pnaRealm', 'length', 'name'}` and the
+sentinel asking only that the set be non-empty PASSED with the slot's emitter
+deleted outright — green for the exact case its own failure message described.
+Both pins are now shown to bite by injection rather than observed passing on a
+clean tree: removing the emitter takes the sentinel red, and a faithful
+per-profile rename takes the distinctness pin red. See `_installed_slot_names`.
 """
 
 import json
@@ -138,13 +149,49 @@ def _defined_slot_names(js: str) -> set:
     return set(re.findall(r"defineProperty\(\s*\w+\s*,\s*'([^']+)'", js))
 
 
+def _installed_slot_names(js: str) -> set:
+    """`_defined_slot_names` narrowed to names that could BE the realm slot.
+
+    ⚠️ THE `device.js` CALL SITE NEEDS THIS AND THE TWO EMITTERS DO NOT, which
+    is why it is a second function rather than a change to the first. Each
+    emitter contains exactly one `defineProperty`, so reading them raw is a real
+    comparison. The BUILT artifact is different: the toString cloak also calls
+    `Object.defineProperty(g, 'name', …)` and `(s, 'length', …)` to copy a
+    wrapped function's arity and name, so the shape-matched set against a real
+    build is `{'__pnaRealm', 'length', 'name'}` — two of which have nothing to
+    do with the realm slot.
+
+    That contamination made the sentinel in the shared-constant test INERT: it
+    asked only that the set be non-empty, and `{'length', 'name'}` satisfies
+    that with the slot's `defineProperty` deleted outright. Measured, not
+    reasoned — the emitter was removed from a built artifact and the test
+    stayed green.
+
+    The filter is `SPEC_OBJECT_OWN_NAMES`, and it is chosen over listing
+    `{'length', 'name'}` as known noise for one reason: it is NAME-AGNOSTIC
+    about the slot. A per-profile rename — the exact change ruling 3 exists to
+    catch — still lands outside the spec vocabulary and is still extracted, so
+    scoping the sentinel this way does NOT re-anchor it on the `__pnaRealm`
+    literal. It is also the same list ruling 3's detection half already turns
+    on: an own name outside the spec vocabulary is precisely what a detector
+    reads, so the sentinel and the ruling now measure the same property.
+    """
+    return _defined_slot_names(js) - SPEC_OBJECT_OWN_NAMES
+
+
 def _run_node(source: str) -> dict:
     """Run a JS fragment that prints one JSON object on its last line."""
     with tempfile.TemporaryDirectory() as tmp:
         path = pathlib.Path(tmp, "probe.js")
         path.write_text(source, encoding="utf-8")
         proc = subprocess.run(
-            [NODE, str(path)], capture_output=True, text=True, timeout=60
+            # `encoding="utf-8"` is not decoration: `text=True` alone decodes
+            # the probe's stdout under the platform locale, which is cp1252 on
+            # Windows against a probe written as utf-8. `tests/` is held at zero
+            # such sites by `test_encoding_discipline.py`, and this file was its
+            # only violator.
+            [NODE, str(path)], capture_output=True, text=True, timeout=60,
+            encoding="utf-8",
         )
     assert proc.returncode == 0, (
         f"probe failed ({proc.returncode})\nstdout:\n{proc.stdout}\n"
@@ -338,15 +385,29 @@ def test_the_slot_name_is_a_shared_constant_across_profiles():
                 seed, str(pathlib.Path(tmp, "dev")), 3, os_type="windows"
             )
             js = pathlib.Path(tmp, "dev", "device.js").read_text(encoding="utf-8")
-        # Every property name the built artifact actually INSTALLS on `Object`.
-        # ⚠️ Matched by SHAPE, not by the `__pna` prefix: a prefix-anchored
-        # regex would report "nothing found" for precisely the per-profile
-        # rename this test exists to catch.
-        emitted[seed] = tuple(sorted(_defined_slot_names(js)))
+        # Every property name the built artifact installs on `Object` that a
+        # detector would flag — i.e. excluding the spec-vocabulary names the
+        # toString cloak also writes (`length`, `name`) onto wrapped functions.
+        # ⚠️ Matched by SHAPE and filtered by SPEC VOCABULARY, not by the
+        # `__pna` prefix: a prefix-anchored regex would report "nothing found"
+        # for precisely the per-profile rename this test exists to catch.
+        emitted[seed] = tuple(sorted(_installed_slot_names(js)))
 
-    assert len(emitted[SEEDS[0]]) > 0, (
-        "the built device.js installs no named property on Object at all — the "
-        "emitter changed shape and this test is no longer reading the slot name"
+    # ⭐ THE SENTINEL, AND IT HAS BEEN SHOWN TO BITE. Deleting the slot's
+    # `defineProperty` from a built device.js takes this red. It did NOT before
+    # PS-400's rework: the unfiltered set still held `{'length', 'name'}` from
+    # the toString cloak, so "non-empty" was satisfied with no realm slot
+    # emitted at all and the guard passed on the one case its own message
+    # describes. Assert the COUNT, not mere non-emptiness: the ruling is that
+    # ONE name is installed outside the spec vocabulary, and a second one
+    # appearing is as much a change to what was ruled on as zero is.
+    assert len(emitted[SEEDS[0]]) == 1, (
+        "the built device.js installs "
+        f"{len(emitted[SEEDS[0]])} non-spec named properties on Object "
+        f"({list(emitted[SEEDS[0]])}), expected exactly 1 (the realm slot). "
+        "Zero means the emitter changed shape or vanished and this test is no "
+        "longer reading the slot name at all; more than one means the surface "
+        "this ruling measured has grown and ruling 4's cost needs re-deriving."
     )
     distinct = set(emitted.values())
     assert len(distinct) == 1, (
