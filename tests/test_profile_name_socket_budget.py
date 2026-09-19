@@ -33,7 +33,7 @@ from src.services.browser import invisible_launch as il
 
 # The kernel's limit, not ours: sizeof(sockaddr_un.sun_path) is 108 on Linux, one byte
 # of which is the terminator. Written here so a reader does not have to take 107 on
-# faith. Darwin's sockaddr_un is 3 bytes smaller (104 usable) — the tests below pin the
+# faith. Darwin's sockaddr_un is 4 bytes smaller (103 usable) — the tests below pin the
 # per-platform split rather than assuming this number everywhere (see
 # test_darwin_gets_its_own_smaller_sun_path).
 SUN_PATH_USABLE = 107
@@ -137,10 +137,13 @@ def test_the_limit_matches_this_platform():
     """Pin the constant against THIS platform's kernel, not against a number.
 
     The gate is POSIX-wide and the kernel's answer differs by platform (Linux
-    107, darwin 104), so the honest pin is measured live: a path exactly at the
+    107, darwin 103), so the honest pin is measured live: a path exactly at the
     constant's length binds, and one character more is refused. Hardcoding
-    Linux's 107 here would pass on darwin while the guard budgets 104 — a test
-    agreeing with a comment instead of with the machine it runs on.
+    Linux's 107 here would pass on darwin while the guard budgets 103 — a test
+    agreeing with a comment instead of with the machine it runs on. This test is
+    the instrument that caught the darwin constant being one byte permissive
+    (it bound at 104 and the kernel refused): its logic is deliberately
+    unchanged, only the numbers this ticket disproved.
     """
     import socket
 
@@ -206,13 +209,13 @@ def test_darwin_gets_its_own_smaller_sun_path(monkeypatch):
     """The gate is POSIX-wide, so its number must follow the platform.
 
     sizeof(``sockaddr_un.sun_path``): Linux 108 bytes, darwin 104 — one byte each
-    way is the terminator, so the usable lengths are 107 and 104. A gate that
+    way is the terminator, so the usable lengths are 107 and 103. A gate that
     activates on every POSIX platform but budgets Linux's number passes launches
     on darwin that the engine dies on, in the 22–25-character band of long home
     paths — the exact outcome a pre-launch guard exists to prevent, which is why
     this is a defect of the guard and not of the engine. Both arms are forced
-    here so the pin runs on any host: darwin's value is 104, and the budget the
-    operator's name spends is exactly the Linux budget minus darwin's 3
+    here so the pin runs on any host: darwin's value is 103, and the budget the
+    operator's name spends is exactly the Linux budget minus darwin's 4
     smaller bytes.
     """
     profile_dir = f"{REAL_PROFILE_ROOT}/CR-control-noproxy"
@@ -220,13 +223,14 @@ def test_darwin_gets_its_own_smaller_sun_path(monkeypatch):
     monkeypatch.setattr(sys, "platform", "linux")
     linux_budget = env_policy.child_tmpdir_budget(profile_dir)
     monkeypatch.setattr(sys, "platform", "darwin")
-    assert env_policy.unix_socket_path_max() == 104, (
-        "darwin's sockaddr_un.sun_path is 104 usable bytes, not Linux's 107 — "
+    assert env_policy.unix_socket_path_max() == 103, (
+        "darwin's sockaddr_un.sun_path is 103 usable bytes, not Linux's 107 — "
         "a POSIX-wide gate must budget the platform it is actually on"
     )
-    assert env_policy.child_tmpdir_budget(profile_dir) == linux_budget - 3, (
-        "the darwin budget must be the Linux budget minus darwin's 3-byte "
-        "smaller sun_path — the operator pays that difference out of their name"
+    assert env_policy.child_tmpdir_budget(profile_dir) == linux_budget - 4, (
+        "the darwin budget must be the Linux budget minus darwin's 4-byte "
+        "smaller usable sun_path — the operator pays that difference out of "
+        "their name"
     )
     # The default arm: anything not darwin reads Linux's number. Unused on
     # Windows (the guard returns before consulting any socket arithmetic

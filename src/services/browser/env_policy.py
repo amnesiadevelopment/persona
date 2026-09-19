@@ -389,7 +389,12 @@ def browser_child_cwd():
 TEMP_DIR_VARS = ("TMPDIR", "TMP", "TEMP")
 
 #: The kernel's limit on a unix socket path, not ours: ``sockaddr_un.sun_path``
-#: is 108 bytes on Linux and 104 on darwin, one of them the terminator. Chromium
+#: is 108 bytes on Linux and 104 on darwin, one of them the terminator — so the
+#: USABLE length is sizeof minus one on BOTH: 107 and 103. Measured, not read
+#: off the header: on Linux a 107-byte path binds and a 108-byte one is refused
+#: with ``AF_UNIX path too long``. Subtracting the terminator on one platform
+#: only is how darwin came to be budgeted at 104, one byte into the permissive
+#: direction — the guard passing a launch the kernel then kills. Chromium
 #: binds its singleton socket under TMPDIR, so this ceiling lands on the profile
 #: path whether anyone planned for it or not.
 #:
@@ -398,12 +403,12 @@ TEMP_DIR_VARS = ("TMPDIR", "TMP", "TEMP")
 #: this path), so a single Linux-derived number leaves darwin's 22–25-character
 #: band unguarded — the guard would pass launches there that the engine dies on,
 #: the one outcome a pre-launch guard exists to prevent. Every darwin byte is
-#: also 3 characters an operator cannot spend on a name. The gate therefore
+#: also 4 characters an operator cannot spend on a name. The gate therefore
 #: budgets against :func:`unix_socket_path_max`, which reads the platform at
 #: call time; this module constant is that same value, resolved once, for
 #: import-time readers (behaviour.py's verify arithmetic).
 _UNIX_SOCKET_PATH_MAX_LINUX = 107
-_UNIX_SOCKET_PATH_MAX_DARWIN = 104
+_UNIX_SOCKET_PATH_MAX_DARWIN = 103
 
 
 def unix_socket_path_max():
@@ -472,8 +477,8 @@ def child_tmpdir_budget(profile_dir):
     Derived from `browser_child_tmpdir` rather than recomputed, so the guard measures
     the path the launch will actually use. A check that builds its own idea of the path
     can pass while the launch still fails. The platform limit is read per call for the
-    same reason: darwin's ``sun_path`` is 3 bytes shorter than Linux's, and a budget
-    frozen at import time is a budget that lies on one of them.
+    same reason: darwin's usable ``sun_path`` is 4 bytes shorter than Linux's, and a
+    budget frozen at import time is a budget that lies on one of them.
     """
     return unix_socket_path_max() - (
         len(browser_child_tmpdir(profile_dir)) + _CHROMIUM_SOCKET_SUFFIX
