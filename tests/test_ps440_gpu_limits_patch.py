@@ -97,8 +97,37 @@ SWIFTSHADER_BACKEND = {
     0x8DFC: 31,     # GL_MAX_VARYING_VECTORS
     0x8872: 32,     # GL_MAX_TEXTURE_IMAGE_UNITS
     0x8B4C: 32,     # GL_MAX_VERTEX_TEXTURE_IMAGE_UNITS
+    # The WebGL2 companions, read live on the same context as the vectors
+    # above. Pre-fix these reconcile exactly with the backend's own vectors
+    # (4096*4, 4096*4, 31*4, 32+32) — it is the CLAMP that breaks the
+    # identity unless the companions are clamped too, which is what the
+    # cross-parameter invariant tests below pin.
+    0x8B4A: 16384,  # GL_MAX_VERTEX_UNIFORM_COMPONENTS    (= 4096 * 4)
+    0x8B49: 16384,  # GL_MAX_FRAGMENT_UNIFORM_COMPONENTS  (= 4096 * 4)
+    0x8B4B: 124,    # GL_MAX_VARYING_COMPONENTS           (=   31 * 4)
+    0x9122: 128,    # GL_MAX_VERTEX_OUTPUT_COMPONENTS
+    0x9125: 128,    # GL_MAX_FRAGMENT_INPUT_COMPONENTS
+    0x8B4D: 64,     # GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS (=  32 + 32)
 }
 
+# The claimed card. The eight originals are the ticket's own reference-card
+# measurement; the six companions are what ANGLE's D3D11 backend computes
+# beside them, from the SAME quantity, in GenerateCaps()
+# (angle/src/libANGLE/renderer/d3d/d3d11/renderer11_utils.cpp):
+#
+#   maxShaderUniformComponents[Vertex]   = maxVertexUniformVectors   * 4
+#   maxShaderUniformComponents[Fragment] = maxFragmentUniformVectors * 4
+#   maxVaryingComponents       = GetMaximumVertexOutputVectors(fl) * 4
+#   maxVaryingVectors          = GetMaximumVertexOutputVectors(fl)
+#   maxVertexOutputComponents  = GetMaximumVertexOutputVectors(fl) * 4
+#   maxFragmentInputComponents = GetMaximumPixelInputVectors(fl)   * 4
+#   maxCombinedTextureImageUnits = texUnits[Vertex] + texUnits[Fragment]
+#
+# Both register files are 32 wide less the 2 reserved for dx_Position and
+# gl_Position, so vertex-output and fragment-input alike are (32-2)*4 = 120.
+# That this arithmetic reproduces the reference card's MEASURED
+# MAX_VARYING_VECTORS of 30 is the check that we are reading the chain that
+# produced the ticket's numbers rather than a plausible-looking other one.
 D3D11_BACKEND = {
     0x0D33: 16384,
     0x84E8: 16384,
@@ -108,7 +137,26 @@ D3D11_BACKEND = {
     0x8DFC: 30,
     0x8872: 16,
     0x8B4C: 16,
+    0x8B4A: 16380,  # 4095 * 4
+    0x8B49: 4096,   # 1024 * 4
+    0x8B4B: 120,    #   30 * 4
+    0x9122: 120,    #   30 * 4
+    0x9125: 120,    #   30 * 4
+    0x8B4D: 32,     #   16 + 16
 }
+
+# The vector/components pairs whose relationship GLES3 and ANGLE's D3D11
+# backend both make definitional: a vector is four components.
+VECTOR_COMPONENT_PAIRS = (
+    ("uniform (vertex)", 0x8DFB, 0x8B4A),
+    ("uniform (fragment)", 0x8DFD, 0x8B49),
+    ("varying", 0x8DFC, 0x8B4B),
+    ("vertex output", 0x8DFC, 0x9122),
+    ("fragment input", 0x8DFC, 0x9125),
+)
+
+# The per-stage texture-unit counts and the combined count that is their sum.
+COMBINED_TEXTURE_UNITS = (0x8B4D, 0x8B4C, 0x8872)
 
 
 @pytest.fixture(scope="module")
@@ -140,10 +188,41 @@ def _added(patch_text: str, path: str) -> str:
 
 
 def _claimed_int_constants(patch_text: str) -> dict[str, int]:
-    """The kClaimed* scalar constants, by suffix: {MaxTextureSize: 16384, ...}."""
-    pairs = re.findall(r"constexpr int32_t kClaimed(\w+) = (\d+);", patch_text)
-    assert pairs, "no claimed int constants found in the patch"
-    return {name: int(value) for name, value in pairs}
+    """The kClaimed* scalar constants, by suffix: {MaxTextureSize: 16384, ...}.
+
+    Resolves DERIVED constants too. The companion limits are deliberately not
+    literals in the source — they are written as arithmetic over the constants
+    they are definitionally tied to, so an edit to a vector limit carries its
+    companion with it. This helper therefore evaluates that arithmetic rather
+    than only reading digits, which keeps these tests measuring the SHIPPED
+    table instead of a copy of it.
+    """
+    consts: dict[str, int] = {}
+    source = _added(patch_text, GPU_FINGERPRINT_CC)
+
+    # Plain literals first, plus the small named factor the derivations use.
+    for name, value in re.findall(
+            r"constexpr int32_t (kComponentsPerVector|kClaimed\w+) = (\d+);",
+            source):
+        consts[name] = int(value)
+    assert any(k.startswith("kClaimed") for k in consts), (
+        "no claimed int constants found in the patch")
+
+    # Then derivations, resolved against the literals above. Only `*` and `+`
+    # over already-known constants are accepted: anything else is a shape this
+    # helper cannot vouch for, and it fails loudly rather than guessing.
+    derived = re.findall(
+        r"constexpr int32_t (kClaimed\w+) =\s*"
+        r"(k\w+)\s*([*+])\s*(k\w+);", source)
+    for name, left, op, right in derived:
+        assert left in consts and right in consts, (
+            f"{name} is derived from {left}/{right}, which are not resolvable "
+            f"constants — the test cannot read the shipped value")
+        consts[name] = (consts[left] * consts[right] if op == "*"
+                        else consts[left] + consts[right])
+
+    return {name[len("kClaimed"):]: value for name, value in consts.items()
+            if name.startswith("kClaimed")}
 
 
 def _claimed_by_enum(patch_text: str) -> dict[int, int]:
@@ -348,6 +427,116 @@ def test_renderbuffer_answer_never_exceeds_the_reported_2d_texture_limit(patch_t
             f"answer — the same self-contained impossibility, one pname over")
 
 
+def test_reported_components_are_always_four_times_reported_vectors(patch_text):
+    """A vector is four components — so the two answers must reconcile.
+
+    This is the invariant that caught the defect this test exists for: the
+    clamp moved the VECTORS side of each pair and left the COMPONENTS side at
+    the backend's value, so components/4 stopped equalling vectors. Every one
+    of those is catchable from our own two numbers on one context, with no
+    reference card and no error to provoke — the same class as the cube-map
+    pair, and strictly worse than the mismatches we knowingly leave.
+
+    Asserted as ARITHMETIC over both measured backends rather than as a
+    comparison of constants, for the reason the cube-map test gives: the
+    constants alone cannot express what the clamp does to them on a backend
+    that cannot back the claim.
+    """
+    for label, backend in (("SwiftShader", SWIFTSHADER_BACKEND),
+                           ("D3D11", D3D11_BACKEND)):
+        reported = _report_table(patch_text, backend)
+        for name, vectors_enum, components_enum in VECTOR_COMPONENT_PAIRS:
+            vectors = reported[vectors_enum]
+            components = reported[components_enum]
+            assert components == vectors * 4, (
+                f"on {label} the {name} pair does not reconcile: reported "
+                f"{vectors} vectors ({vectors_enum:#06x}) beside "
+                f"{components} components ({components_enum:#06x}), but "
+                f"{vectors} * 4 == {vectors * 4}. A page reads both from one "
+                f"context and divides — an impossibility needing no "
+                f"reference card")
+
+
+def test_reported_combined_texture_units_are_the_sum_of_the_stages(patch_text):
+    """The combined count is the sum of its stages on the card we claim.
+
+    ANGLE's D3D11 backend computes it exactly that way, and leaving it at the
+    backend's own value beside two clamped stage counts advertises more
+    combined units than the stages can add up to. Unlike the components
+    pairs, this one is readable on a WebGL1 context too — measured live,
+    SwiftShader answers 64 for 0x8B4D on both contexts — so it is a tell even
+    for a page that never asks for WebGL2.
+    """
+    combined_enum, vertex_enum, fragment_enum = COMBINED_TEXTURE_UNITS
+    for label, backend in (("SwiftShader", SWIFTSHADER_BACKEND),
+                           ("D3D11", D3D11_BACKEND)):
+        reported = _report_table(patch_text, backend)
+        vertex = reported[vertex_enum]
+        fragment = reported[fragment_enum]
+        assert reported[combined_enum] == vertex + fragment, (
+            f"on {label} the combined texture-unit count "
+            f"{reported[combined_enum]} is not the sum of the reported "
+            f"stages ({vertex} vertex + {fragment} fragment = "
+            f"{vertex + fragment})")
+
+
+def test_every_clamped_vector_limit_has_its_companion_clamped_too(patch_text):
+    """Guard the CLASS, not the six parameters that happen to be known.
+
+    The defect this round fixes was one of scope, not of arithmetic: the
+    clamp was extended to a vector limit and its companion was left behind,
+    silently. So rather than listing today's pairs again, this asserts the
+    closure property — if either half of a related pair is claimed, both
+    halves must be. A future parameter added to ClaimedIntLimit without its
+    companion fails here instead of shipping a fresh contradiction.
+    """
+    claimed = _claimed_by_enum(patch_text)
+    related = [(name, a, b) for name, a, b in VECTOR_COMPONENT_PAIRS]
+    related.append(("combined texture units",
+                    COMBINED_TEXTURE_UNITS[1], COMBINED_TEXTURE_UNITS[0]))
+    related.append(("combined texture units",
+                    COMBINED_TEXTURE_UNITS[2], COMBINED_TEXTURE_UNITS[0]))
+    half_spoofed = [
+        f"{name}: {a:#06x} {'claimed' if a in claimed else 'NOT claimed'} "
+        f"but {b:#06x} {'claimed' if b in claimed else 'NOT claimed'}"
+        for name, a, b in related
+        if (a in claimed) != (b in claimed)]
+    assert not half_spoofed, (
+        "a limit is spoofed while the parameter definitionally tied to it is "
+        "not — the page reads both and the pair contradicts itself:\n  "
+        + "\n  ".join(half_spoofed))
+
+
+def test_companion_limits_are_derived_from_their_vector_constants(patch_text):
+    """Pin the mechanism, like the cube-map test does — not just the values.
+
+    Hand-writing 16380/4096/120/32 as independent literals would produce the
+    right answers today and desync the moment someone edits a vector limit
+    without remembering its companion, which is exactly the failure being
+    fixed. So the companions must be DERIVED in the source from the
+    constants they are tied to.
+    """
+    added = _added(patch_text, GPU_FINGERPRINT_CC)
+    for const, expr in (
+        ("kClaimedMaxVertexUniformComponents",
+         "kClaimedMaxVertexUniformVectors * kComponentsPerVector"),
+        ("kClaimedMaxFragmentUniformComponents",
+         "kClaimedMaxFragmentUniformVectors * kComponentsPerVector"),
+        ("kClaimedMaxVaryingComponents",
+         "kClaimedMaxVaryingVectors * kComponentsPerVector"),
+        ("kClaimedMaxVertexOutputComponents",
+         "kClaimedMaxVaryingVectors * kComponentsPerVector"),
+        ("kClaimedMaxFragmentInputComponents",
+         "kClaimedMaxVaryingVectors * kComponentsPerVector"),
+        ("kClaimedMaxCombinedTextureImageUnits",
+         "kClaimedMaxVertexTextureImageUnits + kClaimedMaxTextureImageUnits"),
+    ):
+        assert re.search(
+            rf"constexpr int32_t {const} =\s*{re.escape(expr)};", added), (
+            f"{const} must be derived as `{expr}`, not written out as a "
+            f"literal — a literal cannot track an edit to its vector limit")
+
+
 # ─── 3. Card fidelity: the measured D3D11 ANGLE answers ─────────────────────
 
 
@@ -371,6 +560,23 @@ def test_claimed_values_match_the_measured_reference(patch_text):
     assert consts["MaxVaryingVectors"] == 30
     assert consts["MaxTextureImageUnits"] == 16
     assert consts["MaxVertexTextureImageUnits"] == 16
+    # The six companions. Their claimed values are DERIVED in the source, so
+    # naming them here is not a restatement of a literal — it checks that the
+    # derivation lands on what ANGLE's D3D11 backend actually computes.
+    assert consts["MaxVertexUniformComponents"] == 16380, (
+        "4095 vertex uniform vectors * 4 components")
+    assert consts["MaxFragmentUniformComponents"] == 4096, (
+        "1024 fragment uniform vectors * 4 components")
+    assert consts["MaxVaryingComponents"] == 120, "30 varying vectors * 4"
+    assert consts["MaxVertexOutputComponents"] == 120, (
+        "(D3D11_VS_OUTPUT_REGISTER_COUNT 32 - 2 reserved) * 4 — the same "
+        "quantity the varying-vector limit derives from, which is why it "
+        "reproduces the reference card's measured 30 varyings")
+    assert consts["MaxFragmentInputComponents"] == 120, (
+        "(D3D11_PS_INPUT_REGISTER_COUNT 32 - 2 reserved) * 4")
+    assert consts["MaxCombinedTextureImageUnits"] == 32, (
+        "16 vertex + 16 fragment — the sum of the stages, as ANGLE's D3D11 "
+        "backend computes it and as gpu_ext.py's desktop table already pins")
     assert _claimed_pair(patch_text, "MaxViewportDims") == (32767.0, 32767.0), (
         "a desktop viewport is required for coherence with a desktop D3D11 card")
     assert _claimed_pair(patch_text, "PointSizeRange") == (1.0, 1024.0)
@@ -442,7 +648,17 @@ def test_every_claimed_value_is_reachable_through_its_gl_enum(patch_text):
         r"case (0x[0-9A-F]{4}):  // (GL_[A-Z_0-9]+)\n      return kClaimed(\w+);",
         added,
     )
-    assert len(arms) == 8, f"expected 8 int-limit arms, found {len(arms)}: {arms}"
+    assert arms, "ClaimedIntLimit has no readable switch arms"
+    # Tied to the backend tables rather than a bare count, so adding a pname
+    # to the spoof without measuring it on both backends fails here. A naked
+    # integer would have to be bumped by hand on every extension, which is
+    # how a parameter gets clamped without its companion in the first place.
+    expected = set(SWIFTSHADER_BACKEND) & set(D3D11_BACKEND)
+    got = {int(enum, 16) for enum, _, _ in arms}
+    assert got == expected, (
+        "the spoofed pnames and the measured backend tables disagree — "
+        f"spoofed but unmeasured: {sorted(hex(e) for e in got - expected)}; "
+        f"measured but unspoofed: {sorted(hex(e) for e in expected - got)}")
     seen_enums: set[str] = set()
     for enum, gl_name, const_name in arms:
         assert enum not in seen_enums, f"duplicate switch arm for {enum}"

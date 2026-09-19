@@ -127,7 +127,7 @@ new file mode 100644
 index 0000000000..c9951800bdd394894fbb812365933659338a3121
 --- /dev/null
 +++ b/third_party/blink/renderer/modules/webgl/gpu_fingerprint.cc
-@@ -0,0 +1,235 @@
+@@ -0,0 +1,303 @@
 +#include "third_party/blink/renderer/modules/webgl/gpu_fingerprint.h"
 +
 +#include <algorithm>
@@ -263,6 +263,62 @@ index 0000000000..c9951800bdd394894fbb812365933659338a3121
 +constexpr int32_t kClaimedMaxTextureImageUnits = 16;         // GL_MAX_TEXTURE_IMAGE_UNITS (0x8872)
 +constexpr int32_t kClaimedMaxVertexTextureImageUnits = 16;   // GL_MAX_VERTEX_TEXTURE_IMAGE_UNITS (0x8B4C)
 +
++// WEBGL2 COMPANIONS — DERIVED, NEVER HAND-WRITTEN.
++//
++// Each of the limits above has a WebGL2 companion that a page can read from
++// the same context, and the relationship between the two is DEFINITIONAL on
++// the backend we are claiming rather than merely typical. ANGLE's D3D11
++// backend computes them from the very same quantity it computes the vector
++// limit from (GenerateCaps in
++// angle/src/libANGLE/renderer/d3d/d3d11/renderer11_utils.cpp):
++//
++//   maxShaderUniformComponents[Vertex]   = maxVertexUniformVectors * 4
++//   maxShaderUniformComponents[Fragment] = maxFragmentUniformVectors * 4
++//   maxVaryingComponents        = GetMaximumVertexOutputVectors(fl) * 4
++//   maxVaryingVectors           = GetMaximumVertexOutputVectors(fl)
++//   maxVertexOutputComponents   = GetMaximumVertexOutputVectors(fl) * 4
++//   maxFragmentInputComponents  = GetMaximumPixelInputVectors(fl)  * 4
++//   maxCombinedTextureImageUnits = texUnits[Vertex] + texUnits[Fragment]
++//
++// So on the card we claim, components IS four times vectors and combined IS
++// the sum of the stages. Answering a clamped vector limit beside an
++// unclamped companion breaks an identity a checker can evaluate from OUR OWN
++// TWO NUMBERS — no reference card, no error to provoke. That is the same
++// class as the cube-map pair this patch already removes, so spoofing one
++// side of a pair and not the other would install the very tell we are here
++// to delete.
++//
++// They are DERIVED from the constants above rather than written out, so a
++// future edit to a vector limit cannot leave its companion behind — which is
++// precisely how these pairs came apart in the first place.
++constexpr int32_t kComponentsPerVector = 4;
++
++constexpr int32_t kClaimedMaxVertexUniformComponents =
++    kClaimedMaxVertexUniformVectors * kComponentsPerVector;      // 0x8B4A
++constexpr int32_t kClaimedMaxFragmentUniformComponents =
++    kClaimedMaxFragmentUniformVectors * kComponentsPerVector;    // 0x8B49
++constexpr int32_t kClaimedMaxVaryingComponents =
++    kClaimedMaxVaryingVectors * kComponentsPerVector;            // 0x8B4B
++
++// Vertex OUTPUT and fragment INPUT components are the two ends of the same
++// varying pipe. On D3D11 both derive from a 32-register file less the two
++// reserved for dx_Position/gl_Position, which is the identical quantity the
++// varying-vector limit derives from -- (32 - 2) = 30 varyings, and 30 * 4 =
++// 120 components at each end. That the arithmetic reproduces the reference
++// card's measured MAX_VARYING_VECTORS of 30 is what confirms we are reading
++// the chain that produced the ticket's numbers.
++constexpr int32_t kClaimedMaxVertexOutputComponents =
++    kClaimedMaxVaryingVectors * kComponentsPerVector;            // 0x9122
++constexpr int32_t kClaimedMaxFragmentInputComponents =
++    kClaimedMaxVaryingVectors * kComponentsPerVector;            // 0x9125
++
++// Unlike the five above, this one is reachable on a WebGL1 context too --
++// measured live on SwiftShader, getParameter(0x8B4D) answers 64 on BOTH
++// contexts -- so leaving it unclamped contradicts the per-stage counts even
++// for a page that never asks for WebGL2.
++constexpr int32_t kClaimedMaxCombinedTextureImageUnits =
++    kClaimedMaxVertexTextureImageUnits + kClaimedMaxTextureImageUnits;  // 0x8B4D
++
 +constexpr int32_t kClaimedMaxViewportDims[2] = {32767, 32767};  // GL_MAX_VIEWPORT_DIMS (0x0D3A)
 +constexpr float kClaimedPointSizeRange[2] = {1.0f, 1024.0f};    // GL_ALIASED_POINT_SIZE_RANGE (0x846D)
 +
@@ -287,6 +343,18 @@ index 0000000000..c9951800bdd394894fbb812365933659338a3121
 +      return kClaimedMaxTextureImageUnits;
 +    case 0x8B4C:  // GL_MAX_VERTEX_TEXTURE_IMAGE_UNITS
 +      return kClaimedMaxVertexTextureImageUnits;
++    case 0x8B4A:  // GL_MAX_VERTEX_UNIFORM_COMPONENTS
++      return kClaimedMaxVertexUniformComponents;
++    case 0x8B49:  // GL_MAX_FRAGMENT_UNIFORM_COMPONENTS
++      return kClaimedMaxFragmentUniformComponents;
++    case 0x8B4B:  // GL_MAX_VARYING_COMPONENTS
++      return kClaimedMaxVaryingComponents;
++    case 0x9122:  // GL_MAX_VERTEX_OUTPUT_COMPONENTS
++      return kClaimedMaxVertexOutputComponents;
++    case 0x9125:  // GL_MAX_FRAGMENT_INPUT_COMPONENTS
++      return kClaimedMaxFragmentInputComponents;
++    case 0x8B4D:  // GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS
++      return kClaimedMaxCombinedTextureImageUnits;
 +    default:
 +      return std::nullopt;
 +  }
