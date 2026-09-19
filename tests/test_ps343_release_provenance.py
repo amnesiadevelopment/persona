@@ -544,6 +544,80 @@ def test_a_flat_zip_with_a_wrong_recorded_version_still_goes_red(tmp_path):
     assert run(records, assets) == 1
 
 
+def test_declaring_version_dir_on_a_flat_asset_is_red_as_the_readme_warns(tmp_path):
+    """`engine/releases/README.md` tells the next record author NOT to carry
+    `derived.version_dir` across to a flat Windows asset, and states the exact
+    row they get if they do. This pins that stated consequence.
+
+    It matters because the README's own step 2 says "copy the existing record",
+    and the only existing record (`personium-152.0.7977.75.json`) declares
+    `version_dir` — that release's zip is versioned. Following the steps
+    literally walks the author into this row, so the warning is load-bearing
+    and the row it quotes has to keep being the row that appears.
+
+    The assertion is deliberately on RED rather than on UNMEASURED: the key IS
+    present in the deriver's output (as None), so this does not take the
+    "produced no such field" branch. That distinction is what
+    `_locate_windows_payload`'s docstring now spells out for its two callers,
+    and it is the reason a reader cannot infer this outcome from the benign
+    `verify_base` behaviour.
+    """
+    import hashlib
+
+    assets = tmp_path / "assets"
+    assets.mkdir()
+    win = assets / "personium-153.0.8010.47-windows-x86_64.zip"
+    make_flat_windows_zip(win, "153.0.8010.47")
+
+    def df(v):
+        return {"value": v, "confidence": "derived_from_artifact"}
+
+    record = {
+        "schema": SCHEMA,
+        "tag": "personium-153.0.8010.47",
+        "base": {"chromium_version": df("153.0.8010.47")},
+        "patch_set": {"switches_introduced": df([df(s) for s in SWITCHES])},
+        "assets": [
+            {
+                "name": win.name,
+                "os": "windows",
+                "arch": "x86_64",
+                "format": "windows-zip",
+                "size_bytes": win.stat().st_size,
+                "sha256": hashlib.sha256(win.read_bytes()).hexdigest(),
+                "derived": {
+                    # Carried over from the 152 record — the mistake the
+                    # README now warns about.
+                    "version_dir": df("153.0.8010.47"),
+                    "manifest_version": df("153.0.8010.47"),
+                    "fingerprint_switches_present": df(SWITCHES),
+                },
+            }
+        ],
+    }
+    records = tmp_path / "records"
+    records.mkdir()
+    (records / "personium-153.0.8010.47.json").write_text(
+        json.dumps(record, indent=2), encoding="utf-8"
+    )
+
+    report = Report()
+    verify_asset(record, record["assets"][0], assets, report)
+    rows = {c.name: c for c in report.checks}
+
+    assert rows["derived.version_dir"].verdict == "RED", [
+        (c.name, c.verdict, c.detail) for c in report.checks
+    ]
+    assert rows["derived.version_dir"].detail == (
+        "record '153.0.8010.47', artifact None"
+    ), "the README quotes this row verbatim — keep them in step"
+
+    # And the rest of the asset is unaffected: the manifest still witnesses
+    # the version, so this is a record defect and not a derivation failure.
+    assert rows["derived.manifest_version"].verdict == "GREEN"
+    assert run(records, assets) == 1
+
+
 def test_macos_deriver_reads_the_bundle_version_out_of_a_udif_image(tmp_path):
     d = tmp_path / "m.dmg"
     make_macos_dmg(d, "152.0.7977.64")

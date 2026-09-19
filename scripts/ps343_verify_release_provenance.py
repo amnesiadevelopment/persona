@@ -228,9 +228,21 @@ def _locate_windows_payload(names: list[str]) -> tuple[str | None, str, str]:
     (`ungoogled-chromium_153.0.8010.47-1.1_windows_x64`), not for the Chromium
     version, so it witnesses the version no more than the filename does. The
     record's own rule is that a field which cannot be established must not
-    carry a value, and `BASE_WITNESSES` admits only string witnesses, so a None
-    here withdraws the directory from the witness set instead of fabricating
-    one.
+    carry a value.
+
+    **That None reaches two consumers and they treat it differently — do not
+    read the benign one as a general property:**
+
+    * `verify_base` admits only string witnesses (`isinstance(raw, str)`), so a
+      None *withdraws* the directory from the witness set. The flat zip's
+      manifest still witnesses `base.chromium_version`; no spurious RED.
+    * `verify_asset` compares whatever the deriver returned against whatever
+      the record declared. The key IS present in the deriver's output, so a
+      record that declares `derived.version_dir` for a flat asset does not get
+      the "produced no such field" UNMEASURED — it goes **RED** with
+      `artifact None`. That is deliberate: declaring a directory the artifact
+      does not have is a record defect, and the fix is to drop the declaration
+      (`engine/releases/README.md` says so for the next record author).
     """
     versioned = sorted(
         {
