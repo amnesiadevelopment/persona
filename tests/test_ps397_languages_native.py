@@ -600,6 +600,29 @@ def test_reading_the_accept_language_pref_is_not_an_override(tmp_path):
 # ---------------------------------------------------------------------------
 
 
+#: Patches ALLOWED to touch the locale family, each with the reason PS-397's
+#: verdict survives it. The fence below fires on anything else.
+#:
+#: ⭐ THE FENCE DID ITS JOB, AND THIS IS THE ANSWER IT ASKED FOR. Its docstring
+#: said it was "not a prohibition on ever adding one; a requirement that adding
+#: one re-opens the question this reading answered". One was added, the question
+#: is re-opened here, and the verdict is re-stated rather than the guard silenced.
+LOCALE_TOUCHING_PATCHES = {
+    "000-add-fingerprint-switches.patch":
+        "Declares kFingerprintLanguage and adds it to the renderer forwarding "
+        "list. Declaration only: it reads nothing and changes no behaviour.",
+    "020-serviceworker-locale.patch":
+        "Sets the renderer's ICU DEFAULT LOCALE from that switch. It does NOT "
+        "touch navigator.languages - the value PS-397 measured - which Blink "
+        "still produces from --lang/--accept-lang, so that verdict stands. It "
+        "fixes a surface the reading never covered: Intl, which asks ICU "
+        "directly. Measured on a mac with a Russian system locale, a service "
+        "worker reported navigator.language pl-PL beside an Intl locale of ru, "
+        "formatting currency as Russian while the page formatted Polish. "
+        "creepjs reports that pairing at confidence: high.",
+}
+
+
 def test_the_engine_patch_series_declares_no_language_switch():
     """The reading's premise: nothing in the 16 patches touches the locale.
 
@@ -618,6 +641,8 @@ def test_the_engine_patch_series_declares_no_language_switch():
     )
     offenders = {}
     for p in patches:
+        if p.name in LOCALE_TOUCHING_PATCHES:
+            continue
         text = p.read_text(encoding="utf-8", errors="replace").lower()
         hits = [w for w in ("lang", "locale", "accept") if w in text]
         if hits:
@@ -790,3 +815,17 @@ def test_the_control_mirrors_the_products_own_expression(locale):
         f"--lang={locale}",
         f"--accept-lang={locale},{locale.split('-')[0]}",
     ], f"control drifted from process.py's expression for {locale}: {got}"
+
+
+def test_the_recorded_locale_patches_all_exist():
+    """A stale allowance is a disabled tripwire, so the list is checked both ways.
+
+    Without this, deleting 020 would leave an entry permitting a patch that no
+    longer exists, and the next patch to take that filename would inherit a
+    licence nobody granted it.
+    """
+    present = {p.name for p in PATCH_DIR.glob("*.patch")}
+    missing = sorted(set(LOCALE_TOUCHING_PATCHES) - present)
+    assert missing == [], (
+        f"recorded as locale-touching but absent from the series: {missing}"
+    )

@@ -249,7 +249,7 @@ jobs:
           fi
           case "${STATUS:-}" in
             rejects)
-              echo "::error::Our 16 fingerprint patches DO NOT apply at ${NEWEST}. This is a MEASURED failure (probe exit ${PROBE_EXIT}) — a rebase stands between us and upstream currency. See the filed issue and engine/patches/fingerprint/REBASING.md."
+              echo "::error::Our fingerprint patches DO NOT apply at ${NEWEST}. This is a MEASURED failure (probe exit ${PROBE_EXIT}) — a rebase stands between us and upstream currency. See the filed issue and engine/patches/fingerprint/REBASING.md."
               ;;
             unmeasured)
               echo "::error::NOTHING WAS MEASURED at ${NEWEST} (probe exit ${PROBE_EXIT}). This is NOT a pass and must not be read as continuity — whether our patches apply there is unknown. Re-run scripts/ps299_rebase_probe.py --tag ${NEWEST} by hand and read the log."

@@ -456,6 +456,10 @@ _PRISTINE_ARGV = {
         "--fingerprint-device-memory=8.0",
         "--lang=de-DE",
         "--accept-lang=de-DE,de",
+        # PS-437: the language switch is forwarded verbatim (the way --timezone
+        # is) so the renderer's ICU default locale follows the profile; --lang
+        # alone arrives in the renderer RESOLVED to en-US.
+        "--fingerprint-language=de-DE",
         (
             "--load-extension=<PROFILE>/.persona-native-ext,"
             "<PROFILE>/.persona-locale-ext,<PROFILE>/.persona-voice-ext,"
@@ -508,6 +512,10 @@ _PRISTINE_ARGV = {
         "--fingerprint-device-memory=8.0",
         "--lang=de-DE",
         "--accept-lang=de-DE,de",
+        # PS-437: the language switch is forwarded verbatim (the way --timezone
+        # is) so the renderer's ICU default locale follows the profile; --lang
+        # alone arrives in the renderer RESOLVED to en-US.
+        "--fingerprint-language=de-DE",
         (
             "--load-extension=<PROFILE>/.persona-native-ext,"
             "<PROFILE>/.persona-locale-ext,<PROFILE>/.persona-voice-ext,"
@@ -548,6 +556,10 @@ _PRISTINE_ARGV = {
         "--fingerprint-device-memory=8.0",
         "--lang=de-DE",
         "--accept-lang=de-DE,de",
+        # PS-437: the language switch is forwarded verbatim (the way --timezone
+        # is) so the renderer's ICU default locale follows the profile; --lang
+        # alone arrives in the renderer RESOLVED to en-US.
+        "--fingerprint-language=de-DE",
         (
             "--load-extension=<PROFILE>/.persona-native-ext,"
             "<PROFILE>/.persona-locale-ext,<PROFILE>/.persona-voice-ext,"

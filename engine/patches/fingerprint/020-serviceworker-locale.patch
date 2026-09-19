@@ -1,0 +1,81 @@
+Set the ICU default locale from a forwarded switch, on every platform.
+
+Upstream sets it only inside `#if BUILDFLAG(IS_CHROMEOS)`, with a comment explaining
+that the ChromeOS zygote starts before the browser and so needs it done there. On
+Windows, macOS and Linux it is never set at all, and ICU keeps the system locale for
+the life of the renderer.
+
+That produces a realm which contradicts itself. A page reaches its locale through
+Blink's per-context language and answers correctly, but anything asking ICU directly
+answers with the host's. Measured on a mac whose system locale is Russian, on a
+profile claiming pl-PL:
+
+    surface                page                    service worker
+    navigator.language     pl-PL                   pl-PL
+    Intl timeZone          Europe/Warsaw           Europe/Warsaw
+    Intl resolved locale   pl-PL                   ru
+    currency name          1,00 dolara ameryka...  1,00 доллара США
+    month name             styczeń                 январь
+
+creepjs reports exactly this pairing under ServiceWorkerGlobalScope and marks it
+"confidence: high" — one scope answering half in the profile's language and half in
+the host's is a stronger signal than either value alone.
+
+Dedicated workers, shared workers, iframes and iframe-workers all probe clean; the
+service worker is the only realm that reaches ICU without Blink in front of it.
+
+NOT --lang, and that was measured rather than assumed. The browser RESOLVES --lang
+against the UI locales the build actually ships and hands children the resolved value:
+on an English-only build, --lang=pl-PL, --lang=de-DE and --lang=ja-JP all arrive in the
+renderer as --lang=en-US, and Intl answered en-US for all three. A first version of
+this patch read switches::kLang, compiled, ran, and did nothing. Only the control arm
+caught it. --fingerprint-language is forwarded verbatim, the way --timezone already is.
+
+The include goes in the FILE's include block, not beside the code that uses it: the
+header opens `namespace switches {`, and a first attempt placed it inside
+RendererMain(), which fails with "namespaces can only be defined in global or
+namespace scope".
+
+--- a/content/renderer/renderer_main.cc
++++ b/content/renderer/renderer_main.cc
+@@ -60,6 +60,7 @@
+ #include "third_party/skia/include/core/SkFontMgr.h"
+ #include "third_party/webrtc_overrides/init_webrtc.h"  // nogncheck
+ #include "ui/base/ui_base_switches.h"
++#include "components/ungoogled/ungoogled_switches.h"
+ 
+ #if BUILDFLAG(IS_WIN)
+ #include "components/startup_metric_utils/renderer/startup_metric_utils.h"
+@@ -179,6 +180,32 @@
+   chromeos::system::EnableCoreSchedulingIfAvailable();
+ #endif  // BUILDFLAG(IS_CHROMEOS)
+ 
++#if !BUILDFLAG(IS_CHROMEOS)
++  // Everywhere else, ICU keeps the SYSTEM locale unless told otherwise, and a
++  // service worker asks ICU directly — Blink's per-context language never
++  // reaches it. So a profile could present pl-PL on the page and format
++  // currency in the host's language inside its own worker.
++  //
++  // The assignment is the same one ChromeOS already makes a few lines above;
++  // only its platform fence differs.
++  //
++  // The switch is NOT --lang. The browser resolves that one against the UI
++  // locales it ships and hands children the RESOLVED value — measured, every
++  // language collapses to en-US on an English-only build — so reading it here
++  // produced an assignment that was faithful and useless.
++  // --fingerprint-language is forwarded verbatim, like --timezone.
++  {
++    const base::CommandLine& cmd = *parameters.command_line;
++    if (cmd.HasSwitch(switches::kFingerprintLanguage)) {
++      const std::string locale =
++          cmd.GetSwitchValueASCII(switches::kFingerprintLanguage);
++      if (!locale.empty()) {
++        base::i18n::SetICUDefaultLocale(locale);
++      }
++    }
++  }
++#endif  // !BUILDFLAG(IS_CHROMEOS)
++
+   InitializeSkia();
+ 
+ #if !BUILDFLAG(IS_WIN) && !BUILDFLAG(IS_LINUX) && !BUILDFLAG(IS_CHROMEOS)

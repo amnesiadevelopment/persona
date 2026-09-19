@@ -18,12 +18,12 @@ stamp INSIDE the source tree, and `apply_patches()` is:
         touch "${_src_dir}/.patched.stamp"
     fi
 
-`.patched.stamp` records THAT patching happened, never WHICH series. Our 16
+`.patched.stamp` records THAT patching happened, never WHICH series. Our
 patches are appended to `patches/series` — which lives OUTSIDE the source tree
 while the stamp lives INSIDE it. So a preserved, already-stamped tree makes
-`apply_patches()` a complete no-op, our 16 never enter the tree, the compile
-succeeds, and the artifact is labelled as carrying 16 fingerprint patches while
-carrying none.
+`apply_patches()` a complete no-op, our patches never enter the tree, the compile
+succeeds, and the artifact is labelled as carrying the fingerprint layer while
+carrying none of it.
 
 WHY THIS FILE BUILDS A REAL TREE INSTEAD OF ASSERTING OVER YAML
 ───────────────────────────────────────────────────────────────
@@ -32,7 +32,7 @@ here, but it cannot answer the only question that matters: does the guard
 actually SEE a tree with the patches missing?
 
 So `patched_tree` and `unmodified_tree` are REAL directory trees. The pre-image
-of every file our 16 patches touch is reconstructed from the patches' own hunk
+of every file our patches touch is reconstructed from the patches' own hunk
 context, and then GNU `patch` applies the real patch files to it. The patched
 fixture is a tree our patches were genuinely applied to; the unmodified fixture
 is the same tree with them genuinely absent. The verifier is then run against
@@ -42,7 +42,7 @@ That is what makes the negative controls here real rather than decorative:
 
   * `test_verifier_fails_when_the_stamp_is_present_but_the_patches_are_not`
     reproduces the exact defect the ticket describes — a tree carrying
-    `.patched.stamp`, a `patches/series` naming all 16, and none of the patches
+    `.patched.stamp`, a `patches/series` naming the full staged set, and none of the patches
     in the source. Everything a stamp-reading check would look at says "patched".
     The verifier must still fail.
   * `test_verifier_reports_absent_on_a_tree_that_never_had_our_patches` is the
@@ -73,6 +73,14 @@ VERIFY_SH = REPO_ROOT / "scripts" / "ps307_verify_patches_in_tree.sh"
 EVIDENCE_AWK = REPO_ROOT / "scripts" / "ps307_patch_evidence.awk"
 MANIFEST_SH = REPO_ROOT / "scripts" / "ps218_manifest.sh"
 PATCH_DIR = REPO_ROOT / "engine" / "patches" / "fingerprint"
+
+# The derived census, the way every runtime guard now derives it (PS-437): the
+# count is read from the source of truth at import time instead of pinned, so
+# adding a patch updates every assertion here without a lockstep edit — and a
+# patch DELETED from the directory shows up as a smaller number everywhere at
+# once, which is the loud direction.
+EXPECTED_PATCHES = len(sorted(PATCH_DIR.glob("*.patch")))
+assert EXPECTED_PATCHES > 0, "the fingerprint patch directory is empty"
 
 TAG = "152.0.7977.75-1"
 OTHER_TAG = "144.0.7559.132-1"
@@ -124,16 +132,19 @@ pytestmark = pytest.mark.skipif(
 _HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 
 
-def _preimage_blocks(patch_path: Path) -> dict[str, list[list[str]] | None]:
+def _preimage_blocks(patch_path: Path) -> dict[str, list[tuple[int, list[str]]] | None]:
     """Split a patch into the BEFORE state of each region it touches.
 
     A unified diff carries its own pre-image: context lines and deleted lines.
-    Each hunk yields one BLOCK of pre-image text.
+    Each hunk yields one BLOCK of pre-image text, paired with the hunk's
+    ORIGINAL start line — the geometry the real tree has and the fixture must
+    reproduce (see `_write_source_tree`).
 
-    Returns {relative_path: [block, ...]} — with `None` for a file the patch
-    CREATES, which has no pre-image and must simply not exist beforehand.
+    Returns {relative_path: [(start_line, block), ...]} — with `None` for a
+    file the patch CREATES, which has no pre-image and must simply not exist
+    beforehand.
 
-    ⚠️ BLOCKS, NOT ONE RECONSTRUCTED FILE. Three of the files our 16 patches
+    ⚠️ BLOCKS, NOT ONE RECONSTRUCTED FILE. Three of the files our patches
     touch are touched by TWO patches (element.cc, navigator.cc,
     webgl_rendering_context_base.cc), and the second patch's hunks are numbered
     against the FIRST one's output — so line numbers cannot be honoured across
@@ -143,15 +154,17 @@ def _preimage_blocks(patch_path: Path) -> dict[str, list[list[str]] | None]:
     other's regions, which is how the first cut of this fixture failed on
     009-webdriver.patch.
     """
-    files: dict[str, list[list[str]] | None] = {}
+    files: dict[str, list[tuple[int, list[str]]] | None] = {}
     path: str | None = None
     creating = False
     block: list[str] = []
+    hunk_remaining = 0
+    block_start = 0
 
     def end_block() -> None:
         nonlocal block
         if path is not None and block and not creating:
-            files.setdefault(path, []).append(list(block))  # type: ignore[union-attr]
+            files.setdefault(path, []).append((block_start, list(block)))
         block = []
 
     def end_file() -> None:
@@ -164,6 +177,7 @@ def _preimage_blocks(patch_path: Path) -> dict[str, list[list[str]] | None]:
             end_file()
             creating = raw.startswith("--- /dev/null")
             path = None
+            hunk_remaining = 0
             continue
         if raw.startswith("+++ "):
             target = raw[4:].split("\t")[0].strip()
@@ -171,24 +185,53 @@ def _preimage_blocks(patch_path: Path) -> dict[str, list[list[str]] | None]:
             files.setdefault(path, [])
             continue
         if raw.startswith(("diff --git", "index ")):
+            hunk_remaining = 0
             continue
         if path is None:
             continue
-        if _HUNK.match(raw):
+
+        m = _HUNK.match(raw)
+        if m:
             end_block()
+            # The OLD-side line count is the authority on how many pre-image
+            # lines this hunk carries (context + deleted). Everything after it
+            # is post-image, and the blank line many writers leave BETWEEN
+            # hunks is noise — which is exactly the distinction the first cut
+            # of the PS-437 fixture fix got wrong, swallowing the inter-hunk
+            # blank into the previous block and shifting every later hunk.
+            hunk_remaining = int(m.group(2)) if m.group(2) is not None else 1
+            hunk_start = int(m.group(1))
+            block_start = hunk_start
+            continue
+
+        if hunk_remaining <= 0:
+            # Post-image (+ lines), inter-hunk blanks, trailing newline noise.
+            continue
+
+        # ⚠️ A BARE EMPTY LINE INSIDE A HUNK'S OLD SIDE IS AN EMPTY CONTEXT
+        # LINE, not diff noise. GNU patch accepts the abbreviated form (no
+        # leading space) that the rewritten 019-webgpu-adapter-info.patch and
+        # 020-serviceworker-locale.patch ship; dropping it left the
+        # reconstructed pre-image missing the blank lines its context needs,
+        # and neither hunk of 019 could be located — 27 collection errors and
+        # a reviewer's rejection.
+        if raw == "":
+            block.append("")
+            hunk_remaining -= 1
             continue
 
         marker, body = raw[:1], raw[1:]
         if marker in (" ", "-"):
             block.append(body)
-        # '+' lines are post-image only, and any other line is diff noise.
+            hunk_remaining -= 1
+        # '+' lines are post-image only; any other line is diff noise.
 
     end_file()
     return files
 
 
 def _write_source_tree(dest: Path) -> list[Path]:
-    """Materialise the tree our 16 patches apply to, GROWING IT AS THEY APPLY.
+    """Materialise the tree our patches apply to, GROWING IT AS THEY APPLY.
 
     ⚠️ A LATER PATCH'S PRE-IMAGE IS AN EARLIER PATCH'S OUTPUT, and writing it as
     a fresh region is how a "control" tree ends up carrying our patches.
@@ -225,7 +268,7 @@ def _write_source_tree(dest: Path) -> list[Path]:
     def normalised(lines: list[str]) -> list[str]:
         return [line.strip() for line in lines]
 
-    def merge_block(body_lines: list[str], block: list[str]) -> list[str]:
+    def merge_block(body_lines: list[str], block: list[str], start_line: int) -> list[str]:
         """Splice one hunk's pre-image into the file being grown.
 
         THE OVERLAP CASE IS THE WHOLE REASON THIS IS NOT AN APPEND.
@@ -257,7 +300,23 @@ def _write_source_tree(dest: Path) -> list[Path]:
                     return body_lines[:end] + block[size:] + body_lines[end:]
         out = list(body_lines)
         if out:
-            out.append(f"// filler between regions {len(out)}")
+            # ⚠️ PLACE THE REGION AT ITS ORIGINAL OFFSET (PS-437). A hunk whose
+            # context is at most `--fuzz`'s default of 2 lines — 020's two-line
+            # include hunk, for one — can attach ANYWHERE once the fuzz level
+            # exceeds its context, and empirically the fuzzy match NEARER the
+            # hunk's expected line beats the exact match farther away. With
+            # every region crowding the top of a tiny file, 020's include hunk
+            # fuzz-landed on the wrong region and its real addition vanished
+            # while `patch` still exited 0. Padding out to the hunk's original
+            # start line puts the exact context where the scan looks first, so
+            # the fixture applies for the same reason the real tree does.
+            gap = start_line - 1 - len(out)
+            if gap > 0:
+                out.extend(f"// filler between regions {len(out)}" for _ in range(gap))
+            else:
+                out.append(f"// filler between regions {len(out)}")
+        elif start_line > 1:
+            out.extend(f"// filler between regions {i}" for i in range(start_line - 1))
         return out + list(block)
 
     for patch_path in patches:
@@ -267,9 +326,9 @@ def _write_source_tree(dest: Path) -> list[Path]:
             target = dest / rel
             target.parent.mkdir(parents=True, exist_ok=True)
             body = target.read_text(encoding="utf-8").splitlines() if target.exists() else []
-            for block in blocks:
+            for start_line, block in blocks:
                 if block:
-                    body = merge_block(body, block)
+                    body = merge_block(body, block, start_line)
             target.write_text("\n".join(body) + "\n", encoding="utf-8")
 
         result = _apply(patch_path, dest)
@@ -302,7 +361,7 @@ def _build_ucpl(root: Path, *, apply_ours: bool, skip: set[str] | None = None) -
 
     The tree is ALWAYS grown fully patched by `_write_source_tree` and then
     REVERSED back to whatever this fixture wants — the whole set for a control,
-    or one named patch for a "15 of 16" tree. Reversing is not a detour: a later
+    or one named patch for a one-patch-short tree. Reversing is not a detour: a later
     patch's context lines are the earlier patches' output, so the only honest way
     to obtain "the tree without patch N" is to take the tree WITH it and undo N.
     Assembling an unpatched tree directly from patch context produces a control
@@ -310,8 +369,21 @@ def _build_ucpl(root: Path, *, apply_ours: bool, skip: set[str] | None = None) -
     """
     ucpl = root / "ucpl"
     src = ucpl / "build" / "src"
-    src.mkdir(parents=True, exist_ok=True)
-    (ucpl / "build" / "download_cache").mkdir(parents=True, exist_ok=True)
+    if src.exists():
+        # ⚠️ A BUILD IS FRESH OR SEALED-WHOLE, NEVER HALF-LEFTOVER. pytest hands
+        # a test and its own fixtures the SAME tmp_path, so a test that builds
+        # twice into one directory (the verdict-line test does: the
+        # `unmodified_tree` fixture, then its own one-patch control) would
+        # otherwise merge the patch pre-images into the previous build's
+        # leftovers — duplicating regions, and `patch` then matched the
+        # DUPLICATE of a two-line-context hunk at offset +124 while the exact
+        # original sat at offset 0 (PS-437). Nothing here may depend on residue
+        # of a previous build: the reuse path this ticket exists to guard runs
+        # through the seal in ps307_tree_state.sh, not through whatever a dead
+        # run happened to leave in the directory.
+        shutil.rmtree(ucpl / "build")
+    src.mkdir(parents=True)
+    (ucpl / "build" / "download_cache").mkdir(parents=True)
     applied = _write_source_tree(src)
 
     # Reverse in reverse series order, so each patch is undone from the tree
@@ -460,7 +532,7 @@ def _seal(workdir: Path, tree: str, tag: str = TAG) -> subprocess.CompletedProce
 
 @pytest.fixture
 def patched_tree(tmp_path: Path) -> Path:
-    """A workdir whose `ucpl/build/src` genuinely carries all 16 of our patches."""
+    """A workdir whose `ucpl/build/src` genuinely carries the whole staged patch layer."""
     _build_ucpl(tmp_path, apply_ours=True)
     return tmp_path
 
@@ -476,7 +548,7 @@ def unmodified_tree(tmp_path: Path) -> Path:
 # The fixture itself has to be honest before anything built on it means anything
 # ─────────────────────────────────────────────────────────────────────────────
 def test_the_fixture_tree_really_takes_our_patches(patched_tree: Path):
-    """Every one of the 16 applies to the reconstructed pre-image, at offset 0.
+    """Every patch applies to the reconstructed pre-image, at offset 0.
 
     If this fails, every other assertion in this file is about a tree that does
     not represent the real one, so it is asserted first and explicitly.
@@ -507,10 +579,15 @@ def test_the_unmodified_fixture_really_lacks_our_patches(unmodified_tree: Path):
 # ─────────────────────────────────────────────────────────────────────────────
 # THE VERIFIER — the guard the whole ticket exists for
 # ─────────────────────────────────────────────────────────────────────────────
-def test_verifier_finds_all_sixteen_patches_in_a_genuinely_patched_tree(patched_tree: Path):
+def test_verifier_finds_the_whole_patch_set_in_a_genuinely_patched_tree(patched_tree: Path):
     result = _verify(patched_tree, "present")
     assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
-    assert "all 16 fingerprint patches VERIFIED PRESENT" in result.stdout
+    assert (
+        f"all {EXPECTED_PATCHES} fingerprint patches VERIFIED PRESENT" in result.stdout
+    ), (
+        "the verifier's verdict line must carry the DERIVED count (PS-437) — a "
+        "pinned number in the verdict is the one that goes stale silently"
+    )
 
     report = (patched_tree / "record" / "patch-presence-patched.txt").read_text(encoding="utf-8")
     assert "verdict:          PASS" in report
@@ -552,7 +629,7 @@ def test_verifier_fails_when_the_stamp_is_present_but_the_patches_are_not(unmodi
     result = _verify(unmodified_tree, "present")
 
     assert result.returncode != 0, (
-        "the verifier PASSED a tree that is stamped as patched, has all 16 patches "
+        "the verifier PASSED a tree that is stamped as patched, has the full patch set "
         "in its series, and carries none of them in its source. That is exactly the "
         "silent patch-drop this ticket exists to make impossible.\n"
         f"{result.stdout}\n{result.stderr}"
@@ -561,24 +638,27 @@ def test_verifier_fails_when_the_stamp_is_present_but_the_patches_are_not(unmodi
 
 
 def test_verifier_fails_when_a_single_patch_is_missing(tmp_path: Path):
-    """15 of 16 is not 16. A per-patch verdict is what catches this."""
+    """One short of the set is not the set. A per-patch verdict is what catches this."""
     _build_ucpl(tmp_path, apply_ours=True, skip={"010-headless.patch"})
 
     result = _verify(tmp_path, "present")
 
     assert result.returncode != 0, (
         "the verifier passed a tree missing 010-headless.patch. An artifact built "
-        "from it would be labelled as carrying 16 patches while carrying 15."
+        "from it would be labelled as carrying the full patch layer while carrying "
+        "one patch less."
     )
     report = (tmp_path / "record" / "patch-presence-patched.txt").read_text(encoding="utf-8")
     assert "010-headless.patch" in report
     assert "NOT IN THE TREE" in report
-    # And the other 15 must still be reported as present — a check that failed
+    # And the others must still be reported as present — a check that failed
     # everything once one patch was missing would be useless for diagnosis.
     assert "patches failing:  1" in report
-    assert "patches passing:  15" in report
+    assert f"patches passing:  {EXPECTED_PATCHES - 1}" in report
     present = [line for line in report.splitlines() if " PRESENT " in line]
-    assert len(present) == 15, f"expected 15 patches still reported present, got {len(present)}"
+    assert len(present) == EXPECTED_PATCHES - 1, (
+        f"expected {EXPECTED_PATCHES - 1} patches still reported present, got {len(present)}"
+    )
 
 
 def test_verifier_catches_a_removal_only_patch(tmp_path: Path):
@@ -618,7 +698,7 @@ def test_absent_mode_refuses_a_contaminated_control(patched_tree: Path):
     """And the negative control's own negative control: `absent` must be able to fail."""
     result = _verify(patched_tree, "absent", "unmodified")
     assert result.returncode != 0, (
-        "`absent` mode passed a tree that genuinely carries all 16 patches, so it "
+        "`absent` mode passed a tree that genuinely carries the full patch layer, so it "
         "could never detect a contaminated control."
     )
     assert "supposed to be the UNMODIFIED control" in result.stdout
@@ -642,7 +722,7 @@ def _one_patch_control(root: Path, keep: str) -> Path:
     """A control tree carrying EXACTLY ONE of our patches, and nothing else.
 
     The sharpest possible contamination: the least a real contamination can be.
-    A rule that catches all 16 but not one is not protecting the control, and
+    A rule that catches the whole set but not one patch is not protecting the control, and
     `test_absent_mode_refuses_a_contaminated_control` above cannot tell the two
     apart because it plants everything.
     """
@@ -1052,9 +1132,17 @@ def test_verifier_reads_no_stamp_and_no_series(patched_tree: Path):
 
 
 def test_verifier_refuses_a_patch_set_that_is_not_ours(patched_tree: Path, tmp_path_factory):
-    """A presence check over 15 or 17 patches measures a layer this build does not claim."""
+    """A presence check over a set smaller than the staged series measures a
+    layer this build does not claim.
+
+    The count the verifier expects is DERIVED from the staged series (PS-437),
+    so the refusal is exercised the way it would really fire: the series in the
+    ucpl checkout names the full staged set, while the directory it is pointed
+    at is short by one — exactly the "patch deleted from the vendored set after
+    staging" shape the series-vs-directory cross-check exists to catch.
+    """
     short_dir = tmp_path_factory.mktemp("short_patches")
-    for patch_path in sorted(PATCH_DIR.glob("*.patch"))[:15]:
+    for patch_path in sorted(PATCH_DIR.glob("*.patch"))[: EXPECTED_PATCHES - 1]:
         shutil.copy2(patch_path, short_dir / patch_path.name)
 
     result = _run(
@@ -1064,7 +1152,13 @@ def test_verifier_refuses_a_patch_set_that_is_not_ours(patched_tree: Path, tmp_p
         env_extra={"UCPL_DIR": "ucpl", "PATCH_DIR": str(short_dir)},
     )
     assert result.returncode != 0
-    assert "expected exactly 16 fingerprint patches" in result.stdout
+    assert (
+        f"expected exactly {EXPECTED_PATCHES} fingerprint patches" in result.stdout
+    ), (
+        "the count refusal must keep naming the pinned world, so when the set "
+        "grows this test goes red together with the verifier and the literal "
+        "is moved by a human, never silently"
+    )
 
 
 def test_verifier_refuses_a_patch_it_can_draw_no_claims_from(
@@ -1096,10 +1190,11 @@ def test_verifier_refuses_a_patch_it_can_draw_no_claims_from(
     of the whole ticket is that a rebase changes the patch layer.
     """
     patch_dir = tmp_path_factory.mktemp("noevidence_patches")
-    # 15 of ours, so the count guard is satisfied and cannot be what fires.
-    for patch_path in sorted(PATCH_DIR.glob("*.patch"))[:15]:
+    # All but one of ours, so the count guard is satisfied and cannot be what
+    # fires — the count tracks the derived census (PS-437), not a stale 15.
+    for patch_path in sorted(PATCH_DIR.glob("*.patch"))[: EXPECTED_PATCHES - 1]:
         shutil.copy2(patch_path, patch_dir / patch_path.name)
-    # ...and a 16th whose only section yields no usable evidence.
+    # ...and a final patch whose only section yields no usable evidence.
     (patch_dir / "900-buildgn-only.patch").write_text(
         "--- a/gpu/config/BUILD.gn\n"
         "+++ b/gpu/config/BUILD.gn\n"
@@ -1235,7 +1330,7 @@ def test_the_control_tree_is_not_reused_as_the_patched_tree(patched_tree: Path):
     patched job then runs against the same preserved workspace. If the identity
     check ignored the tree's ROLE it would reuse the control's tree, find
     `.patched.stamp` present, skip `apply_patches()` entirely, and compile a tree
-    carrying none of our 16.
+    carrying none of our patches.
 
     ⚠️ THE REASON IS ASSERTED, NOT JUST THE WIPE. An earlier cut of this test
     checked only that the tree was destroyed — and it still passed with the role

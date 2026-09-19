@@ -17,7 +17,7 @@ diff --git a/third_party/blink/renderer/core/html/canvas/html_canvas_element.cc 
  #include "build/build_config.h"
  #include "cc/layers/texture_layer.h"
  #include "cc/trees/layer_tree_host.h"
-@@ -1287,6 +1289,56 @@
+@@ -1287,6 +1289,61 @@
  
    scoped_refptr<StaticBitmapImage> image_bitmap = Snapshot(source_buffer);
    if (image_bitmap) {
@@ -39,7 +39,12 @@ diff --git a/third_party/blink/renderer/core/html/canvas/html_canvas_element.cc 
 +      size_t row_bytes = image_info.minRowBytes();
 +      size_t buffer_size = image_info.computeMinByteSize();
 +
-+      if (buffer_size > 0 && buffer_size <= partition_alloc::MaxDirectMapped()) {
++      // MaxAllocationSize, not MaxDirectMapped: upstream renamed it between
++      // 152 and 153, deleting the old name outright rather than aliasing it.
++      // Same body on both sides — (1UL << 31) - kSuperPageSize, deliberately
++      // just under 2GiB so a 2GiB allocation fails and size_t-vs-int bugs are
++      // harder to exploit — so this is a rename and not a change of meaning.
++      if (buffer_size > 0 && buffer_size <= partition_alloc::MaxAllocationSize()) {
 +        std::vector<uint8_t> pixel_buffer(buffer_size);
 +
 +        // 从原始图像读取像素数据到我们的副本中
@@ -74,3 +79,4 @@ diff --git a/third_party/blink/renderer/core/html/canvas/html_canvas_element.cc 
      std::unique_ptr<ImageDataBuffer> data_buffer =
          ImageDataBuffer::Create(image_bitmap);
      if (!data_buffer)
+

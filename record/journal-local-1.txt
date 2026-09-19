@@ -1,0 +1,24 @@
+# PS-289 — durable build journal
+#
+# Written line-by-line and fsynced as the build proceeds, OUTSIDE the
+# workspace, so that a run whose runner dies mid-step still says how far
+# it got. READ IT AS FOLLOWS:
+#
+#   BEGIN <tree>/<label>            the phase started
+#   ALIVE <tree>/<label> elapsed=…  the phase was still running then
+#   MARK  <tree> …                  a milestone between phases
+#   END   <tree>/<label> rc=<n>     the phase finished, with its exit code
+#
+# A BEGIN with no matching END means the phase NEVER FINISHED — the last
+# ALIVE line bounds how far it got. That is a different statement from
+# 'the phase failed', and this file is what keeps the two apart.
+#
+# run:      local
+# attempt:  1
+# created:  2026-09-19T15:10:07Z
+# host:     SYNTHETIC-TESTHOST-ZZZ9
+2026-09-19T15:10:07Z  MARK   unmodified  environment recorded (pre-prepare) -> record/environment-unmodified.txt
+2026-09-19T15:10:07Z  MARK   unmodified  environment recorded (pre-prepare) -> record/environment-unmodified.txt
+2026-09-19T15:19:57Z  MARK   unmodified  environment recorded (pre-prepare) -> record/environment-unmodified.txt
+2026-09-19T15:19:57Z  MARK   unmodified  environment recorded (pre-prepare) -> record/environment-unmodified.txt
+2026-09-19T15:21:21Z  MARK   patched  staged 18 fingerprint patches into ungoogled's series

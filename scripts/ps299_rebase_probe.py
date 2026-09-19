@@ -116,7 +116,58 @@ PLATFORMS = {
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PATCH_DIR = os.path.join(REPO_ROOT, "engine", "patches", "fingerprint")
-EXPECTED_PATCHES = 16
+
+# DERIVED, the way ps218_stage_patches.sh derives its own guard, and for the
+# same reason: a literal has to be edited in lockstep with every patch the set
+# gains, and the forgotten edit is the one that turns this guard off in the
+# permissive direction. Counting the source of truth keeps the check honest as
+# the set grows. The count that still bites is the STAGED one: apply_ours may
+# take its patch list from a staged `patches/series` (PS-361), and a set whose
+# size differs from the vendored directory is refused — "a patch present on
+# disk but not staged" is exactly the drop this refuses to measure.
+EXPECTED_PATCHES = len(
+    [n for n in os.listdir(PATCH_DIR) if n.endswith(".patch")]
+)
+
+
+def blank_hunk_separator(text):
+    """Return the 1-based line number of a blank line sitting between hunks.
+
+    GNU patch reads a unified diff hunk by hunk and STOPS READING at a blank
+    line once the preceding hunk's counts are met: every hunk after the blank
+    silently never applies, `patch` still exits 0, and no "Hunk #N FAILED"
+    ever appears — so the reject count below stayed 0 and the patch read as
+    clean. Measured on 020-serviceworker-locale.patch (PS-437): its second
+    hunk — the ICU default-locale assignment, the actual fix — was dropped by
+    exactly this, on the same `patch -p1 --ignore-whitespace` invocation the
+    real build runs. `git apply` refuses the same file outright ("patch
+    fragment without header"), so this is not a tolerated dialect; it is a
+    truncated patch.
+
+    A blank line can only be BETWEEN hunks when the next non-blank line is an
+    @@ header: inside a hunk a blank is context, and before a new file section
+    the `--- `/`+++ ` headers precede any @@. Commit-message blanks are skipped
+    because nothing before the first `--- ` is hunk territory. The one ambiguous
+    form this also refuses, deliberately, is a hunk ENDING in an abbreviated
+    blank context directly ahead of the next @@: GNU patch tolerates it, but
+    every reader after this one has to re-derive whether that blank belongs to
+    the hunk or separates hunks — write the context with its leading space
+    instead. The current set uses no such form (measured, PS-437).
+    """
+    lines = text.splitlines()
+    seen_file_header = False
+    for i, ln in enumerate(lines):
+        if ln.startswith("--- "):
+            seen_file_header = True
+            continue
+        if ln != "" or not seen_file_header:
+            continue
+        j = i + 1
+        while j < len(lines) and lines[j] == "":
+            j += 1
+        if j < len(lines) and lines[j].startswith("@@ "):
+            return i + 1
+    return None
 
 
 def run(cmd, **kw):
@@ -324,6 +375,18 @@ def apply_ours(tree, fuzz, paths=None):
         out = r.stdout + r.stderr
         rej = len(re.findall(r"^Hunk #\d+ FAILED", out, re.M))
         fz = len(re.findall(r"with fuzz \d", out))
+
+        # ⚠️ A TRUNCATED PATCH READS AS CLEAN (PS-437). GNU patch stops reading
+        # at a blank line between hunks and never mentions the hunks after it:
+        # exit 0, zero rejects. Refuse the patch outright — it must be repaired
+        # into one contiguous hunk sequence per file, not measured.
+        sep = blank_hunk_separator(text)
+        if sep:
+            print("::error::%s: blank line between hunks at patch line %d — GNU patch "
+                  "stops reading there, so every hunk after it silently never applies "
+                  "(measured, PS-437). Repair the patch file; this run does not count "
+                  "it as applied." % (name, sep))
+            rej = hunks
 
         # ⚠️ THE EXIT STATUS IS PART OF THE MEASUREMENT — scraping "Hunk #N
         # FAILED" alone FAILS OPEN on the single most likely breakage at a new

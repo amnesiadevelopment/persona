@@ -30,8 +30,8 @@ WHAT IS ASSERTED, AND WHY EACH ONE
   3. THE STAGING IS LOAD-BEARING. Our patches are read back OUT of upstream's
      own `patches/series`. If that stopped being true, AC2's mechanism would be
      decorative: the series could be empty and the measurement identical.
-  4. THE 16-COUNT GUARD SURVIVES A PATH THROUGH THE PROBE. `apply_ours` must
-     refuse a set that is not exactly 16, whatever the caller hands it.
+  4. THE COUNT GUARD SURVIVES A PATH THROUGH THE PROBE. `apply_ours` must
+     refuse a set that is not the vendored count, whatever the caller hands it.
   5. TRANSIENT RETRY DID NOT WEAKEN FAIL-CLOSED. 429/5xx retry; a 404 must NOT,
      because a 404 is a statement about the FILE ("an absent path is not a
      deleted path") and retrying it just reaches the same answer slowly.
@@ -258,37 +258,63 @@ def test_staged_list_refuses_a_checkout_with_no_series(tmp_path):
     assert paths is None and err is not None
 
 
-# ── 4. the 16-count guard survives the probe path ────────────────────────────
+# ── 4. the count guard survives the probe path ───────────────────────────────
 
 @pytest.mark.skipif(shutil.which("patch") is None, reason="GNU patch needed")
-def test_apply_ours_refuses_a_set_that_is_not_exactly_sixteen(tmp_path, capsys):
+def test_apply_ours_refuses_a_set_that_is_not_the_vendored_count(tmp_path, capsys):
     """"A build made to succeed by quietly dropping a patch measures nothing."
 
     The guard lives in ps218_stage_patches.sh, but PS-361 lets the probe take a
     caller-supplied list — so the SAME refusal has to hold on that path, or the
-    new parameter is a way around the guard.
+    new parameter is a way around the guard. The expected count is DERIVED from
+    the vendored directory (PS-437), so this refuses any set whose size is not
+    the directory's, whatever the caller hands it.
     """
     mod = load_probe()
-    fifteen = [str(p) for p in sorted(PATCH_DIR.glob("*.patch"))][:15]
-    assert len(fifteen) == 15
+    all_paths = [str(p) for p in sorted(PATCH_DIR.glob("*.patch"))]
+    short_set = all_paths[:-1]
+    assert len(short_set) == len(all_paths) - 1
 
-    result = mod.apply_ours(str(tmp_path), 0, paths=fifteen)
-    assert result is None, "a set of 15 must be refused, not measured"
-    assert "expected %d patches, found 15" % mod.EXPECTED_PATCHES in capsys.readouterr().out
-
-
-def test_the_repo_really_holds_sixteen_patches():
-    """The guard's premise. If this changes, the guard's number must change WITH it."""
-    assert len(list(PATCH_DIR.glob("*.patch"))) == 16
+    result = mod.apply_ours(str(tmp_path), 0, paths=short_set)
+    assert result is None, "a set smaller than the vendored count must be refused, not measured"
+    assert "expected %d patches, found %d" % (
+        mod.EXPECTED_PATCHES, len(short_set)
+    ) in capsys.readouterr().out
 
 
-def test_stage_script_still_carries_the_sixteen_count_guard():
+def test_the_repo_patch_count_is_the_count_every_guard_derives():
+    """The guard's premise. The stage script and the probe both DERIVE their
+    count from the patch directory now (PS-437), so this pins the one fact the
+    derivation rests on: the directory is readable and non-empty. If this
+    fails, every derived guard is deriving from nothing."""
+    assert len(list(PATCH_DIR.glob("*.patch"))) > 0
+    assert load_probe().EXPECTED_PATCHES == len(list(PATCH_DIR.glob("*.patch"))), (
+        "the probe's derived count disagrees with the directory — the probe has "
+        "stopped reading the source of truth"
+    )
+
+
+def test_stage_script_still_carries_the_derived_count_guard():
     """AC2 requires the guard ACTIVE on the Windows path, and that path reuses
-    this script unmodified — so the guard must still be in it."""
+    this script unmodified — so the guard must still be in it.
+
+    PS-437: the guard derives its expected count from the patch directory (the
+    pattern the script itself documents) instead of pinning a literal that rots
+    in lockstep with the set. What must NOT come back is a pinned literal, so
+    both halves are asserted: the derivation present, the literal absent.
+    """
     text = STAGE.read_text(encoding="utf-8")
-    assert '"$count" -ne 16' in text
+    assert 'find "$PATCH_DIR" -maxdepth 1' in text, (
+        "the staging guard must derive its expected count from the patch "
+        "directory rather than pinning one"
+    )
+    assert '"$count" -ne "$expected"' in text
     assert "measures nothing" in text
     assert "sha256sum" in text, "AC2 also requires the staged set recorded with checksums"
+    assert "-ne 16" not in text and "-eq 16" not in text, (
+        "a pinned count literal is back in the stage script — the exact rot the "
+        "derived guard exists to prevent"
+    )
 
 
 # ── 5. transient retry did NOT weaken fail-closed ────────────────────────────

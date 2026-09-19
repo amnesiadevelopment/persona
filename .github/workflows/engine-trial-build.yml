@@ -1,7 +1,7 @@
 # PS-218 — TRIAL BUILD OF OUR OWN ENGINE, ON THE OWNER'S SELF-HOSTED RUNNER.
 #
 # This workflow exists to produce ONE number that no existing measurement has:
-# whether ungoogled-chromium plus our 16 fingerprint patches COMPILES. Every
+# whether ungoogled-chromium plus our fingerprint patches COMPILES. Every
 # figure the investigation (5c087078) produced measures whether a patch applies
 # as TEXT. A patch that lands with nothing worse than line-offset drift can
 # still break the build when a function it calls changed signature, and that is
@@ -112,7 +112,7 @@
 #    on the patched-only path — so "ran ahead of a failed control" stays
 #    unreachable in the job graph rather than being ruled out in prose.
 #
-# 2. Build WITH our 16 fingerprint patches, and record what breaks at COMPILE
+# 2. Build WITH our fingerprint patches, and record what breaks at COMPILE
 #    time. Patch application and compilation are SEPARATE RESULTS and are
 #    reported separately — see the `prepare` / `compile` step split below, which
 #    is what makes that separation structural rather than editorial. Conflating
@@ -806,7 +806,7 @@ jobs:
   # waiting for, on the owner's personal workstation.
   # ───────────────────────────────────────────────────────────────────────────
   patched:
-    name: "2. patched tree (our 16 fingerprint patches)"
+    name: "2. patched tree (our fingerprint patches)"
     needs: unmodified
     # WIDENED BY EXACTLY ONE READ SCOPE, and only on this job. The borrowed
     # control is an artifact of ANOTHER run, so `actions/download-artifact`
@@ -1040,7 +1040,7 @@ jobs:
       # — it takes MULTIPLE patch directories by design. So our layer is an
       # ADDITION to the existing pipeline rather than a fork of the tooling,
       # which is how fingerprint-chromium composes them today.
-      - name: Stage our 16 fingerprint patches into ungoogled's own series
+      - name: Stage our fingerprint patches into ungoogled's own series
         run: persona/scripts/ps218_stage_patches.sh
         env:
           UCPL_DIR: ucpl
@@ -1104,7 +1104,7 @@ jobs:
       # silent-skip sequence unreachable. This step is here because "unreachable
       # by argument" and "verified in the tree" are different claims, and the
       # ticket asks for the second one.
-      - name: Verify our 16 fingerprint patches are IN the tree about to compile
+      - name: Verify our fingerprint patches are IN the tree about to compile
         id: verify_patches
         if: steps.prepare.outcome == 'success'
         run: persona/scripts/ps307_verify_patches_in_tree.sh present patched

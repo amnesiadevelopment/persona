@@ -19,7 +19,7 @@
 # created the Linux arm, and a reader who assumes "green = it builds on
 # Windows" has been misled by this file.
 #
-#   what IS measured:  our 16 fingerprint patches compose with upstream's own
+#   what IS measured:  our fingerprint patches compose with upstream's own
 #                      Windows patch layer, at the pinned tag, through
 #                      upstream's own `patches/series` mechanism, with the
 #                      16-count guard active — and the tree they land on is
@@ -342,7 +342,7 @@ jobs:
           set +x
           echo "PROBE_EXIT=${rc}" | tee -a "$GITHUB_ENV"
           if [ "$rc" -ne 0 ]; then
-            echo "::error::THE INSTRUMENT CHECK FAILED (exit ${rc}). This is a finding about the ungoogled-chromium-windows tree at ${UNGOOGLED_TAG} — or about this runner's ability to reach googlesource — and says NOTHING about our 16 fingerprint patches. Do not read it as a patch failure."
+            echo "::error::THE INSTRUMENT CHECK FAILED (exit ${rc}). This is a finding about the ungoogled-chromium-windows tree at ${UNGOOGLED_TAG} — or about this runner's ability to reach googlesource — and says NOTHING about our fingerprint patches. Do not read it as a patch failure."
             exit "$rc"
           fi
 
@@ -358,7 +358,7 @@ jobs:
   # 2. OUR 16, STAGED THROUGH UPSTREAM'S OWN SERIES.
   # ───────────────────────────────────────────────────────────────────────────
   patched:
-    name: "2. patched Windows tree (our 16 fingerprint patches)"
+    name: "2. patched Windows tree (our fingerprint patches)"
     # ⛔ THE ORDER IS A PROPERTY OF THE GRAPH, NOT OF PROSE. The patched tree
     # cannot run ahead of its own control, and cannot run at all if the control
     # failed. That is the `ps218_verify_control.sh` discipline, enforced the
