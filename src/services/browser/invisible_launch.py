@@ -3629,11 +3629,25 @@ def _launch_and_watch(cfg, profile_dir, emit, _finish, stop_event, in_thread):
         # and opened a bogus "0.0.9.51" page. Size comes ONLY from the profile's
         # xulstore.json (seeded above), never from extra_args.
         emit(f"HIDPI_DEBUG chosen={w}x{h} window=capped dpr={dpr}")
+        # `screen.avail_width`/`screen.avail_height` left the engine's pin table
+        # in invisible_core 31 (2026-09-15): the page-visible avail rect is
+        # DERIVED there from width/height/taskbar_px, pin validation refuses
+        # unknown keys outright, and the engine measured that pinning the dead
+        # keys moved ZERO emitted preferences. Pinning them therefore crashed
+        # every launch — LAUNCH_FAILED "unknown field 'avail_width'" — the
+        # moment the bumped firefox-31 stack was provisioned (engine-autoupdate
+        # run 35214887812). `screen.taskbar_px` is the one knob BOTH majors
+        # accept, and each re-derives availHeight = height - taskbar_px from it
+        # (20.14.0 does so whenever avail_height itself is not pinned; 31.x
+        # unconditionally), so the engine computes the same h-40 avail rect the
+        # explicit pins used to state. availWidth is width on both (31.x always;
+        # 20.x samples avail_w == sampled w and the pins above fix that w).
+        # Measured on both cores with the gate's pinned profile: identical
+        # screen fields either way (1920 / 1920 / 1040).
         kwargs["pin"] = {
             "screen.width": w,
             "screen.height": h,
-            "screen.avail_width": w,
-            "screen.avail_height": h - 40,
+            "screen.taskbar_px": 40,
             "screen.dpr": dpr,
         }
         kwargs["extra_prefs"]["layout.css.devPixelsPerPx"] = str(dpr)

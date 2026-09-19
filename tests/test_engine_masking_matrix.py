@@ -1638,7 +1638,7 @@ def test_firefox_device_screen_half_is_pinned_at_the_engine_layer():
     # takes.
     src = inspect.getsource(il._launch_and_watch)
     assert 'kwargs["pin"] = {' in src
-    for key in ("screen.width", "screen.height", "screen.avail_width"):
+    for key in ("screen.width", "screen.height", "screen.taskbar_px"):
         assert f'"{key}"' in src
     # ...and it is CONDITIONAL, which is the other half of why this is not a
     # flat "covered": a profile on Auto chooses no resolution and gets no pin.
