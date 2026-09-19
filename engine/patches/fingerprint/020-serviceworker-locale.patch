@@ -38,14 +38,18 @@ namespace scope".
 
 --- a/content/renderer/renderer_main.cc
 +++ b/content/renderer/renderer_main.cc
-@@ -60,2 +60,3 @@
+@@ -60,6 +60,7 @@
+ #include "third_party/skia/include/core/SkFontMgr.h"
  #include "third_party/webrtc_overrides/init_webrtc.h"  // nogncheck
  #include "ui/base/ui_base_switches.h"
 +#include "components/ungoogled/ungoogled_switches.h"
-@@ -179,4 +179,30 @@ int RendererMain(MainFunctionParams parameters) {
+ 
+ #if BUILDFLAG(IS_WIN)
+ #include "components/startup_metric_utils/renderer/startup_metric_utils.h"
+@@ -179,6 +180,32 @@
    chromeos::system::EnableCoreSchedulingIfAvailable();
  #endif  // BUILDFLAG(IS_CHROMEOS)
-
+ 
 +#if !BUILDFLAG(IS_CHROMEOS)
 +  // Everywhere else, ICU keeps the SYSTEM locale unless told otherwise, and a
 +  // service worker asks ICU directly — Blink's per-context language never
@@ -73,4 +77,5 @@ namespace scope".
 +#endif  // !BUILDFLAG(IS_CHROMEOS)
 +
    InitializeSkia();
-
+ 
+ #if !BUILDFLAG(IS_WIN) && !BUILDFLAG(IS_LINUX) && !BUILDFLAG(IS_CHROMEOS)

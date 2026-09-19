@@ -106,4 +106,3 @@ index c7d0fc0072..f5d2cc3684 100644
        switches::kForceDeviceScaleFactor,
        switches::kForceDisplayColorProfile,
        switches::kForceHighContrast,
-
