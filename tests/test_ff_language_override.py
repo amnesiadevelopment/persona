@@ -588,8 +588,17 @@ def test_cloak_emits_the_spidermonkey_native_form_not_v8s():
     assert "var __cloak=function(f,n,s,l){" in cloak
     assert "__nm.set(f,s===undefined?n:s);" in cloak
     assert 'if(l!==undefined)Object.defineProperty(f,"length"' in cloak
-    both = il._language_override_script("en-US") + il._outer_size_override_script()
-    assert both.count("__cloak(()=>v,'get '+k,k)") == 2
+    # Both accessor call sites pass the bare property name as the third arg.
+    # The two `def` helpers differ in ONE respect and it is deliberate (PS-456):
+    # the language one closes over a VALUE (the locale, which cannot change
+    # after init), the outer-size one calls a THUNK (`()=>v()`) because the
+    # window CAN be resized and the frozen read was the defect. Asserted
+    # separately so the difference is pinned rather than averaged away by a
+    # combined count that either form could satisfy.
+    assert il._language_override_script("en-US").count(
+        "__cloak(()=>v,'get '+k,k)") == 1
+    assert il._outer_size_override_script().count(
+        "__cloak(()=>v(),'get '+k,k)") == 1
 
 
 def test_override_scripts_carry_the_cloak_into_every_realm():
@@ -623,8 +632,14 @@ def test_override_script_adds_no_enumerable_own_property():
 def test_override_scripts_cloak_every_installed_function():
     js = il._language_override_script("en-US") + il._outer_size_override_script()
     # navigator + window accessors carry the accessor's own "get <prop>" name,
-    # and stringify under the bare property name (SpiderMonkey drops the prefix)
-    assert js.count("__cloak(()=>v,'get '+k,k)") == 2
+    # and stringify under the bare property name (SpiderMonkey drops the prefix).
+    # Counted per script: PS-456 made the outer-size helper call a THUNK
+    # (`()=>v()`) so a resize is re-read, while the language one still closes
+    # over the locale value. Both are still cloaked, which is what this asserts.
+    assert il._language_override_script("en-US").count(
+        "__cloak(()=>v,'get '+k,k)") == 1
+    assert il._outer_size_override_script().count(
+        "__cloak(()=>v(),'get '+k,k)") == 1
     # Intl constructors, their supportedLocalesOf and resolvedOptions. Each
     # passes the ORIGINAL's .length as the 4th arg so the wrapper's arity
     # matches the native it replaces (PS-119) — read off the original rather

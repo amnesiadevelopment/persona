@@ -247,6 +247,14 @@ def test_outer_size_override_script_ties_outer_to_window():
     js = _outer_size_override_script()
     assert "outerWidth" in js and "outerHeight" in js
     assert "innerWidth" in js  # derives outer from the real inner size
+    # PS-456: "ties to the real window" is a claim about the LIVE window, and
+    # this file can only see source text — so it asserts the one structural fact
+    # that distinguishes a live read from a frozen one (the derivation is inside
+    # an arrow, evaluated per access, not passed as an already-computed value),
+    # and the VALUE-level proof that a resize is actually tracked lives in
+    # tests/test_ps456_outer_size_tracks_resize.py, which runs the script.
+    assert "()=>window.innerWidth + 14" in js
+    assert "()=>window.innerHeight + 91" in js
 
 
 def test_profile_prefs_force_dark_theme():

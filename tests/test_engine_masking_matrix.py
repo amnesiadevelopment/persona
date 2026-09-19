@@ -576,7 +576,48 @@ MATRIX = {
             COVERED,
             '_install_spoof("outer-size", ...), only when a resolution was '
             "chosen (_res_overrides is not None). On Auto the window opens at "
-            "the engine's own screen, where outer already agrees.",
+            "the engine's own screen, where outer already agrees. "
+            "⚠️ THE POST-RESIZE POSITION, recorded here because the Chromium "
+            "cell beside it already carries the same honesty and the two "
+            "arms must not disagree by omission. Until PS-456 this arm was "
+            "worse than Chromium's at exactly the case Chromium's bound "
+            "names: the override derived outer from inner EAGERLY, once, at "
+            "init-script time, so the getter closed over a frozen number and "
+            "a page that resized its window read the size it had AT PAGE "
+            "LOAD. On a GROW that stale outer fell BELOW the live inner — "
+            "measured chrome -626x-269 on a 1280 -> 1920 grow, which is R1 "
+            "violated and is the negative-chrome signature #327 deleted a fix "
+            "for producing; on a SHRINK it reported chrome 654x451, a window "
+            "frame wider than its content. PS-456 passes a THUNK so the "
+            "derivation is re-read per access, and all three relations then "
+            "hold after a mid-range resize. Driven against the real shipped "
+            "artifact in a node realm with a recompute positive control "
+            "(tests/test_ps456_outer_size_tracks_resize.py), on the VALUE a "
+            "page receives rather than on source text. "
+            "⚠️ THE RESIDUAL BOUND, stated rather than left silent: at a "
+            "MAXIMIZED window inner EQUALS the spoofed screen (the operator's "
+            "pick is what kwargs[\"pin\"] writes to screen.width), so "
+            "inner+chrome necessarily exceeds it and the page reads outer > "
+            "screen — R3 violated, outer 1934x1171 against screen 1920x1080. "
+            "That is NOT introduced by the recompute: the eager form reported "
+            "the IDENTICAL pair for a window that launched maximized, and "
+            "that is asserted rather than argued "
+            "(test_the_maximized_r3_bound_predates_this_fix). A clamp at the "
+            "screen would buy R3 there and was MEASURED and DECLINED — it "
+            "moves the no-resize reported values at every geometry (a "
+            "1280x720 pick would report 1280x720, not 1294x811), i.e. it "
+            "regresses the case the spoof was written for, and #327 already "
+            "records that clamping the REPORTED outer is the move that "
+            "manufactured negative chrome. The root is R2 — `inner` is the "
+            "real content box and is not spoofable at the reporting layer "
+            "without breaking layout — and it is fixed at SOURCE by capping "
+            "the window, which is the Chromium arm's route and this arm's "
+            "open question. "
+            "⛔ NO BROWSER WAS LAUNCHED for PS-456: no engine binary, no "
+            "display and no root in the container, so every reading is "
+            "node:vm execution of the real emitted artifact. The frozen read "
+            "was separately observed on live firefox-20 under Xvfb by PS-304, "
+            "which recorded it as pre-existing and worth its own ticket.",
         ),
     },
 }
@@ -643,6 +684,23 @@ RECORDED_REASON_SOURCES = {
 DEVICE_EXT_RATIONALE = (
     "The engine spoofs hardwareConcurrency and (since the pixelscan port's "
     "slice 2)\ndeviceMemory, but not the screen"
+)
+
+# PS-456. The Firefox ``outer-size`` cell above records a RESIDUAL BOUND (R3 is
+# violated at a maximized window) rather than an absence, so it does not belong
+# in RECORDED_REASON_SOURCES — every entry there is asserted to be a
+# NOT_COVERED_RECORDED cell, and this one is COVERED. It is re-read here for the
+# same anti-rot purpose, on the DEVICE_EXT_RATIONALE pattern: the cell's bound
+# is only honest while the tree still states it, and the tree's copy is what a
+# reader of invisible_launch.py actually finds.
+#
+# ⚠️ ONE SOURCE LINE, deliberately — the same trap RECORDED_REASON_SOURCES
+# documents one direction over. `_collapse` normalises whitespace only; it does
+# not strip a docstring's leading indentation into nothing problematic here, but
+# a quote spanning two WRAPPED lines still has to match across the newline, and
+# picking a single line removes the question entirely.
+OUTER_SIZE_RESIDUAL_BOUND = (
+    "screen.width), so inner + chrome necessarily EXCEEDS it and the page reads"
 )
 
 
@@ -2060,6 +2118,24 @@ def test_device_ext_rationale_still_in_tree():
         encoding="utf-8"
     )
     assert _collapse(DEVICE_EXT_RATIONALE) in _collapse(text)
+
+
+def test_outer_size_residual_bound_still_in_tree():
+    # PS-456's bound is recorded in the matrix cell AND in the function whose
+    # behaviour it describes. If the docstring stops stating it, the cell is
+    # citing a position the tree no longer holds — the same failure mode
+    # test_recorded_reasons_still_in_tree guards for the absence cells, applied
+    # to a COVERED cell's residual rather than to an absence's reason.
+    assert MATRIX["outer-size"]["firefox"][0] == COVERED
+    text = (REPO_ROOT / "src/services/browser/invisible_launch.py").read_text(
+        encoding="utf-8"
+    )
+    assert _collapse(OUTER_SIZE_RESIDUAL_BOUND) in _collapse(text), (
+        "the outer-size cell records an R3 bound at the maximized edge, and "
+        "_outer_size_override_script no longer states it. Either restore the "
+        "docstring's account or restate the cell — do not leave the matrix "
+        "citing a bound the tree has stopped explaining."
+    )
 
 
 # --- shape invariants: an unknown may never read as coverage -----------------

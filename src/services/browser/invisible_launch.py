@@ -392,17 +392,65 @@ def _outer_size_override_script() -> str:
     innerWidth on a small window, an inner<outer==screen mismatch no real
     un-maximized window shows. Deriving outer from the live inner size keeps
     outer ≈ inner + chrome (both below screen), which is what a normal window
-    looks like. Chrome offsets match the engine's own (_CHROME_W/_CHROME_H)."""
+    looks like. Chrome offsets match the engine's own (_CHROME_W/_CHROME_H).
+
+    ⭐ PS-456: THE DERIVATION IS LAZY, AND THAT IS THE POINT OF THE THUNK.
+    ``def`` took the value as an ARGUMENT, so ``window.innerWidth + 14`` was
+    evaluated ONCE at init-script time and the getter closed over a frozen
+    number. After any window RESIZE the page read the size the window had at
+    page-load. When the window GREW, that stale outer fell BELOW the live inner
+    — a window smaller than its own content, measured at chrome -626x-269 on a
+    1280 -> 1920 grow, which is exactly the negative-chrome signature #327
+    deleted a fix for producing (R1 in tests/test_ps327_outer_size.py). The
+    shrink direction did not break R1 but reported chrome 654x451, a window
+    frame 654px wider than its content — its own implausible reading. Passing a
+    THUNK and calling it in the getter re-reads the live inner on every access;
+    nothing else about the emitted code moves, so with no resize the reported
+    values are byte-identical to before (asserted at six geometries by
+    tests/test_ps456_outer_size_tracks_resize.py, and by
+    test_reported_values_are_unchanged in tests/test_ff_language_override.py).
+
+    ⚠️ THE BOUND, RECORDED RATHER THAN LEFT SILENT — R3 AT inner == screen.
+    R3 is "outer <= screen". At a MAXIMIZED window the live inner EQUALS the
+    spoofed screen (the operator's pick is what kwargs["pin"] writes to
+    screen.width), so inner + chrome necessarily EXCEEDS it and the page reads
+    outer > screen. That position is NOT introduced here: the shipped eager
+    code reported the identical outer 1934x1171 against screen 1920x1080 for a
+    window that LAUNCHED maximized, and reported it for every later geometry
+    too because it never moved. Three positions were measured before choosing:
+
+      a plain recompute      R1 holds in every row; R3 breaks at inner==screen
+      a clamp at the screen  buys R3 — and MOVES the no-resize values at every
+                             geometry (1280x720 pick reported 1280x720, not
+                             1294x811), i.e. it changes behaviour in the case
+                             the spoof was actually written for
+      freezing (the base)    R1 broken after every grow, R3 broken anyway
+
+    The clamp was rejected on that measurement, not on taste: it trades an
+    always-present regression for an edge-case gain, and #327 already records
+    that clamping the REPORTED outer is the move that manufactured negative
+    chrome. The root of the R3 edge is R2 — `inner` is the real content box and
+    is not spoofable at the reporting layer without breaking layout — which is
+    the same conclusion tests/test_ps327_outer_size.py reaches, and it is fixed
+    at SOURCE by capping the window, not here. So this function's job is to
+    stop REPORTING a stale size; the maximized edge is a window-sizing
+    question, and it stays open and named rather than papered over."""
     return (
         "(() => {" + _native_cloak_js() +
         # The getter is what a page reaches through
         # Object.getOwnPropertyDescriptor(window,'outerWidth').get — cloak it as
         # the real accessor reads: .name "get outerWidth", source text
         # `function outerWidth() {...}` (SpiderMonkey drops the prefix there).
+        #
+        # `v` is a THUNK, called per access — NOT the value. See the docstring:
+        # taking the value froze it at init and the page read a stale size after
+        # every resize. Kept closure-scoped (no new global name for a detector
+        # to probe for — tests/test_ff_language_override.py asserts the only new
+        # globals are outerHeight and outerWidth).
         "const def=(o,k,v)=>{try{Object.defineProperty(o,k,"
-        "{get:__cloak(()=>v,'get '+k,k),configurable:true})}catch(e){}};"
-        "def(window,'outerWidth', window.innerWidth + 14);"
-        "def(window,'outerHeight', window.innerHeight + 91);"
+        "{get:__cloak(()=>v(),'get '+k,k),configurable:true})}catch(e){}};"
+        "def(window,'outerWidth', ()=>window.innerWidth + 14);"
+        "def(window,'outerHeight', ()=>window.innerHeight + 91);"
         "})();"
     )
 
