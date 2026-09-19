@@ -201,12 +201,72 @@ class Unmeasurable(RuntimeError):
     """
 
 
+# A manifest whose STEM IS A VERSION, at the archive root or one directory
+# down. Anchored at both ends rather than written as a `.manifest` suffix test,
+# because the same archive ships `IwaKeyDistribution/manifest.json` — a decoy a
+# looser matcher picks up, and then reads a version out of the wrong file.
+_VERSION_MANIFEST = re.compile(r"^(?:[^/]+/)?[0-9][0-9.]*\.manifest$")
+
+
+def _locate_windows_payload(names: list[str]) -> tuple[str | None, str, str]:
+    """Find the version manifest and the `chrome.dll` beside it.
+
+    TWO LAYOUTS ARE ACCEPTED, and the versioned one is tried first because it
+    is the more specific:
+
+        Chrome-bin/<version>/<version>.manifest   the 152 release's packaging
+        <anything>/<version>.manifest             flat — one top-level
+                                                  directory holding chrome.exe,
+                                                  chrome.dll and the manifest
+                                                  directly (the 153 release,
+                                                  built by upstream's
+                                                  `package.py` from FILES.cfg)
+
+    Returns `(version_dir, manifest_name, dll_name)`. **`version_dir` is None
+    for the flat layout** — deliberately, and not filled in with the top-level
+    directory: that directory is named for the PACKAGE
+    (`ungoogled-chromium_153.0.8010.47-1.1_windows_x64`), not for the Chromium
+    version, so it witnesses the version no more than the filename does. The
+    record's own rule is that a field which cannot be established must not
+    carry a value, and `BASE_WITNESSES` admits only string witnesses, so a None
+    here withdraws the directory from the witness set instead of fabricating
+    one.
+    """
+    versioned = sorted(
+        {
+            m.group(1)
+            for n in names
+            if (m := re.match(r"^Chrome-bin/([0-9][0-9.]*)/", n))
+        }
+    )
+    if len(versioned) > 1:
+        raise Unmeasurable(f"expected one Chrome-bin/<version>/, found {versioned}")
+    if versioned:
+        v = versioned[0]
+        return v, f"Chrome-bin/{v}/{v}.manifest", f"Chrome-bin/{v}/chrome.dll"
+
+    flat = sorted(n for n in names if _VERSION_MANIFEST.match(n))
+    if len(flat) != 1:
+        raise Unmeasurable(
+            "no version manifest in the archive: neither "
+            "Chrome-bin/<version>/<version>.manifest nor a flat "
+            f"<dir>/<version>.manifest (matched {flat})"
+        )
+    manifest_name = flat[0]
+    parent = manifest_name.rpartition("/")[0]
+    return None, manifest_name, f"{parent}/chrome.dll" if parent else "chrome.dll"
+
+
 def derive_windows_zip(path: Path, switches: list[str]) -> dict[str, object]:
-    """Chromium's Windows package names its own version twice, structurally:
-    the versioned `Chrome-bin/<v>/` directory and the `<v>.manifest` inside it,
-    whose `assemblyIdentity/@version` is the authoritative one. Both are read
-    and required to agree — a rename of the directory alone will not satisfy
-    this.
+    """Chromium's Windows package states its own version in a `<version>.
+    manifest`, whose `assemblyIdentity/@version` is the authoritative witness.
+
+    Where that manifest SITS depends on how the zip was packaged, and both
+    shapes ship: see `_locate_windows_payload`. When the layout also carries a
+    versioned `Chrome-bin/<v>/` directory, that second, independent statement
+    is returned alongside — so a rename of the directory alone will not satisfy
+    a record that declares both. A flat zip has no such second statement and
+    returns `version_dir: None` rather than a stand-in.
     """
     try:
         zf = zipfile.ZipFile(path)
@@ -215,18 +275,8 @@ def derive_windows_zip(path: Path, switches: list[str]) -> dict[str, object]:
 
     with zf:
         names = zf.namelist()
-        dirs = sorted(
-            {
-                m.group(1)
-                for n in names
-                if (m := re.match(r"^Chrome-bin/([0-9][0-9.]*)/", n))
-            }
-        )
-        if len(dirs) != 1:
-            raise Unmeasurable(f"expected one Chrome-bin/<version>/, found {dirs}")
-        version_dir = dirs[0]
+        version_dir, manifest_name, dll = _locate_windows_payload(names)
 
-        manifest_name = f"Chrome-bin/{version_dir}/{version_dir}.manifest"
         if manifest_name not in names:
             raise Unmeasurable(f"no {manifest_name} in the archive")
         manifest = zf.read(manifest_name).decode("utf-8", "replace")
@@ -237,7 +287,6 @@ def derive_windows_zip(path: Path, switches: list[str]) -> dict[str, object]:
             raise Unmeasurable("assemblyIdentity/@version not found in the manifest")
         manifest_version = m.group(1)
 
-        dll = f"Chrome-bin/{version_dir}/chrome.dll"
         if dll not in names:
             raise Unmeasurable(f"no {dll} in the archive")
         with zf.open(dll) as fh:
