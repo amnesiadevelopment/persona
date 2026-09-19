@@ -259,17 +259,44 @@ def _switch_blob() -> bytes:
     return b"".join(b"\x00" + s.encode() + b"\x00" for s in SWITCHES)
 
 
-def make_windows_zip(path: Path, version: str = "152.0.7977.75") -> None:
-    manifest = (
+def _win_manifest(version: str) -> str:
+    return (
         "<assembly xmlns='urn:schemas-microsoft-com:asm.v1' manifestVersion='1.0'>\n"
         f"  <assemblyIdentity name='{version}' version='{version}' type='win32'/>\n"
         "  <file name='chrome_elf.dll'/>\n"
         "</assembly>\n"
     )
+
+
+def make_windows_zip(path: Path, version: str = "152.0.7977.75") -> None:
+    manifest = _win_manifest(version)
     with zipfile.ZipFile(path, "w") as zf:
         zf.writestr(f"Chrome-bin/{version}/{version}.manifest", manifest)
         zf.writestr(f"Chrome-bin/{version}/chrome.dll", b"MZ" + _switch_blob() + b"\x00" * 64)
         zf.writestr("Chrome-bin/chrome.exe", b"MZ\x00\x00")
+
+
+def make_flat_windows_zip(path: Path, version: str = "153.0.8010.47") -> None:
+    """The shape upstream's `package.py` builds from `FILES.cfg`: ONE top-level
+    directory holding `chrome.exe`, `chrome.dll` and the version manifest
+    directly. No `Chrome-bin/`, and no versioned directory anywhere.
+
+    Two details are reproduced from the real `.47` asset because they are what
+    the deriver has to get right, not incidental colour:
+
+      * the top-level directory is named for the PACKAGE
+        (`…_153.0.8010.47-1.1_windows_x64`), NOT for the bare Chromium version
+        — which is why no version may be read out of it;
+      * `IwaKeyDistribution/manifest.json` really ships inside this archive. It
+        is the decoy that a `.manifest`-suffix or `manifest`-substring matcher
+        picks up, so it belongs in the fixture rather than in a comment.
+    """
+    top = f"ungoogled-chromium_{version}-1.1_windows_x64"
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr(f"{top}/{version}.manifest", _win_manifest(version))
+        zf.writestr(f"{top}/chrome.dll", b"MZ" + _switch_blob() + b"\x00" * 64)
+        zf.writestr(f"{top}/chrome.exe", b"MZ\x00\x00")
+        zf.writestr(f"{top}/IwaKeyDistribution/manifest.json", b'{"version": "9.9.9.9"}')
 
 
 def make_macos_dmg(path: Path, version: str = "152.0.7977.64") -> None:
@@ -328,6 +355,267 @@ def test_windows_deriver_is_unmeasurable_on_a_zip_with_no_chrome_bin(tmp_path):
         zf.writestr("readme.txt", "nothing here")
     with pytest.raises(Unmeasurable):
         derive_windows_zip(z, SWITCHES)
+
+
+# ── the flat Windows layout (PS-455) ────────────────────────────────────────
+def test_windows_deriver_reads_the_version_out_of_a_FLAT_zip(tmp_path):
+    """THE POINT OF PS-455. The `.47` Windows asset is built by upstream's
+    `package.py` and is flat, so the deriver's hard-coded
+    `Chrome-bin/<v>/<v>.manifest` found nothing and raised — reporting
+    `base.chromium_version` as never checked for a version the artifact states
+    plainly in exactly the file the deriver already treats as authoritative.
+    """
+    z = tmp_path / "flat.zip"
+    make_flat_windows_zip(z, "153.0.8010.47")
+    out = derive_windows_zip(z, SWITCHES)
+    assert out["manifest_version"] == "153.0.8010.47"
+    assert sorted(out["fingerprint_switches_present"]) == sorted(SWITCHES)
+
+
+def test_a_flat_zip_yields_no_version_dir_rather_than_the_package_directory(tmp_path):
+    """`version_dir` must be None, NOT the top-level directory.
+
+    That directory is named for the PACKAGE
+    (`ungoogled-chromium_153.0.8010.47-1.1_windows_x64`), so a version scraped
+    out of it would be read from the packaging revision's name and then
+    reported as a second, INDEPENDENT witness of the Chromium version — which
+    is the record's whole reason for carrying two. A field that cannot be
+    established must not carry a value.
+    """
+    z = tmp_path / "flat.zip"
+    make_flat_windows_zip(z, "153.0.8010.47")
+    out = derive_windows_zip(z, SWITCHES)
+    assert out["version_dir"] is None
+    assert "153.0.8010.47-1.1" not in repr(out)
+
+
+def test_the_decoy_iwa_manifest_json_is_not_read_as_the_version_manifest(tmp_path):
+    """`IwaKeyDistribution/manifest.json` really ships inside the archive, and
+    a suffix or substring matcher picks it up. Here it declares 9.9.9.9, so if
+    it were ever selected the deriver would not merely fail — it would report a
+    confident, wrong version. Hence the anchored stem pattern.
+    """
+    z = tmp_path / "flat.zip"
+    make_flat_windows_zip(z, "153.0.8010.47")
+    with zipfile.ZipFile(z) as zf:
+        assert any(n.endswith("IwaKeyDistribution/manifest.json") for n in zf.namelist())
+    assert derive_windows_zip(z, SWITCHES)["manifest_version"] == "153.0.8010.47"
+
+
+def test_the_versioned_layout_still_wins_when_a_zip_carries_both(tmp_path):
+    """Versioned first BECAUSE IT IS MORE SPECIFIC — pinned so the ordering is
+    a decision rather than an accident of how the two branches happen to sit.
+    A zip carrying both shapes must still yield the `Chrome-bin/` version_dir,
+    not fall through to the flat branch and drop it.
+    """
+    z = tmp_path / "both.zip"
+    make_windows_zip(z, "152.0.7977.75")
+    with zipfile.ZipFile(z, "a") as zf:
+        zf.writestr("stray-top-dir/153.0.8010.47.manifest", _win_manifest("153.0.8010.47"))
+    out = derive_windows_zip(z, SWITCHES)
+    assert out["version_dir"] == "152.0.7977.75"
+    assert out["manifest_version"] == "152.0.7977.75"
+
+
+def test_two_competing_flat_manifests_are_unmeasurable_rather_than_arbitrary(tmp_path):
+    """Ambiguity must go to the third state, not to whichever name sorts first.
+
+    Picking one of two disagreeing version statements would report a version
+    the archive does not unambiguously make — the "a record that has drifted
+    from the bytes is worse than none" failure, arrived at by a tie-break.
+    """
+    z = tmp_path / "ambiguous.zip"
+    with zipfile.ZipFile(z, "w") as zf:
+        for d, v in (("a", "153.0.8010.47"), ("b", "152.0.7977.75")):
+            zf.writestr(f"{d}/{v}.manifest", _win_manifest(v))
+            # Each candidate is otherwise COMPLETE. Without this the archive is
+            # unmeasurable for a duller reason — the first candidate's chrome.dll
+            # is missing — and the test passes while the ambiguity guard itself
+            # is reverted. Verified: it does.
+            zf.writestr(f"{d}/chrome.dll", b"MZ" + _switch_blob() + b"\x00" * 64)
+    with pytest.raises(Unmeasurable) as exc:
+        derive_windows_zip(z, SWITCHES)
+    assert "no version manifest" in str(exc.value)
+    assert "153.0.8010.47" in str(exc.value) and "152.0.7977.75" in str(exc.value)
+
+
+def test_a_flat_zip_witnesses_the_base_version_end_to_end(tmp_path):
+    """The ticket's actual outcome, as one assertion: `base.chromium_version`
+    goes GREEN off a flat zip, witnessed by `manifest_version` alone.
+
+    The per-asset rows and the record-level `base{}` row are separate code
+    paths (`verify_asset` vs `verify_base`), so deriving the version is not by
+    itself evidence that the record's headline claim is checked — that is
+    exactly the gap `BASE_WITNESSES` exists to close, and a None `version_dir`
+    passes through it.
+    """
+    import hashlib
+
+    assets = tmp_path / "assets"
+    assets.mkdir()
+    win = assets / "personium-153.0.8010.47-windows-x86_64.zip"
+    make_flat_windows_zip(win, "153.0.8010.47")
+
+    def df(v):
+        return {"value": v, "confidence": "derived_from_artifact"}
+
+    record = {
+        "schema": SCHEMA,
+        "tag": "personium-153.0.8010.47",
+        "base": {"chromium_version": df("153.0.8010.47")},
+        "patch_set": {"switches_introduced": df([df(s) for s in SWITCHES])},
+        "assets": [
+            {
+                "name": win.name,
+                "os": "windows",
+                "arch": "x86_64",
+                "format": "windows-zip",
+                "size_bytes": win.stat().st_size,
+                "sha256": hashlib.sha256(win.read_bytes()).hexdigest(),
+                # No `version_dir` declared: a flat zip does not witness one,
+                # so a record that declared it would be declaring a gap.
+                "derived": {
+                    "manifest_version": df("153.0.8010.47"),
+                    "fingerprint_switches_present": df(SWITCHES),
+                },
+            }
+        ],
+    }
+    records = tmp_path / "records"
+    records.mkdir()
+    (records / "personium-153.0.8010.47.json").write_text(
+        json.dumps(record, indent=2), encoding="utf-8"
+    )
+
+    report = Report()
+    lint_record(record, report)
+    derived = verify_asset(record, record["assets"][0], assets, report)
+    assert derived is not None, "the flat zip yielded nothing at all"
+    _V.verify_base(record, {win.name: derived}, report)
+
+    base_rows = [c for c in report.checks if c.name == "base.chromium_version"]
+    assert [c.verdict for c in base_rows] == ["GREEN"], [
+        (c.name, c.verdict, c.detail) for c in report.checks
+    ]
+    assert "manifest_version" in base_rows[0].detail
+    assert not report.red
+    assert run(records, assets) == 0
+
+
+def test_a_flat_zip_with_a_wrong_recorded_version_still_goes_red(tmp_path):
+    """The fix must not buy its green row by making the check unfalsifiable.
+
+    A deriver that starts measuring something is only worth having if the
+    measurement can still DISAGREE — so the same flat artifact, against a
+    record claiming a different version, must be RED and exit 1.
+    """
+    import hashlib
+
+    assets = tmp_path / "assets"
+    assets.mkdir()
+    win = assets / "personium-153.0.8010.47-windows-x86_64.zip"
+    make_flat_windows_zip(win, "153.0.8010.47")
+
+    def df(v):
+        return {"value": v, "confidence": "derived_from_artifact"}
+
+    record = {
+        "schema": SCHEMA,
+        "tag": "personium-153.0.8010.47",
+        "base": {"chromium_version": df("153.0.8010.99")},  # the lie
+        "patch_set": {"switches_introduced": df([df(s) for s in SWITCHES])},
+        "assets": [
+            {
+                "name": win.name,
+                "os": "windows",
+                "arch": "x86_64",
+                "format": "windows-zip",
+                "size_bytes": win.stat().st_size,
+                "sha256": hashlib.sha256(win.read_bytes()).hexdigest(),
+                "derived": {"fingerprint_switches_present": df(SWITCHES)},
+            }
+        ],
+    }
+    records = tmp_path / "records"
+    records.mkdir()
+    (records / "personium-153.0.8010.47.json").write_text(
+        json.dumps(record, indent=2), encoding="utf-8"
+    )
+    assert run(records, assets) == 1
+
+
+def test_declaring_version_dir_on_a_flat_asset_is_red_as_the_readme_warns(tmp_path):
+    """`engine/releases/README.md` tells the next record author NOT to carry
+    `derived.version_dir` across to a flat Windows asset, and states the exact
+    row they get if they do. This pins that stated consequence.
+
+    It matters because the README's own step 2 says "copy the existing record",
+    and the only existing record (`personium-152.0.7977.75.json`) declares
+    `version_dir` — that release's zip is versioned. Following the steps
+    literally walks the author into this row, so the warning is load-bearing
+    and the row it quotes has to keep being the row that appears.
+
+    The assertion is deliberately on RED rather than on UNMEASURED: the key IS
+    present in the deriver's output (as None), so this does not take the
+    "produced no such field" branch. That distinction is what
+    `_locate_windows_payload`'s docstring now spells out for its two callers,
+    and it is the reason a reader cannot infer this outcome from the benign
+    `verify_base` behaviour.
+    """
+    import hashlib
+
+    assets = tmp_path / "assets"
+    assets.mkdir()
+    win = assets / "personium-153.0.8010.47-windows-x86_64.zip"
+    make_flat_windows_zip(win, "153.0.8010.47")
+
+    def df(v):
+        return {"value": v, "confidence": "derived_from_artifact"}
+
+    record = {
+        "schema": SCHEMA,
+        "tag": "personium-153.0.8010.47",
+        "base": {"chromium_version": df("153.0.8010.47")},
+        "patch_set": {"switches_introduced": df([df(s) for s in SWITCHES])},
+        "assets": [
+            {
+                "name": win.name,
+                "os": "windows",
+                "arch": "x86_64",
+                "format": "windows-zip",
+                "size_bytes": win.stat().st_size,
+                "sha256": hashlib.sha256(win.read_bytes()).hexdigest(),
+                "derived": {
+                    # Carried over from the 152 record — the mistake the
+                    # README now warns about.
+                    "version_dir": df("153.0.8010.47"),
+                    "manifest_version": df("153.0.8010.47"),
+                    "fingerprint_switches_present": df(SWITCHES),
+                },
+            }
+        ],
+    }
+    records = tmp_path / "records"
+    records.mkdir()
+    (records / "personium-153.0.8010.47.json").write_text(
+        json.dumps(record, indent=2), encoding="utf-8"
+    )
+
+    report = Report()
+    verify_asset(record, record["assets"][0], assets, report)
+    rows = {c.name: c for c in report.checks}
+
+    assert rows["derived.version_dir"].verdict == "RED", [
+        (c.name, c.verdict, c.detail) for c in report.checks
+    ]
+    assert rows["derived.version_dir"].detail == (
+        "record '153.0.8010.47', artifact None"
+    ), "the README quotes this row verbatim — keep them in step"
+
+    # And the rest of the asset is unaffected: the manifest still witnesses
+    # the version, so this is a record defect and not a derivation failure.
+    assert rows["derived.manifest_version"].verdict == "GREEN"
+    assert run(records, assets) == 1
 
 
 def test_macos_deriver_reads_the_bundle_version_out_of_a_udif_image(tmp_path):

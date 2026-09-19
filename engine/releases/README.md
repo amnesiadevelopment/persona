@@ -74,7 +74,7 @@ read out of the artifact's own structure:
 | asset | derived from |
 |---|---|
 | Linux `.AppImage` | `X-AppImage-Version` in the extracted `.desktop` (the **packaging** tag, `…-1`), plus our switches in `opt/*/chrome` |
-| Windows `.zip` | the `Chrome-bin/<version>/` directory **and** `assemblyIdentity/@version` in `<version>.manifest` — two independent statements, both required |
+| Windows `.zip` | `assemblyIdentity/@version` in `<version>.manifest` — always; **plus** the `Chrome-bin/<version>/` directory as a second, independent statement **when the packaging has one** (see below) |
 | macOS `.dmg` | `CFBundleShortVersionString` of the `org.chromium.Chromium` bundle, read out of the UDIF/APFS image with stdlib only (no `hdiutil`, no `7z`) |
 
 Every asset also states which of the eleven switches
@@ -85,6 +85,28 @@ a rename and a re-upload in a way a digest does not.
 
 Digest and derivation are reported as **separate rows**. Neither stands in for
 the other.
+
+### The Windows zip ships in two layouts, and one of them witnesses once
+
+    Chrome-bin/<version>/<version>.manifest     versioned — the 152 packaging
+    <anything>/<version>.manifest               flat — the 153 packaging
+
+The **versioned** layout states the version twice: once in the directory name
+and once inside the manifest. The verifier returns both, so renaming the
+directory alone will not satisfy a record that declares both.
+
+The **flat** layout — what upstream's `package.py` builds from `FILES.cfg`, one
+top-level directory holding `chrome.exe`, `chrome.dll` and the manifest
+directly — states it **once**, in the manifest. Its top-level directory is
+named for the *package* (`ungoogled-chromium_153.0.8010.47-1.1_windows_x64`),
+not for the Chromium version, so scraping a version out of it would manufacture
+a second "independent" witness out of the packaging revision's name. The
+verifier deliberately returns `version_dir: None` there rather than a stand-in.
+
+So a flat asset is measured on one Windows statement, not two. That is a real
+reduction in corroboration and it is stated rather than papered over — the
+manifest is still the authoritative witness `derive_windows_zip()` has always
+treated as decisive, and the record's other assets remain independent of it.
 
 ---
 
@@ -126,6 +148,12 @@ Both are in the record's `discrepancies[]`, with their consequence stated.
 1. Cut the release as `RELEASING.md` describes.
 2. Copy the existing record, update `tag` / `published_at` / `assets[]`
    (name, `size_bytes`, `sha256` from the release API's `digest` field).
+   ⚠️ **Do not carry `derived.version_dir` across to a FLAT Windows asset.**
+   The only existing record (`personium-152.0.7977.75.json`) declares it
+   because that release's zip is versioned; a flat zip has no such directory
+   and the verifier reports `RED derived.version_dir — record '<v>', artifact
+   None`. Drop the field: a flat asset's Windows witness is
+   `manifest_version` alone.
 3. Fill `derived` from what you actually re-derived. **Never guess a value**;
    set `unknown` where you tried and could not. Note that an asset with **no**
    `derived` block at all is `UNMEASURED` (exit `2`), not a pass — its digest
@@ -146,7 +174,7 @@ every field wearing that label has a code path behind it:
 |---|---|
 | `assets[].sha256`, `size_bytes` | the file on disk |
 | `assets[].derived.*` | the per-format deriver's output |
-| `base.chromium_version` | the Windows `manifest_version` and `version_dir`, and the Linux `appimage_version` with its packaging revision dropped |
+| `base.chromium_version` | **any** admitted witness that an asset actually yielded, and all of them must agree: the Windows `manifest_version`, the Windows `version_dir` (absent on a flat zip), and the Linux `appimage_version` with its packaging revision dropped. A witness an asset does not yield is withdrawn, not counted against the record; if **none** is yielded, the field is UNMEASURED |
 | `base.ungoogled_tag` | the Linux `appimage_version` — the only asset carrying the packaging tag |
 | `patch_set.switches_introduced` | every declared switch must be found in the shipped machine code of **at least one** asset |
 
