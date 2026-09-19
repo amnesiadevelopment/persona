@@ -1053,7 +1053,7 @@ def test_chromium_column_desktop_proxied(monkeypatch, tmp_path):
         _spawn_chromium_args(
             monkeypatch,
             tmp_path,
-            Profile(name="masking-matrix-proxied", proxy="p1"),
+            Profile(name="mask-mtx-proxied", proxy="p1"),
             store=_StoreWithCheckedProxy,
         )["args"]
     )
@@ -1081,14 +1081,14 @@ def test_chromium_geo_cell_is_proxy_conditional(monkeypatch, tmp_path):
     # then, does the absence measure the gate.
     direct = _ext_vectors(
         _spawn_chromium_args(
-            monkeypatch, tmp_path, Profile(name="masking-matrix-direct")
+            monkeypatch, tmp_path, Profile(name="mask-mtx-direct")
         )["args"]
     )
     proxied = _ext_vectors(
         _spawn_chromium_args(
             monkeypatch,
             tmp_path,
-            Profile(name="masking-matrix-geo-proxied", proxy="p1"),
+            Profile(name="mask-mtx-geoproxy", proxy="p1"),
             store=_StoreWithCheckedProxy,
         )["args"]
     )
@@ -1115,14 +1115,14 @@ def test_chromium_mobile_and_device_are_mutually_exclusive(monkeypatch, tmp_path
         _spawn_chromium_args(
             monkeypatch,
             tmp_path,
-            Profile(name="masking-matrix-mobile", os_type="ios", device_type="mobile"),
+            Profile(name="mask-mtx-mobile", os_type="ios", device_type="mobile"),
         )["args"]
     )
     assert "mobile" in mobile and "device" not in mobile
 
     desktop = _ext_vectors(
         _spawn_chromium_args(
-            monkeypatch, tmp_path, Profile(name="masking-matrix-desktop")
+            monkeypatch, tmp_path, Profile(name="mask-mtx-desktop")
         )["args"]
     )
     assert "device" in desktop and "mobile" not in desktop
@@ -1134,12 +1134,12 @@ def test_chromium_search_is_the_only_platform_gated_builder(monkeypatch, tmp_pat
     # on Linux would be a per-platform coverage hole no cell above states.
     linux = _ext_vectors(
         _spawn_chromium_args(
-            monkeypatch, tmp_path, Profile(name="masking-matrix-linux"), linux=True
+            monkeypatch, tmp_path, Profile(name="mask-mtx-linux"), linux=True
         )["args"]
     )
     other = _ext_vectors(
         _spawn_chromium_args(
-            monkeypatch, tmp_path, Profile(name="masking-matrix-nonlinux")
+            monkeypatch, tmp_path, Profile(name="mask-mtx-nonlinux")
         )["args"]
     )
     assert other - linux == {"search"}
@@ -1751,7 +1751,7 @@ def test_a_forced_desktop_launch_really_carries_the_window_cap(
     forced = _spawn_chromium_args(
         monkeypatch,
         tmp_path,
-        Profile(name="masking-matrix-forced-res", resolution="1280x720"),
+        Profile(name="mask-mtx-forcedres", resolution="1280x720"),
     )["args"]
     assert "--window-size=1280,720" in forced, (
         "the outer-size cell names spawn_browser's --window-size arm as its "
@@ -1765,7 +1765,7 @@ def test_a_forced_desktop_launch_really_carries_the_window_cap(
     # fire — asserted rather than assumed, because a cap that fired here would
     # resize every operator's window on a profile that never asked for it.
     auto = _spawn_chromium_args(
-        monkeypatch, tmp_path, Profile(name="masking-matrix-auto-res")
+        monkeypatch, tmp_path, Profile(name="mask-mtx-auto-res")
     )["args"]
     assert not [a for a in auto if a.startswith("--window-size")], (
         "an AUTO desktop launch now emits --window-size. The cell claims AUTO "

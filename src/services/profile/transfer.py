@@ -10,6 +10,7 @@ from ...core.logging import get_logger
 from ...models.hardware_generation import CURRENT_HARDWARE_GENERATION
 from ...models.profile import Profile
 from ...utils.validation import validate_profile_name
+from ..browser.env_policy import CHILD_TMPDIR_NAME, LEGACY_CHILD_TMPDIR_NAMES
 
 logger = get_logger("profile.transfer")
 
@@ -24,15 +25,27 @@ _MAX_ENTRIES = 50_000
 #
 # * ``.persona-mtls`` — the mTLS terminator drops the client cert + UNENCRYPTED
 #   private key here. A secrecy exclusion.
-# * ``.persona-tmp`` — the browser child's scratch directory (PS-129, see
-#   env_policy.browser_child_tmpdir). A BULK exclusion, and it is load-bearing:
+# * ``CHILD_TMPDIR_NAME`` — the browser child's scratch directory (PS-129, see
+#   env_policy.browser_child_tmpdir; PS-438 renamed it from ``.persona-tmp`` to
+#   ``.pt`` to give long profile names socket-path room, which is why this set
+#   reads the constant rather than spelling a literal). A BULK exclusion, and it
+#   is load-bearing:
 #   pinning the child's TMPDIR inside the profile is what makes a crash-stranded
 #   temp file wipeable, but it also puts the engine's ~714MB AppImage
 #   self-extraction under the profile dir — MEASURED, and it survives a CLEAN
 #   exit, not just a crash. Without this line every profile export would grow by
 #   that much. Scratch is per-launch state that no importer wants and the child
 #   recreates on demand, so excluding it loses nothing.
-_EXPORT_EXCLUDE_DIRS = {".persona-mtls", ".persona-tmp"}
+# * ``".persona-tmp"`` — the scratch directory's PRE-rename spelling, kept until
+#   every profile has launched once under the new name (``env_policy.
+#   LEGACY_CHILD_TMPDIR_NAMES`` is the authority on the spelling; prepare_child_
+#   tmpdir sweeps it away per launch). A profile exported between the upgrade
+#   and its next launch still carries the old extraction, and this literal is
+#   what keeps that export from growing by ~714MB — the exact bulk PS-129
+#   exists to prevent. It is a literal ON PURPOSE and cannot drift the way the
+#   constant-fix above prevents: the old name is frozen history, nothing can
+#   ever rename it again. Drop it once legacy profiles are gone in practice.
+_EXPORT_EXCLUDE_DIRS = {".persona-mtls", CHILD_TMPDIR_NAME, *LEGACY_CHILD_TMPDIR_NAMES}
 
 # DESTINATION POLICY — export writes wherever the caller says, on BOTH lanes.
 # This is a decision (PS-180), not an oversight. It was raised as a defect,

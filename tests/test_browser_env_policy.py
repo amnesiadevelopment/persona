@@ -528,7 +528,7 @@ def test_both_engines_pin_the_same_scratch_directory(monkeypatch, tmp_path):
     # at the other.
     #
     # FALSIFICATION, run before shipping: re-inlining the value at either seam
-    # — e.g. `env["TMPDIR"] = os.path.join(profile_dir, ".persona-tmp")` in
+    # — e.g. `env["TMPDIR"] = os.path.join(profile_dir, CHILD_TMPDIR_NAME)` in
     # process.py instead of the shared call — must turn this RED. It does: an
     # inline pin at the chromium seam sets TMPDIR but not TMP/TEMP, and the
     # per-var loop below catches the divergence.

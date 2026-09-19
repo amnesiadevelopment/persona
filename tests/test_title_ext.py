@@ -58,7 +58,7 @@ from tests.test_process import _spawn_chromium_args
 # The operator-chosen label the tests hunt for. Distinctive enough that a
 # substring hit anywhere in a realm is unambiguous, and shaped like a label a
 # real operator would pick.
-OPERATOR_LABEL = "acc-42-tania-payouts"
+OPERATOR_LABEL = "acc7-tania-payout"
 
 # A deliberately MEANINGLESS label, for the assertions that must hold even when
 # the name itself discloses nothing (AC 3). If a test that uses this one fails,

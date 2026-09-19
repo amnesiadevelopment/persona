@@ -246,7 +246,7 @@ def test_coherent_records_are_unchanged_on_all_four_vectors(
         monkeypatch,
         tmp_path,
         Profile(
-            name=f"ps236-{os_type}-{device_type}",
+            name=f"p236-{os_type[:3]}-{device_type[0]}",
             os_type=os_type,
             device_type=device_type,
         ),

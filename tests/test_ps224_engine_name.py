@@ -666,6 +666,12 @@ _ALLOWED_FRAGMENTS = (
     # brand is ours, the version number is upstream's, and both are correct.
     ("services/engine/policy.py", "maximum Chromium major"),
     ("services/engine/policy.py", "(Chromium "),
+    # The upstream engine's OWN singleton-socket path template, quoted back to
+    # the operator by PS-438's launch guard when a profile name cannot fit it.
+    # This is the upstream project's identifier as the shipped binary lays it
+    # down on disk — a measured fact about the artifact, not our brand — so it
+    # is spelled literally and this entry earns its place by saying so.
+    ("services/browser/env_policy.py", "org.chromium.Chromium.XXXXXX"),
 )
 
 #: Spellings of our Chromium engine that must never be TYPED into an

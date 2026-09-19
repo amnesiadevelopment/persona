@@ -140,3 +140,33 @@ def test_export_excludes_the_browser_child_scratch_dir(tmp_path):
         f"{[n for n in names if CHILD_TMPDIR_NAME in n]}"
     )
     assert not any("appimage_extracted" in n for n in names)
+
+
+def test_export_excludes_the_legacy_scratch_dir_spelling(tmp_path):
+    # PS-438 renamed the scratch directory; a profile exported between the
+    # upgrade and its next launch still carries the OLD spelling — and under it
+    # the engine's ~714MB AppImage extraction. The exclusion set must know both
+    # spellings or that first export grows by the exact bulk PS-129 exists to
+    # prevent. The old spelling is pinned as a LITERAL here (frozen history: a
+    # test reading the legacy constant would follow a rename of it and stop
+    # pinning the past), mirroring _EXPORT_EXCLUDE_DIRS' own comment.
+    pdir = tmp_path / "pdata"
+    legacy = pdir / ".persona-tmp"
+    (legacy / "appimage_extracted_deadbeef" / "opt").mkdir(parents=True)
+    (legacy / "appimage_extracted_deadbeef" / "opt" / "chrome").write_text(
+        "x" * 1024, encoding="utf-8"
+    )
+    (pdir / "cookies.sqlite").write_text("ok", encoding="utf-8")
+
+    profile = Profile(name="p", os_type="windows")
+    ok, path = export_to_zip(profile, str(pdir), str(tmp_path))
+    assert ok is True
+    with zipfile.ZipFile(path) as z:
+        names = z.namelist()
+
+    assert any("cookies.sqlite" in n for n in names)
+    assert not any(".persona-tmp" in n for n in names), (
+        "the pre-rename scratch dir rode along in the export: "
+        f"{[n for n in names if '.persona-tmp' in n]}"
+    )
+    assert not any("appimage_extracted" in n for n in names)

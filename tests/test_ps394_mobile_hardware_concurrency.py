@@ -155,7 +155,7 @@ def test_an_iOS_profile_is_launched_with_its_PRESETS_cores(seed, monkeypatch, tm
     )
 
     profile = Profile(
-        name=f"ps394-ios-{seed}",
+        name=f"ps394-{seed:x}",
         engine="chromium",
         os_type="ios",
         device_type="mobile",
@@ -185,7 +185,7 @@ def test_an_Android_profile_is_launched_with_its_PRESETS_cores(
     """
     preset = pick_preset(seed, "android", 0)
     profile = Profile(
-        name=f"ps394-android-{seed}",
+        name=f"ps394-{seed:x}",
         engine="chromium",
         os_type="android",
         device_type="mobile",

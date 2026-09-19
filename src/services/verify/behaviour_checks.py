@@ -1474,8 +1474,9 @@ def _survivor_profile(ctx: Context, name: str):
     STYLISTIC — see :data:`SOCKET_BOUND_PROFILE_NAMES`, which is where the two
     names live and where the arithmetic that sizes them is stated. Chromium's
     process singleton binds a UNIX socket at
-    ``<user-data-dir>/.persona-tmp/org.chromium.Chromium.XXXXXX/
-    SingletonSocket``, and ``sun_path`` is 108 bytes. The profile name is a
+    ``<user-data-dir>/<scratch>/org.chromium.Chromium.XXXXXX/
+    SingletonSocket`` — the scratch dir is ``env_policy.CHILD_TMPDIR_NAME`` —
+    and ``sun_path`` is 108 bytes. The profile name is a
     path COMPONENT of that, under a scratch PERSONA_HOME, so a descriptive
     name like ``ps347-survivors-falsify`` pushed it over: chromium exited FATAL
     "Socket path too long" ~6s in, which reads from outside as a tree that

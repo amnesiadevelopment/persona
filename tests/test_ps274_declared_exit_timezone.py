@@ -387,7 +387,7 @@ def test_a_declared_zone_reaches_the_real_chromium_argv(tmp_path, monkeypatch):
             captured["args"] = args
             self.pid = os.getpid()
 
-    monkeypatch.setattr(process, "DATA_DIR", str(tmp_path / "browsers"))
+    monkeypatch.setattr(process, "DATA_DIR", str(tmp_path))
     monkeypatch.setattr(process, "ProxyStore", _Store)
     monkeypatch.setattr(process, "BookmarkStore", _Bookmarks)
     monkeypatch.setattr(process, "write_window_entry", lambda name: None)
