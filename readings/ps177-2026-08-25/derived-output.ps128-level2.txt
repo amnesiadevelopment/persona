@@ -7,7 +7,7 @@ reading.firefox.windows.seed1337.json
   declared_machine_honoured: False
      ^ the engine was NOT asked-and-obeyed. This record states what was PRESENTED,
        not what was requested (product issue #211).
-  exit                     : 95.49.113.111 Warsaw/PL Orange Polska Spolka Akcyjna Europe/Warsaw
+  exit                     : 95.49.x.x Warsaw/PL Orange Polska Spolka Akcyjna Europe/Warsaw
   masking layer            : route=init_scripts installed=audio,locale,webgl complete=True
   counts                   : 39 read, 11 absent, 10 unobtainable (60 rows)
   evidence verdict         : sufficient — 24/27 fingerprint rows (88.9%), from 4 checker(s)
@@ -52,7 +52,7 @@ reading.firefox.windows.seed4242.json
   declared_machine_honoured: False
      ^ the engine was NOT asked-and-obeyed. This record states what was PRESENTED,
        not what was requested (product issue #211).
-  exit                     : 95.49.113.111 Warsaw/PL Orange Polska Spolka Akcyjna Europe/Warsaw
+  exit                     : 95.49.x.x Warsaw/PL Orange Polska Spolka Akcyjna Europe/Warsaw
   masking layer            : route=init_scripts installed=audio,locale,webgl complete=True
   counts                   : 38 read, 12 absent, 10 unobtainable (60 rows)
   evidence verdict         : sufficient — 24/27 fingerprint rows (88.9%), from 4 checker(s)

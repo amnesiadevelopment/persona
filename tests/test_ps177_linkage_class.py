@@ -23,7 +23,7 @@ hand-built dict. A check observed only on inputs invented to satisfy it has not
 been observed. Both branches have a *real* fixture:
 
 * **The answerable arm** — ``readings/ps128-2026-08-23/run1-matrix/`` firefox
-  windows seeds ``1337`` and ``4242``. Same exit (``95.49.113.111``), same
+  windows seeds ``1337`` and ``4242``. Same exit (masked in-tree), same
   masking layer, 3.5 minutes apart. 15 fingerprint rows read on both sides:
   9 entropy-bearing, 6 verdicts. This arm is why the comparator can be tested
   against reality at all — it is the corpus' only two-seed arm with

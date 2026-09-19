@@ -123,7 +123,7 @@ bullet:
 
   But building the comparator surfaced that the CORPUS already held a two-seed arm nobody had
   ever diffed: readings/ps128-2026-08-23/run1-matrix/, firefox/windows at seeds 1337 and 4242,
-  same exit (95.49.113.111), same masking layer, 3.5 minutes apart. Diffed, it ANSWERS Level 2
+  same exit (95.49.x.x), same masking layer, 3.5 minutes apart. Diffed, it ANSWERS Level 2
   for that one arm, and the answer is a FAILURE:
 
       8 of 9 entropy-bearing rows differ across the two seeds (canvas_data_hash,

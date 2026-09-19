@@ -31,7 +31,7 @@
   "exit": {
     "city": "Warsaw",
     "country": "PL",
-    "ip": "95.49.113.111",
+    "ip": "95.49.x.x",
     "org": "Orange Polska Spolka Akcyjna",
     "region": "Masovian Voivodeship",
     "timezone": "Europe/Warsaw"
@@ -259,11 +259,11 @@
       "adverse": false,
       "checker": "engine-exit",
       "item": "observed_ip",
-      "matched_text": "\"ip\": \"95.49.113.111\"",
+      "matched_text": "\"ip\": \"95.49.x.x\"",
       "pattern": "\"ip\"\\s*:\\s*\"([^\"]+)\"",
       "sort": "exit",
       "state": "read",
-      "value": "95.49.113.111"
+      "value": "95.49.x.x"
     },
     {
       "adverse": false,
@@ -367,7 +367,7 @@
       "item": "observed_ip",
       "sort": "exit",
       "state": "read",
-      "value": "95.49.113.111"
+      "value": "95.49.x.x"
     },
     {
       "adverse": false,
@@ -558,7 +558,7 @@
       "item": "observed_ip",
       "sort": "exit",
       "state": "read",
-      "value": "95.49.113.111:41030"
+      "value": "95.49.x.x:41030"
     },
     {
       "adverse": false,

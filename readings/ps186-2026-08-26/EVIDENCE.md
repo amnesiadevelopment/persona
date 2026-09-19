@@ -118,9 +118,9 @@ says "a third firefox seed settles it". This delivers a **fourth**.
 
 | engine | seed | hash | exit | ASN | day |
 |---|---|---|---|---|---|
-| firefox | 1337 | `51df3565` | `95.49.113.111` | Orange | 08-23 |
+| firefox | 1337 | `51df3565` | `95.49.x.x` | Orange | 08-23 |
 | firefox | 1337 | `51df3565` | `83.175.185.209` | AS9141 P4 | 08-24 |
-| firefox | 4242 | `51df3565` | `95.49.113.111` | Orange | 08-23 |
+| firefox | 4242 | `51df3565` | `95.49.x.x` | Orange | 08-23 |
 | firefox | 4242 | `51df3565` | `83.175.185.209` | AS9141 P4 | 08-24 |
 | **firefox** | **5150** | **`51df3565`** | `109.243.64.38` | AS39603 P4 | **08-26** |
 | **firefox** | **24601** | **`51df3565`** | `109.243.69.197` | AS39603 P4 | **08-26** |

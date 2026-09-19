@@ -1176,7 +1176,7 @@ def _exit_json(country="PL", ip="91.150.1.1"):
     }, indent=2)
 
 
-def _ipwho_json(country_code="PL", ip="95.49.113.111"):
+def _ipwho_json(country_code="PL", ip="203.0.113.11"):
     """The SECOND provider's dialect, copied from a real body captured through
     the mobile exit on 2026-08-23 (PS-128).
 
@@ -1302,7 +1302,7 @@ def test_a_rate_limited_first_provider_falls_through_to_the_second():
     # It really did fall through rather than reading the 429 as an answer.
     assert any("ipinfo.io" in url for url in live.visited)
     assert any("ipwho.is" in url for url in live.visited)
-    assert "95.49.113.111" in text
+    assert "203.0.113.11" in text
 
 
 def test_the_second_providers_dialect_is_read_as_PL_not_as_Poland():
@@ -1324,7 +1324,7 @@ def test_the_second_providers_dialect_is_read_as_PL_not_as_Poland():
     # than landing ABSENT and quietly shrinking the record.
     assert by_id["timezone"].value == "Europe/Warsaw"
     assert by_id["org"].value == "Orange Polska Spolka Akcyjna"
-    assert by_id["observed_ip"].value == "95.49.113.111"
+    assert by_id["observed_ip"].value == "203.0.113.11"
 
 
 def test_a_wrong_country_is_NOT_retried_against_a_friendlier_provider():
