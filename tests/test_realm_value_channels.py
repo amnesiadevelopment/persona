@@ -381,10 +381,13 @@ def test_the_slot_is_not_itself_on_the_global(shipped):
     # The fix must not trade two names for a third. `__pnaRealm` hangs off
     # `Object`, so the GLOBAL sweep — the one probes.py runs — gains nothing.
     #
-    # THE HONEST BOUND, inherited from PS-93 and NOT closed here: a detector
+    # THE HONEST BOUND, inherited from PS-93 and RULED ON by PS-400: a detector
     # walking `getOwnPropertyNames(Object)` still finds `__pnaRealm`. That is
-    # out of scope, is stated in worker_wrap.py in place, and this assertion
-    # deliberately does not claim otherwise.
+    # out of scope here and this assertion deliberately does not claim
+    # otherwise — but it is no longer an open question. All four alternatives
+    # (closure, Symbol, per-profile name, hiding the name) were executed with
+    # controls and each is worse than what ships; see worker_wrap.py above
+    # `realm_guard_js` and tests/test_ps400_realm_slot_name.py.
     assert shipped["topSlotOnGlobal"] is False, (
         "__pnaRealm appeared on the GLOBAL object — the slot must hang off "
         "Object, or this change swapped two swept names for one"
