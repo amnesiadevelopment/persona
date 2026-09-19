@@ -294,7 +294,7 @@ def build_mobile_extension(
     css_width: int,
     css_height: int,
     dpr: float,
-    device_memory: int,
+    device_memory: float,
     hardware_concurrency: int,
     touch_points: int = 5,
 ) -> str:
@@ -336,7 +336,17 @@ def build_mobile_extension(
         .replace("__CSS_W__", str(int(css_width)))
         .replace("__CSS_H__", str(int(css_height)))
         .replace("__DPR__", repr(float(dpr)))
-        .replace("__MEM__", str(int(device_memory)))
+        # ⛔ FLOAT, NOT `int()` — the legal set is (0.25, 0.5, 1, 2, 4, 8) and
+        # `str(int(0.25))` is `"0"`, which is itself a value no browser can
+        # report. Truncation here would silently convert a LEGAL sub-1 figure
+        # into an illegal one at the last possible moment, defeating the clamp
+        # the caller applies (`process.py` passes `spec_device_memory(...)`).
+        # No preset declares a sub-1 figure today, so this is a latent trap
+        # rather than a live defect — which is exactly why it is worth closing
+        # while the surrounding invariant is being established. JS `8.0` and
+        # `8` are the same Number, so the emitted value is unchanged for every
+        # preset that exists.
+        .replace("__MEM__", repr(float(device_memory)))
         .replace("__HWC__", str(int(hardware_concurrency)))
         .replace("__MOBILE_LEAF_CLOAK__", chromium_leaf_cloak_js(4))
         .replace("__MOBILE_REALM_BOOTSTRAP__", realm_bootstrap_js("applyMobilePatch"))
