@@ -1823,6 +1823,46 @@ def chromium_leaf_cloak_js(indent: int = 4) -> str:
 # SWEPT FOR SYMBOLS", so a symbol would satisfy the probe's regex while
 # breaching the in-tree rule it encodes.
 #
+# ⭐ PS-400 RULED ON THAT BOUND. It is no longer "declined, unexamined" — every
+# alternative was executed with controls and every one is WORSE than what ships.
+# The bound STANDS, now as a decision rather than an omission. Do not re-open it
+# without new evidence; tests/test_ps400_realm_slot_name.py pins each ruling and
+# each control was shown to bite.
+#
+#   1. CLOSURE / WeakMap keyed on realm — refuted by constraint (b) above,
+#      executed: two independent evaluations of one source into one realm give
+#      APPLIED/APPLIED (a fresh closure per evaluation, so dedup never fires),
+#      against APPLIED/SKIPPED for what ships. ⛔ PS-368's `__pnaName` cloak is
+#      NOT the precedent it looks like: its producer and consumer are the SAME
+#      invocation, so a closure sufficed there. The registry's reader shares no
+#      closure with its writer. Same family, different problem.
+#   2. SYMBOL — refuted above, and re-measured: it relocates the name to
+#      `getOwnPropertySymbols`, one more line for a detector rather than zero.
+#   3. ⭐ PER-PROFILE SEED-DERIVED NAME — refused, and it is a REGRESSION, not
+#      the partial win it appears to be. It does NOT reduce detection: `Object`'s
+#      own property names are ECMA-262 SPECIFIED, so a detector diffs against the
+#      SPEC VOCABULARY — public and static, needing no per-host control — and
+#      `own name ∉ spec` catches a random name exactly as it catches this one.
+#      Meanwhile a name that is identical across every realm and leaf of one
+#      profile, stable across restarts and unique per profile is a SUPERCOOKIE:
+#      one-line-readable, surviving cookie and storage clearing, ~41 bits against
+#      the ~33 needed to index every human alive. The SHARED literal carries
+#      ZERO — every persona profile reads the same string, which is what makes
+#      them mutually indistinguishable here. ⛔ THE SHARED CONSTANT IS THEREFORE
+#      LOAD-BEARING, not an implementation accident. Do not seed this name.
+#   4. HIDING THE NAME — refused on cost: eight independent entry points expose
+#      an own property name (`getOwnPropertyNames`, `Reflect.ownKeys`,
+#      `getOwnPropertyDescriptors`, `getOwnPropertyDescriptor`, `in`,
+#      `Object.hasOwn`, `hasOwnProperty`, a direct read). Suppressing it means
+#      wrapping core intrinsics ordinary page code calls on a hot path — a
+#      larger tell than the one name, and a behavioural change besides.
+#
+# THE RESIDUAL, AND WHY IT IS STRUCTURAL: one unexpected own name stays on
+# `Object`. A cross-realm channel must hang off something reachable from another
+# realm's global, and "reachable from another realm's global" is what an own
+# property IS — so the ticket's stated bar ("reachable across realms without any
+# property on any shared global") is unsatisfiable as written, not merely unmet.
+#
 # FAIL OPEN, never closed. If `defineProperty` is refused the leaf RE-RUNS
 # rather than bailing — matching `fresh()`, which returns true when `WeakSet` is
 # unavailable. A re-run costs a double-applied spoof; a false bail costs an
@@ -1931,6 +1971,23 @@ def realm_guard_js(module_key: str, indent: int = 4) -> str:
 # HONEST BOUND, inherited not closed: a detector walking
 # `getOwnPropertyNames(Object)` still finds `__pnaRealm`. PS-93 states that
 # bound in place and this slice does not claim to close it.
+#
+# ⭐ PS-400 RULED ON IT, and the ruling lives in full above `realm_guard_js` —
+# read it there rather than re-deriving it here. In one line: the bound STANDS
+# as a decision, because all four alternatives (closure, Symbol, per-profile
+# name, hiding the name) were executed and each is worse than what ships.
+#
+# ⛔ THE ONE THING TO KNOW BEFORE EDITING THIS FUNCTION: the slot name is a
+# SHARED CONSTANT ACROSS PROFILES, deliberately, and that is load-bearing. Every
+# persona profile reading the same string is what makes them mutually
+# indistinguishable on this vector (zero bits). A per-profile seed-derived name
+# — which looks like a privacy improvement and was proposed as one — would turn
+# it into a stable, unique, one-line-readable supercookie while leaving
+# detection unchanged, because `Object`'s own names are ECMA-262 specified and a
+# detector diffs against the spec rather than against a host baseline.
+# tests/test_ps400_realm_slot_name.py fails if the name is ever seeded, and
+# fails separately if this emitter and `realm_guard_js` ever disagree on it —
+# a partial rename breaks dedup AND silently nulls the iframe->top crossing.
 def realm_slot_js(indent: int = 4) -> str:
     """Inline JS defining ``__pnaSlot(R, create)`` — the per-realm value slot.
 
