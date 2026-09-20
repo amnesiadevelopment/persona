@@ -247,6 +247,19 @@ def test_outer_size_override_script_ties_outer_to_window():
     js = _outer_size_override_script()
     assert "outerWidth" in js and "outerHeight" in js
     assert "innerWidth" in js  # derives outer from the real inner size
+    # PS-456: "ties to the real window" is a claim about the LIVE window, and
+    # this file can only see source text — so it asserts the one STRUCTURAL
+    # fact that distinguishes a live read from a frozen one (the derivation is
+    # inside an arrow, evaluated per access, rather than passed as an
+    # already-computed value), and deliberately does NOT pin the expression
+    # inside that arrow. Pinning the expression made this test fight the
+    # hardening that stopped a page steering the value via the [Replaceable]
+    # `innerWidth` shadow, while proving nothing about behaviour either way.
+    # The VALUE-level proofs — that a resize IS tracked, and that a page
+    # CANNOT steer it — live in tests/test_ps456_outer_size_tracks_resize.py,
+    # which runs the script.
+    assert "def(window,'outerWidth', ()=>" in js
+    assert "def(window,'outerHeight', ()=>" in js
 
 
 def test_profile_prefs_force_dark_theme():

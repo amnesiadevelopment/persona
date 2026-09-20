@@ -392,17 +392,125 @@ def _outer_size_override_script() -> str:
     innerWidth on a small window, an inner<outer==screen mismatch no real
     un-maximized window shows. Deriving outer from the live inner size keeps
     outer ≈ inner + chrome (both below screen), which is what a normal window
-    looks like. Chrome offsets match the engine's own (_CHROME_W/_CHROME_H)."""
+    looks like. Chrome offsets match the engine's own (_CHROME_W/_CHROME_H).
+
+    ⭐ PS-456: THE DERIVATION IS LAZY, AND THAT IS THE POINT OF THE THUNK.
+    ``def`` took the value as an ARGUMENT, so ``window.innerWidth + 14`` was
+    evaluated ONCE at init-script time and the getter closed over a frozen
+    number. After any window RESIZE the page read the size the window had at
+    page-load. When the window GREW, that stale outer fell BELOW the live inner
+    — a window smaller than its own content, measured at chrome -626x-269 on a
+    1280 -> 1920 grow, which is exactly the negative-chrome signature #327
+    deleted a fix for producing (R1 in tests/test_ps327_outer_size.py). The
+    shrink direction did not break R1 but reported chrome 654x451, a window
+    frame 654px wider than its content — its own implausible reading. Passing a
+    THUNK and calling it in the getter re-reads the live inner on every access;
+    the ARITHMETIC is untouched, so with no resize the reported values are
+    byte-identical to before (asserted at six geometries by
+    tests/test_ps456_outer_size_tracks_resize.py, and by
+    test_reported_values_are_unchanged in tests/test_ff_language_override.py).
+
+    ⛔ THE THUNK CAPTURES THE NATIVE GETTER — IT DOES NOT RE-READ BY NAME.
+    ``innerWidth`` is [Replaceable] in the HTML spec: assigning to it from page
+    script installs an OWN data property that shadows the prototype accessor.
+    A thunk written ``()=>window.innerWidth + 14`` therefore resolves through
+    that shadow, and one line of page JS steers a spoofed value —
+    ``window.innerWidth=5`` makes ``outerWidth`` report 19, which announces the
+    derivation ``outer = inner + 14`` in a single read; ``innerWidth="1280"``
+    makes it return the STRING "128014"; a throwing replacement makes it THROW.
+    On an unpatched engine ``outerWidth`` and ``innerWidth`` are two independent
+    [Replaceable] attributes, so assigning one cannot move the other — a probe
+    with the one-line, deterministic, zero-false-positive shape PS-22 and PS-119
+    describe as a live masking tell, needing no ``defineProperty``. The EAGER
+    form was immune (it read inner once, before any page script ran), so a
+    by-name thunk would have traded the resize bug for a NEW detector probe.
+    ``cap`` walks the prototype chain once at init, takes the native getter and
+    calls it on the captured receiver, so the live window is read through the
+    accessor a page cannot reach. Both halves are load-bearing: ``innerWidth``
+    is not an OWN property of ``window``, so skipping the WALK leaves the
+    descriptor undefined and falls silently through to the by-name path fixing
+    nothing; and ``window`` is [Replaceable] too and the native getter
+    brand-checks its receiver, so re-reading ``window`` at access time calls the
+    getter on the page's replacement and makes ``outerWidth`` THROW ("Illegal
+    invocation") — while the plain by-name form fails the same probe differently
+    again, reading ``({}).innerWidth`` as undefined and reporting NaN. Asserted
+    as the PROBE rather than as the mechanism by
+    test_a_page_cannot_steer_outer_by_assigning_inner and its siblings.
+
+    ⚠️ THE BOUND, RECORDED RATHER THAN LEFT SILENT — R3 AT inner == screen.
+    R3 is "outer <= screen". At a MAXIMIZED window the live inner EQUALS the
+    spoofed screen (the operator's pick is what kwargs["pin"] writes to
+    screen.width), so inner + chrome necessarily EXCEEDS it and the page reads
+    outer > screen. That position is NOT introduced here: the shipped eager
+    code reported the identical outer 1934x1171 against screen 1920x1080 for a
+    window that LAUNCHED maximized, and reported it for every later geometry
+    too because it never moved. Three positions were measured before choosing:
+
+      a plain recompute      R1 holds in every row; R3 breaks at inner==screen
+      a clamp at the screen  buys R3 — and MOVES the no-resize values at every
+                             geometry (1280x720 pick reported 1280x720, not
+                             1294x811), i.e. it changes behaviour in the case
+                             the spoof was actually written for
+      freezing (the base)    R1 broken after every grow, R3 broken anyway
+
+    The clamp was rejected on that measurement, not on taste: it trades an
+    always-present regression for an edge-case gain, and #327 already records
+    that clamping the REPORTED outer is the move that manufactured negative
+    chrome. The root of the R3 edge is R2 — `inner` is the real content box and
+    is not spoofable at the reporting layer without breaking layout — which is
+    the same conclusion tests/test_ps327_outer_size.py reaches, and it is fixed
+    at SOURCE by capping the window, not here. So this function's job is to
+    stop REPORTING a stale size; the maximized edge is a window-sizing
+    question, and it stays open and named rather than papered over."""
     return (
         "(() => {" + _native_cloak_js() +
         # The getter is what a page reaches through
         # Object.getOwnPropertyDescriptor(window,'outerWidth').get — cloak it as
         # the real accessor reads: .name "get outerWidth", source text
         # `function outerWidth() {...}` (SpiderMonkey drops the prefix there).
+        #
+        # `v` is a THUNK, called per access — NOT the value. See the docstring:
+        # taking the value froze it at init and the page read a stale size after
+        # every resize. Kept closure-scoped (no new global name for a detector
+        # to probe for — tests/test_ff_language_override.py asserts the only new
+        # globals are outerHeight and outerWidth).
         "const def=(o,k,v)=>{try{Object.defineProperty(o,k,"
-        "{get:__cloak(()=>v,'get '+k,k),configurable:true})}catch(e){}};"
-        "def(window,'outerWidth', window.innerWidth + 14);"
-        "def(window,'outerHeight', window.innerHeight + 91);"
+        "{get:__cloak(()=>v(),'get '+k,k),configurable:true})}catch(e){}};"
+        # ⭐ The thunk must NOT re-resolve `innerWidth` BY NAME. `innerWidth` is
+        # [Replaceable] in the HTML spec: a plain page assignment installs an
+        # OWN data property that shadows the prototype accessor, so a by-name
+        # read hands a page the steering wheel — `window.innerWidth=5` would
+        # make `outerWidth` report 19, announcing the derivation outer=inner+14
+        # in one line with no defineProperty needed. The eager form was immune
+        # to that (it read inner once, before any page script ran), so a by-name
+        # thunk would trade the resize bug for a NEW detector probe. `cap` walks
+        # the prototype chain ONCE at init, grabs the native getter, and calls
+        # it on the captured receiver — a page can shadow the property all it
+        # likes and the getter still reads the real window.
+        #
+        # Both halves are load-bearing. The prototype WALK: `innerWidth` is not
+        # an own property of a real `window`, so a bare
+        # getOwnPropertyDescriptor(window,k) is undefined and falls silently
+        # through to the by-name path, fixing nothing. The captured RECEIVER
+        # (`w`, not a live `window` lookup): `window` is [Replaceable] too, and
+        # the native getter brand-checks its receiver, so re-reading `window` at
+        # access time calls the getter on the page's replacement and makes
+        # `outerWidth` THROW. (The by-name form fails that same probe a third
+        # way — `({}).innerWidth` is undefined, so `outerWidth` reads NaN.)
+        #
+        # The final `()=>w[k]` fires only where the chain carries no accessor at
+        # all — not a real Window; a test harness that sets innerWidth as a
+        # plain data property. There it degrades to a by-name read, which is the
+        # only way to stay live when there is no getter to capture.
+        "const cap=(k)=>{const w=window;let o=w;while(o){"
+        "try{const d=Object.getOwnPropertyDescriptor(o,k);"
+        "if(d&&typeof d.get==='function'){const n=d.get;return ()=>n.call(w);}}"
+        "catch(e){}"
+        "try{o=Object.getPrototypeOf(o);}catch(e){o=null;}}"
+        "return ()=>w[k];};"
+        "const iw=cap('innerWidth'),ih=cap('innerHeight');"
+        "def(window,'outerWidth', ()=>iw() + 14);"
+        "def(window,'outerHeight', ()=>ih() + 91);"
         "})();"
     )
 
