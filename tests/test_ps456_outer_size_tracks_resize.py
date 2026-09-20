@@ -93,10 +93,21 @@ import src.services.browser.invisible_launch as il
 # script in EXACTLY the derivation, and nothing else.
 _THUNK_CALL = "{get:__cloak(()=>v(),'get '+k,k),configurable:true}"
 _VALUE_CALL = "{get:__cloak(()=>v,'get '+k,k),configurable:true}"
-_LAZY_W = "def(window,'outerWidth', ()=>window.innerWidth + 14);"
+_LAZY_W = "def(window,'outerWidth', ()=>iw() + 14);"
 _EAGER_W = "def(window,'outerWidth', window.innerWidth + 14);"
-_LAZY_H = "def(window,'outerHeight', ()=>window.innerHeight + 91);"
+_LAZY_H = "def(window,'outerHeight', ()=>ih() + 91);"
 _EAGER_H = "def(window,'outerHeight', window.innerHeight + 91);"
+# The capture helper the eager form has no need for — removed too, so the
+# control is the pre-fix script and not the pre-fix script plus dead code.
+_CAP = (
+    "const cap=(k)=>{const w=window;let o=w;while(o){"
+    "try{const d=Object.getOwnPropertyDescriptor(o,k);"
+    "if(d&&typeof d.get==='function'){const n=d.get;return ()=>n.call(w);}}"
+    "catch(e){}"
+    "try{o=Object.getPrototypeOf(o);}catch(e){o=null;}}"
+    "return ()=>w[k];};"
+    "const iw=cap('innerWidth'),ih=cap('innerHeight');"
+)
 
 
 def _pre_fix_form(js):
@@ -107,7 +118,8 @@ def _pre_fix_form(js):
     agree with it for the most misleading possible reason.
     """
     out = js
-    for old, new in ((_THUNK_CALL, _VALUE_CALL), (_LAZY_W, _EAGER_W), (_LAZY_H, _EAGER_H)):
+    for old, new in ((_THUNK_CALL, _VALUE_CALL), (_LAZY_W, _EAGER_W),
+                     (_LAZY_H, _EAGER_H), (_CAP, "")):
         assert old in out, (
             f"the shipped script no longer contains {old!r}, so this file's "
             "pre-fix control cannot be derived from it. Update the control "
@@ -489,3 +501,283 @@ def test_the_thunk_does_not_leak_through_arity_or_source(tmp_path):
             "visible to a page."
         )
         assert "innerWidth" not in c[prop]["src"]
+
+
+# --- the [Replaceable] probe: a page must not be able to STEER outer ---------
+
+# ⭐ WHY THIS SECTION EXISTS, AND WHY THE HARNESS ABOVE COULD NOT SEE IT
+#
+# The first form of this fix was `()=>window.innerWidth + 14` — a thunk that
+# re-resolved `innerWidth` BY NAME on every access. It fixed the resize bug and
+# every test above was green for it. It also handed a page the steering wheel.
+#
+# `innerWidth` is [Replaceable] in the HTML spec: a plain assignment from page
+# script installs an OWN data property that shadows the prototype accessor. So
+# `window.innerWidth = 5` made `outerWidth` report 19 — one line of page JS, no
+# `defineProperty`, announcing the derivation `outer = inner + 14` in a single
+# read. On an unpatched engine `outerWidth` and `innerWidth` are two independent
+# [Replaceable] attributes and assigning one CANNOT move the other, so a value
+# that follows is a live masking tell of exactly the one-line, deterministic,
+# zero-false-positive shape PS-22 and PS-119 describe. The EAGER form was immune
+# (it read inner once, before any page script ran), so the by-name thunk would
+# have traded the resize bug for a NEW detector probe.
+#
+# The harness above models `innerWidth` as a PLAIN GLOBAL, which is what a
+# `vm` context gives you for free — and a plain global has no [Replaceable]
+# setter, so shadowing is indistinguishable from resizing there. That is
+# precisely why this section carries its OWN harness: the defect lives in the
+# difference between a data property and a spec-shaped accessor, and a harness
+# that cannot represent the difference cannot report it.
+#
+# ⛔ ASSERTED AS THE PROBE, NOT AS THE MECHANISM. These tests set `innerWidth`
+# from page script and read `outerWidth`; none of them greps for `cap`, for a
+# prototype walk, or for any particular capture. A different capture that keeps
+# the page out is free to replace this one and these tests stay green.
+
+# A spec-shaped Window: `innerWidth`/`innerHeight`/`window` are [Replaceable]
+# accessors on the PROTOTYPE whose setter installs an own data property on the
+# instance, and the getters BRAND-CHECK their receiver the way a native one
+# does. Both details are load-bearing and were measured to be:
+#   - not on the prototype  -> getOwnPropertyDescriptor(window, k) is undefined,
+#     so a capture that skips the walk silently falls through to a by-name read
+#     and fixes nothing;
+#   - brand-checking        -> a capture that re-reads `window` at access time
+#     lets `window.window = {}` make the getter throw (measured: NaN).
+_REPLACEABLE_WINDOW = r"""
+  globalThis.__wp = {};
+  Object.setPrototypeOf(globalThis, __wp);
+  globalThis.__real = globalThis;
+  let _iw = %(iw)d, _ih = %(ih)d;
+  const repl = (k, g) => Object.defineProperty(__wp, k, {
+    get: function () {
+      if (this !== __real) throw new TypeError("Illegal invocation");
+      return g();
+    },
+    set: function (v) {
+      Object.defineProperty(this, k, {value: v, writable: true, configurable: true});
+    },
+    configurable: true,
+  });
+  repl("innerWidth", () => _iw);
+  repl("innerHeight", () => _ih);
+  Object.defineProperty(__wp, "window", {
+    get: function () { return __real; },
+    set: function (v) {
+      Object.defineProperty(this, "window", {value: v, writable: true, configurable: true});
+    },
+    configurable: true,
+  });
+  globalThis.screen = {width: %(sw)d, height: %(sh)d};
+  globalThis.__resize = (w, h) => { _iw = w; _ih = h; };
+"""
+
+_PROBE_HARNESS = r"""
+const fs = require("fs"), vm = require("vm");
+const cfg = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const js = fs.readFileSync(cfg.script, "utf8");
+
+const ctx = vm.createContext({});
+vm.runInContext(cfg.window, ctx);
+vm.runInContext(js, ctx);
+
+// Read through __real, not through `window`: one of the probes below shadows
+// `window` itself, and reading through the shadow would measure the harness
+// rather than the override.
+const rd = () => {
+  try { return vm.runInContext("[__real.outerWidth, __real.outerHeight]", ctx); }
+  catch (e) { return "THREW: " + e.message; }
+};
+const typ = () => {
+  try { return vm.runInContext("typeof __real.outerWidth", ctx); }
+  catch (e) { return "THREW"; }
+};
+
+const out = {init: rd()};
+for (const step of cfg.steps) {
+  try { vm.runInContext(step.js, ctx); } catch (e) { out[step.name + "_setup"] = "THREW: " + e.message; }
+  out[step.name] = rd();
+  out[step.name + "_type"] = typ();
+}
+console.log(JSON.stringify(out));
+"""
+
+
+def _probe(tmp_path, steps, screen=(1920, 1080), init=(1280, 720), script=None):
+    """Drive the override against a spec-shaped [Replaceable] Window.
+
+    `steps` is a list of (name, js) — each runs in the page realm and is
+    followed by a read of outerWidth/outerHeight.
+    """
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node not available")
+    work = pathlib.Path(tmp_path)
+    work.mkdir(parents=True, exist_ok=True)
+    js = il._outer_size_override_script() if script is None else script
+    (work / "script.js").write_text(js, encoding="utf-8")
+    (work / "harness.js").write_text(_PROBE_HARNESS, encoding="utf-8")
+    (work / "cfg.json").write_text(
+        json.dumps({
+            "script": str(work / "script.js"),
+            "window": _REPLACEABLE_WINDOW % {
+                "iw": init[0], "ih": init[1], "sw": screen[0], "sh": screen[1],
+            },
+            "steps": [{"name": n, "js": s} for n, s in steps],
+        }),
+        encoding="utf-8",
+    )
+    out = subprocess.run(
+        [node, str(work / "harness.js"), str(work / "cfg.json")],
+        capture_output=True, text=True, timeout=60, encoding="utf-8",
+    )
+    assert out.returncode == 0, out.stderr
+    return json.loads(out.stdout)
+
+
+def test_a_page_cannot_steer_outer_by_assigning_inner(tmp_path):
+    """THE PROBE. One line of page script, no ``defineProperty``.
+
+    On an unpatched engine ``outerWidth`` and ``innerWidth`` are two independent
+    [Replaceable] attributes: assigning to one cannot move the other. If
+    ``outerWidth`` follows an assigned ``innerWidth`` ARITHMETICALLY, the page
+    has just read the derivation ``outer = inner + 14`` straight out of the
+    spoof — a live masking tell (PS-22, PS-119).
+
+    Asserted on the VALUE a page receives. Nothing here greps for the capture.
+    """
+    r = _probe(tmp_path, [
+        ("resized", "__resize(1600, 900);"),
+        ("assigned", "window.innerWidth = 5; window.innerHeight = 5;"),
+    ])
+
+    # the resize is still tracked — this test must not pass by re-freezing.
+    assert r["init"] == [1294, 811]
+    assert r["resized"] == [1614, 991], (
+        f"the resize stopped being tracked under the spec-shaped Window; got "
+        f"{r['resized']}. This probe must not be satisfiable by reverting AC1."
+    )
+    assert r["assigned"] == [1614, 991], (
+        f"a page assigned innerWidth = 5 and outerWidth moved to "
+        f"{r['assigned']}. The getter is resolving innerWidth BY NAME, so the "
+        "[Replaceable] shadow a page installs steers a spoofed value — and "
+        "the arithmetic offset it reveals announces the derivation. Capture "
+        "the native getter at init instead of re-resolving the name."
+    )
+
+
+def test_a_page_cannot_change_outers_TYPE_by_assigning_inner(tmp_path):
+    """The same steering axis, read on the TYPE rather than the number.
+
+    ``window.innerWidth = "1280"`` made the by-name form return the STRING
+    "128014" — string concatenation leaking out of a numeric DOM attribute,
+    which is a louder tell than a wrong number because no real ``outerWidth``
+    is ever a string.
+    """
+    r = _probe(tmp_path, [("assigned", 'window.innerWidth = "1280";')])
+
+    assert r["assigned_type"] == "number", (
+        f"outerWidth reports typeof {r['assigned_type']!r} after a page "
+        f"assigned a string to innerWidth (value {r['assigned']!r}). A real "
+        "outerWidth is always a number."
+    )
+    assert r["assigned"] == [1294, 811], (
+        f"outerWidth moved to {r['assigned']} when a page assigned a string "
+        "to innerWidth."
+    )
+
+
+def test_a_page_cannot_make_outer_throw(tmp_path):
+    """Failure mode is an axis a detector reads too (PS-22).
+
+    Replacing ``innerWidth`` with a throwing accessor made the by-name form
+    propagate the throw out of ``outerWidth``. A native ``outerWidth`` does not
+    care what happened to ``innerWidth``.
+    """
+    r = _probe(tmp_path, [(
+        "poisoned",
+        "Object.defineProperty(window,'innerWidth',"
+        "{get(){throw new TypeError('boom')},configurable:true});",
+    )])
+
+    assert r["poisoned"] == [1294, 811], (
+        f"outerWidth read {r['poisoned']!r} after a page poisoned innerWidth. "
+        "A page must not be able to change this accessor's failure mode."
+    )
+
+
+def test_a_page_cannot_break_outer_by_shadowing_window(tmp_path):
+    """The RECEIVER axis — the half a getter capture alone does not close.
+
+    ``window`` is [Replaceable] too, and a native ``innerWidth`` getter
+    brand-checks its receiver. A capture that keeps the native getter but
+    re-reads ``window`` at access time therefore calls it on the page's
+    replacement and gets a TypeError: measured as ``outerWidth === NaN``.
+    """
+    r = _probe(tmp_path, [
+        ("resized", "__resize(1600, 900);"),
+        ("shadowed", "window.window = {};"),
+    ])
+
+    assert r["resized"] == [1614, 991]
+    assert r["shadowed"] == [1614, 991], (
+        f"outerWidth read {r['shadowed']!r} after a page shadowed `window`. "
+        "The receiver must be captured at init, not re-read per access."
+    )
+
+
+def test_the_pre_fix_form_was_immune_to_the_probe_and_this_harness_can_see_it(tmp_path):
+    """THE CONTROL FOR THIS SECTION — and the reason the probe is in scope.
+
+    A hardening test that only shows the CURRENT code is safe cannot say
+    whether the risk was introduced by this diff or inherited. This drives the
+    eager pre-fix form through the identical probe: it is immune (it read inner
+    once, before any page script ran) and it is frozen. So the steering axis
+    would have been NEW breakage introduced by the recompute, not debt the
+    recompute exposed — which is why closing it belongs in this commit.
+
+    It is also the liveness control for the probe harness: a harness whose
+    [Replaceable] setter did not actually shadow anything would report "immune"
+    for every script, including a steerable one. The shipped script reads
+    1614 after the resize here while the pre-fix one reads 1294, so this
+    harness is demonstrably capable of telling the two apart.
+    """
+    pre = _pre_fix_form(il._outer_size_override_script())
+    steps = [
+        ("resized", "__resize(1600, 900);"),
+        ("assigned", "window.innerWidth = 5;"),
+    ]
+    control = _probe(tmp_path / "pre", steps, script=pre)
+    live = _probe(tmp_path / "now", steps)
+
+    # the pre-fix form: frozen (the defect) AND unsteerable (what it cost).
+    assert control["init"] == [1294, 811]
+    assert control["resized"] == [1294, 811], (
+        "the eager form must NOT track the resize here either — if it does, "
+        "this control is not a control."
+    )
+    assert control["assigned"] == [1294, 811]
+
+    # the shipped form: tracks the resize AND is equally unsteerable.
+    assert live["resized"] == [1614, 991]
+    assert live["assigned"] == live["resized"], (
+        "the fix must keep BOTH properties: track the resize, and stay out of "
+        "the page's reach. Got resize -> %r, after assignment -> %r."
+        % (live["resized"], live["assigned"])
+    )
+
+
+def test_the_capture_degrades_to_a_live_read_when_there_is_no_accessor(tmp_path):
+    """The fallback arm, asserted rather than left untested.
+
+    A harness (or an engine) where ``innerWidth`` is a plain DATA property has
+    no getter to capture. The capture must then fall back to a by-name read —
+    still LIVE, because freezing would reinstate the defect in exactly the
+    venue most of this file's other tests run in. This is what keeps the main
+    ``_seen`` harness above meaningful.
+    """
+    r = _seen(tmp_path, screen=(1920, 1080), init=(1280, 720), live=(1600, 900))
+    assert r["before"]["outer"] == [1294, 811]
+    assert r["after"]["outer"] == [1614, 991], (
+        "with innerWidth as a plain data property the capture must degrade to "
+        f"a live by-name read; got {r['after']['outer']}."
+    )

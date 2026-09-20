@@ -594,6 +594,30 @@ MATRIX = {
             "artifact in a node realm with a recompute positive control "
             "(tests/test_ps456_outer_size_tracks_resize.py), on the VALUE a "
             "page receives rather than on source text. "
+            "⛔ THE THUNK CAPTURES THE NATIVE innerWidth GETTER AT INIT — it "
+            "does NOT re-resolve the name per access, and that distinction is "
+            "load-bearing rather than stylistic. `innerWidth` is "
+            "[Replaceable] in the HTML spec, so a plain page assignment "
+            "installs an OWN data property that shadows the prototype "
+            "accessor; a by-name thunk resolves through that shadow and one "
+            "line of page JS steers the spoof — `window.innerWidth=5` read "
+            "`outerWidth` 19, announcing the derivation outer=inner+14 in a "
+            "single read with no defineProperty, plus a STRING result for a "
+            "string assignment and a THROW for a poisoned one. On an "
+            "unpatched engine the two are independent [Replaceable] "
+            "attributes and assigning one cannot move the other, so that is "
+            "a live masking tell of the shape PS-22/PS-119 describe. The "
+            "EAGER form was immune to it (it read inner once, before page "
+            "script ran), so the by-name recompute would have traded the "
+            "resize bug for a NEW probe; the capture keeps both properties. "
+            "The prototype WALK and the captured RECEIVER are each "
+            "load-bearing: innerWidth is not an own property of window, and "
+            "window is [Replaceable] too while the native getter "
+            "brand-checks its receiver. Asserted as the PROBE rather than "
+            "the mechanism (test_a_page_cannot_steer_outer_by_assigning_inner "
+            "and its siblings), against a spec-shaped [Replaceable] Window, "
+            "with the pre-fix form driven through the same probe as the "
+            "control. "
             "⚠️ THE RESIDUAL BOUND, stated rather than left silent: at a "
             "MAXIMIZED window inner EQUALS the spoofed screen (the operator's "
             "pick is what kwargs[\"pin\"] writes to screen.width), so "
@@ -701,6 +725,17 @@ DEVICE_EXT_RATIONALE = (
 # picking a single line removes the question entirely.
 OUTER_SIZE_RESIDUAL_BOUND = (
     "screen.width), so inner + chrome necessarily EXCEEDS it and the page reads"
+)
+
+# PS-456, second pin. Same purpose, different claim: the cell above records not
+# only the R3 residual but the [Replaceable] constraint on HOW the live inner is
+# read. That constraint is the one a future edit is most likely to undo by
+# accident — `()=>window.innerWidth + 14` reads as the obvious simplification of
+# the capture and is a one-line regression back into a page-steerable spoof, so
+# the tree's own statement of WHY the capture exists is what has to survive.
+# Same single-source-line rule as above.
+OUTER_SIZE_REPLACEABLE_BOUND = (
+    "script installs an OWN data property that shadows the prototype accessor."
 )
 
 
@@ -2135,6 +2170,28 @@ def test_outer_size_residual_bound_still_in_tree():
         "_outer_size_override_script no longer states it. Either restore the "
         "docstring's account or restate the cell — do not leave the matrix "
         "citing a bound the tree has stopped explaining."
+    )
+
+
+def test_outer_size_replaceable_bound_still_in_tree():
+    # PS-456's OTHER recorded constraint: the thunk captures the native
+    # innerWidth getter because `innerWidth` is [Replaceable] and a by-name read
+    # is page-steerable. The behavioural proof is
+    # tests/test_ps456_outer_size_tracks_resize.py's probe suite; this asserts
+    # the tree still EXPLAINS the capture, so the next reader who sees
+    # `cap(...)` and reaches for the obvious `()=>window.innerWidth + 14`
+    # simplification finds the reason it is not that, in the file they are
+    # editing.
+    assert MATRIX["outer-size"]["firefox"][0] == COVERED
+    text = (REPO_ROOT / "src/services/browser/invisible_launch.py").read_text(
+        encoding="utf-8"
+    )
+    assert _collapse(OUTER_SIZE_REPLACEABLE_BOUND) in _collapse(text), (
+        "the outer-size cell records that the live inner is read through a "
+        "CAPTURED native getter because innerWidth is [Replaceable], and "
+        "_outer_size_override_script no longer states why. A by-name read is "
+        "a one-line regression into a page-steerable spoof; keep the reason "
+        "next to the code, not only in the matrix."
     )
 
 

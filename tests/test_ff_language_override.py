@@ -595,6 +595,13 @@ def test_cloak_emits_the_spidermonkey_native_form_not_v8s():
     # window CAN be resized and the frozen read was the defect. Asserted
     # separately so the difference is pinned rather than averaged away by a
     # combined count that either form could satisfy.
+    #
+    # ⛔ The outer-size thunk reads a CAPTURED native getter, not
+    # `window.innerWidth` by name — `innerWidth` is [Replaceable], so a by-name
+    # read lets one line of page script steer the spoofed value. That is a
+    # behavioural property and is asserted as a probe in
+    # tests/test_ps456_outer_size_tracks_resize.py; what THIS line pins is only
+    # that the accessor is still cloaked through the same `__cloak` call.
     assert il._language_override_script("en-US").count(
         "__cloak(()=>v,'get '+k,k)") == 1
     assert il._outer_size_override_script().count(
@@ -636,6 +643,10 @@ def test_override_scripts_cloak_every_installed_function():
     # Counted per script: PS-456 made the outer-size helper call a THUNK
     # (`()=>v()`) so a resize is re-read, while the language one still closes
     # over the locale value. Both are still cloaked, which is what this asserts.
+    # (The thunk itself reads a CAPTURED native innerWidth getter rather than
+    # the name — see test_cloak_emits_the_spidermonkey_native_form_not_v8s
+    # above, and the probe suite in
+    # tests/test_ps456_outer_size_tracks_resize.py.)
     assert il._language_override_script("en-US").count(
         "__cloak(()=>v,'get '+k,k)") == 1
     assert il._outer_size_override_script().count(
