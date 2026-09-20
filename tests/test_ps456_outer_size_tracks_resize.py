@@ -541,8 +541,12 @@ def test_the_thunk_does_not_leak_through_arity_or_source(tmp_path):
 #   - not on the prototype  -> getOwnPropertyDescriptor(window, k) is undefined,
 #     so a capture that skips the walk silently falls through to a by-name read
 #     and fixes nothing;
-#   - brand-checking        -> a capture that re-reads `window` at access time
-#     lets `window.window = {}` make the getter throw (measured: NaN).
+#   - brand-checking        -> a capture that keeps the native getter but
+#     re-reads `window` at access time calls it on the page's replacement and
+#     propagates a TypeError out of `outerWidth` (measured: "Illegal
+#     invocation"). The plain by-name form fails differently at the same probe
+#     — `({}).innerWidth` is undefined, so `outerWidth` reads NaN. Two variants,
+#     two failures, both visible to a page; the capture must close both.
 _REPLACEABLE_WINDOW = r"""
   globalThis.__wp = {};
   Object.setPrototypeOf(globalThis, __wp);
@@ -709,9 +713,17 @@ def test_a_page_cannot_break_outer_by_shadowing_window(tmp_path):
     """The RECEIVER axis — the half a getter capture alone does not close.
 
     ``window`` is [Replaceable] too, and a native ``innerWidth`` getter
-    brand-checks its receiver. A capture that keeps the native getter but
-    re-reads ``window`` at access time therefore calls it on the page's
-    replacement and gets a TypeError: measured as ``outerWidth === NaN``.
+    brand-checks its receiver. Two forms fail this probe in two different ways,
+    both measured:
+
+      - a by-name thunk (``()=>window.innerWidth + 14``) reads
+        ``({}).innerWidth`` — undefined — and ``outerWidth`` becomes **NaN**;
+      - a capture that keeps the native getter but re-reads ``window`` per
+        access calls it on the replacement and ``outerWidth`` **throws**
+        ("Illegal invocation").
+
+    Capturing the receiver at init closes both. Asserted on the value a page
+    receives, so either failure lands here.
     """
     r = _probe(tmp_path, [
         ("resized", "__resize(1600, 900);"),

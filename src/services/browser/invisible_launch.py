@@ -430,10 +430,12 @@ def _outer_size_override_script() -> str:
     is not an OWN property of ``window``, so skipping the WALK leaves the
     descriptor undefined and falls silently through to the by-name path fixing
     nothing; and ``window`` is [Replaceable] too and the native getter
-    brand-checks its receiver, so re-reading ``window`` at access time lets
-    ``window.window={}`` make ``outerWidth`` throw. Asserted as the PROBE rather
-    than as the mechanism by
-    test_a_page_cannot_steer_outer_by_assigning_inner.
+    brand-checks its receiver, so re-reading ``window`` at access time calls the
+    getter on the page's replacement and makes ``outerWidth`` THROW ("Illegal
+    invocation") — while the plain by-name form fails the same probe differently
+    again, reading ``({}).innerWidth`` as undefined and reporting NaN. Asserted
+    as the PROBE rather than as the mechanism by
+    test_a_page_cannot_steer_outer_by_assigning_inner and its siblings.
 
     ⚠️ THE BOUND, RECORDED RATHER THAN LEFT SILENT — R3 AT inner == screen.
     R3 is "outer <= screen". At a MAXIMIZED window the live inner EQUALS the
@@ -492,7 +494,9 @@ def _outer_size_override_script() -> str:
         # through to the by-name path, fixing nothing. The captured RECEIVER
         # (`w`, not a live `window` lookup): `window` is [Replaceable] too, and
         # the native getter brand-checks its receiver, so re-reading `window` at
-        # access time lets `window.window={}` make `outerWidth` THROW.
+        # access time calls the getter on the page's replacement and makes
+        # `outerWidth` THROW. (The by-name form fails that same probe a third
+        # way — `({}).innerWidth` is undefined, so `outerWidth` reads NaN.)
         #
         # The final `()=>w[k]` fires only where the chain carries no accessor at
         # all — not a real Window; a test harness that sets innerWidth as a
